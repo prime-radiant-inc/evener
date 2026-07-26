@@ -11,6 +11,7 @@ import { Toast } from "../../widgets";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
+import type { SearchResult } from "./search";
 
 // See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
 class MemoryStorage {
@@ -322,9 +323,12 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
   expect(screen.getByText("turn 1")).toBeTruthy();
 });
 
-// --- search-result navigation: qualified ref vs bare id (I3) ---
+// --- search-result navigation ---
 
-async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: Record<string, unknown>, term: string) {
+// Typed against the real SearchResult, not Record<string, unknown>: `ref` is
+// required now (see search.ts), and a fixture omitting it would be describing
+// a response the hub cannot produce.
+async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
   fetchMock.mockResolvedValue({
     ok: true,
     status: 200,
@@ -338,7 +342,10 @@ async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: 
   await user.click(row as HTMLElement);
 }
 
-test("a search result carrying a qualified ref is opened by that ref (new hubs)", async () => {
+// One ref form, and the type is what enforces it: a hit with no ref is not a
+// state this code can be in, so there is no runtime fallback to test. The hub
+// sets Ref at both construction sites and its field carries no omitempty.
+test("a search result is opened by its qualified ref", async () => {
   const user = userEvent.setup();
   await searchAndClick(
     user,
@@ -346,20 +353,6 @@ test("a search result carrying a qualified ref is opened by that ref (new hubs)"
     "reffuls",
   );
   expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
-});
-
-// There is one ref form. The hub's own searchResult doc comment says it
-// outright - "SPA clients open sessions only by qualified ref
-// (appwire.ParseRef rejects bare ids), so the bare ID field alone cannot be
-// used to open a hit" - and `ref` has no omitempty, so it always ships. The
-// old bare-id fallback built a URL that no longer routes, and (worse) a URL
-// that named the same session differently from the rail, which opened it a
-// SECOND time in its own pane. Absent a ref there is nothing to open.
-test("a search result with no ref navigates nowhere rather than inventing a bare-id URL", async () => {
-  const user = userEvent.setup();
-  const before = window.location.pathname;
-  await searchAndClick(user, { id: "bareonly", title: "norefs", project: "p", state: "ended", age: "2h" }, "norefs");
-  expect(window.location.pathname).toBe(before);
 });
 
 // --- keyboard navigation ---

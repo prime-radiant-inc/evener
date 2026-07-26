@@ -394,9 +394,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // used to open a hit, and `ref` ships on every row. A bare-id URL no
       // longer routes (shell/routing.ts's isRef), and naming a session
       // differently from the rail is what used to open it twice in two panes.
-      const ref = item.result.ref;
-      if (!ref) return;
-      const url = `/s/${encodeURIComponent(ref)}`;
+      const url = `/s/${encodeURIComponent(item.result.ref)}`;
       if (newTab) window.open(url, "_blank");
       else navigate(url);
     }
