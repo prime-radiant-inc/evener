@@ -553,7 +553,7 @@ func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shell
 
 func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Status, reason string, exitCode *int) error {
 	var err error
-	for attempt := 0; attempt < shellFinalizeAttempts; attempt++ {
+	for attempt := range shellFinalizeAttempts {
 		err = jm.finalize(jobID, status, reason, exitCode)
 		if err == nil {
 			return nil
@@ -589,7 +589,7 @@ func (jm *jobManager) finalizeKeptSyncUntilDurable(run *runningJob, status jobst
 
 func shellFinalizeBackoff(attempt int) time.Duration {
 	delay := shellFinalizeRetryDelay
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		delay *= 2
 		if delay >= shellFinalizeMaxRetryDelay {
 			return shellFinalizeMaxRetryDelay

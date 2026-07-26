@@ -216,7 +216,7 @@ func FuzzWatchPendingStateProgram(f *testing.F) {
 		overflowKey := watchKey{VisibleSessionID: jm.sessionID, Target: target, SendTo: "dlg_sink"}
 		jm.watches[overflowKey] = overflowCfg
 		overflowCfg.pendingOrder = append(overflowCfg.pendingOrder, jobstore.WatchSendKey{WatchTarget: "nil-hole"})
-		for i := 0; i < defaultWatchSendPendingCap; i++ {
+		for i := range defaultWatchSendPendingCap {
 			k := jobstore.WatchSendKey{VisibleSessionID: jm.sessionID, WatchTarget: target, ResolvedWatchedIdentity: fmt.Sprintf("watched-%d", i), ResolvedSendTo: "dlg_sink"}
 			s := jobstore.WatchSendState{Key: k, DeliveryID: fmt.Sprintf("d-%d", i), UpdateSeq: 1, TriggerIdentity: fmt.Sprintf("trigger-%d", i)}
 			overflowCfg.pending[k] = &s

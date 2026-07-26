@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,9 +84,7 @@ func (r *wtRepo) switchOp(t *testing.T, args map[string]any) (map[string]any, er
 		t.Fatal("registry is missing manage_worktree")
 	}
 	full := map[string]any{"operation": "switch"}
-	for k, v := range args {
-		full[k] = v
-	}
+	maps.Copy(full, args)
 	out, err := rt.Exec(t.Context(), r.s.currentEnv(), full)
 	if err != nil {
 		return nil, err

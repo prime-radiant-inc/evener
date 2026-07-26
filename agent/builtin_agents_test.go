@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -774,13 +775,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	// task_list should be in the subagent's tools even though explorer.md doesn't list it.
-	hasTaskList := false
-	for _, name := range subagentTools {
-		if name == "task_list" {
-			hasTaskList = true
-			break
-		}
-	}
+	hasTaskList := slices.Contains(subagentTools, "task_list")
 	if !hasTaskList {
 		t.Errorf("named subagent should have task_list, got tools: %v", subagentTools)
 	}
@@ -861,13 +856,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	waitForRuntimeSubagent(t, sess, agentID)
 
 	for _, want := range []string{"task_list"} {
-		found := false
-		for _, name := range subagentTools {
-			if name == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(subagentTools, want)
 		if !found {
 			t.Errorf("all-tools agent should retain %q, got tools: %v", want, subagentTools)
 		}

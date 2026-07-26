@@ -52,7 +52,7 @@ func (r *doctor_reader) doctor_str() string {
 		return ""
 	}
 	var sb strings.Builder
-	for i := 0; i < n; i++ {
+	for range n {
 		sb.WriteByte(r.doctor_u8())
 	}
 	return sb.String()
@@ -178,7 +178,7 @@ func FuzzDoctorRenderWatches(f *testing.F) {
 		w.doctor_putInt(0) // zero watches
 		return w.b
 	}
-	for c := 0; c < 4; c++ {
+	for c := range 4 {
 		f.Add(emptyReport(c))
 	}
 
@@ -365,7 +365,7 @@ func FuzzDoctorRenderAPILog(f *testing.F) {
 	// header writes SessionID + the eight totals fields.
 	header := func(w *doctor_writer) {
 		w.doctor_putStr("s1")
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			w.doctor_putInt(3)
 		}
 	}
@@ -373,7 +373,7 @@ func FuzzDoctorRenderAPILog(f *testing.F) {
 		w := &doctor_writer{}
 		header(w)
 		w.doctor_putInt(calls)
-		for i := 0; i < calls; i++ {
+		for range calls {
 			putCall(w, errMsg, empty)
 		}
 		w.doctor_putBool(false) // EmptyOnly

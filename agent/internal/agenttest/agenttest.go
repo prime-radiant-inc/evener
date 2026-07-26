@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -170,9 +171,7 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		"artifacts": []string{},
 	}
 	if rawOutput, ok := args["output"].(map[string]any); ok {
-		for k, v := range rawOutput {
-			output[k] = v
-		}
+		maps.Copy(output, rawOutput)
 	}
 	if message == "" {
 		if outMsg, ok := output["message"].(string); ok {

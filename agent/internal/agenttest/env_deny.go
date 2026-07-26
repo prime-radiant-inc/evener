@@ -44,7 +44,7 @@ func (d *DenyEnv) OSVersion() string        { return "deny-env" }
 func (d *DenyEnv) draw(parts ...string) uint64 {
 	h := fnv.New64a()
 	var seed [8]byte
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		seed[i] = byte(d.Seed >> (8 * i))
 	}
 	_, _ = h.Write(seed[:])
@@ -103,7 +103,7 @@ func (d *DenyEnv) Glob(pattern string, basePath string) ([]string, error) {
 	h := d.draw("glob", pattern, basePath)
 	n := int(h % 4)
 	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, fmt.Sprintf("%s/match-%d.txt", basePath, i))
 	}
 	return out, nil
@@ -128,7 +128,7 @@ func (d *DenyEnv) ListDirectory(path string, _ int) ([]execenv.DirEntry, error) 
 	h := d.draw("ls", path)
 	n := int(h % 4)
 	out := make([]execenv.DirEntry, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, execenv.DirEntry{
 			Name:  fmt.Sprintf("entry-%d", i),
 			IsDir: (h>>uint(i))&1 == 0,

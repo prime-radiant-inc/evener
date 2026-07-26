@@ -3,6 +3,7 @@ package tool
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,12 +31,7 @@ func required(t *testing.T, def llm.ToolDefinition, name string, want []string) 
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 // TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's wait

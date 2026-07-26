@@ -48,7 +48,7 @@ func TestS1Cov_readJobOutputDigest(t *testing.T) {
 
 	// Whole output fits, multi-line, no overlap → stitched head+elision+tail.
 	var big strings.Builder
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		fmt.Fprintf(&big, "line%02d\n", i)
 	}
 	fits := jobReadOutputSnapshot{Content: big.String(), TotalBytes: int64(big.Len())}

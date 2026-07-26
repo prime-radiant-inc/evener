@@ -24,7 +24,7 @@ import (
 func driveGoalToTerminal(ctx context.Context, t *testing.T, sess *Session, first string, maxPumps int) {
 	t.Helper()
 	input := first
-	for i := 0; i < maxPumps; i++ {
+	for i := range maxPumps {
 		if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
 			t.Fatalf("ProcessInput (pump %d): %v", i, err)
 		}

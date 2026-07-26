@@ -61,7 +61,7 @@ func TestJobstoreSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newSeqModel()
 		steps := rapid.IntRange(1, 40).Draw(rt, "steps")
-		for i := 0; i < steps; i++ {
+		for i := range steps {
 			op := rapid.SampledFrom(m.legalOps()).Draw(rt, "op")
 			m.applyOp(rt, op)
 			m.checkInvariants(rt, i)

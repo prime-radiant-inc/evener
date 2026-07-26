@@ -216,10 +216,7 @@ func (s *Session) accumulateWorkLocked() int64 {
 	if s.turnStartedAt.IsZero() {
 		return 0
 	}
-	ms := s.sclock().Now().Sub(s.turnStartedAt).Milliseconds()
-	if ms < 0 {
-		ms = 0
-	}
+	ms := max(s.sclock().Now().Sub(s.turnStartedAt).Milliseconds(), 0)
 	s.workMillis += ms
 	s.turnStartedAt = time.Time{}
 	return ms

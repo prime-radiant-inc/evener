@@ -229,7 +229,7 @@ func TestEscalation_SnapshotIsInStableRaiseOrder(t *testing.T) {
 		awaitPending(t, s, i+1) // ensure this one registered before raising the next
 	}
 
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		snap := s.PendingEscalations()
 		if len(snap) != len(paths) {
 			t.Fatalf("expected %d pending, got %d", len(paths), len(snap))

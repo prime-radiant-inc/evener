@@ -68,9 +68,7 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 		sync.Mutex
 		cancel context.CancelFunc
 	}
-	loops.Add(1)
-	go func() {
-		defer loops.Done()
+	loops.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -84,12 +82,10 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 			_, _ = sess.ProcessInput(ctx, "hi", nil)
 			cancel()
 		}
-	}()
+	})
 
 	// Concurrent interrupter: cancels whatever turn is in flight (real interrupt).
-	loops.Add(1)
-	go func() {
-		defer loops.Done()
+	loops.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -104,7 +100,7 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 			}
 			runtime.Gosched()
 		}
-	}()
+	})
 
 	// Bounded concurrent control/read ops — all s.mu-guarded, safe against a turn.
 	ops := []func(){
@@ -120,7 +116,7 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 		bounded.Add(1)
 		go func(fn func()) {
 			defer bounded.Done()
-			for i := 0; i < iters; i++ {
+			for range iters {
 				fn()
 				runtime.Gosched()
 			}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -598,9 +599,7 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 	// Merge all agents from all plugins
 	allAgents := map[string]plugin.Agent{}
 	for _, p := range plugins {
-		for k, v := range p.Agents {
-			allAgents[k] = v
-		}
+		maps.Copy(allAgents, p.Agents)
 	}
 
 	// Should have agents from all 3 plugins
@@ -669,9 +668,7 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 
 	allSkills := map[string]skill.SkillMeta{}
 	for _, p := range plugins {
-		for k, v := range p.Skills {
-			allSkills[k] = v
-		}
+		maps.Copy(allSkills, p.Skills)
 	}
 
 	// Superpowers has skills, security-guidance has none

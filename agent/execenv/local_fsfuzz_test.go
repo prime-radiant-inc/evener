@@ -186,7 +186,7 @@ func exfs_buildTree(t *testing.T, root, spec string, mkExec, mkSym bool) {
 	t.Helper()
 	var firstFile string
 	count := 0
-	for _, ln := range strings.Split(spec, "\n") {
+	for ln := range strings.SplitSeq(spec, "\n") {
 		ln = strings.TrimSpace(ln)
 		if ln == "" {
 			continue
@@ -478,7 +478,7 @@ func exfs_checkInject(t *testing.T, env, got []string, r0, r1, binDir string) {
 // entry per non-empty line, verbatim (entries need not contain '=').
 func exfs_parseEnv(spec string) []string {
 	var out []string
-	for _, ln := range strings.Split(spec, "\n") {
+	for ln := range strings.SplitSeq(spec, "\n") {
 		if ln == "" {
 			continue
 		}
@@ -491,8 +491,8 @@ func exfs_parseEnv(spec string) []string {
 // whether one was present.
 func exfs_findPath(env []string) (int, string, bool) {
 	for i, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			return i, strings.TrimPrefix(kv, "PATH="), true
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			return i, v, true
 		}
 	}
 	return -1, "", false
@@ -524,7 +524,7 @@ func exfs_pathSegSet(path string) map[string]bool {
 	if path == "" {
 		return set
 	}
-	for _, p := range strings.Split(path, string(os.PathListSeparator)) {
+	for p := range strings.SplitSeq(path, string(os.PathListSeparator)) {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			set[p] = true

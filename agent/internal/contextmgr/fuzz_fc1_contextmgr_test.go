@@ -82,7 +82,7 @@ func FuzzFc1EstimateUsedTokens(f *testing.F) {
 // are non-zero, exercising the char/4 arithmetic.
 func fc1SyntheticHistory(n int) []schema.Turn {
 	out := make([]schema.Turn, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		switch i % 3 {
 		case 0:
 			out = append(out, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("user turn content here")})

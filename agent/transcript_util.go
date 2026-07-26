@@ -9,7 +9,7 @@ import "strings"
 // stop un-named sessions from dumping a full multi-paragraph prompt.
 func firstLineClamp(s string, limit int) string {
 	firstLine := ""
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 0 {
 			firstLine = strings.Join(fields, " ")

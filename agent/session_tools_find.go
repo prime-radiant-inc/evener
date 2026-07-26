@@ -610,21 +610,12 @@ func makeSnippet(text, query string, width int) string {
 	matchRune := len([]rune(lower[:idx]))
 	qLen := len([]rune(query))
 
-	half := (width - qLen) / 2
-	if half < 0 {
-		half = 0
-	}
-	start := matchRune - half
-	if start < 0 {
-		start = 0
-	}
+	half := max((width-qLen)/2, 0)
+	start := max(matchRune-half, 0)
 	end := start + width
 	if end > len(runes) {
 		end = len(runes)
-		start = end - width
-		if start < 0 {
-			start = 0
-		}
+		start = max(end-width, 0)
 	}
 
 	excerpt := string(runes[start:end])

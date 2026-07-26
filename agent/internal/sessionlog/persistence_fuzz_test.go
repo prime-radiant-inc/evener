@@ -171,7 +171,7 @@ func (r *entryReader) entry() SessionLogEntry {
 	}
 	if shape&0x02 != 0 {
 		n := int(r.next()%3) + 1
-		for i := 0; i < n; i++ {
+		for range n {
 			e.FilesTouched = append(e.FilesTouched, "path/file")
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -469,10 +470,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	full := res.FullOutput
 	const chunk = 4000
 	for i := 0; i < len(full); i += chunk {
-		j := i + chunk
-		if j > len(full) {
-			j = len(full)
-		}
+		j := min(i+chunk, len(full))
 		s.emit(events.EventToolCallOutputDelta, events.ToolCallOutputDeltaData{
 			ToolName: res.ToolName,
 			CallID:   res.CallID,
@@ -566,9 +564,7 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 			return err
 		}
 	}
-	for k, v := range updated {
-		args[k] = v
-	}
+	maps.Copy(args, updated)
 	b, err := json.Marshal(args)
 	if err != nil {
 		return err

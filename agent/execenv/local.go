@@ -666,10 +666,7 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	if start > len(lines) {
 		return "", nil
 	}
-	end := start - 1 + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(start-1+limit, len(lines))
 	var out strings.Builder
 	for i := start; i <= end; i++ {
 		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
@@ -828,10 +825,7 @@ func nearestFileRegion(content, oldString string) string {
 	if best < 0 || bestScore < 0.5 {
 		return ""
 	}
-	end := best + len(oldLines)
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(best+len(oldLines), len(lines))
 	return strings.Join(lines[best:end], "\n")
 }
 
@@ -862,7 +856,7 @@ func lineSimilarity(a, b string) float64 {
 // wordSet returns the set of space-separated tokens in s.
 func wordSet(s string) map[string]bool {
 	m := make(map[string]bool)
-	for _, w := range strings.Fields(s) {
+	for w := range strings.FieldsSeq(s) {
 		m[w] = true
 	}
 	return m
@@ -1368,8 +1362,8 @@ func lookPathInEnv(name string, env []string) (string, bool) {
 	pathPrefix := envvars.Path.Name + "="
 	pathValue := ""
 	for i := len(env) - 1; i >= 0; i-- {
-		if strings.HasPrefix(env[i], pathPrefix) {
-			pathValue = strings.TrimPrefix(env[i], pathPrefix)
+		if rest, ok := strings.CutPrefix(env[i], pathPrefix); ok {
+			pathValue = rest
 			break
 		}
 	}
@@ -1445,8 +1439,8 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	pathPrefix := envvars.Path.Name + "="
 	findPath := func(env []string) (int, string) {
 		for i, kv := range env {
-			if strings.HasPrefix(kv, pathPrefix) {
-				return i, strings.TrimPrefix(kv, pathPrefix)
+			if rest, ok := strings.CutPrefix(kv, pathPrefix); ok {
+				return i, rest
 			}
 		}
 		return -1, ""

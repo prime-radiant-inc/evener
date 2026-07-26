@@ -180,7 +180,7 @@ func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 	// Build a condensed view of old history for the prediction model.
 	const maxHistoryChars = 30_000
 	var b strings.Builder
-	for i := 0; i < cutoff; i++ {
+	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnUserInput:

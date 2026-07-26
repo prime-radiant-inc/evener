@@ -63,10 +63,7 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 	}
 	var lifetime []byte
 	for offset, step := 0, 0; offset < len(stream); step++ {
-		chunkLen := 1 + int(t8OutputProgramByte(program, step+1))%31
-		if chunkLen > len(stream)-offset {
-			chunkLen = len(stream) - offset
-		}
+		chunkLen := min(1+int(t8OutputProgramByte(program, step+1))%31, len(stream)-offset)
 		chunk := stream[offset : offset+chunkLen]
 		n, err := store.Append(chunk)
 		if err != nil || n != len(chunk) {
@@ -312,7 +309,7 @@ func t8AssertReadEventsRecovery(t *testing.T, mode int) {
 func t8AssertStoreFaultRollback(t *testing.T) {
 	t.Helper()
 	sawAppendFault := false
-	for failAt := 0; failAt < 48; failAt++ {
+	for failAt := range 48 {
 		base := afero.NewMemMapFs()
 		const path = "/task8-jobs.jsonl"
 		seed, err := openFs(base, path)

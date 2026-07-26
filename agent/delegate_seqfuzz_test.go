@@ -168,7 +168,7 @@ var ds_texts = []string{"go", "continue", "step 2", "??", "résumé"}
 func ds_drawArtifact(rt *rapid.T) ds_artifact {
 	n := rapid.IntRange(1, 20).Draw(rt, "nops")
 	ops := make([]ds_op, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		code := rapid.SampledFrom(ds_allOps).Draw(rt, "op")
 		op := ds_op{Code: int(code)}
 		switch code {
@@ -916,8 +916,8 @@ func ds_opName(c ds_opCode) string {
 }
 
 func ds_firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if line, _, ok := strings.Cut(s, "\n"); ok {
+		return line
 	}
 	return s
 }

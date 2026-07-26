@@ -14,7 +14,7 @@ import (
 
 func s2cov_seedHistory(sess *Session, n int) []schema.Turn {
 	hist := make([]schema.Turn, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		hist = append(hist, schema.NewTurn(schema.TurnUserInput, llm.User("turn")))
 	}
 	sess.mu.Lock()

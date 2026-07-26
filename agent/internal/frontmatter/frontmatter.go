@@ -24,14 +24,11 @@ func Parse(raw string) (Document, error) {
 	}
 
 	rest := raw[len(delimiter):]
-	idx := strings.Index(rest, delimiter)
-	if idx < 0 {
+	yamlStr, body, found := strings.Cut(rest, delimiter)
+	if !found {
 		// Opening delimiter but no closing delimiter — treat as no frontmatter.
 		return Document{Body: raw}, nil
 	}
-
-	yamlStr := rest[:idx]
-	body := rest[idx+len(delimiter):]
 
 	meta := make(map[string]any)
 	if strings.TrimSpace(yamlStr) != "" {

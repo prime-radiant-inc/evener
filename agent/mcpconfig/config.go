@@ -174,9 +174,9 @@ func expandEnvVars(s string) (string, error) {
 		varName := expr
 		defaultVal := ""
 		hasDefault := false
-		if di := strings.Index(expr, ":-"); di >= 0 {
-			varName = expr[:di]
-			defaultVal = expr[di+2:]
+		if before, after, ok := strings.Cut(expr, ":-"); ok {
+			varName = before
+			defaultVal = after
 			hasDefault = true
 		}
 
@@ -199,13 +199,13 @@ func ParseInline(spec string) (ServerConfig, error) {
 		return ServerConfig{}, errors.New("empty MCP inline spec")
 	}
 
-	colon := strings.Index(spec, ":")
-	if colon < 0 {
+	before, after, ok := strings.Cut(spec, ":")
+	if !ok {
 		return ServerConfig{}, fmt.Errorf("MCP inline spec missing colon: %q (format: name:command args...)", spec)
 	}
 
-	name := strings.TrimSpace(spec[:colon])
-	rest := strings.TrimSpace(spec[colon+1:])
+	name := strings.TrimSpace(before)
+	rest := strings.TrimSpace(after)
 	if name == "" {
 		return ServerConfig{}, fmt.Errorf("MCP inline spec has empty name: %q", spec)
 	}

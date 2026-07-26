@@ -345,7 +345,7 @@ var inputTexts = []string{"hello", "do x", "please", "step 2", "??", "résumé"}
 func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 	n := rapid.IntRange(1, 24).Draw(rt, "nops")
 	ops := make([]opRecord, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		code := rapid.SampledFrom(allLifecycleOps).Draw(rt, "op")
 		rec := opRecord{Code: int(code)}
 		switch code {
@@ -1004,8 +1004,9 @@ func opName(c lifecycleOpCode) string {
 }
 
 func firstLifecycleLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	before, _, found := strings.Cut(s, "\n")
+	if found {
+		return before
 	}
 	return s
 }

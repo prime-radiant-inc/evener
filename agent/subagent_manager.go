@@ -309,7 +309,7 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 	if len(reclaimable) < need {
 		return nil, fmt.Errorf("retained delegate limit reached (%d): finished delegate sessions are still finalizing; retry after job records finish before spawning another delegate", m.maxRetainedTerminal)
 	}
-	for i := 0; i < need; i++ {
+	for i := range need {
 		id := reclaimable[i].id
 		evicted = append(evicted, m.subs[id])
 		delete(m.subs, id)

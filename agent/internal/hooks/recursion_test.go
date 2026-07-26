@@ -74,7 +74,7 @@ func TestMatchHooks_InvalidMatcherSkipsSilently(t *testing.T) {
 	})
 
 	// Dispatch three times; the invalid matcher must be skipped and NOTHING emitted.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if got := r.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 0 {
 			t.Fatalf("invalid regex: hook must be skipped; got %d matches", len(got))
 		}

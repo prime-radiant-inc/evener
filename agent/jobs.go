@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -823,21 +824,11 @@ func keepListedJobRow(rec *jobstore.JobRecord, filter listFilter, sessionID stri
 }
 
 func statusAllowed(status jobstore.Status, allowed []jobstore.Status) bool {
-	for _, want := range allowed {
-		if status == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, status)
 }
 
 func typeAllowed(jobType jobstore.JobType, allowed []jobstore.JobType) bool {
-	for _, want := range allowed {
-		if jobType == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, jobType)
 }
 
 func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {

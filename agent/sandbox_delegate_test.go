@@ -246,7 +246,7 @@ func TestSandboxHostFactsProbedOncePerSession(t *testing.T) {
 	desc := &jobstore.DelegateRestoreDescriptor{WorkingDir: lane, LocalEnvPolicy: "default", Sandbox: snap}
 
 	const n = 5
-	for i := 0; i < n; i++ {
+	for i := range n {
 		rp, reason := s.resolveRestoredDelegateSandbox(desc, lane)
 		if reason != "" {
 			t.Fatalf("assessment %d: unexpected not-resumable reason %q", i, reason)

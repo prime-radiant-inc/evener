@@ -136,7 +136,7 @@ func TestSessionLog_Range(t *testing.T) {
 
 	log := mustNewSessionLog(t, path)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		entry := SessionLogEntry{
 			Turn:    i,
 			Action:  "test",
@@ -323,10 +323,10 @@ func TestSessionLog_ConcurrentAppend(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < entriesPerGoroutine; j++ {
+			for j := range entriesPerGoroutine {
 				entry := SessionLogEntry{
 					Turn:    id*100 + j,
 					Action:  "test",

@@ -107,12 +107,10 @@ func TestSession_Close_ConcurrentCallsSafe(t *testing.T) {
 	t.Parallel()
 	sess := newDisposeCloseTestSession(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			sess.Close()
-		}()
+		})
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()

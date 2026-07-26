@@ -65,7 +65,7 @@ func TestW3Sub_SummarizeSteered_DigestArms(t *testing.T) {
 func TestW3Sub_SummarizeSteered_HistoryCharCap(t *testing.T) {
 	big := strings.Repeat("y", 500) // assistant text is capped at 500 chars each
 	history := make([]schema.Turn, 0, 320)
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(big)))
 	}
 	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("tail")))

@@ -63,7 +63,7 @@ func ValidateName(name string) error {
 	if strings.HasSuffix(name, ".") {
 		return fmt.Errorf("worktree name %q must not end with %q", name, ".")
 	}
-	for _, component := range strings.Split(name, "/") {
+	for component := range strings.SplitSeq(name, "/") {
 		if component == "" {
 			return fmt.Errorf("worktree name %q must not contain an empty path component", name)
 		}

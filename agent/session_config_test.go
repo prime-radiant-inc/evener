@@ -294,11 +294,11 @@ func TestSession_TrackReadFile_Concurrent(t *testing.T) {
 	iterations := 500
 
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func() {
 			defer wg.Done()
 			<-start
-			for j := 0; j < iterations; j++ {
+			for j := range iterations {
 				sess.trackReadFile(fmt.Sprintf("file-%d-%d.txt", i, j))
 			}
 		}()
@@ -838,7 +838,7 @@ func TestSession_DistinctCompactionsQueueOneTranscriptReminderEach(t *testing.T)
 	defer sess.Close()
 	setCompactionTestHistory(sess)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := sess.Compact(context.Background()); err != nil {
 			t.Fatalf("Compact %d: %v", i+1, err)
 		}
@@ -1256,7 +1256,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	}()
 
 	// If tools are run concurrently, we should see both start before release.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case <-started:
 		case <-ctx.Done():

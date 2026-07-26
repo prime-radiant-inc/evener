@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,9 +57,7 @@ func (r *wtRepo) removeOp(t *testing.T, args map[string]any) (map[string]any, er
 		t.Fatal("registry is missing manage_worktree")
 	}
 	full := map[string]any{"operation": "remove"}
-	for k, v := range args {
-		full[k] = v
-	}
+	maps.Copy(full, args)
 	out, err := rt.Exec(t.Context(), r.s.currentEnv(), full)
 	if err != nil {
 		return nil, err
@@ -500,7 +499,7 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 		t.Errorf("branch_kept_reason = %q, want it to say the branch is not merged into the target", reason)
 	}
 	if b, readErr := os.ReadFile(logPath); readErr == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 && fields[0] == "branch" && fields[1] == "-d" {
 				t.Fatalf("git branch -d was invoked despite serf's merge gate: %q", line)
@@ -572,7 +571,7 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 	if logStr == "" {
 		t.Fatal("shim recorded no git invocations; the shim was not exercised")
 	}
-	for _, line := range strings.Split(strings.TrimSpace(logStr), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(logStr), "\n") {
 		fields := strings.Fields(line)
 		for i, f := range fields {
 			if f == "-d" && i > 0 && fields[0] == "branch" {

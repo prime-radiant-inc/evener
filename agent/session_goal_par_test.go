@@ -43,7 +43,7 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 	if _, ok := sess.armGoalContinuation(true, true); !ok {
 		t.Fatal("first progressed continuation should keep the goal active")
 	}
-	for i := 0; i < goal.NoProgressLimit; i++ {
+	for range goal.NoProgressLimit {
 		sess.armGoalContinuation(false, true)
 	}
 

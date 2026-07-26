@@ -93,7 +93,7 @@ func TestScanWorkspace_DepthLimit(t *testing.T) {
 func TestScanWorkspace_MaxEntries(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		touchFile(t, filepath.Join(dir, "file_"+string(rune('a'+i))+".txt"), "x")
 	}
 

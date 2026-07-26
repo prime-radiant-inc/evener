@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/identifier"
@@ -421,7 +422,7 @@ func scanConfigIncludes(configFile string, writable []string, seen map[string]bo
 func parseIncludePaths(text string) []string {
 	var out []string
 	inInclude := false
-	for _, raw := range strings.Split(text, "\n") {
+	for raw := range strings.SplitSeq(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
@@ -465,14 +466,14 @@ func isIncludeSectionHeader(header string) bool {
 // (empty if the line is not a path key). It strips surrounding double quotes and,
 // for an unquoted value, an inline # or ; comment.
 func includePathValue(line string) string {
-	i := strings.Index(line, "=")
-	if i < 0 {
+	key, value, found := strings.Cut(line, "=")
+	if !found {
 		return ""
 	}
-	if !strings.EqualFold(strings.TrimSpace(line[:i]), "path") {
+	if !strings.EqualFold(strings.TrimSpace(key), "path") {
 		return ""
 	}
-	val := strings.TrimSpace(line[i+1:])
+	val := strings.TrimSpace(value)
 	if len(val) >= 2 && val[0] == '"' {
 		if parsed, ok := quotedIncludePathValue(val); ok {
 			return parsed
@@ -560,10 +561,8 @@ func underAnyRoot(p string, roots []string) bool {
 }
 
 func appendUnique(s []string, v string) []string {
-	for _, e := range s {
-		if e == v {
-			return s
-		}
+	if slices.Contains(s, v) {
+		return s
 	}
 	return append(s, v)
 }

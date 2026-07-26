@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -224,17 +225,7 @@ func (s *sandboxFS) underMasked(abs string) bool {
 // (file-tool read or write roots). Such a root exists by construction even when
 // its parent lies outside the policy.
 func (s *sandboxFS) isGrantedRoot(abs string) bool {
-	for _, r := range s.policy.FileTool.ReadRoots {
-		if abs == r {
-			return true
-		}
-	}
-	for _, r := range s.policy.FileTool.WriteRoots {
-		if abs == r {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.policy.FileTool.ReadRoots, abs) || slices.Contains(s.policy.FileTool.WriteRoots, abs)
 }
 
 // underProtected reports whether abs is at or beneath any git config/hook surface

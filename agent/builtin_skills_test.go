@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -87,9 +88,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
-	for name, meta := range skill.DiscoverSkills(env) {
-		skills[name] = meta
-	}
+	maps.Copy(skills, skill.DiscoverSkills(env))
 
 	doctoring := skills[embeddedDoctoringSkill]
 	if doctoring.Description != "Project doctoring override" {

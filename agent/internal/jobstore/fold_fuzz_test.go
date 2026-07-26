@@ -47,7 +47,7 @@ func canonicalWatchSends(rec WatchSendRecord) []*WatchSendState {
 // error). This is the fuzz entry point's view of arbitrary on-disk bytes.
 func decodeEvents(raw []byte) []Event {
 	var events []Event
-	for _, line := range bytes.Split(raw, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(raw, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

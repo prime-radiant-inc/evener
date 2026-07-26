@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/envvars"
@@ -99,10 +100,8 @@ func ApplySessionScratchEnv(env []string, scratchDir string) []string {
 
 // floorDrops reports whether an env var name is removed by the floor.
 func floorDrops(name string) bool {
-	for _, d := range floorExactDrops {
-		if name == d {
-			return true
-		}
+	if slices.Contains(floorExactDrops, name) {
+		return true
 	}
 	for _, p := range floorPrefixDrops {
 		if strings.HasPrefix(name, p) {
