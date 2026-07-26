@@ -90,7 +90,12 @@ test("summarySuffix returns undefined while the question is still unanswered (no
 test("summarySuffix returns the answered recap once a later [answers] reply resolves the call", () => {
   const d = toolRendererFor("ask_user");
   const ask = item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) });
-  const reply: ItemModel = { id: "item_2", turnId: "turn_1", type: "userMessage", text: '[answers]\n1. [Deploy?] → "Yes"' };
+  const reply: ItemModel = {
+    id: "item_2",
+    turnId: "turn_1",
+    type: "userMessage",
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+  };
   expect(d.summarySuffix?.(ask, threadModel([ask, reply]))).toBe(' — answered: "Yes"');
 });
 
