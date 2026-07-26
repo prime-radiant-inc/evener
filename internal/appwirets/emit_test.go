@@ -46,6 +46,9 @@ func TestEmitInterface_UnexportedAndUntaggedFields(t *testing.T) {
 		Untagged string // no json tag at all: defaults to the Go field name
 		hidden   string // unexported: must never reach the wire
 	}
+	var s Sample
+	s.hidden = "x" // keep the field referenced so `go vet`/lint see it as used
+	_ = s
 	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  Untagged: string;\n}\n"
 	if got != want {
