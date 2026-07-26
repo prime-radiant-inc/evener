@@ -262,3 +262,37 @@ test("re-expands Details and Tasks back onto the row when the chrome widens past
     ro.restore();
   }
 });
+
+// Every test above awaits ensureThread BEFORE the first render, so the
+// chrome div already exists on SessionChrome's very first commit. The real
+// app (Session.tsx, and this kata's own k7harness.html) instead mounts
+// SessionChrome immediately and loads the thread asynchronously afterward -
+// SessionChrome renders null (`if (!model) return null`) until that
+// resolves. A useNarrowerThan built on a plain useRef + an effect keyed only
+// on the (constant) threshold runs its setup exactly once, against whatever
+// the ref holds at THAT first commit - null, since there's no div yet - and
+// never re-runs once the div actually mounts a render later, so the
+// observer silently never attaches for the rest of the session (found live
+// in the browser harness; no unit test caught it because every other test
+// here front-loads the model). This test reproduces that real ordering.
+test("still measures the chrome once the thread model loads after the initial mount", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_late_model"));
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_late_model" />);
+    expect(screen.queryByTestId("session-chrome")).toBeNull(); // model not loaded yet
+
+    await act(async () => {
+      await threadsStore.getState().ensureThread("ref_late_model");
+    });
+    await waitFor(() => expect(screen.queryByTestId("session-chrome")).toBeTruthy());
+
+    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
+    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
+  } finally {
+    ro.restore();
+  }
+});

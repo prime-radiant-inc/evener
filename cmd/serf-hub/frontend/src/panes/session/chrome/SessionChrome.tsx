@@ -57,21 +57,32 @@ const NARROW_CHROME_WIDTH_PX = 640;
 // under vitest (narrow stays false, matching every existing test's
 // expectations) and a test that wants to exercise it stubs the observer the
 // same way popover.test.tsx's own "re-measures placement" test does.
-function useNarrowerThan(thresholdPx: number): [React.RefObject<HTMLDivElement | null>, boolean] {
-  const elementRef = useRef<HTMLDivElement>(null);
+//
+// The ref is a CALLBACK ref, not a plain useRef object, on purpose: this
+// component's own caller (SessionChrome) can render null on its first pass
+// while the thread model is still loading (see `if (!model) return null`
+// below) and only mount this div once the model arrives. A plain useRef
+// paired with a `useEffect(..., [thresholdPx])` runs its setup exactly once,
+// against whatever `elementRef.current` holds at that first commit - null,
+// in the loading case - and never runs again since threshold never changes,
+// so the observer silently never attaches for the entire session. Storing
+// the node in state instead makes React invoke the callback (and this hook
+// re-render) at the moment the div actually mounts, however many renders
+// that takes.
+function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => void, boolean] {
+  const [node, setNode] = useState<HTMLDivElement | null>(null);
   const [narrow, setNarrow] = useState(false);
   useEffect(() => {
-    const el = elementRef.current;
-    if (!el) return;
+    if (!node) return;
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) setNarrow(entry.contentRect.width < thresholdPx);
     });
-    observer.observe(el);
+    observer.observe(node);
     return () => observer.disconnect();
-  }, [thresholdPx]);
-  return [elementRef, narrow];
+  }, [node, thresholdPx]);
+  return [setNode, narrow];
 }
 
 export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
