@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -509,5 +510,25 @@ func TestGeneratedFileCurrent(t *testing.T) {
 	got, err := os.ReadFile("../../cmd/serf-hub/frontend/src/protocol/types.gen.ts")
 	if err != nil || string(got) != want {
 		t.Fatal("types.gen.ts stale: run `make generate`")
+	}
+}
+
+// TestEmitsSteeringKindCatalog pins the STEERING_KINDS/SteeringKind catalog
+// generated from events.AllSteeringKinds, the same writeNameCatalog shape
+// already used for METHOD_NAMES/NOTIFICATION_NAMES. This is what turns a new
+// Go steering kind into a missing-key compile error in the frontend's
+// KIND_LABELS Record, instead of an unlabelled row nobody notices.
+func TestEmitsSteeringKindCatalog(t *testing.T) {
+	out := EmitCatalog()
+	if !strings.Contains(out, "export const STEERING_KINDS = [") {
+		t.Error("generated output has no STEERING_KINDS catalog")
+	}
+	if !strings.Contains(out, "export type SteeringKind = (typeof STEERING_KINDS)[number];") {
+		t.Error("generated output has no SteeringKind union")
+	}
+	for _, kind := range events.AllSteeringKinds {
+		if !strings.Contains(out, fmt.Sprintf("%q", kind)) {
+			t.Errorf("kind %q missing from generated output", kind)
+		}
 	}
 }

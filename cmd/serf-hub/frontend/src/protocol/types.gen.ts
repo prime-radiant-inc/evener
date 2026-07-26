@@ -1271,6 +1271,28 @@ export const NOTIFICATION_NAMES = [
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
+export const STEERING_KINDS = [
+  "interrupted",
+  "agent-message",
+  "hook-context",
+  "precompact-hook",
+  "compact-nudge",
+  "image-description",
+  "no-tool-calls",
+  "loop-detected",
+  "tasks-done",
+  "task-nudge",
+  "task-inactive",
+  "note-handoff",
+  "goal-objective",
+  "transcript-pointer",
+  "current-task",
+  "task-list",
+  "notification",
+] as const;
+
+export type SteeringKind = (typeof STEERING_KINDS)[number];
+
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };

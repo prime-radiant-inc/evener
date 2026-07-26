@@ -20,6 +20,7 @@
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 import { memo } from "react";
+import type { SteeringKind } from "../../../../protocol/types.gen";
 import { SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -39,11 +40,17 @@ const CLASS = {
 
 const STEERED = "System steered";
 
-// Labels for the wire's steering kinds (events.SteeringKind* on the Go side).
-// A kind with no entry here renders unlabelled rather than showing its raw
-// slug: an unknown kind means this UI is older than the daemon, and inventing
-// a label from a slug is the guessing this field exists to end.
-const KIND_LABELS: Record<string, string> = {
+// Labels for the wire's steering kinds (events.SteeringKind* on the Go side,
+// generated onto SteeringKind in protocol/types.gen.ts). current-task and
+// task-list are suppressed (the tasks panel owns them - SUPPRESSED below) and
+// notification routes to a card, so those three carry no label. Every OTHER
+// kind the daemon can emit must have one: this Record is exhaustive over the
+// generated union, so adding a kind in Go and regenerating fails the build
+// here until it is given a label. That is the point - the frontend's idea of
+// what the daemon sends cannot drift from what it sends.
+type LabelledKind = Exclude<SteeringKind, "current-task" | "task-list" | "notification">;
+
+const KIND_LABELS: Record<LabelledKind, string> = {
   interrupted: "Interrupted",
   "agent-message": "Message sent",
   "hook-context": "Hook context",
@@ -60,9 +67,21 @@ const KIND_LABELS: Record<string, string> = {
   "transcript-pointer": "Transcript pointer",
 };
 
+// item.steeringKind is a plain string | undefined on the wire (a running
+// frontend can meet a kind newer than its own build, or none at all), never
+// the generated SteeringKind union itself, so the lookup stays tolerant of a
+// miss instead of an indexed access that would silently type as string: an
+// unrecognized kind renders unlabelled rather than inventing a label from a
+// raw slug.
+function labelFor(kind: string): string | undefined {
+  return Object.hasOwn(KIND_LABELS, kind) ? KIND_LABELS[kind as LabelledKind] : undefined;
+}
+
 // The tasks panel and the task-update card already own these surfaces
-// (parity-m4 §8:209-217), so they render nothing inline.
-const SUPPRESSED = new Set(["current-task", "task-list"]);
+// (parity-m4 §8:209-217), so they render nothing inline. Typed against the
+// generated union so a typo here (unlike a typo in KIND_LABELS' keys, which
+// TypeScript already rejects since it targets an exact Record) fails too.
+const SUPPRESSED: ReadonlySet<SteeringKind> = new Set(["current-task", "task-list"]);
 
 // The quiet collapsed-by-default steering divider (parity-m4 §8:
 // appendSteeringDivider) - summary is the glyph, the kind label (or the bare
@@ -106,7 +125,7 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
   if (item.source === "user") return <UserMessageView item={item} opensExchange={false} />;
   if (!item.text) return null; // no text, no images path here - nothing to show
   const kind = item.steeringKind ?? "";
-  if (SUPPRESSED.has(kind)) return null;
+  if ((SUPPRESSED as ReadonlySet<string>).has(kind)) return null;
 
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
@@ -123,7 +142,7 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
     );
   }
 
-  const label = KIND_LABELS[kind];
+  const label = labelFor(kind);
   return <SteeringDivider id={item.id} label={label ? `${STEERED}: ${label}` : STEERED} text={leftover} />;
 }, ignoringTurn);
 
