@@ -599,7 +599,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate {
-		tasks := getSession().Tasks()
+		tasks, err := getSession().TasksWithError()
+		if err != nil {
+			// A persisted-store failure is unavailable task state, not an
+			// authoritative empty list; keep the wire aggregate absent.
+			return nil
+		}
 		done := 0
 		for _, task := range tasks {
 			if task.Status == taskpkg.TaskDone {
