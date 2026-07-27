@@ -1,22 +1,15 @@
 /* Layout/spacing only - typography is owned entirely by Markdown's and
  * StreamingText's own stylesheets (both already source font-family/
  * line-height/color from the same tokens), so the live and settled paths
- * can never visually mismatch: there is nothing here to fight with either
- * widget's own text styling, which is exactly what keeps a rapid live-to-
- * settled transition free of any flash-of-unstyled jank.
+ * can never visually mismatch.
  *
- * Size is the one exception, and it stays a single declaration for the
- * same reason: agent prose is the transcript's hero (docs/web-ui/
- * decisions.md topic 04), one step up the ramp from the body text used
- * everywhere else in the transcript. Setting --prose-font-size here, on
- * the ancestor the live and settled children already share, means neither
- * child's own stylesheet needs an agent-specific fork to agree with the
- * other. The tag-to-prose gap grows a step too (space-1 to space-2) -
- * breathing room tuned for 14px body text reads as a rounding error next
- * to a 16px hero. */
+ * Agent prose is body-size like everything else (tiered-density spec,
+ * 2026-07-27): the hierarchy against the user's ink-mid text is carried
+ * by CONTRAST alone (Markdown's root is --ink-hi). The earlier pane-title
+ * size bump fired on every mid-turn narrative fragment, dozens per
+ * session, and cancelled itself. */
 .message {
   padding: var(--space-2) 0;
-  --prose-font-size: var(--font-size-pane-title);
 }
 
 /* The agent's own speaker mark (1fwc), for assistive tech only (kata 8v4n).
