@@ -26,10 +26,10 @@
 - Consumes: parsed non-test `agent/*.go` files and `events.AllSteeringKinds`.
 - Produces: a counted AST identifier-reference helper used by `TestEverySteeringKindHasAProducer`.
 
-- [ ] **Step 1: Write the failing AST behavior test.** Add a focused test fixture containing a matching identifier reference plus a comment and string literal with the same spelling; assert the helper counts exactly one reference.
-- [ ] **Step 2: Run the focused test and verify the expected undefined-helper failure.** Run `go test ./agent -run 'TestSteeringKindProducerReferencesIgnoreCommentsAndStrings' -count=1`; it must fail because the helper is not implemented yet.
-- [ ] **Step 3: Implement the smallest AST helper.** Parse each non-test source file with the already imported `go/parser`, walk `*ast.Ident` nodes, count matching names, and replace the raw `strings.Contains` body scan with the aggregate count.
-- [ ] **Step 4: Run the focused AST test and producer coverage test.** Run `go test ./agent -run 'Test(SteeringKindProducerReferencesIgnoreCommentsAndStrings|EverySteeringKindHasAProducer|NoProducerPassesEmptySourceAndEmptyKindToTrySteerEnqueue)$' -count=1` and require PASS.
+- [ ] **Step 1: Write the failing AST behavior test.** Add a focused test fixture containing a matching `events.SteeringKindTasksDone` selector plus a comment, string literal, bare/local identifier, and unrelated-package selector with the same spelling; assert the helper counts exactly one producer reference.
+- [ ] **Step 2: Run the focused test and verify the expected red result.** Run `go test ./agent -run 'TestSteeringKindProducerReferencesRequireEventsSelector' -count=1`; it must fail because the existing helper counts non-`events` identifiers.
+- [ ] **Step 3: Implement the smallest AST helper.** Parse each non-test source file with the already imported `go/parser`, walk `*ast.SelectorExpr` nodes whose package expression is the `events` identifier, count matching selector names, and replace the raw `strings.Contains` body scan with the aggregate count.
+- [ ] **Step 4: Run the focused AST test and producer coverage test.** Run `go test ./agent -run 'Test(SteeringKindProducerReferencesRequireEventsSelector|EverySteeringKindHasAProducer|NoProducerPassesEmptySourceAndEmptyKindToTrySteerEnqueue)$' -count=1` and require PASS.
 - [ ] **Step 5: Commit.** Stage only `agent/steering_kind_coverage_test.go` and commit with a message explaining that comments and string literals no longer count as producers.
 
 ### Task 2: Remove the dead durable helper and repair its comments

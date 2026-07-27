@@ -51,11 +51,13 @@ func TestEverySteeringKindHasAProducer(t *testing.T) {
 	}
 }
 
-func TestSteeringKindProducerReferencesIgnoreCommentsAndStrings(t *testing.T) {
+func TestSteeringKindProducerReferencesRequireEventsSelector(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "producer.go", []byte(`package agent
 
 // events.SteeringKindTasksDone
 var text = "SteeringKindTasksDone"
+var bare = SteeringKindTasksDone
+var _ = other.SteeringKindTasksDone
 var _ = events.SteeringKindTasksDone
 `), 0)
 	if err != nil {
@@ -66,12 +68,17 @@ var _ = events.SteeringKindTasksDone
 	}
 }
 
-// steeringKindReferenceCount counts identifier references in parsed Go source;
-// comments and string literals are not AST identifiers.
+// steeringKindReferenceCount counts events.SteeringKind* selector references in
+// parsed Go source; comments, string literals, and unrelated identifiers do not
+// count as producer references.
 func steeringKindReferenceCount(file *ast.File, constName string) (count int) {
 	ast.Inspect(file, func(n ast.Node) bool {
-		ident, ok := n.(*ast.Ident)
-		if ok && ident.Name == constName {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != constName {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if ok && pkg.Name == "events" {
 			count++
 		}
 		return true
