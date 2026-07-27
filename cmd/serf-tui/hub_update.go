@@ -570,6 +570,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAuthApiKeySetResult(msg)
 	case launchconfig.AuthLoginStartResultMsg:
 		return m.handleAuthLoginStartResult(msg)
+	case launchconfig.AuthTestResultMsg:
+		return m.handleAuthTestResult(msg)
 	case launchconfig.AuthLoginCompleteResultMsg:
 		return m.handleAuthLoginCompleteResult(msg)
 	case launchconfig.LaunchSetLayerResultMsg:

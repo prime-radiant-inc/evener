@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -340,5 +341,100 @@ func TestCredentialsPanel_InstanceListResultRefreshesPanel(t *testing.T) {
 	view := updated2.(CredentialsPanel).View()
 	if !strings.Contains(view, "anthropic") {
 		t.Errorf("second InstanceListResultMsg should refresh panel; anthropic missing:\n%s", view)
+	}
+}
+
+func TestCredentialsPanel_TestCredentialsActionIsPerInstanceAndRedacted(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "custom / team-east", Type: "openai", ActiveSource: "absent"},
+	}}})
+
+	pendingModel, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if cmd == nil {
+		t.Fatal("t should produce a credential test command")
+	}
+	msg, ok := cmd().(CredentialsActionMsg)
+	if !ok || msg.Action != "test" || msg.Instance != "custom / team-east" {
+		t.Fatalf("credential test action=%T %+v", cmd(), msg)
+	}
+	if !strings.Contains(pendingModel.(CredentialsPanel).View(), "Testing credentials") {
+		t.Fatalf("pending view should show local progress:\n%s", pendingModel.(CredentialsPanel).View())
+	}
+	_, duplicate := pendingModel.(CredentialsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if duplicate != nil {
+		t.Fatal("duplicate test should be suppressed while the instance is pending")
+	}
+
+	secret := "provider-secret"
+	resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
+		Provider: "custom / team-east",
+		Response: appwire.AuthTestResponse{Provider: "custom / team-east", Status: appwire.AuthTestStatusAuthRejected, Message: secret},
+	})
+	view := resultModel.(CredentialsPanel).View()
+	collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
+	if !strings.Contains(collapsed, "The provider rejected these credentials. Replace the key or sign in again.") {
+		t.Fatalf("result view missing safe auth message:\n%s", view)
+	}
+	if strings.Contains(view, secret) {
+		t.Fatalf("result view leaked secret:\n%s", view)
+	}
+}
+
+func TestCredentialsPanel_RendersSafeCredentialTestStatuses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{name: "success", status: appwire.AuthTestStatusSuccess, want: "Credentials verified."},
+		{name: "missing", status: appwire.AuthTestStatusMissing, want: "No credentials are configured for this instance."},
+		{name: "rejected", status: appwire.AuthTestStatusAuthRejected, want: "The provider rejected these credentials."},
+		{name: "endpoint", status: appwire.AuthTestStatusEndpointFailure, want: "The provider endpoint could not be reached."},
+		{name: "unsupported", status: appwire.AuthTestStatusUnsupported, want: "This provider does not support harmless credential verification."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewCredentialsPanel()
+			updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+				{Name: "openai", Type: "openai"},
+			}}})
+			pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+			secret := "provider-secret-" + tt.name
+			resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
+				Provider: "openai",
+				Response: appwire.AuthTestResponse{Provider: "openai", Status: tt.status, Message: secret},
+			})
+			view := resultModel.(CredentialsPanel).View()
+			collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
+			if !strings.Contains(collapsed, tt.want) {
+				t.Fatalf("result view missing safe message %q:\n%s", tt.want, view)
+			}
+			if strings.Contains(view, secret) {
+				t.Fatalf("result view leaked secret:\n%s", view)
+			}
+		})
+	}
+}
+
+func TestCredentialsPanel_RedactsCredentialTestRPCError(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "openai", Type: "openai"},
+	}}})
+	pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	secret := "provider-secret-from-rpc-error"
+	resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
+		Provider: "openai",
+		Err:      errors.New(secret),
+	})
+	view := resultModel.(CredentialsPanel).View()
+	collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
+	if !strings.Contains(collapsed, "The provider endpoint could not be reached.") {
+		t.Fatalf("RPC error should render fixed endpoint message:\n%s", view)
+	}
+	if strings.Contains(view, secret) {
+		t.Fatalf("RPC error leaked secret:\n%s", view)
 	}
 }

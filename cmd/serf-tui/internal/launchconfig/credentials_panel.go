@@ -13,7 +13,7 @@ import (
 // CredentialsActionMsg carries a credential operation for a specific instance.
 // Instance holds the instance name (not the provider type).
 type CredentialsActionMsg struct {
-	Action   string // "set" | "logout" | "oauth"
+	Action   string // "set" | "logout" | "oauth" | "test"
 	Instance string
 }
 
@@ -44,6 +44,9 @@ type CredentialsPanel struct {
 	formType     string
 	formAPIStyle string
 	formBaseURL  string
+
+	testPending map[string]bool
+	testResults map[string]appwire.AuthTestResponse
 }
 
 func NewCredentialsPanel() CredentialsPanel {
@@ -127,6 +130,28 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
+	case AuthTestResultMsg:
+		name := strings.TrimSpace(m.Provider)
+		if name == "" {
+			name = strings.TrimSpace(m.Response.Provider)
+		}
+		if name == "" {
+			return p, nil
+		}
+		p.testPending = cloneCredentialTestPending(p.testPending)
+		delete(p.testPending, name)
+		if p.testResults == nil {
+			p.testResults = map[string]appwire.AuthTestResponse{}
+		} else {
+			p.testResults = cloneCredentialTestResults(p.testResults)
+		}
+		if m.Err != nil {
+			p.testResults[name] = safeCredentialTestResult(name, appwire.AuthTestResponse{Provider: name, Status: appwire.AuthTestStatusEndpointFailure})
+		} else {
+			p.testResults[name] = safeCredentialTestResult(name, m.Response)
+		}
+		return p, nil
+
 	case tea.KeyMsg:
 		// When a form is open, route keys to the form handler.
 		if p.formOpen {
@@ -166,6 +191,17 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		s := string(m.Runes)
 		switch strings.ToLower(s) {
+		case "t":
+			cur := p.selectedInstance()
+			if cur == nil || p.testPending[cur.Name] {
+				return p, nil
+			}
+			name := cur.Name
+			p.testPending = cloneCredentialTestPending(p.testPending)
+			p.testPending[name] = true
+			p.testResults = cloneCredentialTestResults(p.testResults)
+			delete(p.testResults, name)
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "test", Instance: name} }
 		case "c":
 			cur := p.selectedInstance()
 			if cur == nil {
@@ -404,6 +440,11 @@ func (p CredentialsPanel) View() string {
 				hint = " " + lipgloss.NewStyle().Foreground(th.TextDim).Render(strings.Join(parts, " "))
 			}
 			rows = append(rows, cursor+star+" "+name+hint+"  "+badge)
+			if p.testPending[inst.Name] {
+				rows = append(rows, "    Testing credentials…")
+			} else if result, ok := p.testResults[inst.Name]; ok {
+				rows = append(rows, "    "+result.Status+": "+result.Message)
+			}
 		}
 		body = strings.Join(rows, "\n")
 	}
@@ -414,6 +455,7 @@ func (p CredentialsPanel) View() string {
 	} else {
 		footer = tuiprim.ActionBarForWidth(width,
 			tuiprim.KbdHint("enter", "set key"),
+			tuiprim.KbdHint("t", "test credentials"),
 			tuiprim.KbdHint("o", "OAuth"),
 			tuiprim.KbdHint("c", "clear"),
 			tuiprim.KbdHint("n", "new"),
@@ -424,6 +466,39 @@ func (p CredentialsPanel) View() string {
 		)
 	}
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Instances", Width: width, Body: body, Footer: footer})
+}
+
+func cloneCredentialTestPending(current map[string]bool) map[string]bool {
+	next := make(map[string]bool, len(current)+1)
+	for name, pending := range current {
+		next[name] = pending
+	}
+	return next
+}
+
+func cloneCredentialTestResults(current map[string]appwire.AuthTestResponse) map[string]appwire.AuthTestResponse {
+	next := make(map[string]appwire.AuthTestResponse, len(current)+1)
+	for name, result := range current {
+		next[name] = result
+	}
+	return next
+}
+
+func safeCredentialTestResult(provider string, response appwire.AuthTestResponse) appwire.AuthTestResponse {
+	messages := map[string]string{
+		appwire.AuthTestStatusSuccess:         "Credentials verified.",
+		appwire.AuthTestStatusMissing:         "No credentials are configured for this instance. Add a key or sign in first.",
+		appwire.AuthTestStatusAuthRejected:    "The provider rejected these credentials. Replace the key or sign in again.",
+		appwire.AuthTestStatusEndpointFailure: "The provider endpoint could not be reached. Check the endpoint and network connection.",
+		appwire.AuthTestStatusUnsupported:     "This provider does not support harmless credential verification.",
+	}
+	status := response.Status
+	message, ok := messages[status]
+	if !ok {
+		status = appwire.AuthTestStatusEndpointFailure
+		message = messages[status]
+	}
+	return appwire.AuthTestResponse{Provider: provider, Status: status, Message: message}
 }
 
 // formView renders the in-overlay create/edit form.

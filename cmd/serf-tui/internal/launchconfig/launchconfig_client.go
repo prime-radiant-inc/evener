@@ -48,6 +48,12 @@ type AuthLoginStartResultMsg struct {
 	Err      error
 }
 
+type AuthTestResultMsg struct {
+	Provider string
+	Response appwire.AuthTestResponse
+	Err      error
+}
+
 func CmdResolveLaunch(client *appwire.Client, cwd string, overrides *appwire.LaunchConfigLayer) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -125,6 +131,16 @@ func CmdAuthLoginStart(client *appwire.Client, provider string) tea.Cmd {
 		var resp appwire.AuthLoginStartResponse
 		err := client.Request(ctx, appwire.MethodSerfAuthLoginStart, appwire.AuthLoginStartParams{Provider: provider}, &resp)
 		return AuthLoginStartResultMsg{Provider: provider, URL: resp.URL, FlowID: resp.FlowID, Err: err}
+	}
+}
+
+func CmdAuthTest(client *appwire.Client, provider string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		var resp appwire.AuthTestResponse
+		err := client.Request(ctx, appwire.MethodSerfAuthTest, appwire.AuthTestParams{Provider: provider}, &resp)
+		return AuthTestResultMsg{Provider: provider, Response: resp, Err: err}
 	}
 }
 

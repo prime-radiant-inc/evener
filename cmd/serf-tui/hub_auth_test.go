@@ -7,8 +7,54 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/internal/appserver"
 )
+
+func TestHubModelCredentialTestActionUsesAppWire(t *testing.T) {
+	var testedProvider string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthTest, func(_ context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
+			testedProvider = params.Provider
+			return appwire.AuthTestResponse{
+				Provider: params.Provider,
+				Status:   appwire.AuthTestStatusSuccess,
+				Message:  "provider-secret-must-not-render",
+			}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	panel := launchconfig.NewCredentialsPanel()
+	loaded, _ := panel.Update(launchconfig.InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "custom / team-east", Type: "openai"},
+	}}})
+	pending, actionCmd := loaded.(launchconfig.CredentialsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if actionCmd == nil {
+		t.Fatal("t should produce a credential test action")
+	}
+	panel = pending.(launchconfig.CredentialsPanel)
+	m.credentialsPanel = &panel
+
+	action := actionCmd().(launchconfig.CredentialsActionMsg)
+	updated, cmd := m.handleCredentialsAction(action)
+	if cmd == nil {
+		t.Fatal("credential test action should produce an appwire command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	result := updated.(hubModel)
+	if testedProvider != "custom / team-east" {
+		t.Fatalf("tested provider=%q, want custom / team-east", testedProvider)
+	}
+	view := result.credentialsPanel.View()
+	if !strings.Contains(view, "Credentials verified.") {
+		t.Fatalf("credential result missing from panel:\n%s", view)
+	}
+	if strings.Contains(view, "provider-secret-must-not-render") {
+		t.Fatalf("credential result leaked provider message:\n%s", view)
+	}
+}
 
 func TestHubModelAuthCommandsUseAppWire(t *testing.T) {
 	var methods []string

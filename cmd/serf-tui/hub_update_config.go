@@ -145,8 +145,23 @@ func (m hubModel) handleCredentialsAction(msg launchconfig.CredentialsActionMsg)
 			return m, launchconfig.CmdAuthLoginStart(m.client, msg.Instance)
 		}
 		return m, nil
+	case "test":
+		if m.client != nil {
+			return m, launchconfig.CmdAuthTest(m.client, msg.Instance)
+		}
+		return m, nil
 	}
 	return m, nil
+}
+
+func (m hubModel) handleAuthTestResult(msg launchconfig.AuthTestResultMsg) (tea.Model, tea.Cmd) {
+	if m.credentialsPanel == nil {
+		return m, nil
+	}
+	updated, cmd := m.credentialsPanel.Update(msg)
+	panel := updated.(launchconfig.CredentialsPanel)
+	m.credentialsPanel = &panel
+	return m, cmd
 }
 
 func (m hubModel) handleLaunchOverridesOpen(msg launchconfig.LaunchOverridesOpenMsg) (tea.Model, tea.Cmd) {

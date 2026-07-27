@@ -35,6 +35,7 @@ func FuzzRootTUIMessageProgram(f *testing.F) {
 			launchconfig.CredentialsActionMsg{Action: "set", Instance: "fixture"},
 			launchconfig.CredentialsActionMsg{Action: "logout"},
 			launchconfig.CredentialsActionMsg{Action: "oauth"},
+			launchconfig.AuthTestResultMsg{Provider: "fixture"},
 			launchconfig.CredentialsActionMsg{Action: "unknown"},
 			launchconfig.LaunchOverridesOpenMsg{},
 			launchconfig.LaunchOverridesResultMsg{Cancelled: failed},
