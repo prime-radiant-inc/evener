@@ -208,18 +208,18 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("replays a threadId-only item completion after an earlier buffered turn start establishes routing", async () => {
     const fake = connectFakeClient();
-    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on(
       "thread/read",
       () =>
         new Promise<ThreadReadResponse>((resolve) => {
-          resolveRead = resolve;
+          box.resolveRead = resolve;
         }),
     );
 
     const ensuring = threadsStore.getState().ensureThread("ref_a");
-    await flushUntil(() => resolveRead !== null);
-    expect(resolveRead).not.toBeNull();
+    await flushUntil(() => box.resolveRead !== null);
+    expect(box.resolveRead).not.toBeNull();
 
     fake.emitNotification({
       method: "turn/started",
@@ -238,7 +238,7 @@ describe("useThreadsStore.ensureThread", () => {
       },
     });
 
-    resolveRead?.(readResponse("ref_a"));
+    box.resolveRead?.(readResponse("ref_a"));
     await ensuring;
 
     const model = threadsStore.getState().threads.get("ref_a");
@@ -249,18 +249,18 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("replays threadId-only status and item completion after a ref-targeted event establishes the thread identity", async () => {
     const fake = connectFakeClient();
-    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on(
       "thread/read",
       () =>
         new Promise<ThreadReadResponse>((resolve) => {
-          resolveRead = resolve;
+          box.resolveRead = resolve;
         }),
     );
 
     const ensuring = threadsStore.getState().ensureThread("ref_a");
-    await flushUntil(() => resolveRead !== null);
-    expect(resolveRead).not.toBeNull();
+    await flushUntil(() => box.resolveRead !== null);
+    expect(box.resolveRead).not.toBeNull();
 
     fake.emitNotification({
       method: "thread/status/changed",
@@ -279,7 +279,7 @@ describe("useThreadsStore.ensureThread", () => {
       },
     });
 
-    resolveRead?.(
+    box.resolveRead?.(
       readResponse("ref_a", {
         status: { type: "active" },
         turns: [
