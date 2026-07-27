@@ -21,25 +21,62 @@ func TestEverySteeringKindHasAProducer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var src strings.Builder
+	fset := token.NewFileSet()
+	var files []*ast.File
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(".", name))
+		path := filepath.Join(".", name)
+		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		src.Write(b)
+		file, err := parser.ParseFile(fset, path, b, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		files = append(files, file)
 	}
-	body := src.String()
 	for _, kind := range events.AllSteeringKinds {
 		constName := steeringKindConstName(kind)
-		if !strings.Contains(body, constName) {
+		references := 0
+		for _, file := range files {
+			references += steeringKindReferenceCount(file, constName)
+		}
+		if references == 0 {
 			t.Errorf("kind %q (events.%s) has no producer in agent/*.go", kind, constName)
 		}
 	}
+}
+
+func TestSteeringKindProducerReferencesIgnoreCommentsAndStrings(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "producer.go", []byte(`package agent
+
+// events.SteeringKindTasksDone
+var text = "SteeringKindTasksDone"
+var _ = events.SteeringKindTasksDone
+`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := steeringKindReferenceCount(file, "SteeringKindTasksDone"); got != 1 {
+		t.Fatalf("steering kind reference count = %d, want 1", got)
+	}
+}
+
+// steeringKindReferenceCount counts identifier references in parsed Go source;
+// comments and string literals are not AST identifiers.
+func steeringKindReferenceCount(file *ast.File, constName string) (count int) {
+	ast.Inspect(file, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		if ok && ident.Name == constName {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 // steeringKindConstName maps "tasks-done" to "SteeringKindTasksDone".
