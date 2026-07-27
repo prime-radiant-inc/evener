@@ -969,6 +969,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    // A pending read belongs to this released pane lifecycle. Retire it
+    // before a new ensureThread(ref) can claim the same ref; the old promise's
+    // identity-guarded finally blocks must not remove a newer hydration.
+    inflightHydrates.delete(ref);
+    inflightHydrateClients.delete(ref);
+    inflightHydrateEpochs.delete(ref);
+    pendingThreadHydrations.delete(ref);
     // No wire call exists for "stop pushing me updates for this ref" (no
     // thread/read subscribe:false, no unsubscribe method) — the daemon keeps
     // sending; removing it from `threads` just stops handleNotification's

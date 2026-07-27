@@ -621,6 +621,45 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    let firstSettled = false;
+    void firstEnsure.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 2);
+    expect(reads).toHaveLength(2);
+
+    reads[0]!(readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    reads[1]!(readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }));
+    await Promise.all([firstEnsure, secondEnsure]);
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   // Pre-Task-5, wiring was lazy (attached inside requireClient(), the first
   // time some store action ran) - so this test used to connect the client
   // FIRST, attach spies second, and prove idempotency only across
