@@ -883,7 +883,7 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 			dir = s.currentEnv().WorkingDirectory()
 		}
 		s.taskStore = task.NewTaskStore(dir, s.id)
-		_ = s.taskStore.Load()
+		s.taskStoreLoadErr = s.taskStore.Load()
 	})
 	return s.taskStore
 }
@@ -956,7 +956,16 @@ func optionalIntArg(args map[string]any, key string) *int {
 	return nil
 }
 
+// TasksWithError returns a snapshot of the session's task list and the error,
+// if any, encountered while loading its persisted store. A nil error with an
+// empty slice is an authoritative empty store; a non-nil error means the
+// aggregate is unavailable.
+func (s *Session) TasksWithError() ([]task.Task, error) {
+	return s.getOrCreateTaskStore().View(), s.taskStoreLoadErr
+}
+
 // Tasks returns a snapshot of the session's task list.
 func (s *Session) Tasks() []task.Task {
-	return s.getOrCreateTaskStore().View()
+	tasks, _ := s.TasksWithError()
+	return tasks
 }

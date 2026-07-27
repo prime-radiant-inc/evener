@@ -678,6 +678,7 @@ export interface SerfThread {
   capabilities: ThreadCapabilities;
   diagnostics?: SerfDiagnostics;
   queue: QueueState;
+  tasks?: TaskAggregate;
   goal?: GoalState;
   usage?: SerfUsage;
   workMillis?: number;
@@ -761,6 +762,11 @@ export interface SettingsPastIndexOverview {
 
 export interface SettingsStorageOverview {
   stateDir?: string;
+}
+
+export interface TaskAggregate {
+  total: number;
+  done: number;
 }
 
 export interface TaskListParams {

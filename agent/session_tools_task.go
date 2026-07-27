@@ -65,6 +65,29 @@ func formatTaskUpdates(updates []taskpkg.TaskUpdate) string {
 	return strings.Join(parts, ", ")
 }
 
+// taskToolState is the task-list mutation snapshot carried to human clients.
+// Started is present only for explicit updates whose final status is
+// in_progress, so the frontend can distinguish a real transition from a
+// status reassertion without changing the model-facing tool schema or the
+// persisted Task shape.
+type taskToolState struct {
+	taskpkg.Task
+	Started *bool `json:"started,omitempty"`
+}
+
+func taskToolStateSnapshot(tasks []taskpkg.Task, inProgressUpdates map[int]struct{}, started map[int]bool) []taskToolState {
+	snapshot := make([]taskToolState, len(tasks))
+	for i, task := range tasks {
+		snapshot[i].Task = task
+		if _, ok := inProgressUpdates[task.ID]; !ok {
+			continue
+		}
+		transitioned := started[task.ID]
+		snapshot[i].Started = &transitioned
+	}
+	return snapshot
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -165,20 +188,42 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					updates = append(updates, u)
 				}
-				if err := store.Update(updates); err != nil {
+				mutation, err := store.UpdateWithSnapshot(updates)
+				if err != nil {
 					return nil, err
 				}
 
-				// Classify the batch so we know whether to auto-advance, fire
-				// a manual-start steering, or emit the "all done" steering.
+				// Classify each ID from the final status the store applied, so
+				// duplicate entries cannot steer a task that ended completed or
+				// suppress auto-advance after the final state is known.
+				previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
+				for _, task := range mutation.Before {
+					previous[task.ID] = task.Status
+				}
+				finalStatus := make(map[int]taskpkg.TaskStatus, len(updates))
+				for _, u := range updates {
+					finalStatus[u.ID] = u.Status
+				}
+				inProgressUpdates := make(map[int]struct{}, len(updates))
+				started := make(map[int]bool)
 				var completedAny bool
 				var manuallyStartedID int
+				seenIDs := make(map[int]struct{}, len(updates))
 				for _, u := range updates {
-					if u.Status == taskpkg.TaskDone || u.Status == taskpkg.TaskCancelled {
+					if _, seen := seenIDs[u.ID]; seen {
+						continue
+					}
+					seenIDs[u.ID] = struct{}{}
+					status := finalStatus[u.ID]
+					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
 						completedAny = true
 					}
-					if u.Status == taskpkg.TaskInProgress {
-						manuallyStartedID = u.ID
+					if status == taskpkg.TaskInProgress {
+						inProgressUpdates[u.ID] = struct{}{}
+						if previous[u.ID] != taskpkg.TaskInProgress {
+							started[u.ID] = true
+							manuallyStartedID = u.ID
+						}
 					}
 				}
 
@@ -186,7 +231,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// steering so the SYSTEM-REMINDER for the new task shows up on
 				// the next turn.
 				if manuallyStartedID != 0 {
-					for _, t := range store.View() {
+					for _, t := range mutation.After {
 						if t.ID == manuallyStartedID {
 							if t.ReasoningEffort != "" {
 								deps.taskGuard.SetReasoningEffort(t.ReasoningEffort)
@@ -198,11 +243,17 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return tool.StateResult{Output: "Updated " + formatTaskUpdates(updates) + ".", State: store.View()}, nil
+					total, done := store.Progress()
+					deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
+					return tool.StateResult{
+						Output: "Updated " + formatTaskUpdates(updates) + ".",
+						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
+					}, nil
 				}
 
 				var msg strings.Builder
 				msg.WriteString("Updated " + formatTaskUpdates(updates) + ". ")
+				finalTasks := mutation.After
 
 				if completedAny {
 					// Auto-advance unless the agent already picked what to do next.
@@ -210,7 +261,8 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
-							if err := store.Update([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+								finalTasks = auto.After
 								if next.ReasoningEffort != "" {
 									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
 								}
@@ -219,8 +271,8 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
-							allDone := taskListAllDone(store.View())
-							if allDone && len(store.View()) > 0 {
+							allDone := taskListAllDone(finalTasks)
+							if allDone && len(finalTasks) > 0 {
 								deps.steer(taskReminderAllDone(), events.SteeringKindTasksDone)
 								msg.WriteString("All tasks complete. ")
 							}
@@ -231,7 +283,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				total, done := store.Progress()
 				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
 				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", done, total)
-				return tool.StateResult{Output: msg.String(), State: store.View()}, nil
+				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}

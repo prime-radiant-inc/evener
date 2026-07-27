@@ -102,6 +102,111 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	}
 }
 
+func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: added[0].ID, Status: TaskInProgress},
+		{ID: added[0].ID, Status: TaskDone},
+	})
+	if err != nil {
+		t.Fatalf("UpdateWithSnapshot: %v", err)
+	}
+	if got := snapshot.Before[0].Status; got != TaskOpen {
+		t.Fatalf("before task 1 status = %q, want open", got)
+	}
+	if got := snapshot.After[0].Status; got != TaskDone {
+		t.Fatalf("after task 1 status = %q, want done", got)
+	}
+	if got := s.View()[0].Status; got != TaskDone {
+		t.Fatalf("store task 1 status = %q, want done", got)
+	}
+}
+
+func TestUpdateWithSnapshotClonesTimestampPointers(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}}); err != nil {
+		t.Fatalf("UpdateWithSnapshot: %v", err)
+	}
+
+	type timestampValues struct {
+		createdAt   *time.Time
+		updatedAt   *time.Time
+		completedAt *time.Time
+	}
+	copyTime := func(value *time.Time) *time.Time {
+		if value == nil {
+			return nil
+		}
+		clonedValue := *value
+		return &clonedValue
+	}
+	snapshot, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: added[1].ID, Status: TaskOpen}})
+	if err != nil {
+		t.Fatalf("UpdateWithSnapshot: %v", err)
+	}
+	if snapshot.Before[0].CompletedAt == nil {
+		// The completed task proves a non-nil CompletedAt pointer is covered;
+		// task 2's nil CompletedAt values prove nil timestamps remain nil.
+		t.Fatal("snapshot.Before[0].CompletedAt = nil, want a completed timestamp")
+	}
+	storeView := s.View()
+	want := make([]timestampValues, len(storeView))
+	for i, task := range storeView {
+		want[i] = timestampValues{
+			createdAt:   copyTime(task.CreatedAt),
+			updatedAt:   copyTime(task.UpdatedAt),
+			completedAt: copyTime(task.CompletedAt),
+		}
+	}
+
+	mutated := 0
+	for _, tasks := range [2][]Task{snapshot.Before, snapshot.After} {
+		for i := range tasks {
+			for _, timestamp := range []*time.Time{
+				tasks[i].CreatedAt,
+				tasks[i].UpdatedAt,
+				tasks[i].CompletedAt,
+			} {
+				if timestamp == nil {
+					continue
+				}
+				mutated++
+				*timestamp = time.Unix(int64(9000+mutated), 0).UTC()
+			}
+		}
+	}
+	if mutated != 10 {
+		t.Fatalf("mutated %d timestamp pointers, want 10", mutated)
+	}
+
+	got := s.View()
+	for i, task := range got {
+		for name, timestamps := range map[string][2]*time.Time{
+			"CreatedAt":   {task.CreatedAt, want[i].createdAt},
+			"UpdatedAt":   {task.UpdatedAt, want[i].updatedAt},
+			"CompletedAt": {task.CompletedAt, want[i].completedAt},
+		} {
+			actual, expected := timestamps[0], timestamps[1]
+			if (actual == nil) != (expected == nil) {
+				t.Errorf("task %d %s nil = %t, want %t", task.ID, name, actual == nil, expected == nil)
+				continue
+			}
+			if actual != nil && !actual.Equal(*expected) {
+				t.Errorf("task %d %s = %v, want %v", task.ID, name, *actual, *expected)
+			}
+		}
+	}
+}
+
 func TestUpdate_DependsOnChangeAndClear(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})

@@ -1055,6 +1055,38 @@ func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	}
 }
 
+func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
+	readTasks := func(aggregate *appwire.TaskAggregate) *appwire.TaskAggregate {
+		t.Helper()
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_1")
+		if aggregate != nil {
+			srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate { return aggregate })
+		}
+
+		conn := srv.AppServer().NewConnection("test")
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+		resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+		data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+		if !ok {
+			t.Fatalf("result=%T", resp.Response.Result)
+		}
+		return data.Thread.Serf.Tasks
+	}
+
+	if got := readTasks(nil); got != nil {
+		t.Fatalf("unwired task aggregate=%+v, want nil", got)
+	}
+	want := &appwire.TaskAggregate{Total: 4, Done: 2}
+	if got := readTasks(want); got == nil || *got != *want {
+		t.Fatalf("task aggregate=%+v, want %+v", got, want)
+	}
+	zero := &appwire.TaskAggregate{}
+	if got := readTasks(zero); got == nil || *got != *zero {
+		t.Fatalf("zero task aggregate=%+v, want a present zero", got)
+	}
+}
+
 // TestServerAppWireThreadReadIncludesCostTotal verifies the live producer
 // stamps SerfThread.Cost from the pulled cumulative usage at the session
 // model's price — the session-level dollar total kept current across

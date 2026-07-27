@@ -2414,6 +2414,43 @@ test("hydrateThread maps serf.cost into the model, null when absent", () => {
   expect(testHydrate().cost).toBeNull();
 });
 
+test("hydrateThread preserves task aggregate through notification mutation and reconnect rehydrate", () => {
+  const snapshot = {
+    ref: "ref_t",
+    capabilities: CAPABILITIES,
+    queue: {},
+    tasks: { total: 7, done: 6 },
+  };
+  let model = testHydrate({ serf: snapshot });
+  expect(model.tasks).toEqual({ total: 7, done: 6 });
+
+  model = applyNotification(
+    model,
+    { method: "serf/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 7 } },
+    2000,
+  );
+  expect(model.tasks).toEqual({ total: 7, done: 7 });
+
+  const rehydrated = testHydrate({
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      tasks: { total: 7, done: 7 },
+    },
+  });
+  expect(rehydrated.tasks).toEqual({ total: 7, done: 7 });
+});
+
+test("hydrateThread keeps absent task aggregate null and distinguishes an authoritative zero", () => {
+  expect(testHydrate().tasks).toBeNull();
+  expect(
+    testHydrate({
+      serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, tasks: { total: 0, done: 0 } },
+    }).tasks,
+  ).toEqual({ total: 0, done: 0 });
+});
+
 // Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
 // activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
 // from thread.serf (appwire/types.go's SerfThread, lines 223-274). None of
