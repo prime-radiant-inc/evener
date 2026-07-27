@@ -4,7 +4,7 @@
 // cannot leave stale membership behind. Like systemGrouping.ts, this is
 // adjacency-only: any other item type forces a new run.
 import type { ItemModel } from "../../../protocol/model";
-import { toolCallFailed } from "./toolRenderers";
+import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 
 export interface ToolRun {
   items: ItemModel[];
@@ -20,6 +20,10 @@ function isToolCall(item: ItemModel): boolean {
   return item.type === "commandExecution";
 }
 
+function isSuppressed(item: ItemModel): boolean {
+  return toolRendererFor(item.toolName ?? "").suppress?.(item) ?? false;
+}
+
 // ask_user is deliberately a conversational boundary. It is not treated as
 // a failure: the calls before and after it are separate grammatical runs, and
 // the ask_user row remains an ordinary ToolCallItem.
@@ -31,7 +35,7 @@ function isAskUser(item: ItemModel): boolean {
 // both sides. This rule is separate from isAskUser because a question is a
 // boundary for conversational meaning, not a failure special case.
 function joinsRun(item: ItemModel): boolean {
-  return isToolCall(item) && !isAskUser(item) && !toolCallFailed(item);
+  return isToolCall(item) && !isSuppressed(item) && !isAskUser(item) && !toolCallFailed(item);
 }
 
 // toolRunFor finds the contiguous eligible run containing itemId. A failed
@@ -40,7 +44,7 @@ function joinsRun(item: ItemModel): boolean {
 export function toolRunFor(turnItems: ItemModel[], itemId: string): ToolRun | undefined {
   const index = turnItems.findIndex((item) => item.id === itemId);
   const item = turnItems[index];
-  if (!item || !isToolCall(item) || isAskUser(item)) return undefined;
+  if (!item || !isToolCall(item) || isAskUser(item) || isSuppressed(item)) return undefined;
 
   if (toolCallFailed(item)) {
     return { items: [item], isFirst: true, isLastActivity: index === turnItems.length - 1 };

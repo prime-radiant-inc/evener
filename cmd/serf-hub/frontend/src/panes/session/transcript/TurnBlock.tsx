@@ -17,6 +17,7 @@ import { TurnSeparator } from "./messages";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { shouldGroup, toolRunFor } from "./toolGrouping";
+import { itemScopeKey } from "./tools/subagentModuleStore";
 import { visibleItems } from "./transcriptVisibility";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
@@ -89,7 +90,7 @@ export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlo
           const run = toolRunFor(shown, item.id);
           if (run && shouldGroup(run)) {
             if (!run.isFirst) return null;
-            return <ToolCallCluster key={item.id} items={run.items} turn={shownTurn} sessionRef={sessionRef} />;
+            return <ToolCallCluster key={itemScopeKey(sessionRef, item.id)} items={run.items} turn={shownTurn} sessionRef={sessionRef} />;
           }
           const ItemRenderer = itemRendererFor(item.type);
           return (

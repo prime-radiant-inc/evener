@@ -16,6 +16,10 @@ function item(id: string, overrides: Partial<ItemModel> = {}): ItemModel {
   };
 }
 
+function suppressedTaskView(id: string): ItemModel {
+  return item(id, { toolName: "task_list", argumentsJSON: '{"action":"view"}' });
+}
+
 test("an item not present or a non-tool item resolves to no run", () => {
   const items = [item("a"), item("prose", { type: "agentMessage" })];
   expect(toolRunFor(items, "missing")).toBeUndefined();
@@ -101,4 +105,30 @@ test("ask_user is a conversational boundary, not a failure classification", () =
   expect(toolRunFor(items, "before-a")?.items.map((i) => i.id)).toEqual(["before-a", "before-b"]);
   expect(toolRunFor(items, "ask")).toBeUndefined();
   expect(toolRunFor(items, "after-a")?.items.map((i) => i.id)).toEqual(["after-a", "after-b"]);
+});
+
+test("suppressed task_list views do not belong to an eligible run", () => {
+  const items = [suppressedTaskView("view-a"), suppressedTaskView("view-b"), suppressedTaskView("view-c")];
+
+  expect(toolRunFor(items, "view-a")).toBeUndefined();
+  expect(toolRunFor(items, "view-b")).toBeUndefined();
+  expect(toolRunFor(items, "view-c")).toBeUndefined();
+});
+
+test("suppressed calls are boundaries and cannot inflate a visible run", () => {
+  const items = [
+    item("before-a"),
+    item("before-b"),
+    suppressedTaskView("view"),
+    item("after-a"),
+    item("after-b"),
+    item("reply", { type: "agentMessage" }),
+  ];
+
+  const before = toolRunFor(items, "before-a");
+  const after = toolRunFor(items, "after-a");
+  expect(before?.items.map((i) => i.id)).toEqual(["before-a", "before-b"]);
+  expect(after?.items.map((i) => i.id)).toEqual(["after-a", "after-b"]);
+  expect(shouldGroup(before!)).toBe(false);
+  expect(shouldGroup(after!)).toBe(false);
 });
