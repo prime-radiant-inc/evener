@@ -126,3 +126,70 @@ The controller-owned fresh acceptance review was requested after the final fix a
 
 - `648e674ad` — `feat(hubcore): add pure favorite authority classification`
 - `5af07b630` — `fix(hubcore): keep alias cluster collisions dormant`
+
+## Acceptance review follow-up: Important finding
+
+Status: fixed.
+
+Finding: `cmd/serf-hub/internal/hubcore/favorite_authority.go` treated zero or unknown `FavoriteNodeKind` values as non-cluster nodes. With a complete node sharing a valid session authority, that allowed the session decision to classify valid. Unknown and zero kinds must conservatively be ambiguous so affected decisions remain dormant. Only `FavoriteNodeSession`, `FavoriteNodeSubagent`, `FavoriteNodeFork`, and `FavoriteNodeCluster` are accepted kinds.
+
+### RED evidence
+
+Regression test added first:
+
+```text
+gofmt -w cmd/serf-hub/internal/hubcore/favorite_authority_test.go && go test ./cmd/serf-hub/internal/hubcore -run 'TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant' -count=1
+```
+
+Result: exit code 1, with both complete-node cases incorrectly classified as valid:
+
+```text
+--- FAIL: TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant (0.00s)
+    --- FAIL: TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant/zero (0.00s)
+        favorite_authority_test.go:202: classification for {session 033wbPGJIeaTz5nAoeq0r8} = "valid", want "dormant"
+    --- FAIL: TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant/unknown (0.00s)
+        favorite_authority_test.go:202: classification for {session 033wbPGJIid9RPIRsyxpxA} = "valid", want "dormant"
+FAIL
+FAIL	primeradiant.com/serf/cmd/serf-hub/internal/hubcore	0.372s
+FAIL
+exit_code=1
+```
+
+### Fix and GREEN evidence
+
+The smallest fix adds an explicit switch over the four accepted node kinds. The default branch marks the complete node identity ambiguous, reusing the existing dormant classification path. Known non-cluster kinds retain their prior behavior, and cluster handling is unchanged.
+
+Focused classifier tests:
+
+```text
+gofmt -w cmd/serf-hub/internal/hubcore/favorite_authority.go cmd/serf-hub/internal/hubcore/favorite_authority_test.go && go test ./cmd/serf-hub/internal/hubcore -run 'TestClassifyFavoriteDecisions' -count=1
+ok  	primeradiant.com/serf/cmd/serf-hub/internal/hubcore	0.308s
+exit_code=0
+```
+
+Full hubcore package:
+
+```text
+go test ./cmd/serf-hub/internal/hubcore -count=1
+ok  	primeradiant.com/serf/cmd/serf-hub/internal/hubcore	0.476s
+exit_code=0
+```
+
+Hubcore lint:
+
+```text
+golangci-lint run ./cmd/serf-hub/internal/hubcore
+0 issues.
+exit_code=0
+```
+
+Whitespace verification:
+
+```text
+git diff --check
+exit_code=0
+```
+
+### Follow-up commit
+
+- `e5fb25f43` — `fix(hubcore): make unknown favorite node kinds dormant`
