@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
+import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { Rail } from "./Rail";
 
@@ -201,6 +202,7 @@ let postResponses: Record<string, { status: number; body: unknown }>;
 let postCalls: { path: string; body: unknown }[];
 let projectDetailResponses: Record<string, unknown>;
 let projectPageResponses: Record<string, unknown>;
+let pendingTreeRefresh: Promise<Response> | null;
 
 function defaultPostResponses(): Record<string, { status: number; body: unknown }> {
   return {
@@ -221,10 +223,18 @@ beforeEach(() => {
   postCalls = [];
   projectDetailResponses = { archproj: ARCHIVED_PROJECT_DETAIL };
   projectPageResponses = {};
+  pendingTreeRefresh = null;
 
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
-    if (method === "GET" && url === "/api/tree") return jsonResponse(treeResponseBody);
+    if (method === "GET" && url === "/api/tree") {
+      if (pendingTreeRefresh) {
+        const response = await pendingTreeRefresh;
+        pendingTreeRefresh = null;
+        return response;
+      }
+      return jsonResponse(treeResponseBody);
+    }
     if (method === "GET" && url.startsWith("/api/tree/project?key=")) {
       const parsed = new URL(url, "http://serf.test");
       const key = parsed.searchParams.get("key") ?? "";
@@ -254,6 +264,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1326,6 +1337,53 @@ describe("rename flow", () => {
 });
 
 describe("delete project flow", () => {
+  test("hides the project optimistically, then restores a skipped live project after refresh", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByRole("button", { name: /archived/i }));
+    await screen.findByText("old-project");
+
+    const user = userEvent.setup();
+    const row = rowFor("old-project");
+    await user.click(within(row).getByRole("button", { name: /actions for old-project/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+
+    let resolveRefresh!: (response: Response) => void;
+    pendingTreeRefresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    postResponses["/api/project/delete"] = {
+      status: 200,
+      body: { deleted: [], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+    };
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => expect(screen.queryByText("old-project")).toBeNull());
+    resolveRefresh(
+      jsonResponse({
+        ...SAMPLE_WIRE_TREE,
+        archived_projects: [],
+        projects: [
+          ...SAMPLE_WIRE_TREE.projects,
+          wireProject({
+            key: "archproj",
+            name: "old-project",
+            default_expanded: true,
+            sessions: [
+              wireNode({
+                row_id: "project:archproj:local:old1",
+                ref: "local:old1",
+                title: "Skipped live session",
+                tier: "current",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    await screen.findByText("Skipped live session");
+  });
+
   test("opens a confirmation dialog; confirming POSTs the delete and refetches", async () => {
     renderRail();
     await screen.findByText("Live session");

@@ -446,17 +446,26 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     const target = deleteTarget;
     if (!target) return;
     closeDeleteDialog();
+    const optimistic: PendingOp = { kind: "hideProject", key: target.key };
+    setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
+      // The response may contain both deleted and skipped sessions when a
+      // session resumes during the destructive pass. Awaiting this refresh
+      // while the optimistic project hide is still active makes the next
+      // render authoritative: deleted rows stay gone, while skipped live
+      // rows/projects return from the rebuilt index honestly.
+      await treeStore.getState().refresh();
       if (result.skipped.length > 0) {
         toasts.push(
           "warning",
           `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
         );
       }
-      void treeStore.getState().refresh();
     } catch (err) {
       toasts.push("error", `Couldn't delete project: ${errorText(err)}`);
+    } finally {
+      setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
 
