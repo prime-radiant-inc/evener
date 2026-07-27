@@ -41,3 +41,27 @@
 - `kata show 3ekx` records three negative raw-CDP reproductions over clean localhost reloads and specifically calls out delayed/blackholed old WS or throttled new connection as untested.
 - Current code already has frontend client-swap/reconnect tests and Go relay/appserver teardown tests, but no test that injects a matching live notification while `handleReady`'s snapshot request is unresolved.
 
+## Phase 2: Forced results
+
+The first regression was committed RED as `ddc1c57ae` before the production change. It uses `FakeClient` to hold the reconnect `thread/read` response unresolved, injects matching `item/completed` and bare `turn/completed` notifications, then resolves the stale in-progress snapshot. The old implementation applied the notifications to `threads` and then let `handleReady` replace the map entry with `hydrateThread(snapshot)`, restoring the spinner and empty output.
+
+The controlled harness now covers these exact interleavings without sleeps:
+
+1. Initial `ensureThread`: the notification arrives after `thread/read` is issued but before any model is published. The event is buffered by explicit `ref` (and bare `turn/completed` is queued for reducer-side active-turn routing), then replayed onto the stale snapshot.
+2. Reconnect: the old model remains unchanged while a reconnect `thread/read` is pending; matching live events are buffered and folded onto the replacement snapshot before publication.
+3. Overlapping clients: client A's old response is held after client B is wired. B's snapshot plus buffered completion publishes first; A's late response is ignored by the pending hydration token and client identity check.
+4. Watched child thread: the same initial snapshot window is forced through `watchedThreads`, proving the additive watcher path does not retain the wholesale-snapshot clobber.
+
+The root cause is frontend snapshot publication ordering, not notification routing or server connection-ID reuse. `threads.handleNotification` correctly routes and folds live events; `handleReady`, `ensureThread`, and `watchThread` previously published a wholesale snapshot after that fold. The fix buffers notifications per pending hydration, replays them through the same reducer, preserves frame-time bookkeeping, and publishes atomically. Superseded client/lifecycle responses cannot publish.
+
+The server paths were audited and the existing exact-boundary tests were run. `app_rpc.go` reads the source snapshot before `startRelay`; `app_relay.go` keeps the relay context alive with `context.WithoutCancel`, subscribes the source before registering the appserver connection, and serializes existing-relay registration against idle retirement. `internal/appserver` uses monotonic production WebSocket IDs, pointer-checked teardown, and connection-scoped subscription registration. Focused passing coverage includes `TestHubRPCThreadReadRereadJoinsRelayRecovery`, `TestHubRPCThreadReadRetiresRelayWhenClientDisconnects`, `TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement`, `TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement`, `TestStaleConnectionTeardownPreservesSameIDReplacement`, `TestStaleBroadcastFailurePreservesSameIDReplacement`, `TestContextSubscriptionRegistrationRejectsRemovedConnection`, and `TestContextSubscriptionRegistrationSerializesWithConnectionTeardown`.
+
+No raw-CDP throttling was added after the deterministic fake harness reproduced the missing window directly. No kata issue was created: `kata search 3ekx` returned no matches.
+
+## Phase 3: Verification status
+
+- Frontend focused store suite: 126 tests passed.
+- Frontend `npm run typecheck`: passed.
+- Frontend `npm run lint`: passed.
+- Go focused suites `go test ./internal/appserver` and `go test ./cmd/serf-hub -run '^(TestHubRPCThreadRead|TestHubRelay)'`: passed.
+- Remaining work: full frontend test/build and repository Go gates, final diff/clean-worktree verification.
