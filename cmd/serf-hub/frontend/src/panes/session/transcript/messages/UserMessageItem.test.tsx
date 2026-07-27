@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
@@ -13,6 +16,7 @@ import { Toast } from "../../../../widgets";
 import { readDraft } from "../../composer/draft";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
+import styles from "./usermessageitem.module.css";
 
 afterEach(cleanup);
 
@@ -70,6 +74,26 @@ test('carries a quiet "You" tag as a sibling of the text, not mixed into it', ()
   // would make "hi" only findable as part of a larger "You hi" string).
   expect(screen.getByText("hi")).toBeTruthy();
   expect(container.querySelector('[data-testid="user-message-item"]')).toBeTruthy();
+});
+
+test("the approved You row keeps identity, attachments, and text in one baseline gutter hierarchy", () => {
+  const { container } = render(
+    <UserMessageView item={item({ text: "hi", images: [{ src: "data:image/png;base64,x" }] })} />,
+  );
+  const message = container.querySelector('[data-testid="user-message-item"]');
+  expect(message?.children[0]?.textContent).toBe("You");
+  expect(message?.children[1]?.className).toBe(styles.body);
+  expect(message?.children[1]?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
+  expect(message?.children[1]?.textContent).toContain("hi");
+});
+
+test("the You row layout is token-backed and has no prose card treatment", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
+  expect(css).toMatch(/\.tag\s*\{[\s\S]*flex:\s*none;[\s\S]*width:\s*var\(--space-7\);/);
+  expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
+  expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
 test("no gallery thumbnails when the item carries no images", () => {
