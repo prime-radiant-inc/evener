@@ -61,7 +61,20 @@ test("the hint renders when present", () => {
       sessionRef="ref_a"
     />,
   );
+  expect(screen.getByText("What can I do?")).toBeTruthy();
   expect(screen.getByText("check your API key")).toBeTruthy();
+});
+
+test("hint sits behind a disclosure; retry is inline in the head row", () => {
+  render(
+    <TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} turn={failedTurn()} sessionRef="s1" />,
+  );
+  const cap = screen.getByTestId("turn-failure");
+  const head = cap.firstElementChild as HTMLElement;
+  expect(head.contains(screen.getByRole("button", { name: /retry/i }))).toBe(true);
+  const hintSummary = screen.getByText("What can I do?");
+  expect(hintSummary.closest("details")!.open).toBe(false);
+  expect(cap.querySelector("[class*=hint]")!.closest("details")).not.toBeNull();
 });
 
 test("clicking retry re-issues the turn's user input via threadsStore.send", async () => {

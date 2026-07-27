@@ -1,33 +1,41 @@
-/* The end-cap that closes a failed turn. Neutral throughout: the failure
- * colour lives entirely on the danger Chip in the head (a non-widget stylesheet
- * may not reach for --danger; see the component header), so every rule here
- * stays on neutral ink/edge tokens. */
+/* One head row carries the whole cap (tiered-density spec, 2026-07-27):
+ * the failure FACT (chip + message + retry) inline, the advice behind a
+ * disclosure. Danger stays confined to the Chip widget - this stylesheet
+ * may not reference --danger (token-contract.test.ts). */
 .cap {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
-  margin-top: var(--space-1);
-  border-top: 1px solid var(--edge);
+  padding: var(--space-1) 0;
 }
 
 .head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-2);
 }
 
 .message {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
   color: var(--ink-hi);
-  font-size: var(--font-size-ui);
+  overflow-wrap: anywhere;
+}
+
+.hintDisclosure {
+  display: inline;
+}
+
+.hintSummary {
+  display: inline;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
 }
 
 .hint {
-  color: var(--ink-mid);
+  flex-basis: 100%;
+  margin-top: var(--space-1);
+  font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-}
-
-.actions {
-  display: flex;
-  gap: var(--space-2);
+  color: var(--ink-mid);
 }

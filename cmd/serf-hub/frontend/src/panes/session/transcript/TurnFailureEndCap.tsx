@@ -30,7 +30,8 @@ const CLASS = {
   head: requireClass(styles.head, "turnfailure.module.css", "head"),
   message: requireClass(styles.message, "turnfailure.module.css", "message"),
   hint: requireClass(styles.hint, "turnfailure.module.css", "hint"),
-  actions: requireClass(styles.actions, "turnfailure.module.css", "actions"),
+  hintDisclosure: requireClass(styles.hintDisclosure, "turnfailure.module.css", "hintDisclosure"),
+  hintSummary: requireClass(styles.hintSummary, "turnfailure.module.css", "hintSummary"),
 };
 
 // The turn that failed opened with the user's own input as its first item
@@ -107,15 +108,18 @@ export function TurnFailureEndCap({
       <div className={CLASS.head}>
         <Chip tone="danger">{info.badge}</Chip>
         <span className={CLASS.message}>{info.message}</span>
-      </div>
-      {info.hint && <div className={CLASS.hint}>{info.hint}</div>}
-      {canRetry && (
-        <div className={CLASS.actions}>
+        {info.hint && (
+          <details className={CLASS.hintDisclosure}>
+            <summary className={CLASS.hintSummary}>What can I do?</summary>
+            <div className={CLASS.hint}>{info.hint}</div>
+          </details>
+        )}
+        {canRetry && (
           <Button variant="primary" size="sm" onClick={() => void retry()}>
             {info.recoveryLabel}
           </Button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
