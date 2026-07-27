@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -60,6 +61,42 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	}
 	if tscInfo.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("local tsc is not executable: mode %s", tscInfo.Mode())
+	}
+}
+
+func TestNpmShimRejectsUnsupportedCommand(t *testing.T) {
+	t.Parallel()
+
+	env := npmShimEnv(t, installTestEnv(t, t.TempDir(), nil))
+	var npmPath string
+	for _, item := range env {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok || name != "PATH" {
+			continue
+		}
+		parts := strings.Split(value, string(os.PathListSeparator))
+		if len(parts) == 0 || parts[0] == "" {
+			t.Fatal("npm shim PATH is empty")
+		}
+		npmPath = filepath.Join(parts[0], "npm")
+		break
+	}
+	if npmPath == "" {
+		t.Fatal("npm shim PATH was not configured")
+	}
+
+	cmd := exec.Command(npmPath, "install")
+	cmd.Env = env
+	if _, err := cmd.CombinedOutput(); err == nil {
+		t.Fatal("npm shim accepted unsupported command")
+	} else {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("npm shim did not execute as a process: %v", err)
+		}
+		if got := exitErr.ExitCode(); got != 2 {
+			t.Fatalf("npm shim exit code = %d, want 2", got)
+		}
 	}
 }
 
@@ -667,10 +704,15 @@ func npmShimEnv(t *testing.T, env []string) []string {
 
 	fakeBin := t.TempDir()
 	const npmShim = `#!/bin/sh
-if [ "$1" = "ci" ]; then
+if [ "$#" -eq 1 ] && [ "$1" = "ci" ]; then
   mkdir -p node_modules/.bin
   printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
   chmod +x node_modules/.bin/tsc
+elif [ "$#" -eq 2 ] && [ "$1" = "run" ] && [ "$2" = "build" ]; then
+  :
+else
+  echo "unsupported npm args: $*" >&2
+  exit 2
 fi
 exit 0
 `
