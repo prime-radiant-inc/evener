@@ -48,6 +48,7 @@ import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
 import { harnessUsesSerfModels } from "./harnessModels";
+import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchSerfOptions, resolveScalars } from "./schema";
@@ -84,6 +85,11 @@ const CLASS = {
   branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   chips: requireClass(styles.chips, "spawn.module.css", "chips"),
+  actionBand: requireClass(styles.actionBand, "spawn.module.css", "actionBand"),
+  mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
+  mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
+  mobilePromptHeading: requireClass(styles.mobilePromptHeading, "spawn.module.css", "mobilePromptHeading"),
+  mobilePromptSubtitle: requireClass(styles.mobilePromptSubtitle, "spawn.module.css", "mobilePromptSubtitle"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
 };
@@ -479,7 +485,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "serf", label: "serf" }];
 
   return (
-    <PaneScaffold title="Start an agent">
+    <PaneScaffold title="Start an agent" mobileTitle="new">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <div className={CLASS.notice} role="status">
@@ -494,6 +500,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
+        <div className={CLASS.mobilePromptIntro} data-testid="spawn-mobile-prompt-intro">
+          <h3 className={CLASS.mobilePromptHeading}>What should the agent do?</h3>
+          <p className={CLASS.mobilePromptSubtitle}>Leave blank to start a dormant session.</p>
+        </div>
+
         {/* The prompt comes FIRST and takes the page's slack: writing the
             prompt is what starting an agent IS, and everything below it is
             configuration that mostly stays where it was last left. The card is
@@ -501,6 +512,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
           <PromptCard
             data-testid="spawn-prompt-card"
+            controlsClassName={CLASS.actionBand}
+            controlsTestId="spawn-mobile-actions"
             field={
               <Textarea
                 ref={textareaRef}
@@ -538,9 +551,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               />
             }
             actions={
-              <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
-                {/* "Start", not "Spawn": spawn is implementation vocabulary, and
-                    the rail's own button already says "New session". */}
+              <Tooltip label={`Spawn the agent · ${chordLabel(["Mod", "Enter"])}`}>
                 <Button
                   variant="primary"
                   size="xs"
@@ -548,7 +559,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   onClick={() => void handleSpawn()}
                   disabled={busy || modelRequired}
                 >
-                  {busy ? "Starting…" : "Start"}
+                  {busy ? "Spawning…" : "Spawn"}
                 </Button>
               </Tooltip>
             }
@@ -634,6 +645,33 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               disabled={!usesSerfModels}
             />
           </FormRow>
+        </div>
+
+        <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
+          <MobileSettingRows
+            harness={harness || "serf"}
+            harnessOptions={harnessOptions}
+            onHarnessChange={handleHarnessChange}
+            model={model}
+            modelDisplay={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
+            modelRequired={modelRequired}
+            loadCatalog={loadCatalog}
+            onModelChange={handleModelChange}
+            cwd={cwd}
+            onCwdChange={setCwd}
+            complete={complete}
+            listRecents={listRecents}
+            fallbackDir={getGlobalLastWorkingDir()}
+            onCwdPanelClose={setGlobalLastWorkingDir}
+            branch={branch}
+            reasoningEffort={reasoningEffort}
+            reasoningOptions={REASONING_OPTIONS}
+            reasoningDisabled={!usesSerfModels}
+            onReasoningChange={setReasoningEffort}
+            accessMode={accessMode}
+            accessOptions={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+            onAccessChange={setAccessMode}
+          />
         </div>
 
         <AdvancedOptions

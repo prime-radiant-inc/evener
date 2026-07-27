@@ -18,7 +18,9 @@ function stripCssComments(css: string): string {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
 });
 
 // jsdom has no Clipboard API of its own, but @testing-library/user-event

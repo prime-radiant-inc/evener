@@ -382,6 +382,10 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
+	// taskStoreLoadErr records whether the session's persisted task store could
+	// be loaded. It is published by taskStoreOnce before any snapshot reads use
+	// it, so aggregate producers can distinguish unavailable data from zero tasks.
+	taskStoreLoadErr error
 
 	// goal store (lazy-init)
 	goalStore     *goal.Store

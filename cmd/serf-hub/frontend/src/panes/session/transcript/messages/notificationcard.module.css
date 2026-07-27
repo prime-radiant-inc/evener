@@ -1,6 +1,11 @@
 /* Job-notification card. Neutral by default (a completed job recedes); tone
  * colour is spent only via the Chip in the head (its danger/attention tones are
  * allowlisted), so every rule here stays on neutral ink/surface tokens. */
+.root {
+  width: 100%;
+  min-width: 0;
+}
+
 .head {
   display: flex;
   align-items: baseline;
@@ -18,6 +23,28 @@
   color: var(--ink-mid);
 }
 
+.action {
+  margin-left: auto;
+  display: inline-flex;
+}
+
+.metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.field {
+  min-width: 0;
+}
+
+.fieldLabel {
+  color: var(--ink-low);
+}
+
 .concerns {
   margin-top: var(--space-2);
   font-size: var(--font-size-ui);
@@ -32,36 +59,31 @@
   word-break: break-word;
 }
 
-/* Both disclosures this card renders ("Raw notification" at the foot of
- * every card; "Full excerpt" inside Excerpt, for a preview long enough to
- * truncate) share this shape: a short, fixed label in the same left gutter
- * every other labelled transcript row uses (kata 8v4n), baseline-aligned
- * with the revealed block's first line rather than stacked above it.
- * Deliberately NOT flex-wrap - see thinkblock.module.css's identical
- * .details comment: a multi-line flex container lines up items by their
- * UNSHRUNK size, so a .rawBody with even one line longer than the row would
- * always wrap to its own line under wrap, regardless of how short the label
- * is. nowrap plus .rawBody's own flex-shrink is what actually keeps them
- * beside each other, the same mechanism the golden reference's own
- * `.think`/`.think-body` uses. */
+/* The raw payload is secondary diagnostic material. Keep its disclosure and
+ * preformatted body as full-width block rows so long attributes cannot turn
+ * the summary into a narrow side column. */
 .raw {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  display: block;
+  width: 100%;
   margin-top: var(--space-2);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 
 .summary {
-  flex: none;
+  display: list-item;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   cursor: pointer;
 }
 
 .rawBody {
-  flex: 1 1 auto;
+  display: block;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
-  margin: 0;
+  margin: var(--space-1) 0 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

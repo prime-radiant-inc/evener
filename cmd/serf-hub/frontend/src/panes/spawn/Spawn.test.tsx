@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -190,8 +193,51 @@ test("the configuration row is working directory, model and effort - and nothing
   await settled();
 
   expect(screen.getByLabelText("Working directory")).toBeTruthy();
-  expect(screen.getByText("Model")).toBeTruthy();
+  expect(screen.getAllByText("Model").length).toBeGreaterThan(0);
   expect(screen.getByLabelText("Effort")).toBeTruthy();
+});
+
+test("mobile Spawn exposes Treatment A rows and a pinned action band without losing auto-grow", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  expect(
+    [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
+  ).toEqual(["Harness", "Model", "Working directory", "Branch", "Reasoning effort", "Access mode"]);
+  expect(screen.getByTestId("spawn-mobile-actions").querySelector("[data-testid='spawn-submit']")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
+});
+
+test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed mobile work");
+
+  expect(screen.getByTestId("pane-title-mobile").textContent).toBe("new");
+  expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
+  expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+});
+
+test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const spawnCss = readFileSync(join(here, "spawn.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rowsCss = readFileSync(join(here, "MobileSettingRows.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const paneCss = readFileSync(join(here, "../../widgets/panescaffold/panescaffold.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  expect(spawnCss).toContain(".mobilePromptIntro");
+  expect(spawnCss).toContain("@media (max-width: 899px)");
+  expect(rowsCss).toContain("min-height: 48px");
+  expect(rowsCss).toContain("font-size: var(--font-size-body)");
+  expect(paneCss).toContain(".desktopTitle");
+  expect(paneCss).toContain(".mobileTitle");
+  expect(paneCss).toContain("@media (max-width: 899px)");
 });
 
 // Harness moves into Advanced options: most installs have exactly one, so a
@@ -210,18 +256,18 @@ test("harness moved into Advanced options, and still works there", async () => {
   expect(harness.value).toBe("codex-cli");
 });
 
-// "Start", not "Spawn": spawn is implementation vocabulary, and the rail's own
-// button already says "New session". The page title matches the verb.
-test("the primary verb is Start, in the card's own corner, and the page is titled to match", async () => {
+// The approved mobile Treatment A action band uses the direct user-facing
+// action "Spawn". The page title remains the existing React identity.
+test("the primary verb is Spawn, in the card's own corner, and the page is titled to match", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const start = screen.getByTestId("spawn-submit");
-  expect(start.textContent).toBe("Start");
-  expect(screen.getByRole("heading", { name: "Start an agent" })).toBeTruthy();
+  expect(start.textContent).toBe("Spawn");
+  expect(screen.getByTestId("pane-title-desktop").textContent).toBe("Start an agent");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
-  expect(screen.queryByRole("button", { name: "Spawn" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Spawn" })).toBeTruthy();
 });
 
 // The dormant-start rule rides in the placeholder rather than a separate
@@ -645,9 +691,9 @@ test("aborts with the validator message for a non-fixable working dir, then a co
 // override, so an empty resolve preview means the daemon WILL refuse the
 // submit - "(default)" next to a working Effort default is a lie in that
 // state. The preview is fail-open (an unmocked/failing resolve never blocks
-// Start) - only a CONFIRMED empty default does.
+// Spawn) - only a CONFIRMED empty default does.
 
-test("Model keeps reading '(default)' and Start stays untouched when the hub resolves a real default (kata xgk8, happy path)", async () => {
+test("Model keeps reading '(default)' and Spawn stays untouched when the hub resolves a real default (kata xgk8, happy path)", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("serf/launch/resolve", () => ({
@@ -672,7 +718,7 @@ test("Model keeps reading '(default)' and Start stays untouched when the hub res
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 });
 
-test("kata xgk8: Model reads as required (not '(default)') and Start is disabled when the hub has no default model", async () => {
+test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled when the hub has no default model", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("serf/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
@@ -881,7 +927,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("re-enables the Start button after a successful start (post-success state hygiene, same class as §1.14)", async () => {
+test("re-enables the Spawn button after a successful start (post-success state hygiene, same class as §1.14)", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
@@ -895,11 +941,11 @@ test("re-enables the Start button after a successful start (post-success state h
   // Addressed by testid so a still-stuck "Starting…" fails on the label
   // assertion below with a clear message rather than on a failed query.
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
-  expect(button.textContent).toBe("Start");
+  expect(button.textContent).toBe("Spawn");
   expect(button.disabled).toBe(false);
 });
 
-// kata 61v2: three fast clicks on Start spawned three separate live daemons
+// kata 61v2: three fast clicks on Spawn spawned three separate live daemons
 // running the same prompt. `disabled={busy}` alone is not a re-entrancy guard
 // - `busy` is React state, and its read inside handleSpawn's closure only
 // reflects whatever was committed as of the LAST render. Three clicks fired

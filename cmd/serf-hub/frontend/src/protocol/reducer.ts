@@ -262,7 +262,9 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     turns: mergeToolCallsByCallId((thread.turns ?? []).map(wireToTurnModel)),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.serf.queue,
-    tasks: null,
+    // An absent aggregate means the daemon could not authoritatively read
+    // tasks; preserve a present zero so an empty task list stays distinct.
+    tasks: thread.serf.tasks ?? null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
     capabilities: thread.serf.capabilities,

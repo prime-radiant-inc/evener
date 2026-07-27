@@ -859,6 +859,7 @@ func (s *Server) appThread() appwire.Thread {
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	ftcfn := s.failedToolCallsFn
+	tafn := s.taskAggregateFn
 	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
 	pesfn := s.pendingEscalationsSnapshotFn
@@ -918,6 +919,10 @@ func (s *Server) appThread() appwire.Thread {
 		if status, iterations, ok := gsfn(); ok {
 			goalState = &appwire.GoalState{Status: status, Iterations: iterations}
 		}
+	}
+	var taskAggregate *appwire.TaskAggregate
+	if tafn != nil {
+		taskAggregate = tafn()
 	}
 	var workMillis int64
 	var usage *appwire.SerfUsage
@@ -986,6 +991,7 @@ func (s *Server) appThread() appwire.Thread {
 			Capabilities:          s.appCapabilities(status.State, processing),
 			Diagnostics:           diagnostics,
 			Queue:                 queue,
+			Tasks:                 taskAggregate,
 			Goal:                  goalState,
 			Usage:                 usage,
 			Cost:                  appwire.EstimateCost(status.Model, usage),

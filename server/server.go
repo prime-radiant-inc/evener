@@ -230,6 +230,7 @@ type Server struct {
 	reasoningEffortFunc func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn             func() any
+	taskAggregateFn     func() *appwire.TaskAggregate
 	shutdownFunc        func()
 	transcriptPathFn    func() string
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
@@ -668,6 +669,15 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseIte
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
 	s.tasksFn = fn
+	s.mu.Unlock()
+}
+
+// SetTaskAggregateFunc sets the authoritative task progress callback used by
+// AppWire thread snapshots. A nil callback means the source cannot report
+// task state; a non-nil callback may return a present zero aggregate.
+func (s *Server) SetTaskAggregateFunc(fn func() *appwire.TaskAggregate) {
+	s.mu.Lock()
+	s.taskAggregateFn = fn
 	s.mu.Unlock()
 }
 

@@ -72,6 +72,41 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
+function sameEpochReconnectFixture() {
+  const staleSnapshot = readResponse("ref_a", {
+    status: { type: "active", activeFlags: ["streaming"] },
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+      },
+    ],
+    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  const completion = {
+    method: "item/completed" as const,
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      turnId: "turn_1",
+      item: {
+        type: "commandExecution" as const,
+        id: "item_1",
+        turnId: "turn_1",
+        output: "done",
+        status: "completed" as const,
+      },
+    },
+  };
+  const turnCompleted = {
+    method: "turn/completed" as const,
+    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+  };
+  return { staleSnapshot, completion, turnCompleted };
+}
+
 // connectFakeClient wires a fresh FakeClient through useConnectionStore's
 // locked connect(client) entry point — the same path threads.ts's
 // requireClient() rides to reach the client (see connection.ts).
@@ -153,6 +188,153 @@ describe("useConnectionStore", () => {
 });
 
 describe("useThreadsStore.ensureThread", () => {
+  test("replays notifications that arrive after the initial subscription but before its snapshot", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(resolveRead).not.toBeNull();
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(staleSnapshot);
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
+  test("replays a threadId-only item completion after an earlier buffered turn start establishes routing", async () => {
+    const fake = connectFakeClient();
+    const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          box.resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => box.resolveRead !== null);
+    expect(box.resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+      },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        turnId: "turn_live",
+        item: { type: "agentMessage", id: "item_live", turnId: "turn_live", text: "answer", status: "completed" },
+      },
+    });
+
+    box.resolveRead?.(readResponse("ref_a"));
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns).toHaveLength(1);
+    expect(model?.turns[0]?.id).toBe("turn_live");
+    expect(model?.turns[0]?.items[0]?.text).toBe("answer");
+  });
+
+  test("replays threadId-only status and item completion after a ref-targeted event establishes the thread identity", async () => {
+    const fake = connectFakeClient();
+    const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          box.resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => box.resolveRead !== null);
+    expect(box.resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", status: { type: "active", activeFlags: ["streaming"] } },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+
+    box.resolveRead?.(
+      readResponse("ref_a", {
+        status: { type: "active" },
+        turns: [
+          {
+            id: "turn_1",
+            status: "inProgress",
+            itemsView: "full",
+            items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+          },
+        ],
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
   test("hydrates via thread/read and routes a subsequent matching notification through the reducer", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
@@ -200,6 +382,202 @@ describe("useThreadsStore.ensureThread", () => {
 
     expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+  });
+
+  test("restarts a pending initial hydrate on a client swap and waits for the new client's model", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+
+    const b = new FakeClient("connecting");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    b.emitReady();
+    await flushUntil(() => bRead.resolve !== null);
+
+    let settled = false;
+    void ensuring.then(() => {
+      settled = true;
+    });
+    aRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => settled);
+
+    expect(settled).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    b.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("transfers buffered notifications exactly once when a pending hydrate moves from A to B", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null; reject: ((error: Error) => void) | null } =
+      {
+        resolve: null,
+        reject: null,
+      };
+    a.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          aRead.resolve = resolve;
+          aRead.reject = reject;
+        }),
+    );
+
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active", activeFlags: ["streaming"] },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    const completion = {
+      method: "item/completed" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution" as const,
+          id: "item_1",
+          turnId: "turn_1",
+          output: "A's output",
+          status: "completed" as const,
+        },
+      },
+    };
+    const status = {
+      method: "thread/status/changed" as const,
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    };
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+    a.emitNotification(completion);
+    a.emitNotification(status);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    // The same wire frame can be observed again after the new subscription;
+    // it must not be replayed twice after A's buffer is transferred.
+    b.emitNotification(status);
+    aRead.reject?.(new Error("retired client A read"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    bRead.resolve?.(staleSnapshot);
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.items[0]?.output).toBe("A's output");
+    expect(model?.turns[0]?.items).toHaveLength(1);
+    expect(model?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(2);
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
+  test("re-hydrates an initial same-client epoch and replays reconnect-window notifications", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
+    const { staleSnapshot, completion, turnCompleted } = sameEpochReconnectFixture();
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+
+    fake.emitStateChange("reconnecting");
+    // This frame arrives while the old same-client hydration is still tagged
+    // with the previous ready epoch. The new pending record must inherit it.
+    fake.emitNotification(completion);
+    fake.emitNotification(turnCompleted);
+    fake.emitNotification(completion); // exact duplicate: replay once
+    fake.emitReady();
+    await flushUntil(() => reads.length === 2);
+    fake.emitReady(); // same-ready duplicate must not start a third hydration
+    expect(reads).toHaveLength(2);
+
+    // Old A settles first. Its stale snapshot must not publish or clear B's
+    // transferred pending buffer; B then publishes the replayed live state.
+    reads[0]!(staleSnapshot);
+    reads[1]!(staleSnapshot);
+    await ensuring;
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+    expect(model?.turns[0]?.items).toHaveLength(1);
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(2);
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("late A rejection cannot remove or reject B's newer pending initial hydrate", async () => {
+    const a = connectFakeClient();
+    const aRead: { reject: ((error: Error) => void) | null } = { reject: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((_, reject) => (aRead.reject = reject)));
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => aRead.reject !== null);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    aRead.reject?.(new Error("late A rejection"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    threadsStore.getState().releaseThread("ref_a");
   });
 
   test("throws when no client has been connected yet", async () => {
@@ -257,6 +635,39 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  test("same-lifecycle ensure failures each roll back one shared claim", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    const box: { rejectRead: ((error: Error) => void) | null } = { rejectRead: null };
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return new Promise<ThreadReadResponse>((_, reject) => {
+          box.rejectRead = reject;
+        });
+      }
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_retry", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => box.rejectRead !== null);
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    expect(readCount).toBe(1);
+
+    box.rejectRead?.(new Error("shared read failure"));
+    const results = await Promise.allSettled([firstEnsure, secondEnsure]);
+    expect(results[0]?.status).toBe("rejected");
+    expect(results[1]?.status).toBe("rejected");
+
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(readCount).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_retry");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   test("a ref released before its in-flight hydrate resolves is not resurrected", async () => {
     const fake = connectFakeClient();
     // A plain `let` reassigned only inside the executor closure below gets
@@ -275,6 +686,89 @@ describe("useThreadsStore.ensureThread", () => {
     box.resolveRead?.(readResponse("ref_a"));
     await ensuring;
 
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    let firstSettled = false;
+    void firstEnsure.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 2);
+    expect(reads).toHaveLength(2);
+
+    reads[0]!(readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    reads[1]!(readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }));
+    await Promise.all([firstEnsure, secondEnsure]);
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("a retired ensure rejection does not consume a replacement lifecycle claim", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 2);
+
+    let firstRejected = false;
+    void firstEnsure.then(
+      () => undefined,
+      () => {
+        firstRejected = true;
+      },
+    );
+    reads[0]!.reject(new Error("retired read A"));
+    await flushUntil(() => firstRejected);
+
+    reads[1]!.resolve(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await secondEnsure;
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
@@ -418,6 +912,114 @@ describe("notification routing", () => {
 });
 
 describe("reconnect resubscribe", () => {
+  test("does not let pending reconnect hydration erase a live completion", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      expect((params as { subscribe: boolean }).subscribe).toBe(true);
+      if (readCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        reconnectRead.resolve = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => reconnectRead.resolve !== null);
+    expect(reconnectRead.resolve).not.toBeNull();
+
+    // This is the notification that arrives after the new subscription is
+    // accepted but before its snapshot response is applied. The old snapshot
+    // is intentionally still in progress, so the store buffers this live
+    // completion instead of mutating the model that is about to be replaced.
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
+
+    // The snapshot was captured before the completion. Applying it after the
+    // live event must not restore the spinner or erase the completed output.
+    reconnectRead.resolve?.(staleSnapshot);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
+  test("replays a ref-targeted turn start followed by a bare completion after a stale reconnect snapshot", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a");
+    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        reconnectRead.resolve = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => reconnectRead.resolve !== null);
+    expect(reconnectRead.resolve).not.toBeNull();
+
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_live", turn: { id: "turn_live", status: "completed", itemsView: "" } },
+    });
+
+    reconnectRead.resolve?.(staleSnapshot);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns).toHaveLength(1);
+    expect(model?.turns[0]?.id).toBe("turn_live");
+    expect(model?.turns[0]?.status).toBe("completed");
+  });
+
   test("onReady refire re-subscribes every tracked ref additively and replaces each model wholesale", async () => {
     const fake = connectFakeClient();
     let readCount = 0;
@@ -463,6 +1065,78 @@ describe("reconnect resubscribe", () => {
     });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
+  });
+
+  test("a late old-client hydration cannot overwrite the newest client's replayed completion", async () => {
+    const a = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    let aReadCount = 0;
+    let resolveA: ((response: ThreadReadResponse) => void) | null = null;
+    a.on("thread/read", () => {
+      aReadCount += 1;
+      if (aReadCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveA = resolve;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    a.emitStateChange("reconnecting");
+    a.emitReady();
+    await flushUntil(() => resolveA !== null);
+
+    const b = new FakeClient("ready");
+    let resolveB: ((response: ThreadReadResponse) => void) | null = null;
+    b.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveB = resolve;
+        }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => resolveB !== null);
+
+    b.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    b.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    // B wins publication first, with its buffered live completion replayed.
+    expect(resolveB).not.toBeNull();
+    const finishB = resolveB as unknown as (response: ThreadReadResponse) => void;
+    finishB(staleSnapshot);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
+
+    // A's older response arrives after B and must not restore its stale model.
+    const finishA = resolveA as unknown as (response: ThreadReadResponse) => void;
+    resolveA = null;
+    finishA(staleSnapshot);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
   });
 
   test("a released ref is not re-subscribed on the next onReady", async () => {
@@ -1604,6 +2278,206 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
 // when the exact same ref happens to be both ensureThread'd and
 // watchThread'd at once.
 describe("useThreadsStore.watchThread", () => {
+  test("replays notifications that arrive before the initial watched snapshot", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(readResponse("ref_a", { status: { type: "idle" } }));
+    await watching;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("restarts a pending initial watched hydrate on a client swap and waits for the new client's model", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    let settled = false;
+    void watching.then(() => {
+      settled = true;
+    });
+    aRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => settled);
+
+    expect(settled).toBe(false);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await watching;
+
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls[0]?.params).toEqual({
+      ref: "ref_a",
+      includeTurns: false,
+      itemsView: "full",
+      subscribe: true,
+      replaceSubscription: false,
+      turnLimit: 40,
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    b.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("transfers buffered notifications exactly once when a pending watched hydrate moves from A to B", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null; reject: ((error: Error) => void) | null } =
+      {
+        resolve: null,
+        reject: null,
+      };
+    a.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          aRead.resolve = resolve;
+          aRead.reject = reject;
+        }),
+    );
+
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active", activeFlags: ["streaming"] },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    const completion = {
+      method: "item/completed" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution" as const,
+          id: "item_1",
+          turnId: "turn_1",
+          output: "A's output",
+          status: "completed" as const,
+        },
+      },
+    };
+    const status = {
+      method: "thread/status/changed" as const,
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    };
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+    a.emitNotification(completion);
+    a.emitNotification(status);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    b.emitNotification(status);
+    aRead.reject?.(new Error("retired client A watched read"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    bRead.resolve?.(staleSnapshot);
+    await watching;
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns[0]?.items[0]?.output).toBe("A's output");
+    expect(model?.turns[0]?.items).toHaveLength(1);
+    expect(model?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toHaveLength(2);
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
+  test("re-hydrates a watched same-client epoch and replays reconnect-window notifications", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
+    const { staleSnapshot, completion, turnCompleted } = sameEpochReconnectFixture();
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitNotification(completion);
+    fake.emitNotification(turnCompleted);
+    fake.emitNotification(completion); // exact duplicate: replay once
+    fake.emitReady();
+    await flushUntil(() => reads.length === 2);
+    fake.emitReady(); // same-ready duplicate must not start a third hydration
+    expect(reads).toHaveLength(2);
+
+    // B publishes before old A settles. The watch caller still awaiting A
+    // must observe B after A later resolves, without letting A overwrite it.
+    reads[1]!(staleSnapshot);
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.status === "completed");
+    reads[0]!(staleSnapshot);
+    await watching;
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+    expect(model?.turns[0]?.items).toHaveLength(1);
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toHaveLength(2);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
   test("hydrates via thread/read with includeTurns:false and routes a subsequent matching notification", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {

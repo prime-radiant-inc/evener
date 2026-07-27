@@ -22,6 +22,7 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
+import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -168,6 +169,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
   const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+  const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
@@ -195,6 +197,53 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     return turn;
   };
 
+  const transcript = (
+    <div className={styles.transcript}>
+      <FlowOverlay
+        top={
+          <>
+            {model.olderCursor && (
+              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            )}
+            <LivenessLine
+              lastFrameAt={model.lastFrameAt}
+              now={now}
+              active={model.status.type === "active"}
+              sessionRef={ref}
+              turnId={model.activeTurnId}
+            />
+          </>
+        }
+        pill={
+          <NewContentPill
+            count={flow.pillCount}
+            needsYou={flow.pillNeedsYou}
+            error={flow.pillError}
+            pillArrowDirection={flow.pillArrowDirection}
+            onClick={flow.jumpToBottom}
+          />
+        }
+      >
+        <div className={styles.transcriptContent}>
+          <div className={styles.transcriptList}>
+            <VirtualList
+              ref={virtualListRef}
+              dynamic
+              count={model.turns.length}
+              estimateSize={() => ESTIMATED_TURN_HEIGHT}
+              getItemKey={(index) => turnAt(index).id}
+              renderRow={(index) => {
+                const t = turnAt(index);
+                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
+              }}
+            />
+          </div>
+          {showColdStartSkeleton && <ColdStartSkeleton />}
+        </div>
+      </FlowOverlay>
+    </div>
+  );
+
   return (
     <PaneScaffold
       title={model.name || ref}
@@ -210,48 +259,12 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       }
     >
       <SandboxEscalationRail sessionRef={ref} />
-      {isDormantTranscript(model.turns) ? (
+      {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
+        <ColdStartSkeleton />
+      ) : isDormantTranscript(model.turns) ? (
         <EmptyTranscript active={model.status.type === "active"} />
       ) : (
-        <div className={styles.transcript}>
-          <FlowOverlay
-            top={
-              <>
-                {model.olderCursor && (
-                  <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-                )}
-                <LivenessLine
-                  lastFrameAt={model.lastFrameAt}
-                  now={now}
-                  active={model.status.type === "active"}
-                  sessionRef={ref}
-                  turnId={model.activeTurnId}
-                />
-              </>
-            }
-            pill={
-              <NewContentPill
-                count={flow.pillCount}
-                needsYou={flow.pillNeedsYou}
-                error={flow.pillError}
-                pillArrowDirection={flow.pillArrowDirection}
-                onClick={flow.jumpToBottom}
-              />
-            }
-          >
-            <VirtualList
-              ref={virtualListRef}
-              dynamic
-              count={model.turns.length}
-              estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => {
-                const t = turnAt(index);
-                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
-              }}
-            />
-          </FlowOverlay>
-        </div>
+        transcript
       )}
     </PaneScaffold>
   );

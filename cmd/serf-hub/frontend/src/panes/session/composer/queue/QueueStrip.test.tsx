@@ -8,6 +8,7 @@ import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../..
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
 
@@ -109,6 +110,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
+  resetToastStoreForTests();
 });
 
 afterEach(() => {

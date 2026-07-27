@@ -4,6 +4,7 @@ import styles from "./panescaffold.module.css";
 
 export interface PaneScaffoldProps {
   title: string;
+  mobileTitle?: string;
   cadence?: ReactNode;
   actions?: ReactNode;
   footer?: ReactNode;
@@ -14,6 +15,8 @@ const CLASS = {
   pane: requireClass(styles.pane, "panescaffold.module.css", "pane"),
   header: requireClass(styles.header, "panescaffold.module.css", "header"),
   title: requireClass(styles.title, "panescaffold.module.css", "title"),
+  desktopTitle: requireClass(styles.desktopTitle, "panescaffold.module.css", "desktopTitle"),
+  mobileTitle: requireClass(styles.mobileTitle, "panescaffold.module.css", "mobileTitle"),
   cadenceSlot: requireClass(styles.cadenceSlot, "panescaffold.module.css", "cadenceSlot"),
   actions: requireClass(styles.actions, "panescaffold.module.css", "actions"),
   body: requireClass(styles.body, "panescaffold.module.css", "body"),
@@ -27,11 +30,24 @@ const CLASS = {
  * the most-copied layout primitive in the app, so every pane looks and
  * behaves the same way.
  */
-export function PaneScaffold({ title, cadence, actions, footer, children }: PaneScaffoldProps) {
+export function PaneScaffold({ title, mobileTitle, cadence, actions, footer, children }: PaneScaffoldProps) {
   return (
     <div className={CLASS.pane}>
       <div className={CLASS.header}>
-        <h2 className={CLASS.title}>{title}</h2>
+        <h2 className={CLASS.title}>
+          {mobileTitle === undefined ? (
+            title
+          ) : (
+            <>
+              <span className={CLASS.desktopTitle} data-testid="pane-title-desktop">
+                {title}
+              </span>
+              <span className={CLASS.mobileTitle} data-testid="pane-title-mobile">
+                {mobileTitle}
+              </span>
+            </>
+          )}
+        </h2>
         {cadence !== undefined && (
           <div className={CLASS.cadenceSlot} data-testid="pane-cadence-slot">
             {cadence}

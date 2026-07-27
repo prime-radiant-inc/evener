@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
@@ -74,6 +77,14 @@ test("renders an empty turn without crashing", () => {
 test("tags the root with the turn id", () => {
   const { container } = render(<TurnBlock turn={turn([], { id: "turn_42" })} />);
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
+});
+
+test("the turn root remains a centered, shrinkable reading column", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(
+    /\.turn\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*var\(--session-measure\);[\s\S]*margin-inline:\s*auto;/,
+  );
 });
 
 test("showSeenDivider defaults to false: no divider marker rendered", () => {

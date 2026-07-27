@@ -80,6 +80,17 @@ test("parses the real daemon shape into display-ready rows, camelCasing the snak
   ]);
 });
 
+test("preserves the explicit task-start marker from a mutation snapshot", () => {
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "a", prompt: "", status: "in_progress", started: false },
+    { id: 2, type: "implement", description: "b", prompt: "", status: "in_progress", started: true },
+  ]);
+  expect(rows?.map((row) => ({ id: row.id, started: row.started }))).toEqual([
+    { id: 1, started: false },
+    { id: 2, started: true },
+  ]);
+});
+
 test("an empty array (a real daemon with zero tasks - TaskStore.View's own always-non-nil empty slice) parses to an empty, non-null array", () => {
   expect(parseTaskListData([])).toEqual([]);
 });

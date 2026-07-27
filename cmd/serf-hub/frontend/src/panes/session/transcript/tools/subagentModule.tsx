@@ -30,12 +30,11 @@
 // rows would need far more inference than the wire actually supports.
 import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { openBeside } from "../../../../shell/paneActions";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, type CadenceState, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../../liveness";
-import { OpenBesideIcon } from "../fileOpenBeside";
+import { OpenTranscriptButton } from "../openTranscript";
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -79,7 +78,6 @@ const CLASS = {
   activityItem: requireClass(styles.activityItem, "subagentmodule.module.css", "activityItem"),
   activityLatest: requireClass(styles.activityLatest, "subagentmodule.module.css", "activityLatest"),
   summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
-  openTranscriptIcon: requireClass(styles.openTranscriptIcon, "subagentmodule.module.css", "openTranscriptIcon"),
 };
 
 // classifyJobStatus and resolveRowKey now live in subagentModuleStore.ts (dr7e):
@@ -172,28 +170,6 @@ function durationLabel(row: SubagentRow): string | undefined {
   if (!row.startedAt || !row.completedAt) return undefined;
   const ms = new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime();
   return ms >= 0 ? formatToolDuration(ms) : undefined;
-}
-
-function openTranscript(ref: string, parentRef: string | undefined): void {
-  // The read-only "transcript" pane is the DISTINCT contextual surface for
-  // viewing another thread beside the current one (plan §Ambiguities #1 / PIN-A:
-  // reachable via openBeside, never a URL) - not the live SESSION pane (which is
-  // the /thread/{ref} single-pane target). openBeside splits it beside the
-  // focused pane on desktop and degrades to a plain full-screen open on the
-  // mobile StackHost (openBeside's own no-dockview path); re-opening the same
-  // child ref (from the SAME parent) just focuses the existing pane (the
-  // store's same-params dedup).
-  //
-  // parentRef (kata 0pzz) is the enclosing session's ref, carried in the
-  // transcript pane's own params so it survives a layout restore/reload, not
-  // just passed as a one-off argument: a subagent transcript is a child of a
-  // specific parent session, and the pane it opens must be able to say so and
-  // offer a way back on its own (Transcript.tsx's "Back to …" action) rather
-  // than leaving the reader to reconstruct where they came from. Omitted
-  // entirely (not sent as `undefined`) when no enclosing session ref is
-  // available, so params stays the plain `{ref}` shape existing callers/tests
-  // already expect in that case.
-  openBeside({ type: "transcript", params: parentRef === undefined ? { ref } : { ref, parentRef } });
 }
 
 // ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
@@ -371,20 +347,7 @@ function SubagentRowView({
   // the frozen output's own reason.
   const preview = row.liveReason ?? row.resultPreview;
   const openTranscriptButton = transcriptRef ? (
-    <Button
-      variant="quiet"
-      size="sm"
-      aria-label="Open transcript"
-      onClick={(e) => {
-        e.stopPropagation();
-        openTranscript(transcriptRef, sessionRef);
-      }}
-    >
-      open
-      <span className={CLASS.openTranscriptIcon}>
-        <OpenBesideIcon />
-      </span>
-    </Button>
+    <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} />
   ) : null;
 
   // Collapsed one-liner: status dot + (live cadence while running) + task +

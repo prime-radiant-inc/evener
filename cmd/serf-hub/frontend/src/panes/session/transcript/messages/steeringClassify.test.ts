@@ -41,6 +41,38 @@ test("a delegate-completion job-notification parses one block", () => {
   expect(n.secondary).toContain("delegate");
 });
 
+test("retains validated child identity and useful job fields from a completion", () => {
+  const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" status="completed" reason="" output_bytes="12" exit_code="0" transcript_ref="local:child">
+Job job_42 completed.
+excerpt:
+did the thing
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.jobId).toBe("job_42");
+  expect(n.jobType).toBe("delegate");
+  expect(n.status).toBe("completed");
+  expect(n.outputBytes).toBe(12);
+  expect(n.exitCode).toBe(0);
+  expect(n.transcriptRef).toBe("local:child");
+  expect(n.excerpt).toBe("did the thing");
+});
+
+test("retains qualified remote child references", () => {
+  const block = `<job-notification job_id="job_remote" event="completed" status="completed" transcript_ref="remote:child">
+done
+</job-notification>`;
+  expect(notif(parseSteeringNotifications(block).notifications, 0).transcriptRef).toBe("remote:child");
+});
+
+test("drops missing, empty, and malformed child references", () => {
+  const refs = [undefined, "", "child", "local:child:extra", "local:bad..child", "local:bad ref"];
+  for (const ref of refs) {
+    const attr = ref === undefined ? "" : ` transcript_ref="${ref}"`;
+    const block = `<job-notification job_id="job_bad" event="completed" status="completed"${attr}>done</job-notification>`;
+    expect(notif(parseSteeringNotifications(block).notifications, 0).transcriptRef).toBeUndefined();
+  }
+});
+
 test("several job-notification blocks each parse individually (no greedy aggregation across blocks)", () => {
   const two = `${oneBlock}\n<job-notification job_id="job_43" event="failed" job_type="shell" status="failed" reason="nonzero exit" output_bytes="4" exit_code="2">
 Job job_43 failed.

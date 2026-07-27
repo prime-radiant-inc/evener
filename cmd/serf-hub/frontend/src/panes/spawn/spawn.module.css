@@ -12,6 +12,33 @@
   max-width: 720px;
 }
 
+.actionBand {
+  /* Desktop keeps PromptCard's normal in-card controls. Mobile overrides this
+   * row into the approved thumb-reachable surface. */
+}
+
+.mobileConfig {
+  display: none;
+}
+
+.mobilePromptIntro {
+  display: none;
+}
+
+.mobilePromptHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+}
+
+.mobilePromptSubtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-body);
+}
+
 /* One compact row of configuration, wrapping to stacked rows on a narrow
  * viewport. The working directory is the only field that changes often, so it
  * takes the row's free width and the other two size to their content. */
@@ -110,4 +137,63 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+@media (max-width: 899px) {
+  .form {
+    width: 100%;
+    max-width: none;
+    padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+
+  .form textarea {
+    font-size: 16px;
+    min-height: 96px;
+  }
+
+  .cfg {
+    display: none;
+  }
+
+  .mobileConfig {
+    display: block;
+  }
+
+  .mobilePromptIntro {
+    display: block;
+  }
+
+  .actionBand {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    min-height: 76px;
+    align-items: center;
+    padding: var(--space-3) var(--space-4) calc(var(--space-3) + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--edge);
+    background: var(--surface-1);
+  }
+
+  .actionBand > button {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .actionBand > div {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .actionBand > div > span,
+  .actionBand > div > span > button {
+    display: block;
+    width: 100%;
+  }
+
+  .actionBand > div > span > button {
+    min-height: 52px;
+  }
 }
