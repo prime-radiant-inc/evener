@@ -64,4 +64,9 @@ No raw-CDP throttling was added after the deterministic fake harness reproduced 
 - Frontend `npm run typecheck`: passed.
 - Frontend `npm run lint`: passed.
 - Go focused suites `go test ./internal/appserver` and `go test ./cmd/serf-hub -run '^(TestHubRPCThreadRead|TestHubRelay)'`: passed.
-- Remaining work: full frontend test/build and repository Go gates, final diff/clean-worktree verification.
+- Full frontend suite: 277 files and 4,712 tests passed.
+- Frontend `npm run build`: passed.
+- Repository `make test`: passed (`agent`, `llm`, `auth`, `envvars`, `invariant`, `identifier`, and `web` waves).
+- Repository `make vet`: passed.
+- Repository `make lint`: passed for 7 modules.
+- Root `make build`: passed; final `git diff --check` and `git status --short` are clean.
