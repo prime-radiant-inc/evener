@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +112,9 @@ func TestAPITreeFavoriteRevalidation_ConfirmedInvalidRowsRemainUnchanged(t *test
 		if treeResponseHasFavorite(response, id) {
 			t.Fatalf("confirmed-invalid session %q appeared in pinned favorites", id)
 		}
+		if node, ok := treeResponseNode(response, id); ok && node.Favorite {
+			t.Fatalf("confirmed-invalid session %q was rendered as favorite: %+v", id, node)
+		}
 	}
 	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
 		t.Fatalf("confirmed-invalid/false favorite rows changed during tree read")
@@ -141,6 +146,9 @@ func TestAPITreeFavoriteRevalidation_RemoteFailureDormantThenRecovers(t *testing
 	dormant := getTreeResponse(t, web)
 	if treeResponseHasFavorite(dormant, remoteID) {
 		t.Fatalf("last-known-good remote favorite remained visible after source failure")
+	}
+	if node, ok := treeResponseNode(dormant, remoteID); ok && node.Favorite {
+		t.Fatalf("last-known-good remote row remained rendered as favorite: %+v", node)
 	}
 	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
 		t.Fatalf("remote source failure changed stored favorite rows")
@@ -313,12 +321,448 @@ func TestAPITreeFavoriteRevalidation_UsesOneSourceGeneration(t *testing.T) {
 	}
 }
 
+func TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	threadID := hubtest.SessionID(t)
+	remoteID := "remote:" + threadID
+	thread := appwire.Thread{
+		ID: threadID, Source: "remote", Serf: appwire.SerfThread{Ref: remoteID},
+		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshot([]appwire.Thread{thread}, true)
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", remoteID, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+
+	previousInputs := hubNavigationInputs
+	firstSnapshotReady := make(chan struct{})
+	releaseFirstSnapshot := make(chan struct{})
+	var calls atomic.Int32
+	hubNavigationInputs = func(server *WebServer, ctx context.Context) navigationSnapshot {
+		snapshot := previousInputs(server, ctx)
+		if calls.Add(1) == 1 {
+			close(firstSnapshotReady)
+			<-releaseFirstSnapshot
+		}
+		return snapshot
+	}
+	t.Cleanup(func() {
+		hubNavigationInputs = previousInputs
+	})
+
+	type result struct {
+		status int
+		body   hubapi.TreeResponse
+	}
+	request := func() result {
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+		var body hubapi.TreeResponse
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Errorf("decode concurrent tree response: %v", err)
+			}
+		}
+		return result{status: rec.Code, body: body}
+	}
+	firstDone := make(chan result, 1)
+	go func() { firstDone <- request() }()
+	select {
+	case <-firstSnapshotReady:
+	case <-time.After(time.Second):
+		t.Fatal("first tree request did not reach the snapshot interleave")
+	}
+
+	cache.StoreSnapshot([]appwire.Thread{thread}, false)
+	secondDone := make(chan result, 1)
+	go func() { secondDone <- request() }()
+	var second result
+	select {
+	case second = <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second tree request did not complete during the interleave")
+	}
+	close(releaseFirstSnapshot)
+	var first result
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first tree request did not complete after the interleave")
+	}
+	for name, got := range map[string]result{"first": first, "second": second} {
+		if got.status != http.StatusOK {
+			t.Fatalf("%s tree status=%d, want 200", name, got.status)
+		}
+	}
+	if !treeResponseHasFavorite(first.body, remoteID) {
+		t.Fatalf("first request paired its rows with the later incomplete authority: %+v", first.body.Favorites)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_HealthySourceSurvivesUnrelatedFailure(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	healthyID := hubtest.SessionID(t)
+	healthyRef := "healthy:" + healthyID
+	healthy := &revalidationRemoteSource{
+		scriptedAppSource: scriptedAppSource{id: "healthy"},
+		response: appwire.ThreadListResponse{Data: []appwire.Thread{{
+			ID: healthyID, Source: "healthy", Serf: appwire.SerfThread{Ref: healthyRef},
+			CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		}}},
+	}
+	failing := &revalidationRemoteSource{scriptedAppSource: scriptedAppSource{id: "failing"}, err: errors.New("source unavailable")}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", healthyRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(healthy)
+	web.sources.Add(failing)
+
+	response := getTreeResponse(t, web)
+	if !treeResponseHasFavorite(response, healthyRef) {
+		t.Fatalf("healthy source favorite was hidden by unrelated failure: %+v", response.Favorites)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_EmptyRemoteCacheDoesNotDowngradeLocalClusterAuthority(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	metas := make([]schema.SessionMeta, 0, 3)
+	for i := range 3 {
+		metas = append(metas, schema.SessionMeta{
+			ID: hubtest.SessionID(t), Name: "same title",
+			CreatedAt: favoriteRevalidationTreeTime.Add(-time.Duration(i) * time.Minute),
+			UpdatedAt: favoriteRevalidationTreeTime.Add(-time.Duration(i) * time.Minute),
+		})
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	cache := &hubcore.RemoteThreadCache{}
+	web := favoriteRevalidationWeb(t, favorites, metas)
+	web.cfg.RemoteThreadCache = cache
+	tree, _, _, authority := web.memoTreeWithAuthority(context.Background())
+	var clusterID string
+	for _, node := range tree.FavoriteNodeAuthorities() {
+		if node.Kind == hubcore.FavoriteNodeCluster {
+			clusterID = node.ID
+			break
+		}
+	}
+	if clusterID == "" {
+		t.Fatal("tree did not produce a local cluster authority")
+	}
+	key := hubcore.ArchiveKey{Kind: "session", ID: clusterID}
+	classification := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{key: true}, authority).Classifications[key]
+	if classification.State != hubcore.FavoriteDecisionConfirmedInvalid {
+		t.Fatalf("empty unrelated remote cache changed local cluster classification to %q", classification.State)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_PaginatedSnapshotIncludesCappedAwayFavorite(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	threads := make([]appwire.Thread, 0, 51)
+	for i := range 50 {
+		id := hubtest.SessionID(t)
+		threads = append(threads, revalidationClosedThread("remote", id, favoriteRevalidationTreeTime.Add(-time.Duration(i)*time.Minute)))
+	}
+	targetID := hubtest.SessionID(t)
+	targetRef := "remote:" + targetID
+	source := &paginatedRevalidationSource{
+		scriptedAppSource: scriptedAppSource{id: "remote"},
+		pages: map[string]appwire.ThreadListResponse{
+			"":       {Data: threads, NextCursor: "page-2"},
+			"page-2": {Data: []appwire.Thread{revalidationClosedThread("remote", targetID, favoriteRevalidationTreeTime.Add(-time.Hour))}},
+		},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", targetRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+
+	response := getTreeResponse(t, web)
+	if !treeResponseHasFavorite(response, targetRef) {
+		t.Fatalf("favorite from terminal page was not presented: %+v", response.Favorites)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_LaterPageFailureDormantsLastGoodRows(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	targetID := hubtest.SessionID(t)
+	targetRef := "remote:" + targetID
+	source := &paginatedRevalidationSource{
+		scriptedAppSource: scriptedAppSource{id: "remote"},
+		pages: map[string]appwire.ThreadListResponse{
+			"":       {Data: []appwire.Thread{revalidationClosedThread("remote", targetID, favoriteRevalidationTreeTime)}, NextCursor: "page-2"},
+			"page-2": {},
+		},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", targetRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+	first := getTreeResponse(t, web)
+	if !treeResponseHasFavorite(first, targetRef) {
+		t.Fatalf("setup page did not present target favorite: %+v", first.Favorites)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	source.failCursor = "page-2"
+	second := getTreeResponse(t, web)
+	if treeResponseHasFavorite(second, targetRef) {
+		t.Fatalf("later-page failure kept a last-good favorite visible")
+	}
+	if node, ok := treeResponseNode(second, targetRef); !ok || node.Favorite {
+		t.Fatalf("later-page failure did not render retained row as non-favorite: found=%t node=%+v", ok, node)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("later-page failure changed stored favorite rows")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_RepeatedPageCursorIsIncomplete(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	targetID := hubtest.SessionID(t)
+	targetRef := "remote:" + targetID
+	source := &paginatedRevalidationSource{
+		scriptedAppSource: scriptedAppSource{id: "remote"},
+		pages: map[string]appwire.ThreadListResponse{
+			"":     {Data: []appwire.Thread{revalidationClosedThread("remote", targetID, favoriteRevalidationTreeTime)}, NextCursor: "loop"},
+			"loop": {NextCursor: "loop"},
+		},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", targetRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, targetRef) {
+		t.Fatalf("repeated cursor was treated as complete authority")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_SourceRefConflictAndMalformedRowDoNotHideHealthyIdentity(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	conflictID := hubtest.SessionID(t)
+	validID := hubtest.SessionID(t)
+	malformedID := hubtest.SessionID(t)
+	conflictRef := "remote-b:" + conflictID
+	validRef := "remote-a:" + validID
+	malformedRef := "remote-a:" + malformedID
+	source := &revalidationRemoteSource{
+		scriptedAppSource: scriptedAppSource{id: "remote-a"},
+		response: appwire.ThreadListResponse{Data: []appwire.Thread{
+			{ID: conflictID, Source: "remote-a", Serf: appwire.SerfThread{Ref: conflictRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+			{ID: validID, Source: "remote-a", Serf: appwire.SerfThread{Ref: validRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+			{ID: malformedID, Source: "remote-a", Serf: appwire.SerfThread{Ref: "malformed"}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+		}},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	for _, id := range []string{conflictRef, validRef, malformedRef} {
+		if err := favorites.Set("session", id, true, favoriteRevalidationTreeTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, conflictRef) {
+		t.Fatalf("conflicting source/ref identity was treated as valid")
+	}
+	if treeResponseHasFavorite(response, malformedRef) {
+		t.Fatalf("malformed ref identity was treated as valid")
+	}
+	if !treeResponseHasFavorite(response, validRef) {
+		t.Fatalf("valid unrelated remote identity was hidden by malformed rows: %+v", response.Favorites)
+	}
+	for _, id := range []string{conflictRef, malformedRef} {
+		if node, ok := treeResponseNode(response, id); ok && node.Favorite {
+			t.Fatalf("invalid remote row %q was rendered as favorite: %+v", id, node)
+		}
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_SourceFieldConflictWithoutRefIsDormant(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	id := hubtest.SessionID(t)
+	ref := "remote-a:" + id
+	source := &revalidationRemoteSource{
+		scriptedAppSource: scriptedAppSource{id: "remote-a"},
+		response: appwire.ThreadListResponse{Data: []appwire.Thread{{
+			ID: id, Source: "remote-b", CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		}}},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, ref) {
+		t.Fatalf("source field conflict without ref was treated as valid")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_MalformedParentRefIsDormant(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	parentID := hubtest.SessionID(t)
+	childID := hubtest.SessionID(t)
+	parentRef := "remote:" + parentID
+	childRef := "remote:" + childID
+	source := &revalidationRemoteSource{
+		scriptedAppSource: scriptedAppSource{id: "remote"},
+		response: appwire.ThreadListResponse{Data: []appwire.Thread{
+			{ID: parentID, Source: "remote", Serf: appwire.SerfThread{Ref: parentRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+			{ID: childID, Source: "remote", Serf: appwire.SerfThread{Ref: childRef, ParentRef: parentID}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
+		}},
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", childRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.sources.Add(source)
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, childRef) {
+		t.Fatalf("malformed parent ref was treated as complete lineage")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_EndedRemoteCarriedProjectCanBeFavorited(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := hubtest.SessionID(t)
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{{
+		ID: threadID, Source: "remote", CWD: filepath.Join(projectDir, "ended-worktree"),
+		ProjectID: project.ID, ProjectPath: project.CanonicalPath,
+		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+	}})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("project", project.ID, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	response := getTreeResponse(t, web)
+	for _, candidate := range append(append([]hubapi.TreeProject{}, response.Projects...), response.ArchivedProjects...) {
+		if candidate.Key == project.ID && !candidate.Favorite {
+			t.Fatalf("ended remote carried project was not rendered favorite: %+v", candidate)
+		}
+	}
+	if !treeResponseProjectHasFavorite(response, project.ID) {
+		t.Fatalf("ended remote carried project was absent from tree: %+v", response)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_ProjectClaimsWithSameIDAreAmbiguous(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectAPath := filepath.Join(t.TempDir(), "project-a")
+	projectBPath := filepath.Join(t.TempDir(), "project-b")
+	for _, path := range []string{projectAPath, projectBPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := identifier.ResolveProject(projectAPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads := []appwire.Thread{
+		{ID: hubtest.SessionID(t), Source: "remote-a", CWD: filepath.Join(projectAPath, "worktree"), ProjectID: project.ID, ProjectPath: projectAPath, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		{ID: hubtest.SessionID(t), Source: "remote-b", CWD: filepath.Join(projectBPath, "worktree"), ProjectID: project.ID, ProjectPath: projectBPath, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store(threads)
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("project", project.ID, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	response := getTreeResponse(t, web)
+	for _, candidate := range append(append([]hubapi.TreeProject{}, response.Projects...), response.ArchivedProjects...) {
+		if candidate.Key == project.ID && candidate.Favorite {
+			t.Fatalf("conflicting project claims were collapsed into a valid favorite: %+v", candidate)
+		}
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_MemoKeyDoesNotCollideAcrossInputsAndRemoteGeneration(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	firstID := hubtest.SessionID(t)
+	secondID := hubtest.SessionID(t)
+	cache := &hubcore.RemoteThreadCache{}
+	firstThread := revalidationClosedThread("remote", firstID, favoriteRevalidationTreeTime)
+	firstThread.Status.Type = appwire.ThreadStatusActive
+	cache.Store([]appwire.Thread{firstThread})
+	cache.Store([]appwire.Thread{firstThread})
+	sharedTreeCache := &hubcore.TreeCache{}
+	firstInputs := &hubcore.InputsVersion{}
+	firstInputs.Bump()
+	firstWeb := NewWebServer(hubcore.WebConfig{Inputs: firstInputs, RemoteThreadCache: cache, Past: hubcore.NewPastIndex("")})
+	firstWeb.treeCache = sharedTreeCache
+	firstTree, _, _, _ := firstWeb.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(firstTree, "remote:"+firstID) {
+		t.Fatalf("first memoized tree omitted first generation row")
+	}
+
+	secondThread := revalidationClosedThread("remote", secondID, favoriteRevalidationTreeTime)
+	secondThread.Status.Type = appwire.ThreadStatusActive
+	cache.Store([]appwire.Thread{secondThread})
+	cache.Store([]appwire.Thread{secondThread})
+	secondWeb := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache, Past: hubcore.NewPastIndex("")})
+	secondWeb.treeCache = sharedTreeCache
+	secondTree, _, _, _ := secondWeb.memoTreeWithAuthority(context.Background())
+	if treeContainsID(secondTree, "remote:"+firstID) || !treeContainsID(secondTree, "remote:"+secondID) {
+		t.Fatalf("memo key reused a different input/generation pair: first=%t second=%t", treeContainsID(secondTree, "remote:"+firstID), treeContainsID(secondTree, "remote:"+secondID))
+	}
+}
+
 type revalidationRemoteSource struct {
 	scriptedAppSource
 	response  appwire.ThreadListResponse
 	responses []appwire.ThreadListResponse
 	err       error
 	calls     int
+}
+
+type paginatedRevalidationSource struct {
+	scriptedAppSource
+	pages      map[string]appwire.ThreadListResponse
+	failCursor string
+	cursors    []string
+}
+
+func (s *paginatedRevalidationSource) ListThreads(_ context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	s.cursors = append(s.cursors, params.Cursor)
+	if s.failCursor != "" && params.Cursor == s.failCursor {
+		return appwire.ThreadListResponse{}, errors.New("page unavailable")
+	}
+	return s.pages[params.Cursor], nil
+}
+
+func revalidationClosedThread(sourceID, id string, at time.Time) appwire.Thread {
+	return appwire.Thread{
+		ID: id, Source: sourceID, Serf: appwire.SerfThread{Ref: sourceID + ":" + id},
+		CreatedAt: at.Unix(), UpdatedAt: at.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+	}
 }
 
 func (s *revalidationRemoteSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -369,6 +813,36 @@ func getTreeResponse(t *testing.T, web *WebServer) hubapi.TreeResponse {
 func treeResponseHasFavorite(response hubapi.TreeResponse, ref string) bool {
 	for _, node := range response.Favorites {
 		if node.Ref == ref || node.SessionID == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func treeResponseProjectHasFavorite(response hubapi.TreeResponse, key string) bool {
+	for _, project := range append(append([]hubapi.TreeProject{}, response.Projects...), response.ArchivedProjects...) {
+		if project.Key == key && project.Favorite {
+			return true
+		}
+	}
+	return false
+}
+
+func treeContainsID(tree hubcore.Tree, id string) bool {
+	var walk func([]hubcore.TreeNode) bool
+	walk = func(nodes []hubcore.TreeNode) bool {
+		for _, node := range nodes {
+			if node.ID == id || walk(node.Children) {
+				return true
+			}
+		}
+		return false
+	}
+	if walk(tree.Live) || walk(tree.NeedsYou) {
+		return true
+	}
+	for _, project := range append(append([]hubcore.TreeProject{}, tree.Projects...), tree.ArchivedProjects...) {
+		if walk(project.Current) || walk(project.Recent) || walk(project.Archived) {
 			return true
 		}
 	}

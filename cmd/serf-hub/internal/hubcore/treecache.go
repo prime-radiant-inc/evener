@@ -22,12 +22,20 @@ type InputsVersion struct{ v atomic.Uint64 }
 func (iv *InputsVersion) Bump()        { iv.v.Add(1) }
 func (iv *InputsVersion) Load() uint64 { return iv.v.Load() }
 
+// TreeCacheKey keeps independently advancing tree inputs distinct. A struct
+// key avoids collisions that can occur when multiple versions are folded into
+// one arithmetic value.
+type TreeCacheKey struct {
+	InputsVersion    uint64
+	RemoteGeneration uint64
+}
+
 // TreeCache memoizes one (Tree, AttentionSummary) per (inputs-version, 30s time
 // bucket). Response shaping and volatile derivations happen post-memo.
 type TreeCache struct {
 	mu      sync.Mutex
 	valid   bool
-	version uint64
+	key     TreeCacheKey
 	bucket  int64
 	tree    Tree
 	summary appwire.AttentionSummary
@@ -35,14 +43,14 @@ type TreeCache struct {
 
 // Get returns the memoized value, recomputing via compute only when the inputs
 // version or the 30s time bucket has changed.
-func (c *TreeCache) Get(version uint64, now time.Time, compute func() (Tree, appwire.AttentionSummary)) (Tree, appwire.AttentionSummary) {
+func (c *TreeCache) Get(key TreeCacheKey, now time.Time, compute func() (Tree, appwire.AttentionSummary)) (Tree, appwire.AttentionSummary) {
 	bucket := now.Unix() / treeBucketSeconds
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.valid && c.version == version && c.bucket == bucket {
+	if c.valid && c.key == key && c.bucket == bucket {
 		return c.tree, c.summary
 	}
 	tree, sum := compute()
-	c.tree, c.summary, c.version, c.bucket, c.valid = tree, sum, version, bucket, true
+	c.tree, c.summary, c.key, c.bucket, c.valid = tree, sum, key, bucket, true
 	return tree, sum
 }

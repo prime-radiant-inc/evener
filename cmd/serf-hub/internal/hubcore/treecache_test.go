@@ -13,16 +13,16 @@ func fuzzScenarioTreeCacheMemoizesByVersionAndBucket(t *testing.T) {
 	calls := 0
 	compute := func() (Tree, appwire.AttentionSummary) { calls++; return Tree{}, appwire.AttentionSummary{} }
 
-	cache.Get(1, now, compute)
-	cache.Get(1, now.Add(5*time.Second), compute) // same version, same 30s bucket
+	cache.Get(TreeCacheKey{InputsVersion: 1}, now, compute)
+	cache.Get(TreeCacheKey{InputsVersion: 1}, now.Add(5*time.Second), compute) // same version, same 30s bucket
 	if calls != 1 {
 		t.Fatalf("same version+bucket should compute once, got %d", calls)
 	}
-	cache.Get(2, now, compute) // version bump busts
+	cache.Get(TreeCacheKey{InputsVersion: 2}, now, compute) // version bump busts
 	if calls != 2 {
 		t.Fatalf("version bump should recompute, got %d", calls)
 	}
-	cache.Get(2, now.Add(31*time.Second), compute) // next time bucket busts
+	cache.Get(TreeCacheKey{InputsVersion: 2}, now.Add(31*time.Second), compute) // next time bucket busts
 	if calls != 3 {
 		t.Fatalf("bucket roll should recompute, got %d", calls)
 	}

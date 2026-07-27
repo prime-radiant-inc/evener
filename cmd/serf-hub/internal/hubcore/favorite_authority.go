@@ -31,8 +31,9 @@ type FavoriteSessionAuthority struct {
 // navigation layer. ID must be identifier.Project.ID; display names and paths
 // are deliberately not accepted as aliases here.
 type FavoriteProjectAuthority struct {
-	ID      string
-	Quality FavoriteAuthorityQuality
+	ID       string
+	Quality  FavoriteAuthorityQuality
+	ClaimKey string
 }
 
 // FavoriteNodeKind identifies the current, collision-checked kind of a
@@ -178,7 +179,18 @@ func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProje
 		index.byID[authority.ID] = append(index.byID[authority.ID], authority)
 	}
 	for id, authorities := range index.byID {
-		if len(authorities) > 1 {
+		if len(authorities) <= 1 {
+			continue
+		}
+		claimKeys := make(map[string]struct{}, len(authorities))
+		for _, authority := range authorities {
+			if authority.ClaimKey == "" {
+				claimKeys[authority.ClaimKey] = struct{}{}
+				break
+			}
+			claimKeys[authority.ClaimKey] = struct{}{}
+		}
+		if len(claimKeys) > 1 || len(claimKeys) == 1 && authorities[0].ClaimKey == "" {
 			index.ambiguousIDs[id] = true
 		}
 	}

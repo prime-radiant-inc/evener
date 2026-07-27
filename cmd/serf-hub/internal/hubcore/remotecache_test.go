@@ -41,3 +41,32 @@ func fuzzScenarioRemoteThreadCacheSnapshotTracksAuthorityGeneration(t *testing.T
 		t.Fatalf("second snapshot = %+v, want complete generation 2 with fresh row", second)
 	}
 }
+
+func TestRemoteThreadCacheSnapshotDefensivelyCopiesSourceAuthority(t *testing.T) {
+	thread := appwire.Thread{ID: "thread", Source: "remote"}
+	incompleteID := "remote:bad"
+	cache := &RemoteThreadCache{}
+	snapshot := RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{thread},
+		Complete: false,
+		Sources: map[string]RemoteSourceSnapshot{
+			"remote": {Threads: []appwire.Thread{thread}, Complete: false, IncompleteIDs: []string{incompleteID}},
+		},
+	}
+	cache.StoreSnapshotData(snapshot)
+	snapshot.Threads[0].ID = "changed"
+	snapshot.Sources["remote"].Threads[0].ID = "changed"
+	snapshot.Sources["remote"].IncompleteIDs[0] = "changed"
+
+	got := cache.Snapshot()
+	if got.Generation != 1 || got.Complete || got.Threads[0].ID != "thread" {
+		t.Fatalf("snapshot metadata = %+v", got)
+	}
+	if got.Sources["remote"].Threads[0].ID != "thread" || got.Sources["remote"].IncompleteIDs[0] != incompleteID {
+		t.Fatalf("source authority was not defensively copied: %+v", got.Sources)
+	}
+	got.Sources["remote"].IncompleteIDs[0] = "mutated"
+	if again := cache.Snapshot(); again.Sources["remote"].IncompleteIDs[0] != incompleteID {
+		t.Fatalf("mutating a returned source snapshot changed cache state: %+v", again.Sources)
+	}
+}

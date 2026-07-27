@@ -1104,6 +1104,9 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if entry.Project.ID != "" && projectArchivedDecision(decisions, entry.Project.ID) {
 			continue
 		}
+		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
+			continue
+		}
 		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
 			continue
 		}
