@@ -210,6 +210,7 @@ export interface ThreadsStoreState {
 const refCounts = new Map<string, number>();
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
+const inflightHydrateEpochs = new Map<string, number>();
 // The published model is intentionally stale while a thread/read is pending.
 // Keep only the routing facts that can evolve from accepted notifications, so
 // a later ref-less or threadId-only frame is judged against the pending stream
@@ -221,7 +222,9 @@ type PendingHydrationRouting = {
 };
 type PendingThreadHydration = {
   client: AppwireClientLike;
+  epoch: number;
   notifications: AnyNotification[];
+  notificationKeys: Set<string>;
   routing: PendingHydrationRouting;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
@@ -231,6 +234,7 @@ type PendingThreadHydration = {
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 let wiredClient: AppwireClientLike | null = null;
+let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 let resolveClientReadyOrRewired: (() => void) | null = null;
@@ -253,6 +257,7 @@ let inflightModelsList: Promise<ModelListResponse> | null = null;
 const watchRefCounts = new Map<string, number>();
 const inflightWatchHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightWatchHydrateClients = new Map<string, AppwireClientLike>();
+const inflightWatchHydrateEpochs = new Map<string, number>();
 const inflightWatchIncludeTurns = new Map<string, boolean>();
 // A generation changes whenever the last watcher releases. Late responses
 // from that retired lifetime must not populate a new one.
@@ -457,10 +462,13 @@ function beginThreadHydration(
   ref: string,
   client: AppwireClientLike,
   model: ThreadModel | undefined,
+  epoch: number,
 ): PendingThreadHydration {
   const pending = {
     client,
+    epoch,
     notifications: [],
+    notificationKeys: new Set<string>(),
     routing: pendingHydrationRouting(ref, model),
   };
   pendingThreadHydrations.set(ref, pending);
@@ -471,14 +479,38 @@ function beginWatchedHydration(
   ref: string,
   client: AppwireClientLike,
   model: ThreadModel | undefined,
+  epoch: number,
 ): PendingThreadHydration {
   const pending = {
     client,
+    epoch,
     notifications: [],
+    notificationKeys: new Set<string>(),
     routing: pendingHydrationRouting(ref, model),
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
+}
+
+function notificationKey(notification: AnyNotification): string {
+  return JSON.stringify(notification) ?? "";
+}
+
+function transferPendingHydration(previous: PendingThreadHydration | undefined, next: PendingThreadHydration): void {
+  if (!previous) return;
+
+  next.notifications = [...previous.notifications];
+  next.notificationKeys = new Set(previous.notifications.map(notificationKey));
+  next.routing = { ...previous.routing };
+}
+
+function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): boolean {
+  const key = notificationKey(notification);
+  if (pending.notificationKeys.has(key)) return false;
+  pending.notificationKeys.add(key);
+  pending.notifications.push(notification);
+  advancePendingHydrationRouting(notification, pending);
+  return true;
 }
 
 function replayHydrationNotifications(
@@ -500,6 +532,7 @@ function replayHydrationNotifications(
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (wiredClient !== pending.client) return null;
+  if (readyEpoch !== pending.epoch) return null;
   if ((refCounts.get(ref) ?? 0) <= 0) {
     pendingThreadHydrations.delete(ref);
     return null;
@@ -531,6 +564,7 @@ function publishWatchedHydration(
 ): ThreadModel | null {
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (wiredClient !== pending.client) return null;
+  if (readyEpoch !== pending.epoch) return null;
   if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) {
     pendingWatchedHydrations.delete(ref);
     return null;
@@ -604,8 +638,7 @@ function handleNotification(n: AnyNotification): void {
   const pendingRefs = new Set<string>();
   for (const [ref, pending] of pendingThreadHydrations) {
     if (targetsPendingHydration(n, pending)) {
-      pending.notifications.push(n);
-      advancePendingHydrationRouting(n, pending);
+      bufferPendingNotification(pending, n);
       pendingRefs.add(ref);
     } else if (notificationRef(n) === ref) {
       // Do not let a contradictory ref-targeted frame mutate the stale model
@@ -617,8 +650,7 @@ function handleNotification(n: AnyNotification): void {
   const pendingWatchedRefs = new Set<string>();
   for (const [ref, pending] of pendingWatchedHydrations) {
     if (targetsPendingHydration(n, pending)) {
-      pending.notifications.push(n);
-      advancePendingHydrationRouting(n, pending);
+      bufferPendingNotification(pending, n);
       pendingWatchedRefs.add(ref);
     } else if (notificationRef(n) === ref) {
       pendingWatchedRefs.add(ref);
@@ -688,7 +720,7 @@ function storeWatchedModel(
 // fires on a FUTURE transition, never retroactively for a client that
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
-async function handleReady(client: AppwireClientLike): Promise<void> {
+async function handleReady(client: AppwireClientLike, epoch: number): Promise<void> {
   const refs = new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
   const watchRefs = new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
@@ -696,7 +728,8 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
       if ((refCounts.get(ref) ?? 0) <= 0) return;
       const previous = pendingThreadHydrations.get(ref);
       if (previous?.client === client) return;
-      const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref));
+      const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
+      transferPendingHydration(previous, pending);
       const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((model) => {
         if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
         return publishThreadHydration(ref, pending, model);
@@ -705,11 +738,13 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
       if (trackAsInitialHydration) {
         inflightHydrates.set(ref, hydration);
         inflightHydrateClients.set(ref, client);
+        inflightHydrateEpochs.set(ref, epoch);
         void hydration
           .finally(() => {
             if (inflightHydrates.get(ref) === hydration) {
               inflightHydrates.delete(ref);
               inflightHydrateClients.delete(ref);
+              inflightHydrateEpochs.delete(ref);
             }
           })
           .catch(() => {});
@@ -729,7 +764,8 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
       const generation = watchGenerations.get(ref) ?? 0;
       const previous = pendingWatchedHydrations.get(ref);
       if (previous?.client === client) return;
-      const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref));
+      const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
+      transferPendingHydration(previous, pending);
       const includeTurns = watchIncludeTurns.get(ref) ?? false;
       const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns).then((model) => {
         if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
@@ -739,12 +775,14 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
       if (trackAsInitialHydration) {
         inflightWatchHydrates.set(ref, hydration);
         inflightWatchHydrateClients.set(ref, client);
+        inflightWatchHydrateEpochs.set(ref, epoch);
         inflightWatchIncludeTurns.set(ref, includeTurns);
         void hydration
           .finally(() => {
             if (inflightWatchHydrates.get(ref) === hydration) {
               inflightWatchHydrates.delete(ref);
               inflightWatchHydrateClients.delete(ref);
+              inflightWatchHydrateEpochs.delete(ref);
               inflightWatchIncludeTurns.delete(ref);
             }
           })
@@ -778,6 +816,7 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
 //     effect.
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
+  readyEpoch += 1;
   resolveClientReadyOrRewired?.();
   resolveClientReadyOrRewired = null;
   unwireNotification?.();
@@ -792,9 +831,10 @@ function rewireClient(client: AppwireClientLike): void {
   }
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
+    readyEpoch += 1;
     resolveClientReadyOrRewired?.();
     resolveClientReadyOrRewired = null;
-    void handleReady(client);
+    void handleReady(client, readyEpoch);
   });
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
@@ -804,7 +844,7 @@ function rewireClient(client: AppwireClientLike): void {
   // connect() before ever handing it to connectionStore.connect()), so
   // without this, swapping to an already-ready client would never
   // re-subscribe/re-hydrate this store's tracked refs at all.
-  if (client.state === "ready") void handleReady(client);
+  if (client.state === "ready") void handleReady(client, readyEpoch);
 }
 
 // The single reactive trigger for rewireClient: every connectionStore
@@ -843,7 +883,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
     const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
-      const pending = beginThreadHydration(ref, hydrationClient, threadsStore.getState().threads.get(ref));
+      const hydrationEpoch = readyEpoch;
+      const pending = beginThreadHydration(
+        ref,
+        hydrationClient,
+        threadsStore.getState().threads.get(ref),
+        hydrationEpoch,
+      );
       const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now())
         .then((model) => publishThreadHydration(ref, pending, model))
         .finally(() => {
@@ -851,6 +897,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         });
       inflightHydrates.set(ref, hydration);
       inflightHydrateClients.set(ref, hydrationClient);
+      inflightHydrateEpochs.set(ref, hydrationEpoch);
       // .finally() re-throws inflight's own rejection on ITS OWN returned
       // promise — a separate object from `inflight` — so without a catch
       // here a failed hydrate becomes an unhandled rejection on top of the
@@ -860,6 +907,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (inflightHydrates.get(ref) === hydration) {
             inflightHydrates.delete(ref);
             inflightHydrateClients.delete(ref);
+            inflightHydrateEpochs.delete(ref);
           }
         })
         .catch(() => {});
@@ -871,11 +919,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     try {
       for (;;) {
         const inflightClient = inflightHydrateClients.get(ref) ?? client;
+        const inflightEpoch = inflightHydrateEpochs.get(ref) ?? readyEpoch;
         try {
           const model = await inflight;
           if (model) return;
         } catch (err) {
-          if (wiredClient !== inflightClient) {
+          if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
+            if (threadsStore.getState().threads.has(ref)) return;
             client = requireClient();
             if (client.state !== "ready") await clientReadyOrRewired;
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
@@ -967,7 +1017,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (tracked && !upgrading) return; // already hydrated at the level we need
 
     const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
-      const pending = beginWatchedHydration(ref, hydrationClient, threadsStore.getState().watchedThreads.get(ref));
+      const hydrationEpoch = readyEpoch;
+      const pending = beginWatchedHydration(
+        ref,
+        hydrationClient,
+        threadsStore.getState().watchedThreads.get(ref),
+        hydrationEpoch,
+      );
       const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), needTurns)
         .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
         .finally(() => {
@@ -975,12 +1031,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         });
       inflightWatchHydrates.set(ref, hydration);
       inflightWatchHydrateClients.set(ref, hydrationClient);
+      inflightWatchHydrateEpochs.set(ref, hydrationEpoch);
       inflightWatchIncludeTurns.set(ref, needTurns);
       void hydration
         .finally(() => {
           if (inflightWatchHydrates.get(ref) === hydration) {
             inflightWatchHydrates.delete(ref);
             inflightWatchHydrateClients.delete(ref);
+            inflightWatchHydrateEpochs.delete(ref);
             inflightWatchIncludeTurns.delete(ref);
           }
         })
@@ -998,12 +1056,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
     for (;;) {
       const inflightClient = inflightWatchHydrateClients.get(ref) ?? client;
+      const inflightEpoch = inflightWatchHydrateEpochs.get(ref) ?? readyEpoch;
       try {
         const model = await inflight;
         if (model) return;
       } catch (err) {
-        if (wiredClient !== inflightClient) {
+        if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
+          const hydrated = threadsStore.getState().watchedThreads.get(ref);
+          if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
           client = requireClient();
           if (client.state !== "ready") {
             await clientReadyOrRewired;
@@ -1044,6 +1105,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // from publishing into the new lifecycle.
     inflightWatchHydrates.delete(ref);
     inflightWatchHydrateClients.delete(ref);
+    inflightWatchHydrateEpochs.delete(ref);
     inflightWatchIncludeTurns.delete(ref);
     pendingWatchedHydrations.delete(ref);
     // Drop the monotonic turns flag with the last watcher so a future watch of
@@ -1334,10 +1396,12 @@ export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
+  inflightHydrateEpochs.clear();
   pendingThreadHydrations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchHydrateClients.clear();
+  inflightWatchHydrateEpochs.clear();
   inflightWatchIncludeTurns.clear();
   pendingWatchedHydrations.clear();
   watchGenerations.clear();
@@ -1353,6 +1417,7 @@ export function resetThreadsStoreForTests(): void {
   resolveClientReadyOrRewired = null;
   clientReadyOrRewired = Promise.resolve();
   wiredClient = null;
+  readyEpoch = 0;
   threadsStore.setState({
     threads: new Map(),
     frameTimes: new Map(),
