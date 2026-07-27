@@ -1,10 +1,10 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { TasksPanel } from "../panes/session/chrome/TasksPanel";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
-import { TasksPanel } from "../panes/session/chrome/TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
