@@ -130,6 +130,7 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
+  const label = labelFor(kind);
   const { notifications, leftover } = parseSteeringNotifications(item.text);
   if (notifications.length > 0) {
     return (
@@ -137,12 +138,17 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
         {notifications.map((n) => (
           <NotificationCard key={n.rawText} notification={n} />
         ))}
-        {leftover && <SteeringDivider id={item.id} label={STEERED} text={leftover} />}
+        {leftover && (
+          <SteeringDivider
+            id={item.id}
+            label={label ? `${STEERED}: ${label}` : STEERED}
+            text={leftover}
+          />
+        )}
       </>
     );
   }
 
-  const label = labelFor(kind);
   return <SteeringDivider id={item.id} label={label ? `${STEERED}: ${label}` : STEERED} text={leftover} />;
 }, ignoringTurn);
 

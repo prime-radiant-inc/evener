@@ -235,6 +235,19 @@ test("routes a notification kind to a card", () => {
   expect(screen.getByTestId("notification-card")).toBeTruthy();
 });
 
+test("a mixed notification steer keeps its wire-kind label on the leftover divider", () => {
+  render(
+    <SteeringItem
+      item={item({ text: `${JOB_NOTIFICATION_STEERING}\ntrailing steering prose`, steeringKind: "tasks-done" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("notification-card")).toBeTruthy();
+  expect(screen.getByText("System steered: Tasks done")).toBeTruthy();
+  expect(screen.getByText("trailing steering prose")).toBeTruthy();
+});
+
 // The card's trigger is <job-notification> markup, not the kind: structured
 // markup cannot false-positive the way a prose pattern can, so a pre-Kind
 // transcript still gets its card.
