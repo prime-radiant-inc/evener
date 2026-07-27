@@ -52,6 +52,25 @@ test('offers a "New session" action', () => {
   expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
 });
 
+test("orients a new person to what a session can do", () => {
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+
+  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
+  expect(screen.getByText(/run commands/i)).toBeTruthy();
+  expect(screen.getByText(/delegate work to helpers/i)).toBeTruthy();
+});
+
+test("offers concrete example tasks that activate the real Spawn prefill", async () => {
+  const user = userEvent.setup();
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+
+  const example = screen.getByRole("button", { name: /Find and fix the root cause of a flaky test/i });
+  await user.click(example);
+
+  expect(window.location.pathname).toBe("/new");
+  expect(new URLSearchParams(window.location.search).get("prompt")).toBe("Find and fix the root cause of a flaky test");
+});
+
 test('clicking "New session" navigates to /new', async () => {
   const user = userEvent.setup();
   render(<Welcome params={{}} paneId="welcome" focused={true} />);

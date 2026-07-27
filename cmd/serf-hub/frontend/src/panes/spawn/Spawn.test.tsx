@@ -194,6 +194,23 @@ test("the configuration row is working directory, model and effort - and nothing
   expect(screen.getByLabelText("Effort")).toBeTruthy();
 });
 
+test("mobile Spawn exposes Treatment A rows and a pinned action band without losing auto-grow", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  expect([...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label)).toEqual([
+    "Harness",
+    "Model",
+    "Working directory",
+    "Branch",
+    "Reasoning effort",
+    "Access mode",
+  ]);
+  expect(screen.getByTestId("spawn-mobile-actions").querySelector("[data-testid='spawn-submit']")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
+});
+
 // Harness moves into Advanced options: most installs have exactly one, so a
 // field whose answer is always "serf" shouldn't lead the page. It stays fully
 // functional there - the switch still blanks a non-serf model (see the harness
