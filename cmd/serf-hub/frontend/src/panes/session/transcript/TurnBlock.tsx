@@ -90,7 +90,14 @@ export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlo
           const run = toolRunFor(shown, item.id);
           if (run && shouldGroup(run)) {
             if (!run.isFirst) return null;
-            return <ToolCallCluster key={itemScopeKey(sessionRef, item.id)} items={run.items} turn={shownTurn} sessionRef={sessionRef} />;
+            return (
+              <ToolCallCluster
+                key={itemScopeKey(sessionRef, item.id)}
+                items={run.items}
+                turn={shownTurn}
+                sessionRef={sessionRef}
+              />
+            );
           }
           const ItemRenderer = itemRendererFor(item.type);
           return (

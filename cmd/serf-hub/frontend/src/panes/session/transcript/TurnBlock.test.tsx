@@ -197,7 +197,9 @@ test("a cluster closes when the same virtualized turn and item ids switch sessio
     item({ id: "shared-reply", type: "agentMessage", text: "session A reply" }),
   ];
   const sessionBItems = sessionAItems.map((entry) =>
-    entry.type === "commandExecution" ? { ...entry, output: "session B content" } : { ...entry, text: "session B reply" },
+    entry.type === "commandExecution"
+      ? { ...entry, output: "session B content" }
+      : { ...entry, text: "session B reply" },
   );
   const sharedTurn = (items: ItemModel[]) => turn(items, { id: "shared-turn" });
 
