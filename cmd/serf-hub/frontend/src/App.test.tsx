@@ -1,8 +1,19 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { App } from "./App";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { resetTreeStoreForTests } from "./stores/tree";
+
+let App: typeof import("./App").App;
+
+const escapedFetches = vi.hoisted(() => {
+  const calls: unknown[] = [];
+  const ambientFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => {
+    calls.push(args[0]);
+    return ambientFetch(...args);
+  });
+  return calls;
+});
 
 // The default route mounts AppShell -> DockHost -> real dockview-react, which
 // needs a ResizeObserver (jsdom has none) and localStorage (Node 26's own
@@ -85,6 +96,7 @@ beforeAll(async () => {
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
   stubTreeFetch();
+  ({ App } = await import("./App"));
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -128,6 +140,10 @@ test("does not show a tree load error while rendering the welcome pane", async (
   render(<App />);
   await screen.findByText("No session open");
   expect(screen.queryByText("Couldn't load sessions")).toBeNull();
+});
+
+test("does not escape a tree fetch before the test fake is installed", () => {
+  expect(escapedFetches).toHaveLength(0);
 });
 
 test("renders the dev widget gallery at /dev/widgets", async () => {
