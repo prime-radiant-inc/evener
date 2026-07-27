@@ -303,6 +303,7 @@ function reconcileProjectList(
   key: string,
   deletedIDs: string[],
   skippedIDs: string[],
+  hydratedDetailIsEmpty: boolean,
 ): TreeProject[] {
   return projects.flatMap((project) => {
     if (project.key !== key) return [project];
@@ -311,7 +312,13 @@ function reconcileProjectList(
       sessions.length > 0
         ? sessions.length
         : (project.session_count ?? (skippedIDs.length > 0 ? skippedIDs.length : undefined));
-    if (sessionCount === undefined && skippedIDs.length === 0 && !projectHasOverflow(project)) return [];
+    if (
+      skippedIDs.length === 0 &&
+      !projectHasOverflow(project) &&
+      (hydratedDetailIsEmpty || (sessionCount === undefined && sessions.length === 0))
+    ) {
+      return [];
+    }
     return [
       {
         ...project,
@@ -387,9 +394,11 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
     set((s) => {
       const nextDetails = new Map(s.projectDetails);
       const detail = nextDetails.get(key);
+      let hydratedDetailIsEmpty = false;
       if (detail) {
         const sessions = reconcileNodes(detail.sessions, deletedIDs);
-        if (sessions.length === 0 && skippedIDs.length === 0 && !projectHasOverflow(detail)) nextDetails.delete(key);
+        hydratedDetailIsEmpty = sessions.length === 0 && skippedIDs.length === 0 && !projectHasOverflow(detail);
+        if (hydratedDetailIsEmpty) nextDetails.delete(key);
         else nextDetails.set(key, { ...detail, sessions });
       }
       if (!s.tree) return { projectDetails: nextDetails, loading: false };
@@ -398,9 +407,15 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
         loading: false,
         tree: {
           ...s.tree,
-          projects: reconcileProjectList(s.tree.projects, key, deletedIDs, skippedIDs),
-          archived_projects: reconcileProjectList(s.tree.archived_projects, key, deletedIDs, skippedIDs),
-          test_runs: reconcileProjectList(s.tree.test_runs, key, deletedIDs, skippedIDs),
+          projects: reconcileProjectList(s.tree.projects, key, deletedIDs, skippedIDs, hydratedDetailIsEmpty),
+          archived_projects: reconcileProjectList(
+            s.tree.archived_projects,
+            key,
+            deletedIDs,
+            skippedIDs,
+            hydratedDetailIsEmpty,
+          ),
+          test_runs: reconcileProjectList(s.tree.test_runs, key, deletedIDs, skippedIDs, hydratedDetailIsEmpty),
         },
       };
     });
