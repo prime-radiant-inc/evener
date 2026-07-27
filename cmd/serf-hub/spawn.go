@@ -549,6 +549,9 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if strings.TrimSpace(inst.APIKey) != "" {
 				return nil
 			}
+			if hasFile, _ := store.InstanceLayers(inst.Name, string(inst.Type)); hasFile {
+				return nil
+			}
 			for _, value := range inst.CredentialHeaders {
 				if strings.TrimSpace(value) != "" {
 					return nil

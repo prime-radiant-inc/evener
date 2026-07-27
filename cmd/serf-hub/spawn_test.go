@@ -1010,6 +1010,26 @@ api_key = "sk-inline-key"
 	}
 }
 
+func TestValidateProviderCredentials_ConfigInstanceStoredAPIKey(t *testing.T) {
+	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := store.Set("kimi-anthropic-api", "stored-instance-key"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
+		Default: "kimi-anthropic-api",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "kimi-anthropic-api", Type: "kimi-anthropic"},
+		},
+	})
+
+	if err := validateProviderCredentials("kimi-anthropic-api", store, nil, cfgPath); err != nil {
+		t.Fatalf("validateProviderCredentials with stored instance key: %v", err)
+	}
+}
+
 func TestValidateProviderCredentials_ConfiguredCredentialHeaders(t *testing.T) {
 	tests := []struct {
 		name              string
