@@ -497,19 +497,19 @@ test("reopening a singleton pane with different params updates the existing tab'
 // visible in the host.
 test("a primary replacement removes stale panels from the live DockHost", async () => {
   const workspace = workspaceStore.getState();
-  workspace.openPane("doc", { ref: "main-a" });
+  workspace.openPane("session", { ref: "local:session-a" });
   render(<DockHost />);
-  await screen.findByText(/doc pane: main-a/);
+  await screen.findAllByText("local:session-a");
   workspace.openPane("doc", { ref: "secondary" });
   await screen.findByText(/doc pane: secondary/);
 
-  const replacementId = workspace.replacePrimary("doc", { ref: "main-b" }, "main-b");
+  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "doc", params: { ref: "main-b" }, slot: "main" },
+    { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
   ]);
-  expect(await screen.findByText(/doc pane: main-b/)).toBeTruthy();
-  expect(screen.queryByText(/doc pane: main-a/)).toBeNull();
+  expect(await screen.findAllByText("local:session-b")).toBeTruthy();
+  expect(screen.queryByText(/local:session-a/)).toBeNull();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
 });
 

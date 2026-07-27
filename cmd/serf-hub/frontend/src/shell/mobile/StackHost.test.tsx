@@ -141,6 +141,28 @@ test("switching the focused pane (workspace.focusPane) swaps which one is render
   expect(screen.queryByText(/doc pane: ref_b/)).toBeNull();
 });
 
+// StackHost and DockHost must consume the same store-level primary replacement
+// contract. A mobile host that only changes its focused pane leaves the stale
+// secondary doc in shared state and can render the wrong pane after a route.
+test("renders the replacement session and drops stale secondary panes from the shared workspace", async () => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:session-a" });
+  render(<StackHost />);
+  await screen.findByText("local:session-a");
+
+  workspace.openPane("doc", { ref: "secondary" });
+  await screen.findByText(/doc pane: secondary/);
+
+  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
+
+  expect(workspaceStore.getState().panes).toEqual([
+    { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+  ]);
+  expect(await screen.findByText("local:session-b")).toBeTruthy();
+  expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
+  expect(screen.queryByText("local:session-a")).toBeNull();
+});
+
 // --- remount safety: matches DockHost's own "unmount, not hide" contract -
 
 test("switching away from a pane and back remounts it fresh - local state does not survive", async () => {
