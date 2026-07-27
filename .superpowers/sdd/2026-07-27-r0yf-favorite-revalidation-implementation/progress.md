@@ -23,3 +23,17 @@ complete/incomplete/ambiguous project claims. GREEN evidence: new memo races
 race `-race -count=10`, TreeFavorite `-count=5`, hubcore Favorite/TreeCache/
 Remote `-count=5`, full hubcore, full cmd/serf-hub, vet, lint, and diff check
 all passed; exact evidence is recorded in `task-2-report.md`.
+
+Second fresh whole-branch review rejected tip `d32623550`: Findings 1 and 2
+were valid, while Finding 3 was invalid. Finding 1 parsed colon-shaped local
+IDs as remote project sources; Finding 2 collapsed all carried project
+identities by working directory with last-row-wins behavior. RED was proven by
+both local-ID row orders, both carried-project row orders, and the
+carried-versus-local conflict case before production changes. The invalid
+Finding 3 was disproved by the `favoriteLive`/archive call sites and a
+structured live-orphan `resp.Favorites` assertion. Code/tests correction
+`86ad330ab` retains all project identities, selects deterministic presentation
+data, marks conflicts incomplete, and derives remote project sources only from
+authoritative ownership. Required repeated focused/race tests, full hubcore
+and cmd/serf-hub, vet, lint, gofmt, and diff checks passed; exact evidence is
+in `task-2-report.md`.

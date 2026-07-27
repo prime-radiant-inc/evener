@@ -313,3 +313,119 @@ exit 0, no output
 The blocking tests use bounded waits, `sync.Once` release functions, cleanup
 restoration for the global snapshot hook, and cleanup joins for both the memo
 goroutine and the blocked Past.Rebuild goroutine.
+
+## Second fresh whole-branch review correction
+
+The fresh final whole-branch re-review rejected tip `d32623550`. Finding 1 and
+Finding 2 were technically valid. Finding 3 was invalid; source and call-site
+inspection showed that it described archive decisions as if they were favorite
+decisions. The code/test correction is committed separately as `86ad330ab`.
+
+### Finding 1: local colon-shaped IDs were misclassified as remote project claims
+
+`favoriteProjectSourceClaim` parsed any colon-bearing session ID and used the
+parsed source spelling as a project claim key. A legitimate local
+`cluster:<id>` session therefore formed a different claim from a normal local
+session in the same project, making an otherwise complete project authority
+ambiguous. The correction uses `navigationSnapshot.remoteOwnership` as the
+only source of remote provenance; an ID with no authoritative ownership entry
+is local regardless of its spelling. Incomplete ownership still gets a
+distinct fail-closed claim and incomplete quality.
+
+The deterministic RED run against the pre-correction production path was:
+
+```text
+go test ./cmd/serf-hub -run 'Test(FavoriteProjectAuthorities_|APITreeFavoriteRevalidation_(EndedRemoteCarriedProjectCanBeFavorited|ClusterSpellingDoesNotDecideValidity)|Web_APITreeOrphanLiveRowsCarryTierFavoriteRename)' -count=1 -v
+```
+
+Both `LocalColonIdentitySharesLocalClaim` row permutations failed with two
+complete claims, one ending in `cluster` and one ending in `local`, instead of
+one complete local claim. The existing colon-spelling session, ended carried
+remote project, and live-orphan endpoint checks passed in that run.
+
+### Finding 2: carried project identities were last-row-wins by working directory
+
+`navigationSnapshotInputs` previously stored one carried project per working
+directory. The final remote row could replace an earlier valid project
+identity, so the navigation tree and authority collector could not distinguish
+a conflict from a resolved project. The correction retains all distinct
+`ProjectID`/canonical-path identities per working directory, selects a stable
+sorted identity for tree presentation, and marks every candidate incomplete
+when the working directory has conflicting identities. The same rule applies
+when a carried identity conflicts with a locally resolved identity.
+
+The RED run also showed the last-row collapse directly: one carried project
+identity was absent from authority, the surviving identity remained complete,
+and the carried/local conflict omitted the local identity. The final carried
+fixture uses two valid non-empty project identities from the same remote source
+so unrelated source-claim ambiguity cannot mask this defect. The existing
+single ended carried-remote project success case remains covered.
+
+### Finding 3: reviewer claim about `favoriteLive` was invalid
+
+The reviewer conflated archive and favorite decisions. In
+`cmd/serf-hub/internal/hubcore/tree.go`, `favoriteLive` is populated at
+`BuildTreeAtWithProjects` lines 1101-1121 and filters the `decisions` argument
+with `projectArchivedDecision` and `decisionFor`; that argument is the archive
+map from `memoTreeWithAuthority` at `cmd/serf-hub/web_api_tree.go:267`, not the
+favorite store. `handleAPITree` reads `favoriteDecisions` separately at lines
+130-136, then applies the resulting presentation map after
+`tree.FavoriteCandidates()` at lines 236-243. Therefore the reviewer’s
+proposed production change would have changed behavior without fixing a bug.
+
+The existing `TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename` now adds a
+structured assertion that the valid favorited orphan is present in
+`resp.Favorites` with the pinned tier. It passes without production behavior
+changes.
+
+### Exact GREEN evidence
+
+```text
+go test ./cmd/serf-hub -run 'Test(FavoriteProjectAuthorities_|APITreeFavoriteRevalidation_(RemoteCandidate|LocalCandidate))' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub 0.974s
+
+go test ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_(EndedRemoteCarriedProjectCanBeFavorited|ClusterSpellingDoesNotDecideValidity)' -count=10
+ok   primeradiant.com/serf/cmd/serf-hub 0.662s
+
+go test ./cmd/serf-hub -run TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename -count=5
+ok   primeradiant.com/serf/cmd/serf-hub 0.354s
+
+go test -race ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_Memo(CapturesInputsVersionBeforeSnapshot|ReturnsOneGenerationDuringPastRebuildGap)' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub 1.933s
+
+go test -race ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot -count=10
+ok   primeradiant.com/serf/cmd/serf-hub 1.586s
+
+go test ./cmd/serf-hub/internal/hubcore -run '(Favorite|Remote|TreeCache)' -count=5
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.369s
+
+go test ./cmd/serf-hub -run TreeFavorite -count=5
+ok   primeradiant.com/serf/cmd/serf-hub 1.267s
+
+go test ./cmd/serf-hub -run ProjectDelete -count=3
+ok   primeradiant.com/serf/cmd/serf-hub 2.111s
+
+go test ./cmd/serf-hub -run FavoriteEndpoint -count=3
+ok   primeradiant.com/serf/cmd/serf-hub 1.566s
+
+go test ./cmd/serf-hub/internal/hubcore -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.513s
+
+go test ./cmd/serf-hub -count=1
+ok   primeradiant.com/serf/cmd/serf-hub 26.267s
+
+go vet ./cmd/serf-hub/...
+exit 0, no output
+
+golangci-lint run ./cmd/serf-hub/...
+0 issues.
+
+gofmt -w cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_favorite_revalidation_test.go cmd/serf-hub/web_api_tree_test.go
+git diff --check
+exit 0, no output
+```
+
+The new authority tests also assert that both row orders choose the same
+presentation project, retain every conflicting identity, classify every
+affected project favorite as dormant, and leave the ended carried-remote
+success path valid.
