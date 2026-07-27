@@ -105,17 +105,9 @@ test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-p
   expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
 });
 
-// --- settled: collapse to "Thought[ for Ns]" only ---------------------------
-// kdyh/tx8m: the collapsed summary used to also carry a firstLine() preview
-// of the reasoning text - which then reappeared, verbatim, as the opening
-// sentence of the expanded body (agents often open a thought with a bolded
-// topic sentence), so the same words rendered twice one line apart, and the
-// preview - being plain text, not markdown-parsed - showed the model's own
-// **bold**/`code` syntax as literal characters where the body one line below
-// rendered the identical text as real markdown. The summary now carries only
-// the duration: no arbitrary agent text ever lands in a plain-text context.
+// --- settled: duration + final context --------------------------------------
 
-test("settled collapses to a closed details with a duration-only summary (no reasoning text preview)", () => {
+test("settled collapses to a closed details with duration and the final nonblank context line", () => {
   render(
     <ThinkBlock
       item={item({ reasoningSummaries: [["The answer is 42.\nmore reasoning"]] })}
@@ -127,10 +119,10 @@ test("settled collapses to a closed details with a duration-only summary (no rea
   expect(details.tagName).toBe("DETAILS");
   expect(details.open).toBe(false);
   const summary = details.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought");
+  expect(summary?.textContent).toBe("Thought · more reasoning");
 });
 
-test("kdyh: the collapsed summary never repeats text that also appears in the expanded body", () => {
+test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
   const { container } = render(
     <ThinkBlock
       item={item({ reasoningSummaries: [["Delegating simple directory inspection task\n\nmore detail"]] })}
@@ -139,13 +131,11 @@ test("kdyh: the collapsed summary never repeats text that also appears in the ex
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought");
-  expect(summary?.textContent).not.toContain("Delegating");
-  // The full sentence still exists, but only once - inside the body.
-  expect(screen.getAllByText(/Delegating simple directory inspection task/).length).toBe(1);
+  expect(summary?.textContent).toBe("Thought · more detail");
+  expect(screen.getByText(/Delegating simple directory inspection task/)).toBeTruthy();
 });
 
-test("tx8m: markdown syntax in the reasoning text never shows literally, because the summary carries no reasoning text at all", () => {
+test("the plain context removes common Markdown decoration while the expanded body still parses Markdown", () => {
   const { container } = render(
     <ThinkBlock
       item={item({ reasoningSummaries: [["**Delegating simple directory inspection task**"]] })}
@@ -154,10 +144,17 @@ test("tx8m: markdown syntax in the reasoning text never shows literally, because
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought");
+  expect(summary?.textContent).toBe("Thought · Delegating simple directory inspection task");
   expect(summary?.textContent).not.toMatch(/\*/);
-  // The body still renders it as real markdown, one level down.
   expect(screen.getByText("Delegating simple directory inspection task").tagName).toBe("STRONG");
+});
+
+test("a long final context line is honestly truncated in the collapsed summary", () => {
+  const longLine = `final context ${"x".repeat(180)}`;
+  render(<ThinkBlock item={item({ reasoningSummaries: [[longLine]] })} turn={turn} live={false} />);
+  const summary = document.querySelector("summary")?.textContent ?? "";
+  expect(summary.endsWith("…")).toBe(true);
+  expect(summary).not.toContain(longLine);
 });
 
 test("settled body holds the full reasoning text (not just the preview) once expanded", () => {
@@ -279,11 +276,11 @@ test("the same settled think item id has independent disclosure state in differe
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought");
+  expect(summary?.textContent).toBe("Thought · content");
   expect(summary?.textContent).not.toMatch(/\d/);
 });
 
-test("a real startedAt/completedAt pair (future-proofing - not populated by today's wire) produces a real Ns label", () => {
+test("a replay item's real startedAt/completedAt pair produces a duration label", () => {
   render(
     <ThinkBlock
       item={item({
@@ -295,10 +292,10 @@ test("a real startedAt/completedAt pair (future-proofing - not populated by toda
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
 });
 
-test("an observed timing pair (no wire pair) also produces a real Ns label", () => {
+test("a live-observed timing pair (no wire pair) produces a real duration label once settled", () => {
   render(
     <ThinkBlock
       item={item({
@@ -310,7 +307,7 @@ test("an observed timing pair (no wire pair) also produces a real Ns label", () 
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s · content");
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
@@ -327,7 +324,48 @@ test("the wire pair wins over the observed pair when both are present", () => {
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+});
+
+test("a completed sub-second thought reports milliseconds, not a rounded second", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        reasoningSummaries: [["content"]],
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:00.250Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 250ms · content");
+});
+
+test("an in-progress streaming thought never shows a duration summary", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        status: "inProgress",
+        reasoningSummaries: [["still thinking"]],
+        observedStartedAt: "2026-01-01T00:00:00.000Z",
+        observedCompletedAt: undefined,
+      })}
+      turn={turn}
+      live={true}
+    />,
+  );
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(screen.queryByText(/Thought for/)).toBeNull();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+test("an in-progress item stays live even if a stale caller passes live=false", () => {
+  render(
+    <ThinkBlock item={item({ status: "inProgress", reasoningSummaries: [["still live"]] })} turn={turn} live={false} />,
+  );
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(document.querySelector("details")).toBeNull();
 });
 
 // --- empty thoughts removed --------------------------------------------------
@@ -356,7 +394,7 @@ test("live streaming settles cleanly into the collapsed disclosure, no leftover 
 
   expect(screen.queryByTestId("streaming-text")).toBeNull();
   expect(screen.queryByText("Thinking…")).toBeNull();
-  expect(screen.getByText("Thought")).toBeTruthy();
+  expect(screen.getByText("Thought · thinking...")).toBeTruthy();
 });
 
 test("a reset (a new item id replacing the live one) discards prior streamed text without residue", () => {
