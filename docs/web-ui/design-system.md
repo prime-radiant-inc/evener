@@ -342,3 +342,42 @@ current gap:
   doesn't change touch+AT behavior in some non-obvious way. Left as-is, flagged for a more
   careful pass that can validate actual AT behavior on a real touch+screen-reader device, not
   reasoned about in the abstract.
+
+---
+
+## 11. Mobile forms and honest cold starts
+
+Mobile forms use settings-style rows when several related choices must remain
+scannable on a narrow screen. A row fills the available width, is at least
+48px tall, uses sentence-case sans labels, and truncates its value without
+shrinking the label or the hit target. Interactive rows expose the whole row
+as one control; read-only facts do not show a misleading caret. Use existing
+surface, edge, ink, spacing, and tap-size tokens. Do not introduce mobile-only
+colors, type tokens, chip backgrounds, or monospace labels.
+
+Editable text remains at least 16px on mobile so focusing a field does not
+trigger browser zoom. An auto-growing textarea has a real content-driven
+minimum and maximum, keeps the resize behavior accessible, and reserves space
+for any pinned actions below it. The field remains the same semantic textarea
+and preserves keyboard submission, attachment, paste, and screen-reader
+behavior across breakpoints.
+
+When a form has one primary completion action, the mobile action band may be
+fixed above `env(safe-area-inset-bottom)`. It is a raised surface with a top
+edge and no shadow; the primary control is at least 52px tall and adjacent
+secondary controls are at least 44px. The form body reserves the band's space
+so content is never covered, and the desktop action layout remains unchanged.
+
+Mobile choice controls use the existing bottom `Sheet` pattern. Sheet options
+are at least 48px tall, expose selected state semantically, restore focus to
+the invoking row after Escape or selection, and retain the shared focus trap
+and scrim behavior. A feature should reuse its existing catalog/path panel
+inside the sheet rather than create a second picker implementation.
+
+Loading treatment follows the honest-liveness rule. A first-turn skeleton may
+reserve the shape of the response only after a send or active first turn and
+only until the first authoritative transcript item. It must disappear on an
+authoritative frame, terminal/error/cancel state, session change, or pending
+failure; it must never appear for an untouched empty session. Reuse the static
+`Skeleton` widget, keep its accessible loading status and decorative bars, and
+do not add shimmer, pulse, or other motion that implies live data.

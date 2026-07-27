@@ -5,6 +5,38 @@ Scope: the `/new` session creation form in `cmd/serf-hub`.
 Date: 2026-07-12.
 Companion: [`docs/web-ui/mockups/22-mobile-spawn-treatments.html`](../../web-ui/mockups/22-mobile-spawn-treatments.html).
 
+React implementation status (2026-07-26): **Treatment A satisfied**.
+
+The current implementation lives in these React files, which supersede the
+older server-rendered implementation notes below:
+
+- `cmd/serf-hub/frontend/src/panes/spawn/Spawn.tsx`
+- `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.tsx`
+- `cmd/serf-hub/frontend/src/panes/spawn/MobileSettingRows.module.css`
+- `cmd/serf-hub/frontend/src/panes/spawn/spawn.module.css`
+- `cmd/serf-hub/frontend/src/widgets/promptcard/index.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/coldStart.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/Session.tsx`
+- `cmd/serf-hub/frontend/src/panes/welcome/Welcome.tsx`
+
+The live 390px baseline probe against the React `/new` route showed why the
+existing surface did not satisfy this treatment: `scrollWidth` was 390px, but
+the prompt card was only 324px wide at x=33; only Working directory, Model,
+and Effort were visible while Harness and Access remained under Advanced; the
+`Start` action was a 24px in-card control at y=299 rather than a pinned band;
+and the textarea's computed font size was 13px. The implementation now exposes
+all six approved rows, uses the existing bottom-sheet and focus-management
+patterns, pins the action band, and sets the mobile textarea to 16px with a
+96px minimum.
+
+Final deterministic evidence: the frontend suite passed 278 test files and
+4,723 tests; `layoutguard` passed all five cases; and `overflowguard` passed at
+390px, 700px, 1024px, and 1400px. A final direct Spawn geometry capture was
+attempted but not used as evidence because the isolated headless Chrome probe
+reported macOS keychain `errSecInteractionNotAllowed` and terminated after
+exposing its CDP endpoint. The component tests and the 390px overflow guard
+remain the recorded satisfaction path.
+
 ---
 
 ## Problem
@@ -90,6 +122,10 @@ Add a new section to `docs/web-ui/design-system.md` (§11) covering mobile form 
 - Do not add new color or type tokens; reuse the existing system.
 
 ## Implementation notes
+
+The notes in this section describe the pre-rewrite server-rendered
+implementation and remain for historical context. The React files and
+evidence above are the authoritative implementation record.
 
 - Update `cmd/serf-hub/templates/partials/spawn.html` to use row markup instead of the chip pile.
 - Update `cmd/serf-hub/assets/style.css` mobile rules (`≤767px`) for `.spawn-form`, `.spawn-row`, `.spawn-actions`, and `.spawn-input`.
