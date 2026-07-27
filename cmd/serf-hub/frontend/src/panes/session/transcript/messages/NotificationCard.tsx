@@ -15,13 +15,19 @@
 // by the uniform tone treatment.
 import { Card, Chip, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
-import type { NotificationTone, ParsedNotification } from "./steeringClassify";
+import { isValidTranscriptRef, type NotificationTone, type ParsedNotification } from "./steeringClassify";
 
 const CLASS = {
+  root: requireClass(styles.root, "notificationcard.module.css", "root"),
   head: requireClass(styles.head, "notificationcard.module.css", "head"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
   secondary: requireClass(styles.secondary, "notificationcard.module.css", "secondary"),
+  action: requireClass(styles.action, "notificationcard.module.css", "action"),
+  metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
+  field: requireClass(styles.field, "notificationcard.module.css", "field"),
+  fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
   concerns: requireClass(styles.concerns, "notificationcard.module.css", "concerns"),
   excerpt: requireClass(styles.excerpt, "notificationcard.module.css", "excerpt"),
   raw: requireClass(styles.raw, "notificationcard.module.css", "raw"),
@@ -58,44 +64,79 @@ function Excerpt({ text }: { text: string }) {
   const decoded = decodeEntities(text.trim());
   if (decoded === "") return null;
   if (decoded.length <= EXCERPT_PREVIEW) {
-    return <div className={CLASS.excerpt}>{decoded}</div>;
+    return (
+      <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+        {decoded}
+      </div>
+    );
   }
-  // A very long unstructured excerpt is collapsed rather than rendered in full
-  // (contracts §17): a bounded preview plus a details holding the whole thing.
+  // Keep unstructured output bounded in the primary card. The complete
+  // diagnostic payload remains available in the card's one raw disclosure.
   return (
-    <>
-      <div className={CLASS.excerpt}>{`${decoded.slice(0, EXCERPT_PREVIEW)}…`}</div>
-      <details className={CLASS.raw}>
-        <summary className={CLASS.summary}>Full excerpt</summary>
-        <pre className={CLASS.rawBody}>{decoded}</pre>
-      </details>
-    </>
+    <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+      {`${decoded.slice(0, EXCERPT_PREVIEW)}…`}
+    </div>
   );
+}
+
+function Field({ label, value, testId }: { label: string; value: string | number; testId: string }) {
+  return (
+    <span className={CLASS.field} data-testid={testId}>
+      <span className={CLASS.fieldLabel}>{label}</span> {value}
+    </span>
+  );
+}
+
+function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
+  const fields = [
+    notification.status && <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />,
+    notification.jobType && <Field key="job-type" label="Job type" value={notification.jobType} testId="notification-field-job-type" />,
+    notification.outputBytes !== undefined && (
+      <Field key="output" label="Output" value={notification.outputBytes} testId="notification-field-output" />
+    ),
+    notification.reason && <Field key="reason" label="Reason" value={notification.reason} testId="notification-field-reason" />,
+    notification.exitCode !== undefined && (
+      <Field key="exit" label="Exit code" value={notification.exitCode} testId="notification-field-exit" />
+    ),
+  ].filter(Boolean);
+  if (fields.length === 0) return null;
+  return <div className={CLASS.metadata}>{fields}</div>;
 }
 
 export function NotificationCard({ notification }: { notification: ParsedNotification }) {
   const chip = toneChip(notification.tone);
+  const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   return (
     <Card>
-      <div className={CLASS.head} data-testid="notification-card" data-tone={notification.tone}>
-        {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
-        <span className={CLASS.title}>{notification.title}</span>
-        {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
+      <div className={CLASS.root} data-testid="notification-card-root">
+        <div className={CLASS.head} data-testid="notification-card" data-tone={notification.tone}>
+          {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
+          <span className={CLASS.title}>{notification.title}</span>
+          {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
+          {transcriptRef && (
+            <span className={CLASS.action}>
+              <OpenTranscriptButton transcriptRef={transcriptRef} label="Open subagent" />
+            </span>
+          )}
+        </div>
+        <NotificationMetadata notification={notification} />
+        {notification.message ? (
+          <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+            <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+          </div>
+        ) : (
+          <Excerpt text={notification.excerpt} />
+        )}
+        {notification.concerns.length > 0 && (
+          <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
+        )}
+        <details className={CLASS.raw} data-testid="notification-raw-disclosure">
+          <summary className={CLASS.summary}>Raw notification</summary>
+          <pre className={CLASS.rawBody} data-testid="notification-raw">
+            {notification.rawText}
+          </pre>
+        </details>
       </div>
-      {notification.message ? (
-        <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
-      ) : (
-        <Excerpt text={notification.excerpt} />
-      )}
-      {notification.concerns.length > 0 && (
-        <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
-      )}
-      <details className={CLASS.raw}>
-        <summary className={CLASS.summary}>Raw notification</summary>
-        <pre className={CLASS.rawBody} data-testid="notification-raw">
-          {notification.rawText}
-        </pre>
-      </details>
     </Card>
   );
 }
