@@ -21,11 +21,18 @@ export interface WatchedChildIndicatorProps {
   // and setWatchedLiveKind below writes into that same page-lifetime store.
   scopeKey: string;
   rowKey: string;
+  /** Keep the subscription active without rendering the Cadence glyph. */
+  renderCadence?: boolean;
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function WatchedChildIndicator({ ref: childRef, scopeKey, rowKey }: WatchedChildIndicatorProps) {
+export function WatchedChildIndicator({
+  ref: childRef,
+  scopeKey,
+  rowKey,
+  renderCadence = true,
+}: WatchedChildIndicatorProps) {
   useEffect(() => {
     // Best-effort: a failed watch leaves this indicator rendering nothing
     // rather than crashing the whole subagent module over a live-status
@@ -55,6 +62,6 @@ export function WatchedChildIndicator({ ref: childRef, scopeKey, rowKey }: Watch
     if (liveKind) setWatchedLiveKind(scopeKey, rowKey, liveKind);
   }, [scopeKey, rowKey, liveKind]);
 
-  if (!model) return null;
+  if (!model || !renderCadence) return null;
   return <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 }

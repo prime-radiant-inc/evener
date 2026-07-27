@@ -27,6 +27,7 @@ import {
   turnScopeKey,
   useSubagentRows,
 } from "./tools/subagentModuleStore";
+import { WatchedChildIndicator } from "./tools/watchedChild";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
@@ -84,6 +85,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const isDelegate = item.toolName === "delegate";
   const delegateRows = useSubagentRows(isDelegate ? turnScopeKey(sessionRef, item.turnId) : "");
   const delegateRow = isDelegate ? delegateRows.find((row) => row.rowKey === rowKeyForDelegateItem(item)) : undefined;
+  const delegateTranscriptRef = isDelegate ? str(parseJSONObject(item.output) ?? {}, "transcript_ref") : undefined;
   const delegateKind = delegateStatusForItem(item, delegateRow, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
 
@@ -182,6 +184,20 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // below).
   if (descriptor.suppress?.(item)) return null;
 
+  // The module's rich watcher only exists while the body is expanded. Keep a
+  // single lean watcher mounted for the collapsed state so the top-level dot
+  // still follows terminal child status; the rich body watcher takes over
+  // when the disclosure opens.
+  const leanDelegateWatch =
+    isDelegate && !expanded && delegateTranscriptRef ? (
+      <WatchedChildIndicator
+        ref={delegateTranscriptRef}
+        scopeKey={turnScopeKey(sessionRef, item.turnId)}
+        rowKey={rowKeyForDelegateItem(item)}
+        renderCadence={false}
+      />
+    ) : null;
+
   // A failed row is never a bare summary line even with no body/images: the
   // reader must be able to open it and read the error, so it is always a
   // <details>.
@@ -235,6 +251,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
           open, and a collapsed row costs nothing to render. */}
+      {leanDelegateWatch}
       {expanded && (
         <div className={CLASS.body} data-testid="tool-call-body">
           {/* descriptor.detail() (currently only shell's exit code) rides the

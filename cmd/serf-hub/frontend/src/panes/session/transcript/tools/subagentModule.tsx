@@ -51,6 +51,7 @@ import {
   setWatchedLiveKind,
   turnScopeKey,
   upsertSubagentRow,
+  useLeader,
   useSubagentRows,
 } from "./subagentModuleStore";
 import styles from "./subagentmodule.module.css";
@@ -489,7 +490,11 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
   );
 }
 
-function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<SubagentRow, "spawnIndex" | "rowKey"> } {
+function rowFromDelegateItem(item: ItemModel): {
+  rowKey: string;
+  migrateFromRowKey?: string;
+  row: Omit<SubagentRow, "spawnIndex" | "rowKey">;
+} {
   const args = parseArgs(item.argumentsJSON);
   // Full, unclipped task text - it is the entire specification of what the
   // delegate was asked to do (7f7c). Callers that need a one-line preview
@@ -503,9 +508,11 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
   const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
+  const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
   const rowKey = resolveRowKey(delegateId, jobId, item.callId ?? item.id);
   return {
     rowKey,
+    migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
       kind: classifyJobStatus(status),
       task,
@@ -519,33 +526,23 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
 }
 
 function DelegateBody({ item, sessionRef }: ToolRenderProps) {
-  const [isLeader, setIsLeader] = useState(false);
   const scopeKey = turnScopeKey(sessionRef, item.turnId);
+  const leaderId = useLeader(scopeKey);
+  const isLeader = leaderId === item.id;
 
   useLayoutEffect(() => {
-    const { rowKey, row } = rowFromDelegateItem(item);
-    upsertSubagentRow(scopeKey, { rowKey, ...row });
+    const { rowKey, migrateFromRowKey, row } = rowFromDelegateItem(item);
+    upsertSubagentRow(scopeKey, { rowKey, ...row }, migrateFromRowKey);
   }, [scopeKey, item]);
 
-  // Claim AND release inside the SAME effect - never a useState lazy
-  // initializer, which runs at render time (store setState during render is
-  // an impure-render anti-pattern on its own, StrictMode aside). This makes
-  // the claim self-healing across StrictMode's dev-only mount -> cleanup ->
-  // remount double-invoke: a split where claiming happened once at render
-  // but releasing/re-claiming only happened in the effect meant the interim
-  // cleanup pass freed the store's leader slot while this component stayed
-  // mounted (its own isLeader would never be recomputed to notice) - a
-  // later-mounting delegate in the same turn could then also claim the now-
-  // vacant slot. Keeping both calls in one effect means the double-invoke's
-  // immediately-following remount pass re-runs this exact body and
-  // re-claims before anything else gets a chance to. See this file's own
-  // StrictMode test for the failure mode this fixes.
+  // The reactive leader read lets a mounted follower retry after the current
+  // leader unmounts. The effect only claims an empty slot and releases it
+  // from the elected component's cleanup, keeping StrictMode's mount/cleanup
+  // cycle symmetric without making followers poll or render nested details.
   useLayoutEffect(() => {
-    const leader = claimLeader(scopeKey, item.id);
-    setIsLeader(leader);
-    if (!leader) return;
-    return () => releaseLeader(scopeKey, item.id);
-  }, [scopeKey, item.id]);
+    if (leaderId === undefined) claimLeader(scopeKey, item.id);
+  }, [scopeKey, item.id, leaderId]);
+  useLayoutEffect(() => () => releaseLeader(scopeKey, item.id), [scopeKey, item.id]);
 
   return isLeader ? <SubagentModule turnId={item.turnId} sessionRef={sessionRef} /> : null;
 }
@@ -558,12 +555,11 @@ registerToolRenderer({
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same
   // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
-  // default, the module (and the live watch that drives it) never mounts at
-  // all: a delegate that announces itself and ends its turn would show a
-  // bare one-line "Delegated: ..." summary with no visible way to tell
-  // whether it is running, done, or failed (evch). Opening it at settle
-  // makes the tally/status/live-cadence/result visible without a click; a
-  // manual collapse afterward still sticks (ToolCallItem's own autoDefault
-  // vs. store-backed toggle).
+  // default, the rich module body and its activity watch never mount until
+  // opened: the ToolCallItem-owned lean watch still keeps the top-level dot
+  // current while collapsed (evch). Opening it at settle makes the
+  // tally/status/live-cadence/result visible without a click; a manual
+  // collapse afterward still sticks (ToolCallItem's own autoDefault vs.
+  // store-backed toggle).
   autoExpand: () => true,
 });

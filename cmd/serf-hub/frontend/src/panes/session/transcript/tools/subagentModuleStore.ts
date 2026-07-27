@@ -167,11 +167,12 @@ function sortedRows(rows: Map<string, SubagentRow>): SubagentRow[] {
 // (subagentModule.tsx), the one tool in this family allowed to spawn a
 // fresh row. `scopeKey` is a turnScopeKey(sessionRef, turnId) - see that
 // function's own doc comment for why a bare turnId is not enough.
-export function upsertSubagentRow(scopeKey: string, row: SubagentRowInput): void {
+export function upsertSubagentRow(scopeKey: string, row: SubagentRowInput, migrateFromRowKey?: string): void {
   moduleStore.setState((s) => {
     const existingForTurn = s.turnRowsByKey.get(scopeKey);
     const rows = new Map(existingForTurn ?? []);
-    const existingRow = rows.get(row.rowKey);
+    const existingRow = rows.get(row.rowKey) ?? (migrateFromRowKey ? rows.get(migrateFromRowKey) : undefined);
+    if (migrateFromRowKey && migrateFromRowKey !== row.rowKey) rows.delete(migrateFromRowKey);
     const nextIndexBefore = s.turnNextSpawnIndex.get(scopeKey) ?? 0;
     const spawnIndex = existingRow?.spawnIndex ?? nextIndexBefore;
     // Preserve every overlay field: DelegateBody re-upserts the frozen tool
@@ -341,12 +342,15 @@ export function useSubagentRows(scopeKey: string): SubagentRow[] {
   return useStore(moduleStore, (s) => s.turnRowsSorted.get(scopeKey) ?? EMPTY_ROWS);
 }
 
-// claimLeader is a plain (non-reactive) function, meant to be called from
-// a component's lazy useState initializer - it runs once per mount,
-// before paint, and the result never changes for that component instance's
-// lifetime. Returns true for whichever item id claims (or already holds)
-// leadership for `scopeKey`; false for every other item. Idempotent: the
-// current leader re-claiming its own slot stays true.
+export function useLeader(scopeKey: string): string | undefined {
+  return useStore(moduleStore, (s) => s.turnLeader.get(scopeKey));
+}
+
+// claimLeader is a plain (non-reactive) function called from a component
+// effect when the reactive leader slot is empty. Returns true for whichever
+// item id claims (or already holds) leadership for `scopeKey`; false for every
+// other item. Idempotent: the current leader re-claiming its own slot stays
+// true.
 export function claimLeader(scopeKey: string, itemId: string): boolean {
   const current = moduleStore.getState().turnLeader.get(scopeKey);
   if (current === undefined) {

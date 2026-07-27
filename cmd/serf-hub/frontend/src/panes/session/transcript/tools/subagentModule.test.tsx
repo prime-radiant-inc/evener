@@ -336,6 +336,97 @@ test("StrictMode's mount-cleanup-remount double-invoke keeps leadership with the
   expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
 });
 
+test("a collapsed live delegate updates its top-level status when the child settles", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
+  connectionStore.getState().connect(fake);
+
+  const turn: TurnModel = { id: "turn_collapsed_live", status: "completed", items: [] };
+  const started = delegateItem({
+    id: "d_collapsed_live",
+    turnId: turn.id,
+    callId: "call_collapsed_live",
+    description: "Collapsed live delegate",
+    argumentsJSON: JSON.stringify({ task: "wait for child" }),
+    output: JSON.stringify({ job_id: "job_collapsed_live", status: "running", transcript_ref: "ref_collapsed_live" }),
+  });
+  render(<ToolCallItem item={started} turn={turn} live={false} />);
+
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("tool-row"));
+  expect(details.open).toBe(false);
+
+  await act(async () => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_child", ref: "ref_collapsed_live", status: { type: "closed" } },
+    } as never);
+  });
+
+  expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+});
+
+test("a mounted follower takes over when the current delegate leader unmounts", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const first = delegateItem({
+    id: "d_leader_unmounts",
+    turnId: "turn_leader_unmounts",
+    callId: "call_leader_unmounts",
+    argumentsJSON: JSON.stringify({ task: "leader task" }),
+  });
+  const follower = delegateItem({
+    id: "d_follower_takes_over",
+    turnId: "turn_leader_unmounts",
+    callId: "call_follower_takes_over",
+    argumentsJSON: JSON.stringify({ task: "follower task" }),
+  });
+
+  const { rerender } = render(
+    <>
+      <Body key={first.id} item={first} live={false} />
+      <Body key={follower.id} item={follower} live={false} />
+    </>,
+  );
+  expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
+
+  rerender(<Body key={follower.id} item={follower} live={false} />);
+
+  expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
+  expect(screen.getByText("follower task")).toBeTruthy();
+});
+
+test("a delegate row migrates fallback identity to job identity without losing its live overlay", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const scopeKey = turnScopeKey(undefined, "turn_row_migrates");
+  const beforeJob = delegateItem({
+    id: "d_row_migrates",
+    turnId: "turn_row_migrates",
+    callId: "call_row_migrates",
+    argumentsJSON: JSON.stringify({ task: "migrate this row" }),
+    output: JSON.stringify({ status: "running" }),
+  });
+  const { rerender } = render(<Body item={beforeJob} live={false} />);
+
+  act(() => {
+    updateSubagentRowIfExists(scopeKey, "call:call_row_migrates", {
+      liveKind: "failed",
+      liveReason: "watch failed",
+    });
+  });
+
+  const withJob = { ...beforeJob, output: JSON.stringify({ job_id: "job_row_migrates", status: "completed" }) };
+  rerender(<Body item={withJob} live={false} />);
+
+  const rows = screen.getAllByTestId("subagent-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.getAttribute("data-kind")).toBe("failed");
+  expect(screen.getByText("watch failed")).toBeTruthy();
+});
+
 // --- row content ----------------------------------------------------------
 
 test("a running row in a multi-row aggregate shows the task and running kind", () => {

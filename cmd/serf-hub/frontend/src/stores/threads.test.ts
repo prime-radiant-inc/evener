@@ -1820,6 +1820,40 @@ describe("useThreadsStore.watchThread", () => {
     expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2);
   });
 
+  test("a concurrent rich watch does not share an in-flight lean hydrate or lose its turns", async () => {
+    const fake = connectFakeClient();
+    const pending: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+    }> = [];
+    fake.on("thread/read", (params) => {
+      return new Promise<ThreadReadResponse>((resolve) => {
+        pending.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve });
+      });
+    });
+
+    const lean = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 1);
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => pending.length === 2);
+
+    expect(pending.map((request) => request.includeTurns)).toEqual([false, true]);
+
+    pending[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_rich", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
+    await Promise.all([lean, rich]);
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
   test("monotonic: once turns are loaded, a later lean watch does not downgrade them away", async () => {
     const fake = connectFakeClient();
     turnsAwareRead(fake);
