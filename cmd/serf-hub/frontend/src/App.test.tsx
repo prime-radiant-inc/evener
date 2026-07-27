@@ -96,7 +96,6 @@ beforeAll(async () => {
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
   stubTreeFetch();
-  ({ App } = await import("./App"));
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -105,6 +104,7 @@ beforeAll(async () => {
   // below renders through AppShell -> DockHost, same reasoning as the
   // three imports above.
   await import("./shell/DockHost");
+  ({ App } = await import("./App"));
 
   // Then render each route once, for the React.lazy half of the cost — see
   // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
