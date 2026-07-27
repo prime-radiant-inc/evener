@@ -994,6 +994,51 @@ func TestAPITreeFavoriteRevalidation_EndedRemoteCarriedProjectCanBeFavorited(t *
 	}
 }
 
+func TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := hubtest.SessionID(t)
+	thread := appwire.Thread{
+		ID: threadID, Source: "remote", CWD: filepath.Join(projectDir, "ended-worktree"),
+		ProjectID: project.ID, ProjectPath: project.CanonicalPath,
+		Serf:      appwire.SerfThread{Ref: "remote:" + threadID},
+		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{thread, thread})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("project", project.ID, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+
+	response := getTreeResponse(t, web)
+	var found bool
+	for _, candidate := range append(append([]hubapi.TreeProject{}, response.Projects...), response.ArchivedProjects...) {
+		if candidate.Key == project.ID {
+			found = true
+			if candidate.Favorite {
+				t.Fatalf("identical remote duplicate made carried project favorite: %+v", candidate)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("identical remote duplicate removed carried project row: %+v", response)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("identical remote duplicate changed stored favorite rows")
+	}
+}
+
 func TestAPITreeFavoriteRevalidation_ProjectClaimsWithSameIDAreAmbiguous(t *testing.T) {
 	useFavoriteRevalidationTreeClock(t)
 	projectAPath := filepath.Join(t.TempDir(), "project-a")

@@ -1095,8 +1095,10 @@ func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemot
 		}
 		candidate := favoriteRemoteOwnership{sourceID: sourceID, complete: complete}
 		if previous, exists := ownerships[ref.String()]; exists {
-			if previous.sourceID != candidate.sourceID || !previous.complete || !candidate.complete {
-				candidate = favoriteRemoteOwnership{complete: false}
+			if previous.sourceID == candidate.sourceID && previous.sourceID != "" {
+				candidate = favoriteRemoteOwnership{sourceID: candidate.sourceID}
+			} else {
+				candidate = favoriteRemoteOwnership{}
 			}
 		}
 		ownerships[ref.String()] = candidate
