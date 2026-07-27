@@ -200,6 +200,7 @@ let treeResponseBody: unknown;
 let postResponses: Record<string, { status: number; body: unknown }>;
 let postCalls: { path: string; body: unknown }[];
 let projectDetailResponses: Record<string, unknown>;
+let projectPageResponses: Record<string, unknown>;
 
 function defaultPostResponses(): Record<string, { status: number; body: unknown }> {
   return {
@@ -219,12 +220,19 @@ beforeEach(() => {
   postResponses = defaultPostResponses();
   postCalls = [];
   projectDetailResponses = { archproj: ARCHIVED_PROJECT_DETAIL };
+  projectPageResponses = {};
 
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (method === "GET" && url === "/api/tree") return jsonResponse(treeResponseBody);
     if (method === "GET" && url.startsWith("/api/tree/project?key=")) {
-      const key = decodeURIComponent(url.slice("/api/tree/project?key=".length));
+      const parsed = new URL(url, "http://serf.test");
+      const key = parsed.searchParams.get("key") ?? "";
+      if (parsed.searchParams.has("tier")) {
+        const pageKey = `${key}:${parsed.searchParams.get("tier")}:${parsed.searchParams.get("offset")}`;
+        const page = projectPageResponses[pageKey];
+        return page ? jsonResponse(page) : jsonResponse({ error: "page not found" }, 404);
+      }
       const body = projectDetailResponses[key];
       return body ? jsonResponse(body) : jsonResponse({ error: "not found" }, 404);
     }
@@ -555,6 +563,41 @@ describe("row activation", () => {
     row.focus();
     fireEvent.keyDown(row, { key: "Enter" });
     expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+});
+
+describe("tier overflow", () => {
+  test("activating +N older fetches and reveals the next tier page", async () => {
+    const visible = wireNode({ ...PROJECT_SESSION, tier: "current" });
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [wireProject({ ...PROJECT, sessions: [visible], more_current: 1 })],
+    };
+    projectPageResponses["proj1:current:1"] = {
+      key: "proj1",
+      tier: "current",
+      offset: 1,
+      sessions: [
+        wireNode({
+          ...visible,
+          row_id: "project:proj1:local:older",
+          ref: "local:older",
+          session_id: "older",
+          title: "Older session",
+          tier: "current",
+        }),
+      ],
+      remaining: 0,
+    };
+
+    renderRail();
+    await screen.findByText("Session one");
+    await userEvent.setup().click(screen.getByTestId("rail-row-overflow"));
+
+    expect(await screen.findByText("Older session")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith("/api/tree/project?key=proj1&tier=current&offset=1&limit=1", {
+      credentials: "same-origin",
+    });
   });
 });
 

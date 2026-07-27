@@ -512,6 +512,19 @@ describe("per-tier overflow", () => {
     expect(rail?.children.map((c) => c.kind)).toEqual(["session", "session", "overflow"]);
   });
 
+  test("describes each capped tier page so the overflow row can reveal older sessions", () => {
+    const [rail] = projectNodes(
+      [project({ sessions: [node({ tier: "current" })], more_current: 7, more_recent: 5 })],
+      NEVER_EXPANDED,
+    );
+    const last = rail?.children.at(-1);
+    expect(last?.kind).toBe("overflow");
+    expect(last && "pages" in last && last.pages).toEqual([
+      { projectKey: "p1", tier: "current", offset: 1, limit: 7 },
+      { projectKey: "p1", tier: "recent", offset: 0, limit: 5 },
+    ]);
+  });
+
   test("no overflow row when nothing was capped", () => {
     const [rail] = projectNodes([project({ sessions: [node()] })], NEVER_EXPANDED);
     expect(rail?.children.every((c) => c.kind === "session")).toBe(true);

@@ -44,6 +44,7 @@ import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
+  type OverflowRailNode,
   overrideLookup,
   projectNodeIdForSessionRef,
   projectNodes,
@@ -315,7 +316,11 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   function handleActivate(node: RailNode) {
-    if (node.kind === "loading" || node.kind === "overflow") return;
+    if (node.kind === "loading") return;
+    if (node.kind === "overflow") {
+      void revealOverflow(node);
+      return;
+    }
     if (node.kind === "session") {
       // A cluster row is a repeated-title FOLD, not a session: its ref is a
       // synthetic "cluster:<hex>" naming no session, so opening a pane for it
@@ -333,6 +338,19 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       return;
     }
     handleToggle(node); // a project row has nowhere to "open" - Enter/click toggles it, same as its chevron
+  }
+
+  async function revealOverflow(node: OverflowRailNode): Promise<void> {
+    if (node.pages.length === 0) return;
+    try {
+      await Promise.all(
+        node.pages.map((page) =>
+          treeStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit),
+        ),
+      );
+    } catch (err) {
+      toasts.push("error", `Couldn't load older sessions: ${errorText(err)}`);
+    }
   }
 
   // runAction is the one path every rail mutation takes. `optimistic` is what

@@ -6,7 +6,7 @@ import {
   threadStartedNotification,
 } from "../protocol/testing/notifications";
 import { connectionStore } from "./connection";
-import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, treeStore } from "./tree";
+import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "./tree";
 
 // A minimal, well-formed Response stand-in - only what refresh()/
 // loadProjectDetail() actually touch (ok/status/statusText/json()).
@@ -218,6 +218,57 @@ describe("loadProjectDetail", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
     await expect(treeStore.getState().loadProjectDetail("missing")).resolves.toBeUndefined();
     expect(treeStore.getState().projectDetails.has("missing")).toBe(false);
+  });
+});
+
+describe("loadProjectPage", () => {
+  test("fetches an offset page and merges it into the requested tier", async () => {
+    const current: TreeNode[] = Array.from({ length: 50 }, (_, i) => ({
+      row_id: `r${i}`,
+      ref: `local:${i}`,
+      host_id: "local",
+      session_id: `${i}`,
+      title: `Current ${i}`,
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    }));
+    const recent: TreeNode = { ...current[0]!, row_id: "recent", ref: "local:recent", tier: "recent", title: "Recent" };
+    const tree: TreeResponse = {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [],
+      needs_you: [],
+      favorites: [],
+      projects: [{ key: "p1", name: "Proj", sessions: [...current, recent], more_current: 1 }],
+      archived_projects: [],
+      test_runs: [],
+      attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    };
+    treeStore.setState({ tree });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        key: "p1",
+        tier: "current",
+        offset: 50,
+        sessions: [{ ...current[0]!, row_id: "r50", ref: "local:50", session_id: "50", title: "Current 50" }],
+        remaining: 0,
+      }),
+    );
+
+    await treeStore.getState().loadProjectPage("p1", "current", 50, 50);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tree/project?key=p1&tier=current&offset=50&limit=50", {
+      credentials: "same-origin",
+    });
+    const project = treeStore.getState().tree?.projects[0];
+    expect(project?.sessions.filter((n) => n.tier === "current")).toHaveLength(51);
+    expect(project?.sessions[50]?.title).toBe("Current 50");
+    expect(project?.sessions[51]?.title).toBe("Recent");
+    expect(project?.more_current).toBe(0);
   });
 });
 

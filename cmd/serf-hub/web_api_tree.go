@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -261,10 +262,48 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, http.StatusBadRequest, "key is required")
 		return
 	}
+	query := r.URL.Query()
+	pageRequested := query.Has("tier") || query.Has("offset") || query.Has("limit")
+	tier := query.Get("tier")
+	offset, limit := 0, hubcore.SidebarSessionPageSize
+	if pageRequested {
+		switch tier {
+		case "current", "recent", "archived":
+		default:
+			writeAPIError(w, http.StatusBadRequest, "tier must be current, recent, or archived")
+			return
+		}
+		if raw := query.Get("offset"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				writeAPIError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+				return
+			}
+			offset = parsed
+		}
+		if raw := query.Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > hubcore.SidebarSessionPageSize {
+				writeAPIError(w, http.StatusBadRequest, "limit must be between 1 and 50")
+				return
+			}
+			limit = parsed
+		}
+	}
 	tree, _ := s.memoTree(r.Context())
 	favs := s.favoriteDecisions()
-	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+	projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
+	for _, p := range projects {
 		if p.Key == key {
+			if pageRequested {
+				rows, remaining, ok := p.Page(tier, offset, limit)
+				if !ok {
+					writeAPIError(w, http.StatusBadRequest, "invalid project page")
+					return
+				}
+				writeAPIJSON(w, http.StatusOK, s.apiTreeProjectPage("project", favs, p, tier, offset, rows, remaining))
+				return
+			}
 			writeAPIJSON(w, http.StatusOK, s.apiTreeProject("project", favs, p))
 			return
 		}
@@ -639,6 +678,22 @@ func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]boo
 		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "archived", favs, n))
 	}
 	return ap
+}
+
+func (s *WebServer) apiTreeProjectPage(
+	scope string,
+	favs map[hubcore.ArchiveKey]bool,
+	p hubcore.TreeProject,
+	tier string,
+	offset int,
+	rows []hubcore.TreeNode,
+	remaining int,
+) hubapi.TreeProjectPage {
+	page := hubapi.TreeProjectPage{Key: p.Key, Tier: tier, Offset: offset, Remaining: remaining}
+	for _, n := range rows {
+		page.Sessions = append(page.Sessions, s.apiTreeNodeTier(scope, p.Key, tier, favs, n))
+	}
+	return page
 }
 
 // apiTreeNodeTier wraps apiTreeNode and stamps the row-level fields a tiered

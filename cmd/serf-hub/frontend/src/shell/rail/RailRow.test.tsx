@@ -51,7 +51,7 @@ function loadingRailNode(): LoadingRailNode {
 }
 
 function overflowRailNode(count: number): OverflowRailNode {
-  return { id: "projectnode:p1:overflow", kind: "overflow", count };
+  return { id: "projectnode:p1:overflow", kind: "overflow", count, pages: [] };
 }
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {

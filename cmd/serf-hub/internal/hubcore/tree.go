@@ -81,7 +81,14 @@ type TreeProject struct {
 	MoreCurrent  int
 	MoreRecent   int
 	MoreArchived int
-	Age          string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
+	// The uncapped tier slices remain available for an explicit page request.
+	// They are intentionally private: the baseline tree only exposes the kept
+	// rows and additive overflow counts, while Page is the controlled seam for
+	// revealing older rows.
+	allCurrent  []TreeNode
+	allRecent   []TreeNode
+	allArchived []TreeNode
+	Age         string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
 	// Worktrees is the count of distinct non-empty WorktreePath values across
 	// the project's sessions, surfaced in the delete confirmation.
 	Worktrees int
@@ -95,6 +102,9 @@ const (
 	// of one-shot runs would otherwise bloat the partial; the kept rows are the
 	// most-recent N and the overflow is summarised as a quiet "+N older" note.
 	maxSidebarSessionsPerTier = 50
+	// SidebarSessionPageSize is the maximum number of capped-away rows a
+	// single rail pagination request may reveal.
+	SidebarSessionPageSize = maxSidebarSessionsPerTier
 )
 
 // capTier keeps the first n rows (the input is already most-recent first) and
@@ -104,6 +114,44 @@ func capTier(rows []TreeNode, n int) ([]TreeNode, int) {
 		return rows, 0
 	}
 	return rows[:n], len(rows) - n
+}
+
+// Page returns one bounded, ordered slice from a project's uncapped tier and
+// the number still beyond the returned end. The baseline tree keeps only the
+// newest 50 rows, so callers use the same offset to reveal the next page
+// without changing the tier's ordering contract.
+func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool) {
+	if offset < 0 || limit <= 0 {
+		return nil, 0, false
+	}
+	var rows []TreeNode
+	switch tier {
+	case "current":
+		rows = p.allCurrent
+		if rows == nil {
+			rows = p.Current
+		}
+	case "recent":
+		rows = p.allRecent
+		if rows == nil {
+			rows = p.Recent
+		}
+	case "archived":
+		rows = p.allArchived
+		if rows == nil {
+			rows = p.Archived
+		}
+	default:
+		return nil, 0, false
+	}
+	if offset >= len(rows) {
+		return []TreeNode{}, 0, true
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end], len(rows) - end, true
 }
 
 // classifySession returns a session's sidebar tier from its last activity and
@@ -775,9 +823,10 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
 		// sidebar payload; the kept rows are the most-recent N (already ordered).
-		current, moreCurrent := capTier(current, maxSidebarSessionsPerTier)
-		recent, moreRecent := capTier(recent, maxSidebarSessionsPerTier)
-		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
+		allCurrent, allRecent, allArchived := current, recent, archived
+		current, moreCurrent := capTier(allCurrent, maxSidebarSessionsPerTier)
+		recent, moreRecent := capTier(allRecent, maxSidebarSessionsPerTier)
+		archived, moreArchived := capTier(allArchived, maxSidebarSessionsPerTier)
 
 		treeProjects = append(treeProjects, TreeProject{
 			Name:         acc.name,
@@ -798,6 +847,9 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			MoreCurrent:  moreCurrent,
 			MoreRecent:   moreRecent,
 			MoreArchived: moreArchived,
+			allCurrent:   allCurrent,
+			allRecent:    allRecent,
+			allArchived:  allArchived,
 			Age:          AgeString(lastActivity),
 		})
 	}

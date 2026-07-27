@@ -85,6 +85,17 @@ type TreeProject struct {
 	Sessions     []TreeNode `json:"sessions"`
 }
 
+// TreeProjectPage is the bounded response for revealing rows omitted from one
+// project's capped activity tier. Offset is the requested position in that
+// tier; Remaining is the number still beyond the returned page.
+type TreeProjectPage struct {
+	Key       string     `json:"key"`
+	Tier      string     `json:"tier"`
+	Offset    int        `json:"offset"`
+	Sessions  []TreeNode `json:"sessions"`
+	Remaining int        `json:"remaining"`
+}
+
 type TreeNode struct {
 	RowID        string `json:"row_id"`
 	Ref          string `json:"ref"`

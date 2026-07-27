@@ -5,7 +5,7 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, TreeTier } from "../../stores/tree";
 import type { TreeNode as WidgetTreeNode } from "../../widgets";
 
 export interface SessionRailNode extends WidgetTreeNode {
@@ -44,14 +44,21 @@ export interface InactiveFoldRailNode extends WidgetTreeNode {
   children: (SessionRailNode | OverflowRailNode)[];
 }
 
+export interface OverflowPage {
+  projectKey: string;
+  tier: TreeTier;
+  offset: number;
+  limit: number;
+}
+
 /** A quiet "+N older" note standing for the rows the server capped away
- * (hubcore's maxSidebarSessionsPerTier, 50 per tier). A leaf, not a
- * disclosure: the rows it counts were never sent, so there is nothing behind
- * it to open - it exists so a capped list stops silently claiming to be the
- * whole list. */
+ * (hubcore's maxSidebarSessionsPerTier, 50 per tier). Project overflow rows
+ * carry the tier offsets needed to reveal those rows; synthetic child folds
+ * leave pages empty because their omitted children are not project pages. */
 export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
+  pages: OverflowPage[];
 }
 
 export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode | OverflowRailNode;
@@ -60,13 +67,28 @@ export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | Ina
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(id: string, count: number): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count }] : [];
+function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
 }
 
 function tierOverflow(p: ApiTreeProject, tiers: ("current" | "recent" | "archived")[]): number {
   const field = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
   return tiers.reduce((sum, t) => sum + (field[t] ?? 0), 0);
+}
+
+function tierOverflowPages(p: ApiTreeProject, tiers: TreeTier[]): OverflowPage[] {
+  const fields = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
+  return tiers.flatMap((tier) => {
+    const count = fields[tier] ?? 0;
+    if (count <= 0) return [];
+    return [
+      { projectKey: p.key, tier, offset: p.sessions.filter((n) => n.tier === tier).length, limit: Math.min(count, 50) },
+    ];
+  });
+}
+
+function projectOverflowNode(id: string, p: ApiTreeProject, tiers: TreeTier[]): OverflowRailNode[] {
+  return overflowNode(id, tierOverflow(p, tiers), tierOverflowPages(p, tiers));
 }
 
 // Resolves one node's expanded state: an explicit user toggle (tracked by
@@ -119,24 +141,24 @@ function inactiveFoldId(parentRowID: string): string {
 function splitChildren(parent: ApiTreeNode, isExpanded: IsExpanded): (SessionRailNode | InactiveFoldRailNode)[] {
   const current: SessionRailNode[] = [];
   const inactive: SessionRailNode[] = [];
-	if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
+  if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
   for (const child of parent.children) {
     (CURRENT_SUBAGENT_STATES.has(child.state) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
-	const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
-	if (inactiveCount === 0) return current;
-	const id = inactiveFoldId(parent.row_id);
-	const omitted = overflowNode(id, parent.more_subagents ?? 0);
-	return [
-		...current,
-		{
-			id,
-			kind: "inactiveFold",
-			count: inactiveCount,
-			expanded: isExpanded(id, false),
-			children: [...inactive, ...omitted],
-		},
-	];
+  const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
+  if (inactiveCount === 0) return current;
+  const id = inactiveFoldId(parent.row_id);
+  const omitted = overflowNode(id, parent.more_subagents ?? 0);
+  return [
+    ...current,
+    {
+      id,
+      kind: "inactiveFold",
+      count: inactiveCount,
+      expanded: isExpanded(id, false),
+      children: [...inactive, ...omitted],
+    },
+  ];
 }
 
 function toSessionNode(n: ApiTreeNode, isExpanded: IsExpanded): SessionRailNode {
@@ -252,7 +274,7 @@ export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded)
           .filter((n) => !isArchivedTier(n))
           .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
           .map((n) => toSessionNode(n, isExpanded)),
-        ...overflowNode(id, tierOverflow(p, ["current", "recent"])),
+        ...projectOverflowNode(id, p, ["current", "recent"]),
       ],
     };
   });
@@ -292,10 +314,7 @@ export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: Is
       kind: "project",
       project: p,
       expanded: isExpanded(id, false),
-      children: [
-        ...archived.map((n) => toSessionNode(n, isExpanded)),
-        ...overflowNode(id, tierOverflow(p, ["archived"])),
-      ],
+      children: [...archived.map((n) => toSessionNode(n, isExpanded)), ...projectOverflowNode(id, p, ["archived"])],
     });
   }
   return groups;
@@ -337,7 +356,7 @@ export function archivedProjectNodes(
       // capped away from them - the stub carried neither.
       children = [
         ...detail.sessions.map((n) => toSessionNode(n, isExpanded)),
-        ...overflowNode(id, tierOverflow(detail, ["current", "recent", "archived"])),
+        ...projectOverflowNode(id, detail, ["current", "recent", "archived"]),
       ];
     } else if ((p.session_count ?? 0) > 0) {
       children = [{ id: `${id}:loading`, kind: "loading" }];

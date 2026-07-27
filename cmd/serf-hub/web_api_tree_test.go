@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -344,6 +345,53 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 	if p.Key != key || len(p.Sessions) != 1 {
 		t.Fatalf("want the single project with its session, got %+v", p)
+	}
+}
+
+func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "paged")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01PAGE%02d", i), CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/tree/project?key="+project.ID+"&tier=current&offset=50&limit=50", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Key       string            `json:"key"`
+		Tier      string            `json:"tier"`
+		Offset    int               `json:"offset"`
+		Sessions  []hubapi.TreeNode `json:"sessions"`
+		Remaining int               `json:"remaining"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Key != project.ID || page.Tier != "current" || page.Offset != 50 {
+		t.Fatalf("page identity = %+v", page)
+	}
+	if len(page.Sessions) != 10 || page.Remaining != 0 {
+		t.Fatalf("page = %d rows + %d remaining, want 10 + 0", len(page.Sessions), page.Remaining)
+	}
+	if page.Sessions[0].SessionID == "" || page.Sessions[0].SessionID == "01PAGE00" {
+		t.Fatalf("page did not contain a capped-away session: %+v", page.Sessions[0])
 	}
 }
 

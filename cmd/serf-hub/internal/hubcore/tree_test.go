@@ -1695,6 +1695,35 @@ func TestSubagentChildrenCarryOverage(t *testing.T) {
 	}
 }
 
+func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01PAGE%02d", i), CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/page"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(tree.Projects))
+	}
+	project := tree.Projects[0]
+	if len(project.Current) != maxSidebarSessionsPerTier || project.MoreCurrent != 10 {
+		t.Fatalf("capped project = %d rows + %d more, want 50 + 10", len(project.Current), project.MoreCurrent)
+	}
+	page, remaining, ok := project.Page("current", maxSidebarSessionsPerTier, maxSidebarSessionsPerTier)
+	if !ok {
+		t.Fatal("current tier page was rejected")
+	}
+	if len(page) != 10 || remaining != 0 {
+		t.Fatalf("page = %d rows + %d remaining, want 10 + 0", len(page), remaining)
+	}
+	if page[0].ID == project.Current[0].ID {
+		t.Fatalf("page repeated a retained row %q", page[0].ID)
+	}
+}
+
 func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, origin string) schema.SessionMeta {
