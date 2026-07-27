@@ -93,8 +93,11 @@
 }
 
 .mandate {
+  font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .activity {

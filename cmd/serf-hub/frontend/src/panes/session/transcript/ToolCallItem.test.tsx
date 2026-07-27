@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
@@ -791,9 +791,12 @@ test("task-only delegates show a bounded purpose preview while keeping the full 
   const tool = screen.getByTestId("tool-call-item");
   const module = screen.getByTestId("subagent-module");
   const purpose = screen.getByTestId("tool-row-purpose");
-  expect(purpose.textContent).toBe("**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…");
+  expect(purpose.textContent).toBe(
+    "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
+  );
   expect(purpose.textContent).not.toBe(task);
-  expect(screen.getByTestId("subagent-mandate").textContent).toBe(task);
+  const mandate = screen.getByTestId("subagent-mandate");
+  expect(mandate.lastElementChild?.textContent).toBe(task);
   expect(tool.querySelectorAll("details > summary")).toHaveLength(1);
   expect(module.querySelectorAll("details > summary")).toHaveLength(0);
   expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();

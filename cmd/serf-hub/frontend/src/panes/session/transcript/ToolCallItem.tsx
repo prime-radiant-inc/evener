@@ -13,12 +13,12 @@ import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
-import { ToolRow } from "./ToolRow";
+import { statedPurposeOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { parseJSONObject, str } from "./tools/helpers";
+import { clip, parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
@@ -48,6 +48,16 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   failed: "failed",
   unknown: "needs-you",
 };
+
+const DELEGATE_PURPOSE_PREVIEW_MAX = 120;
+
+function delegatePurposeOf(item: ItemModel): string | undefined {
+  const statedPurpose = statedPurposeOf(item);
+  if (statedPurpose !== undefined) return statedPurpose;
+
+  const task = str(parseArgs(item.argumentsJSON), "task")?.replace(/\s+/g, " ").trim();
+  return task === undefined || task === "" ? undefined : clip(task, DELEGATE_PURPOSE_PREVIEW_MAX);
+}
 
 function delegateStatusFromItem(item: ItemModel): DelegateStatusKey {
   const parsed = parseJSONObject(item.output);
@@ -130,6 +140,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
   const summary = descriptor.summary(item) + (summarySuffix ?? "");
+  const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
@@ -207,7 +218,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
           summary={isDelegate ? "" : summary}
-          purpose={item.description}
+          purpose={purpose}
           failed={false}
           status={delegateStatus}
           expandable={false}
@@ -235,7 +246,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     >
       <ToolRow
         summary={isDelegate ? "" : summary}
-        purpose={item.description}
+        purpose={purpose}
         failed={failed}
         status={delegateStatus}
         expandable
