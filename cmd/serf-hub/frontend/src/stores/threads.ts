@@ -230,6 +230,9 @@ let inflightModelsList: Promise<ModelListResponse> | null = null;
 const watchRefCounts = new Map<string, number>();
 const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
 const inflightWatchIncludeTurns = new Map<string, boolean>();
+// A generation changes whenever the last watcher releases. Late responses
+// from that retired lifetime must not populate a new one.
+const watchGenerations = new Map<string, number>();
 // Per-ref "does any watcher want turns" flag (yd16 §4.2). Monotonic across a
 // ref's watch lifetime: set true the first time any watchThread call asks for
 // turns, never flipped back to false while watched, cleared only when the last
@@ -445,6 +448,22 @@ function handleNotification(n: AnyNotification): void {
   threadsStore.setState(patch);
 }
 
+function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolean, generation: number): void {
+  if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
+  if ((watchGenerations.get(ref) ?? 0) !== generation) return;
+
+  // A late lean reconnect snapshot cannot downgrade a rich snapshot that
+  // already won an upgrade race in this same watch lifetime.
+  const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
+  if (!includeTurns && hydratedRich) return;
+  watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
+  threadsStore.setState((s) => {
+    const next = new Map(s.watchedThreads);
+    next.set(ref, model);
+    return { watchedThreads: next };
+  });
+}
+
 // handleReady re-subscribes every currently-tracked ref, additively, and
 // replaces its model wholesale from the fresh snapshot (hydrateThread) —
 // snapshot recovery, since notifications published while the socket was down
@@ -478,18 +497,11 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
       }
     }),
     ...watchRefs.map(async (ref) => {
+      const generation = watchGenerations.get(ref) ?? 0;
       try {
         const includeTurns = watchIncludeTurns.get(ref) ?? false;
         const model = await hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns);
-        // A concurrent releaseWatchedThread() may have dropped this ref
-        // while the re-subscribe was in flight; don't resurrect it.
-        if (!threadsStore.getState().watchedThreads.has(ref)) return;
-        watchHydratedIncludeTurns.set(ref, includeTurns);
-        threadsStore.setState((s) => {
-          const next = new Map(s.watchedThreads);
-          next.set(ref, model);
-          return { watchedThreads: next };
-        });
+        storeWatchedModel(ref, model, includeTurns, generation);
       } catch {
         // Best-effort, same rationale as the real-pane path above.
       }
@@ -644,6 +656,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async watchThread(ref, opts) {
     const client = requireClient();
     const wantTurns = opts?.includeTurns ?? false;
+    if ((watchRefCounts.get(ref) ?? 0) === 0) {
+      watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
+    }
+    const generation = watchGenerations.get(ref) ?? 0;
     watchRefCounts.set(ref, (watchRefCounts.get(ref) ?? 0) + 1);
     // Monotonic per-ref turns flag: once any watcher wants turns, keep them
     // for every watcher until the last release (yd16 §4.2).
@@ -684,20 +700,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       // This call's own claim never landed: undo it via releaseWatchedThread,
       // same rationale as ensureThread's own catch above.
-      threadsStore.getState().releaseWatchedThread(ref);
+      if ((watchGenerations.get(ref) ?? 0) === generation) {
+        threadsStore.getState().releaseWatchedThread(ref);
+      }
       throw err;
     }
-    // A concurrent releaseWatchedThread() may have dropped this ref to zero
-    // watchers while the hydrate was in flight; don't resurrect it.
-    if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
-    const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
-    if (!needTurns && hydratedRich) return;
-    watchHydratedIncludeTurns.set(ref, hydratedRich || needTurns);
-    threadsStore.setState((s) => {
-      const next = new Map(s.watchedThreads);
-      next.set(ref, model);
-      return { watchedThreads: next };
-    });
+    storeWatchedModel(ref, model, needTurns, generation);
   },
 
   releaseWatchedThread(ref) {
@@ -708,6 +716,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
+    // A retired lifecycle must not lend its pending hydrate to a new watcher.
+    // The old promise may still settle, but its generation check prevents it
+    // from publishing into the new lifecycle.
+    inflightWatchHydrates.delete(ref);
+    inflightWatchIncludeTurns.delete(ref);
     // Drop the monotonic turns flag with the last watcher so a future watch of
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
@@ -998,6 +1012,7 @@ export function resetThreadsStoreForTests(): void {
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchIncludeTurns.clear();
+  watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
   modelsCache = null;

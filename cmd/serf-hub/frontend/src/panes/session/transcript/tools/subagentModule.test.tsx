@@ -370,6 +370,45 @@ test("a collapsed live delegate updates its top-level status when the child sett
   expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
 });
 
+test("a genuinely live collapsed delegate has a status row before its child settles", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
+  connectionStore.getState().connect(fake);
+
+  const turn: TurnModel = { id: "turn_live_collapsed_initial", status: "inProgress", items: [] };
+  const liveItem = delegateItem({
+    id: "d_live_collapsed_initial",
+    turnId: turn.id,
+    callId: "call_live_collapsed_initial",
+    description: "Genuinely live delegate",
+    argumentsJSON: JSON.stringify({ task: "keep working" }),
+    output: JSON.stringify({
+      job_id: "job_live_collapsed_initial",
+      status: "running",
+      transcript_ref: "ref_live_collapsed_initial",
+    }),
+  });
+  render(<ToolCallItem item={liveItem} turn={turn} live={true} />);
+
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1));
+
+  await act(async () => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_child",
+        ref: "ref_live_collapsed_initial",
+        status: { type: "closed" },
+      },
+    } as never);
+  });
+
+  expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+});
+
 test("a mounted follower takes over when the current delegate leader unmounts", () => {
   const Body = toolRendererFor("delegate").body!;
   const first = delegateItem({

@@ -490,7 +490,7 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
   );
 }
 
-function rowFromDelegateItem(item: ItemModel): {
+export function rowFromDelegateItem(item: ItemModel): {
   rowKey: string;
   migrateFromRowKey?: string;
   row: Omit<SubagentRow, "spawnIndex" | "rowKey">;

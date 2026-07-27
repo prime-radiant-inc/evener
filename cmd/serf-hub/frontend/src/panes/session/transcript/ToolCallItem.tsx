@@ -19,12 +19,14 @@ import { toolCallDuration } from "./toolMeta";
 import { toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { parseJSONObject, str } from "./tools/helpers";
+import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
   effectiveRowKind,
   rowKeyForDelegateItem,
   type SubagentRow,
   turnScopeKey,
+  upsertSubagentRow,
   useSubagentRows,
 } from "./tools/subagentModuleStore";
 import { WatchedChildIndicator } from "./tools/watchedChild";
@@ -88,6 +90,13 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const delegateTranscriptRef = isDelegate ? str(parseJSONObject(item.output) ?? {}, "transcript_ref") : undefined;
   const delegateKind = delegateStatusForItem(item, delegateRow, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
+
+  useLayoutEffect(() => {
+    if (!isDelegate) return;
+    const { rowKey, migrateFromRowKey, row } = rowFromDelegateItem(item);
+    upsertSubagentRow(delegateScopeKey, { rowKey, ...row }, migrateFromRowKey);
+  }, [delegateScopeKey, isDelegate, item]);
 
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
