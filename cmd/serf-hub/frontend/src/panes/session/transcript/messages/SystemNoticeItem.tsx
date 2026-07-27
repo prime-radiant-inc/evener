@@ -27,6 +27,7 @@ import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { FailureGlyph, Markdown } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { itemScopeKey } from "../tools/subagentModuleStore";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
@@ -99,11 +100,12 @@ function scaffoldLabel(item: ItemModel): string {
 // expanding renders the FULL text through the same Markdown pipeline every
 // other message body uses, since the wire's own text is markdown (## headers
 // etc.) that would otherwise show as literal, unformatted characters.
-function ScaffoldDisclosure({ item }: { item: ItemModel }) {
-  // Open/closed state lives in the shared disclosureStore keyed by item.id
-  // (yt2q), so an expanded scaffold survives the VirtualList/dockview remount
-  // that would reset a native uncontrolled <details>. Collapsed by default.
-  const open = isDisclosureOpen(item.id, false);
+function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
+  // Open/closed state lives in the shared disclosureStore keyed by session ref
+  // plus item id, so an expanded scaffold survives a remount without colliding
+  // with the same item id in another session. Collapsed by default.
+  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const open = isDisclosureOpen(disclosureKey, false);
   return (
     <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -111,7 +113,7 @@ function ScaffoldDisclosure({ item }: { item: ItemModel }) {
         className={CLASS.scaffoldSummary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(item.id, false);
+          toggleDisclosure(disclosureKey, false);
         }}
       >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
@@ -153,7 +155,7 @@ function pctLabel(pct: number): string {
 // Falls back to the plain prose line when raw is absent or malformed - a
 // heterogeneous-version relay from a daemon predating this field still shows
 // something rather than nothing.
-function RoundTimingsLine({ item }: { item: ItemModel }) {
+function RoundTimingsLine({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
   const summary = roundTimingsSummary(item.raw);
   if (!summary) {
     return (
@@ -171,7 +173,8 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
       </div>
     );
   }
-  const open = isDisclosureOpen(item.id, false);
+  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const open = isDisclosureOpen(disclosureKey, false);
   const headline = `Round ${summary.round} · ${total} — ${summary.dominant.label} ${formatDurationMs(summary.dominant.ms)} (${pctLabel(summary.dominant.pct)})`;
   return (
     <details className={CLASS.timings} data-testid="system-notice-timings" open={open}>
@@ -180,7 +183,7 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
         className={CLASS.timingsSummary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(item.id, false);
+          toggleDisclosure(disclosureKey, false);
         }}
       >
         {headline}
@@ -237,10 +240,10 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   );
 }
 
-function SystemLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
+function SystemLine({ item, turn, sessionRef }: { item: ItemModel; turn: TurnModel; sessionRef?: string }) {
   if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
-  if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} />;
-  if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
+  if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
+  if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} sessionRef={sessionRef} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
       {noticeText(item)}
@@ -248,7 +251,7 @@ function SystemLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   );
 }
 
-function SystemGroup({ run, turn }: { run: SystemRun; turn: TurnModel }) {
+function SystemGroup({ run, turn, sessionRef }: { run: SystemRun; turn: TurnModel; sessionRef?: string }) {
   const count = run.items.length;
   // Every SystemGroup caller already checked shouldGroup(run), i.e.
   // count >= MIN_GROUP_SIZE - so items[0] always exists. That guarantee
@@ -257,11 +260,11 @@ function SystemGroup({ run, turn }: { run: SystemRun; turn: TurnModel }) {
   const firstItem = run.items[0];
   if (!firstItem) throw new Error("SystemGroup rendered with an empty run");
   const first = firstLine(noticeText(firstItem), 60);
-  // Open/closed state lives in the shared disclosureStore keyed by the run's
-  // first item id (yt2q) - the run's stable identity across renders - so an
-  // expanded group survives the VirtualList/dockview remount that would reset
-  // a native uncontrolled <details>. Collapsed by default.
-  const open = isDisclosureOpen(firstItem.id, false);
+  // Open/closed state lives in the shared disclosureStore keyed by session ref
+  // plus the run's first item id - the run's stable identity across renders -
+  // so an expanded group survives a remount without cross-session collision.
+  const disclosureKey = itemScopeKey(sessionRef, firstItem.id);
+  const open = isDisclosureOpen(disclosureKey, false);
   return (
     <details className={CLASS.group} data-testid="system-notice-group" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -269,14 +272,14 @@ function SystemGroup({ run, turn }: { run: SystemRun; turn: TurnModel }) {
         className={CLASS.summary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(firstItem.id, false);
+          toggleDisclosure(disclosureKey, false);
         }}
       >
         {count} system events · {first}
       </summary>
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (
-          <SystemLine key={it.id} item={it} turn={turn} />
+          <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} />
         ))}
       </div>
     </details>
@@ -297,16 +300,16 @@ function SystemGroup({ run, turn }: { run: SystemRun; turn: TurnModel }) {
 // because its render is cheap - one linear systemRunFor scan plus a few
 // divs, no markdown/diff work - unlike the heavy renderers ignoringTurn
 // exists to protect.
-export function SystemNoticeItem({ item, turn }: ItemRenderProps) {
+export function SystemNoticeItem({ item, turn, sessionRef }: ItemRenderProps) {
   const run = systemRunFor(turn.items, item.id);
   if (!run) return null; // defensive - the registry only dispatches systemMessage items here
 
   if (shouldGroup(run)) {
     if (!run.isFirst) return null; // absorbed into the run's first member
-    return <SystemGroup run={run} turn={turn} />;
+    return <SystemGroup run={run} turn={turn} sessionRef={sessionRef} />;
   }
 
-  return <SystemLine item={item} turn={turn} />;
+  return <SystemLine item={item} turn={turn} sessionRef={sessionRef} />;
 }
 
 registerItemRenderer("systemMessage", SystemNoticeItem);

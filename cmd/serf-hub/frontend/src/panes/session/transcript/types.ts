@@ -14,9 +14,7 @@ export interface ItemRenderProps {
   turn: TurnModel;
   live: boolean;
   // The owning session's ref, threaded from Session.tsx via TurnBlock so an
-  // item renderer that needs a session-scoped action can wire it (ToolCallItem's
-  // file "open beside" affordance, floor §3.7). Constant for the pane's life
-  // (it IS the pane's identity), so `ignoringTurn` below need not compare it.
+  // item renderer can scope a disclosure or action to the owning session.
   sessionRef?: string;
 }
 
@@ -56,5 +54,5 @@ export function itemRendererFor(type: string): ComponentType<ItemRenderProps> {
 // wrapped with this; don't add it to a new renderer without first checking
 // what it reads off `turn`.
 export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): boolean {
-  return prev.item === next.item && prev.live === next.live;
+  return prev.item === next.item && prev.live === next.live && prev.sessionRef === next.sessionRef;
 }

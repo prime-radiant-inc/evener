@@ -3,19 +3,19 @@
 // `delegate` itself (the spawn call - see subagentModule.tsx, which owns
 // the aggregated view these calls' targets correlate into).
 //
-// Ground truth (agent/session_tools_jobs.go, verified directly - see the
-// wave-4 task-3 report for the full citation trail): the currently
-// registered "read one job" tool is named job_status, NOT job_read_output
-// (that Def exists but is never wired into registerJobToolsWithRegistrar);
-// job_status is also the ONLY member of this family whose Output is real,
-// whole-string JSON (marshalBoundedJSON) - job_list/job_stop/delegate_send
-// all return human-FORMATTED TEXT (formatJobList/formatJobStop/
-// formatDelegateSend) ending in a "[... · ...]" bracketed footer, with the
-// actual structured result only in tool_state/Raw, which protocol/
-// reducer.ts drops before it reaches ItemModel (see helpers.ts's own
-// header). job_send_message is a retired/banned tool name (see the
-// report) kept only as a defensive alias reading its own legacy `target`
-// arg, exactly as renderer-tools.js's jobSendMessageRenderer did.
+// Ground truth (agent/session_tools_jobs.go, verified directly): the
+// currently registered "read one job" tool is named job_status, NOT
+// job_read_output (that Def exists but is never wired into
+// registerJobToolsWithRegistrar). ExecuteCall marshals State directly into
+// item.raw with no wrapper key. job_status returns whole-object JSON in
+// item.output, so its existing output parser is the useful representation;
+// raw duplicates that state. job_list returns human-formatted text in output
+// but a stable direct jobListResult in raw, which supplies valuable row fields
+// and is rendered below. job_stop and delegate_send return concise actionable
+// text/footers in output; their direct raw results duplicate that status or
+// would repeat details already present in the existing correlation bodies, so
+// those bodies stay output-driven. job_send_message is a retired/banned tool
+// name kept only as a defensive alias reading its legacy target arg.
 import { useLayoutEffect } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -54,6 +54,73 @@ function CorrelatingBody({
     });
   });
   return <HeadClippedOutputBody item={item} live={false} />;
+}
+
+type JsonObject = Record<string, unknown>;
+
+function asJsonObject(value: unknown): JsonObject | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
+}
+
+interface JobListState {
+  jobs: JsonObject[];
+  total: number;
+}
+
+// jobListState validates the direct StateResult.State shape produced by
+// jobListTool: {jobs:[{job_id,...}], count, total, ...}. There is no `state` or
+// `job_list` wrapper key because ExecuteCall marshals State itself. A malformed
+// or older raw value falls back to the producer's formatted output below.
+function jobListState(raw: unknown): JobListState | undefined {
+  const state = asJsonObject(raw);
+  if (!state || !Array.isArray(state.jobs)) return undefined;
+
+  const jobs: JsonObject[] = [];
+  for (const value of state.jobs) {
+    const job = asJsonObject(value);
+    if (!job || typeof job.job_id !== "string") return undefined;
+    jobs.push(job);
+  }
+
+  const total =
+    typeof state.total === "number" ? state.total : typeof state.count === "number" ? state.count : jobs.length;
+  return { jobs, total };
+}
+
+function textField(object: JsonObject, key: string): string | undefined {
+  const value = object[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function JobListBody({ item, live }: ToolRenderProps) {
+  const state = jobListState(item.raw);
+  if (!state) return <HeadClippedOutputBody item={item} live={live} />;
+
+  return (
+    <div data-testid="job-list-structured">
+      {state.jobs.length === 0 ? (
+        <div>No jobs.</div>
+      ) : (
+        state.jobs.map((job) => {
+          const identity = textField(job, "job_id");
+          if (identity === undefined) return null;
+          const fields = [identity, textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
+            (field): field is string => field !== undefined,
+          );
+          const description = textField(job, "description");
+          return (
+            <div key={identity} data-testid="job-list-row">
+              {fields.join(" · ")}
+              {description ? ` — ${description}` : ""}
+            </div>
+          );
+        })
+      )}
+      <div data-testid="job-list-total">
+        {state.jobs.length} of {state.total} jobs
+      </div>
+    </div>
+  );
 }
 
 registerToolRenderer({
@@ -96,7 +163,7 @@ registerToolRenderer({
     const filter = Array.isArray(status) ? status.filter((s) => typeof s === "string").join(", ") : "";
     return filter ? `Listed jobs (${filter})` : "Listed jobs";
   },
-  body: HeadClippedOutputBody,
+  body: JobListBody,
 });
 
 registerToolRenderer({

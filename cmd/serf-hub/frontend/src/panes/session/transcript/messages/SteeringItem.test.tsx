@@ -88,6 +88,25 @@ test("an expanded steering divider stays open across an unmount+remount with the
   expect((screen.getByTestId("steering-item") as HTMLDetailsElement).open).toBe(true);
 });
 
+test("the same steering item id has independent disclosure state in different sessions", () => {
+  const shared = item({ id: "same_item", text: "the raw steering body" });
+  render(
+    <>
+      <SteeringItem item={shared} turn={turn} live={false} sessionRef="session_a" />
+      <SteeringItem item={shared} turn={turn} live={false} sessionRef="session_b" />
+    </>,
+  );
+
+  const dividers = screen.getAllByTestId("steering-item") as HTMLDetailsElement[];
+  expect(dividers).toHaveLength(2);
+  expect(dividers[0]?.open).toBe(false);
+  expect(dividers[1]?.open).toBe(false);
+
+  fireEvent.click(dividers[0]!.querySelector("summary")!);
+  expect(dividers[0]?.open).toBe(true);
+  expect(dividers[1]?.open).toBe(false);
+});
+
 test("blank text with no source and no images renders nothing distinguishable", () => {
   const { container } = render(<SteeringItem item={item({ text: "" })} turn={turn} live={false} />);
   expect(container.firstChild).toBeNull();

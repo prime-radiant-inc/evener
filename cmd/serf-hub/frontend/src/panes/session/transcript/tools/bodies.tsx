@@ -1,12 +1,13 @@
 // Two shared tool-body shapes, reused across several per-tool descriptors
 // (fsTools.tsx, shellTool.tsx) rather than duplicated per file. Ground truth
-// (see helpers.ts's own header): a tool call's ItemModel carries its output
-// TEXT (item.output), input args, and — on a failed/denied call — its error
-// text (item.error). These bodies render straight off `item.output`; the
-// error text and the failed-row treatment (force-open, failure marker) are
-// surfaced GENERICALLY once by ToolCallItem for every descriptor, so a body
-// never has to branch on error/success itself. The tool_state snapshot the
-// legacy renderer-tools.js relied on is still dropped by the reducer.
+// (see helpers.ts's own header): a tool call's ItemModel carries output text,
+// input args, error text, and optional direct producer state in item.raw.
+// These shared bodies intentionally render item.output because read_file can
+// return text or an image, grep/list_dir/glob return plain text, and shell's
+// structured state is not a common body shape. ToolCallItem surfaces error
+// text and failed-row treatment generically; a domain-specific body uses
+// item.raw only when its producer state is stable and materially improves the
+// display.
 import { CodeBlock } from "../../../../widgets";
 import { clip, tailFold, tailSlice } from "./helpers";
 

@@ -16,13 +16,14 @@ import { ImageGallery } from "./flow/ImageGallery";
 import { ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
-import { toolRendererFor } from "./toolRenderers";
+import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
   effectiveRowKind,
+  itemScopeKey,
   rowKeyForDelegateItem,
   type SubagentRow,
   turnScopeKey,
@@ -62,17 +63,6 @@ function delegateStatusForItem(
   const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
   if (live && !hasSettledOutputStatus) return "running";
   return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromItem(item);
-}
-
-// A tool call failed or was denied when its ItemModel carries error text. That
-// PRESENCE is the primary signal (the reducer maps ThreadItem.error straight
-// through, so it survives an old-daemon reload whose settled status is still
-// "completed"); the honest status "failed" the wire now stamps
-// (apptranscript.SettledToolStatus, appwire_projection.go:438) is corroboration
-// for the same-daemon live/reload paths. A whitespace-empty error is not a
-// failure — the projector only stamps failed when data.Error != "".
-function toolFailed(item: ItemRenderProps["item"]): boolean {
-  return (item.error !== undefined && item.error !== "") || item.status === "failed";
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -115,7 +105,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // Two independent failure signals, OR'd: the generic wire one (error text /
   // honest status) and the descriptor's own (a shell command that ran and
   // exited nonzero is a clean tool RESULT the reader still needs marked).
-  const failed = toolFailed(item) || (descriptor.failed?.(item) ?? false);
+  const failed = toolCallFailed(item);
   const hasErrorText = item.error !== undefined && item.error !== "";
   // Rendered in TWO places, deliberately: the collapsed row's hover title (a
   // glance) and the expanded body as real text (the keyboard-reachable copy).
@@ -153,9 +143,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // so a settled row's later re-renders never re-fight the reader's toggle).
   //
   // The open/closed state itself lives in the shared disclosureStore keyed by
-  // item.id (yt2q), so it survives the VirtualList/dockview remount that would
-  // reset a component-local useState. autoDefault is only the store's FALLBACK:
-  // the moment the reader toggles, the store holds an explicit entry that wins.
+  // session ref plus item id, so it survives the VirtualList/dockview remount
+  // without colliding with identical item ids in another session.
+  // autoDefault is only the store's FALLBACK: the moment the reader toggles,
+  // the store holds an explicit entry that wins.
   const [autoDefault, setAutoDefault] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
@@ -184,7 +175,8 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const superseded = useThreadsStore((s) =>
     supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
-  const expanded = isDisclosureOpen(item.id, autoDefault && !superseded);
+  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const expanded = isDisclosureOpen(disclosureKey, autoDefault && !superseded);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -248,10 +240,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         status={delegateStatus}
         expandable
         expanded={expanded}
-        // toggleDisclosure writes an explicit store entry against this id, so
-        // the user's own choice wins over autoDefault (the fallback) from here
-        // on AND survives a remount (yt2q).
-        onToggle={() => toggleDisclosure(item.id, autoDefault && !superseded)}
+        // toggleDisclosure writes an explicit store entry against this
+        // session-scoped item key, so the user's own choice wins over
+        // autoDefault (the fallback) from here on and survives a remount.
+        onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
         trailing={openBesideButton}
         title={detail}
         duration={duration}

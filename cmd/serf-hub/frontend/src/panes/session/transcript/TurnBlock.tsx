@@ -7,13 +7,17 @@
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
 import "./ToolCallItem";
+import "./tools";
 import { useMemo } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { usePrefsStore } from "../../../stores/prefs";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SeenDivider } from "./flow/SeenDivider";
 import { TurnSeparator } from "./messages";
+import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
+import { shouldGroup, toolRunFor } from "./toolGrouping";
+import { itemScopeKey } from "./tools/subagentModuleStore";
 import { visibleItems } from "./transcriptVisibility";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
@@ -83,6 +87,18 @@ export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlo
       {showSeenDivider && <SeenDivider />}
       <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
         {shown.map((item) => {
+          const run = toolRunFor(shown, item.id);
+          if (run && shouldGroup(run)) {
+            if (!run.isFirst) return null;
+            return (
+              <ToolCallCluster
+                key={itemScopeKey(sessionRef, item.id)}
+                items={run.items}
+                turn={shownTurn}
+                sessionRef={sessionRef}
+              />
+            );
+          }
           const ItemRenderer = itemRendererFor(item.type);
           return (
             <ItemRenderer key={item.id} item={item} turn={shownTurn} live={isItemLive(item)} sessionRef={sessionRef} />

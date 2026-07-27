@@ -257,6 +257,25 @@ test("an expanded settled think block stays open across an unmount+remount with 
   expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
 });
 
+test("the same settled think item id has independent disclosure state in different sessions", () => {
+  const shared = item({ id: "same_item", reasoningSummaries: [["deep thoughts here"]] });
+  render(
+    <>
+      <ThinkBlock item={shared} turn={turn} live={false} sessionRef="session_a" />
+      <ThinkBlock item={shared} turn={turn} live={false} sessionRef="session_b" />
+    </>,
+  );
+
+  const blocks = screen.getAllByRole("group") as HTMLDetailsElement[];
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]?.open).toBe(false);
+  expect(blocks[1]?.open).toBe(false);
+
+  fireEvent.click(blocks[0]!.querySelector("summary")!);
+  expect(blocks[0]?.open).toBe(true);
+  expect(blocks[1]?.open).toBe(false);
+});
+
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary");

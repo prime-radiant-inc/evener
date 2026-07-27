@@ -204,6 +204,26 @@ test("an expanded tool row stays expanded across an unmount+remount with the sam
   expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
 });
 
+test("the same tool item id has independent disclosure state in different sessions", () => {
+  registerToolRenderer({ match: "tci_session_isolation", summary: () => "s", body: () => <div>body text</div> });
+  const shared = item({ id: "same_item", toolName: "tci_session_isolation" });
+  render(
+    <>
+      <ToolCallItem item={shared} turn={turn} live={false} sessionRef="session_a" />
+      <ToolCallItem item={shared} turn={turn} live={false} sessionRef="session_b" />
+    </>,
+  );
+
+  const rows = screen.getAllByTestId("tool-call-item") as HTMLDetailsElement[];
+  expect(rows).toHaveLength(2);
+  expect(rows[0]?.open).toBe(false);
+  expect(rows[1]?.open).toBe(false);
+
+  fireEvent.click(rows[0]!.querySelector("summary")!);
+  expect(rows[0]?.open).toBe(true);
+  expect(rows[1]?.open).toBe(false);
+});
+
 test("shell: a failing exit code auto-expands the row once it settles (the real parseShellExitCode heuristic)", () => {
   const output = "stdout\n[exit 1]";
   render(

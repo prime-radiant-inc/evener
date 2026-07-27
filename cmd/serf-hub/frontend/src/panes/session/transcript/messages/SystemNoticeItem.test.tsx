@@ -95,6 +95,26 @@ test("three consecutive systemMessage items group into one collapsed disclosure"
   expect(screen.getAllByTestId("system-notice-group")).toHaveLength(1);
 });
 
+test("the same scaffold item id has independent disclosure state in different sessions", () => {
+  showSystemPrompt();
+  const shared = item("same_item", { eventKind: "system_prompt", text: "You are a helpful assistant." });
+  render(
+    <>
+      <TurnBlock turn={turnWith([shared])} sessionRef="session_a" />
+      <TurnBlock turn={turnWith([shared])} sessionRef="session_b" />
+    </>,
+  );
+
+  const scaffolds = screen.getAllByTestId("system-notice-scaffold") as HTMLDetailsElement[];
+  expect(scaffolds).toHaveLength(2);
+  expect(scaffolds[0]?.open).toBe(false);
+  expect(scaffolds[1]?.open).toBe(false);
+
+  fireEvent.click(scaffolds[0]!.querySelector("summary")!);
+  expect(scaffolds[0]?.open).toBe(true);
+  expect(scaffolds[1]?.open).toBe(false);
+});
+
 test("the group's summary names the count and the first event", () => {
   const items = [item("a", { text: "first thing happened" }), item("b"), item("c")];
   render(<TurnBlock turn={turnWith(items)} />);

@@ -6,6 +6,7 @@ import {
   applySerfJobStarted,
   claimLeader,
   classifyJobStatus,
+  itemScopeKey,
   releaseLeader,
   resetSubagentModuleStoreForTests,
   resolveRowKey,
@@ -169,6 +170,12 @@ test("releaseLeader: a stale release from a non-leader item does not clear the r
 test("leadership is independent per turnId", () => {
   claimLeader("turn_l1", "item_1");
   expect(claimLeader("turn_l2", "item_1")).toBe(true);
+});
+
+test("itemScopeKey isolates the same item id across sessions and turns", () => {
+  expect(itemScopeKey("session_a", "item_1")).not.toBe(itemScopeKey("session_b", "item_1"));
+  expect(itemScopeKey("session_a", "item_1")).not.toBe(itemScopeKey("session_a", "item_2"));
+  expect(itemScopeKey(undefined, "item_1")).toContain("\0item_1");
 });
 
 // --- upsertSubagentRow preserves every overlay field, not just liveKind ---

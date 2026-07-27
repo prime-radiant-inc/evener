@@ -6,6 +6,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
+import "./tools";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global, so
@@ -124,6 +125,112 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   // output confirms the descriptor's body ran rather than an empty shell.
   fireEvent.click(screen.getByTestId("tool-row"));
   expect(screen.getByText("tool output")).toBeTruthy();
+});
+
+test("groups a settled non-final tool run behind its highest-consequence summary and keeps one row per call", () => {
+  const items = [
+    item({
+      id: "read-a",
+      type: "commandExecution",
+      toolName: "read_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({
+      id: "write",
+      type: "commandExecution",
+      toolName: "write_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({
+      id: "read-b",
+      type: "commandExecution",
+      toolName: "read_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({ id: "reply", type: "agentMessage", text: "tests green" }),
+  ];
+  render(<TurnBlock turn={turn(items)} />);
+
+  const cluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
+  expect(cluster.open).toBe(false);
+  expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(1);
+  expect(cluster.textContent).toContain("3 steps");
+  expect(cluster.textContent).toContain("Wrote src/cache.go");
+  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+
+  fireEvent.click(cluster.querySelector("summary")!);
+  expect(cluster.open).toBe(true);
+  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
+});
+
+test("a cluster closes when the same virtualized turn and item ids switch sessions", () => {
+  const sessionAItems = [
+    item({
+      id: "shared-a",
+      type: "commandExecution",
+      toolName: "tb-session-tool",
+      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
+      output: "session A content",
+      status: "completed",
+    }),
+    item({
+      id: "shared-b",
+      type: "commandExecution",
+      toolName: "tb-session-tool",
+      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
+      output: "session A content",
+      status: "completed",
+    }),
+    item({
+      id: "shared-c",
+      type: "commandExecution",
+      toolName: "tb-session-tool",
+      argumentsJSON: JSON.stringify({ file_path: "session-a.txt" }),
+      output: "session A content",
+      status: "completed",
+    }),
+    item({ id: "shared-reply", type: "agentMessage", text: "session A reply" }),
+  ];
+  const sessionBItems = sessionAItems.map((entry) =>
+    entry.type === "commandExecution"
+      ? { ...entry, output: "session B content" }
+      : { ...entry, text: "session B reply" },
+  );
+  const sharedTurn = (items: ItemModel[]) => turn(items, { id: "shared-turn" });
+
+  const { rerender } = render(<TurnBlock turn={sharedTurn(sessionAItems)} sessionRef="session_a" />);
+  const cluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
+  fireEvent.click(cluster.querySelector("summary")!);
+  expect(cluster.open).toBe(true);
+  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
+
+  rerender(<TurnBlock turn={sharedTurn(sessionBItems)} sessionRef="session_b" />);
+
+  const switchedCluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
+  expect(switchedCluster.open).toBe(false);
+  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
+  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+});
+
+test("suppressed task_list views do not create an empty cluster", () => {
+  const items = [
+    item({ id: "view-a", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
+    item({ id: "view-b", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
+    item({ id: "view-c", type: "commandExecution", toolName: "task_list", argumentsJSON: '{"action":"view"}' }),
+    item({ id: "view-reply", type: "agentMessage", text: "done" }),
+  ];
+
+  render(<TurnBlock turn={turn(items)} />);
+
+  expect(screen.queryByTestId("tool-call-cluster")).toBeNull();
+  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
+  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
 });
 
 test("computes live per item from its own status, passed through to the renderer", () => {
