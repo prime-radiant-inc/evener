@@ -18,7 +18,7 @@ import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
-import { clip, parseArgs, parseJSONObject, str } from "./tools/helpers";
+import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
@@ -51,12 +51,17 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
 
 const DELEGATE_PURPOSE_PREVIEW_MAX = 120;
 
+function clipDelegatePurpose(text: string, max: number): string {
+  const codePoints = Array.from(text);
+  return codePoints.length <= max ? text : `${codePoints.slice(0, max).join("")}…`;
+}
+
 function delegatePurposeOf(item: ItemModel): string | undefined {
   const statedPurpose = statedPurposeOf(item);
   if (statedPurpose !== undefined) return statedPurpose;
 
   const task = str(parseArgs(item.argumentsJSON), "task")?.replace(/\s+/g, " ").trim();
-  return task === undefined || task === "" ? undefined : clip(task, DELEGATE_PURPOSE_PREVIEW_MAX);
+  return task === undefined || task === "" ? undefined : clipDelegatePurpose(task, DELEGATE_PURPOSE_PREVIEW_MAX);
 }
 
 function delegateStatusFromItem(item: ItemModel): DelegateStatusKey {
