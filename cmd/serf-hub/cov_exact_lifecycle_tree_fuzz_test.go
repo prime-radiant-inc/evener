@@ -148,12 +148,12 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
 		)
-		hubNavigationInputs = func(*WebServer, context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
-			return nil, []hubcore.LiveEntry{
+		hubNavigationInputs = func(*WebServer, context.Context) navigationSnapshot {
+			return navigationSnapshot{live: []hubcore.LiveEntry{
 				{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
 				{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "errored"},
 				{Entry: rendezvous.Entry{SessionID: "pathless", StartedAt: now}, SessionID: "pathless", Status: "idle"},
-			}, nil
+			}}
 		}
 		rankCalls := 0
 		hubTreeAttentionRank = func(string) int {

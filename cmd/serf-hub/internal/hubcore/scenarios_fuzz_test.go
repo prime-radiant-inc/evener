@@ -141,6 +141,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioRESTProxy_RoutesByPath,
 		fuzzScenarioRemainingPureBranches,
 		fuzzScenarioRemoteThreadCacheReadReturnsLastStored,
+		fuzzScenarioRemoteThreadCacheSnapshotTracksAuthorityGeneration,
 		fuzzScenarioRollupRank,
 		fuzzScenarioRosterListDedupesSessionIDPreferringAppWireEntry,
 		fuzzScenarioRosterListOrdersByStartedAtAndID,

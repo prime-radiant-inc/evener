@@ -32,6 +32,77 @@ type Tree struct {
 	Live             []TreeNode
 	Projects         []TreeProject
 	ArchivedProjects []TreeProject
+	favoriteLive     []TreeNode
+}
+
+// FavoriteCandidates returns every uncapped, top-level session row that is
+// eligible for the pinned tier. It deliberately reads the retained full tier
+// slices, while excluding archived projects and synthetic cluster rows.
+func (t Tree) FavoriteCandidates() []TreeNode {
+	var out []TreeNode
+	seen := make(map[string]struct{})
+	appendNode := func(node TreeNode) {
+		if node.ID == "" {
+			return
+		}
+		if _, ok := seen[node.ID]; ok {
+			return
+		}
+		seen[node.ID] = struct{}{}
+		out = append(out, node)
+	}
+	for _, node := range t.favoriteLive {
+		appendNode(node)
+	}
+	for _, project := range t.Projects {
+		for _, rows := range [][]TreeNode{project.allCurrent, project.allRecent} {
+			for _, node := range rows {
+				switch node.Kind {
+				case "session", "fork":
+					appendNode(node)
+				case "cluster":
+					for _, child := range node.Children {
+						if child.Kind == "session" || child.Kind == "fork" {
+							appendNode(child)
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// FavoriteNodeAuthorities exposes node kinds from the uncapped tree rows so
+// read-time favorite classification can recognize current synthetic clusters.
+// The caller supplies source and lineage completeness for session identities;
+// these node facts are only about the current presentation classification.
+func (t Tree) FavoriteNodeAuthorities() []FavoriteNodeAuthority {
+	var out []FavoriteNodeAuthority
+	appendRows := func(rows []TreeNode) {
+		for _, node := range rows {
+			if node.ID == "" {
+				continue
+			}
+			out = append(out, FavoriteNodeAuthority{
+				ID:      node.ID,
+				Kind:    FavoriteNodeKind(node.Kind),
+				Quality: FavoriteAuthorityComplete,
+			})
+		}
+	}
+	appendProject := func(project TreeProject) {
+		appendRows(project.allCurrent)
+		appendRows(project.allRecent)
+		appendRows(project.allArchived)
+	}
+	for _, project := range t.Projects {
+		appendProject(project)
+	}
+	for _, project := range t.ArchivedProjects {
+		appendProject(project)
+	}
+	return out
 }
 
 // TreeProject groups sessions by canonical project identity. Its sessions are
@@ -1027,11 +1098,27 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
 	})
 
+	favoriteLive := make([]TreeNode, 0, len(liveNodes))
+	for _, node := range liveNodes {
+		entry := liveMap[node.ID]
+		if entry.Project.ID != "" && projectArchivedDecision(decisions, entry.Project.ID) {
+			continue
+		}
+		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
+			continue
+		}
+		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
+			continue
+		}
+		favoriteLive = append(favoriteLive, node)
+	}
+
 	return Tree{
 		NeedsYou:         needsYou,
 		Live:             liveNodes,
 		Projects:         activeProjects,
 		ArchivedProjects: archivedProjects,
+		favoriteLive:     favoriteLive,
 	}
 }
 

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+	_ "modernc.org/sqlite"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -83,6 +87,99 @@ func writeSession(t *testing.T, stateDir, id, wd string) {
 	}
 }
 
+type failingMkdirAllFS struct {
+	afero.Fs
+	err error
+}
+
+func (f failingMkdirAllFS) MkdirAll(string, os.FileMode) error {
+	return f.err
+}
+
+func readFavoriteDecisionRows(t *testing.T, dbPath string) map[hubcore.ArchiveKey]bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.Query("SELECT kind, id, favorited FROM favorite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	decisions := make(map[hubcore.ArchiveKey]bool)
+	for rows.Next() {
+		var kind, id string
+		var favorited int
+		if err := rows.Scan(&kind, &id, &favorited); err != nil {
+			t.Fatal(err)
+		}
+		decisions[hubcore.ArchiveKey{Kind: kind, ID: id}] = favorited == 1
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return decisions
+}
+
+func seedProjectDeleteDecisions(t *testing.T, archive *hubcore.ArchiveStore, favorite *hubcore.FavoriteStore, projectID string, sessionIDs ...string) {
+	t.Helper()
+	for _, id := range sessionIDs {
+		if err := archive.Set("session", id, true, timeNowForTest()); err != nil {
+			t.Fatal(err)
+		}
+		if err := favorite.Set("session", id, true, timeNowForTest()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Set("project", projectID, true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("project", projectID, true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertProjectDeleteDecisionPresent(t *testing.T, dbPath string, kind, id string, want bool) {
+	t.Helper()
+	favorites := readFavoriteDecisionRows(t, dbPath)
+	got, ok := favorites[hubcore.ArchiveKey{Kind: kind, ID: id}]
+	if !ok || got != want {
+		t.Fatalf("favorite decision (%s, %s) = (%v, %v), want present=%v value=%v", kind, id, got, ok, true, want)
+	}
+}
+
+func assertProjectDeleteDecisionAbsent(t *testing.T, dbPath string, kind, id string) {
+	t.Helper()
+	if _, ok := readFavoriteDecisionRows(t, dbPath)[hubcore.ArchiveKey{Kind: kind, ID: id}]; ok {
+		t.Fatalf("favorite decision (%s, %s) should be absent", kind, id)
+	}
+}
+
+func assertArchiveDecisionPresent(t *testing.T, archive *hubcore.ArchiveStore, kind, id string, want bool) {
+	t.Helper()
+	decisions, err := archive.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := decisions[hubcore.ArchiveKey{Kind: kind, ID: id}]
+	if !ok || got != want {
+		t.Fatalf("archive decision (%s, %s) = (%v, %v), want present=%v value=%v", kind, id, got, ok, true, want)
+	}
+}
+
+func assertArchiveDecisionAbsent(t *testing.T, archive *hubcore.ArchiveStore, kind, id string) {
+	t.Helper()
+	decisions, err := archive.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decisions[hubcore.ArchiveKey{Kind: kind, ID: id}]; ok {
+		t.Fatalf("archive decision (%s, %s) should be absent", kind, id)
+	}
+}
+
 func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -113,7 +210,19 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	_, _ = past.Rebuild()
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
-	_ = archive.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
@@ -145,10 +254,14 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 			t.Fatalf("unrelated path %s was touched: %v", path, err)
 		}
 	}
-	d, _ := archive.Decisions()
-	if _, present := d[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; present {
-		t.Fatalf("session archive row should be scrubbed: %v", d)
-	}
+	assertArchiveDecisionAbsent(t, archive, "session", webTestSessionID)
+	assertArchiveDecisionAbsent(t, archive, "project", project.ID)
+	assertArchiveDecisionPresent(t, archive, "session", "unrelated-session", true)
+	assertArchiveDecisionPresent(t, archive, "project", "unrelated-project", true)
+	assertProjectDeleteDecisionAbsent(t, dbPath, "session", webTestSessionID)
+	assertProjectDeleteDecisionAbsent(t, dbPath, "project", project.ID)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", "unrelated-session", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", "unrelated-project", true)
 }
 
 func TestRemoveFlatProjectSessionArtifactsRejectsInvalidSessionID(t *testing.T) {
@@ -290,9 +403,13 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_, _ = past.Rebuild()
-	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 	body := `{"key":"` + project.ID + `","working_dir":"` + wrongDir + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -301,6 +418,10 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("mismatch must be rejected 400, got %d", rec.Code)
 	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
 func TestProjectDeleteRefusesWhenLive(t *testing.T) {
@@ -315,10 +436,14 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_, _ = past.Rebuild()
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
-	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: roster})
 	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -330,6 +455,10 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
 		t.Fatal("nothing should be removed when refused")
 	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
 func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
@@ -344,11 +473,15 @@ func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	checks := 0
 	oldProjectSessionLive := projectSessionLive
@@ -378,6 +511,10 @@ func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
 		t.Fatalf("live session artifact was removed: %v", err)
 	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
 func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.T) {
@@ -392,11 +529,15 @@ func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	resumeLogger, err := llm.NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -443,6 +584,10 @@ func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); err != nil {
 		t.Fatalf("reserved per-session directory was removed: %v", err)
 	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
 func TestProjectDeleteRemovesAPILogOnlyAfterResumeArtifacts(t *testing.T) {
@@ -500,15 +645,11 @@ func TestProjectDeleteRemovesAPILogOnlyAfterResumeArtifacts(t *testing.T) {
 	}
 }
 
-// TestProjectDeleteSkipsOnRemoveFailure forces a non-ENOENT os.Remove error
-// (permission denied on the containing sessions/ dir) and asserts the
-// session lands ONLY in skipped: never also in deleted, its decision rows
-// are left intact, and its files are left in place so the delete is
-// cleanly retriable.
+// TestProjectDeleteSkipsOnRemoveFailure forces a deterministic flat-file
+// removal failure and asserts the session lands only in skipped: never also
+// in deleted, its decision rows are left intact, and its files are left in
+// place so the delete is cleanly retriable.
 func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("chmod-based permission test is meaningless as root")
-	}
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -525,19 +666,18 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	_, _ = past.Rebuild()
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
-	_ = archive.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
-	_ = favorite.Set("session", webTestSessionID, true, time.Unix(1_700_000_000, 0))
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
 	sessDir := filepath.Join(stateDir, "sessions")
-	if err := os.Chmod(sessDir, 0o555); err != nil {
-		t.Fatalf("chmod sessions dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(sessDir, 0o755); err != nil {
-			t.Errorf("restore sessions dir perms: %v", err)
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".future-artifact" {
+			return errors.New("flat-file removal failed")
 		}
-	})
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
 
 	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
@@ -570,16 +710,369 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 		t.Fatalf("want exactly 1 skipped entry for webTestSessionID, got %d: %+v", skippedCount, resp)
 	}
 
-	ad, _ := archive.Decisions()
-	if _, present := ad[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; !present {
-		t.Fatal("session archive row must survive a failed removal (retriable)")
-	}
-	fd, _ := favorite.Favorites()
-	if _, present := fd[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; !present {
-		t.Fatal("session favorite row must survive a failed removal (retriable)")
-	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 	if _, err := os.Stat(filepath.Join(sessDir, webTestSessionID+".meta.json")); err != nil {
 		t.Fatalf(".meta.json must still exist after a failed removal: %v", err)
+	}
+}
+
+func TestProjectDeletePreservesDecisionsWhenSessionDirectoryRemovalFails(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
+
+	oldRemove := removeProjectSessionDir
+	removeProjectSessionDir = func(string) error { return errors.New("session directory removal failed") }
+	t.Cleanup(func() { removeProjectSessionDir = oldRemove })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Deleted) != 0 || len(response.Skipped) != 1 || response.Skipped[0].ID != webTestSessionID {
+		t.Fatalf("directory failure must skip the session: %+v", response)
+	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".api.jsonl")); err != nil {
+		t.Fatalf("API log must remain after directory removal failure: %v", err)
+	}
+}
+
+func TestProjectDeletePreservesDecisionsWhenAPILogRemovalFails(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
+
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".api.jsonl" {
+			return errors.New("API log removal failed")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Deleted) != 0 || len(response.Skipped) != 1 || response.Skipped[0].ID != webTestSessionID {
+		t.Fatalf("API-log failure must skip the session: %+v", response)
+	}
+	assertArchiveDecisionPresent(t, archive, "session", webTestSessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".api.jsonl")); err != nil {
+		t.Fatalf("API log must remain after injected failure: %v", err)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("%s should already be gone before the final API-log failure, err=%v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); !os.IsNotExist(err) {
+		t.Fatalf("session directory should already be gone before the final API-log failure, err=%v", err)
+	}
+}
+
+func TestProjectDeleteRetainsSkippedDecisionsAndRemovesOnlyDeletedDecisions(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedID := projectDeleteCanonicalSessionIDs[0]
+	skippedID := projectDeleteCanonicalSessionIDs[1]
+	writeSession(t, stateDir, deletedID, project.CanonicalPath)
+	writeSession(t, stateDir, skippedID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, deletedID, skippedID)
+	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
+
+	checks := 0
+	oldProjectSessionLive := projectSessionLive
+	projectSessionLive = func(_ *hubcore.Roster, id string) bool {
+		checks++
+		return checks > 2 && id == skippedID
+	}
+	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Deleted) != 1 || response.Deleted[0] != deletedID || len(response.Skipped) != 1 || response.Skipped[0].ID != skippedID {
+		t.Fatalf("partial deletion response=%+v", response)
+	}
+	assertArchiveDecisionAbsent(t, archive, "session", deletedID)
+	assertProjectDeleteDecisionAbsent(t, dbPath, "session", deletedID)
+	assertArchiveDecisionPresent(t, archive, "session", skippedID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", skippedID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+	assertArchiveDecisionPresent(t, archive, "session", "unrelated-session", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", "unrelated-session", true)
+	assertArchiveDecisionPresent(t, archive, "project", "unrelated-project", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", "unrelated-project", true)
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", deletedID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("successfully deleted session metadata survived, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", skippedID+".meta.json")); err != nil {
+		t.Fatalf("skipped session metadata was removed: %v", err)
+	}
+}
+
+func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+	favorite.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("favorite delete setup failure")})
+	pokes := 0
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Past:          past,
+		Archive:       archive,
+		Favorite:      favorite,
+		Roster:        hubcore.NewRosterWithEntries(),
+		PokeAttention: func() { pokes++ },
+	})
+	defer hub.Close()
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	response, err := http.Post(hub.URL+"/api/project/delete", "application/json", newBody(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("favorite store failure status=%d", response.StatusCode)
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(failure.Error, "favorite store error: favorite delete setup failure") {
+		t.Fatalf("favorite store failure was not reported: %s", failure.Error)
+	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	if pokes != 1 {
+		t.Fatalf("PokeAttention calls=%d, want exactly one after physical deletion", pokes)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed before reporting the store failure, err=%v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); !os.IsNotExist(err) {
+		t.Fatalf("session directory should be removed before reporting the store failure, err=%v", err)
+	}
+	// Read the original database through a new store-independent SQL path: the
+	// failing FavoriteStore must not make the retained row disappear or pretend
+	// that the removed artifact was restored.
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+}
+
+func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, sessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, sessionID)
+	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+
+	inputs := &hubcore.InputsVersion{}
+	past.SetOnChange(inputs.Bump)
+	oldBuild := hubBuildNavigationTree
+	interleaveObserved := false
+	hubBuildNavigationTree = func(metas []schema.SessionMeta, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, projects map[string]identifier.Project) hubcore.Tree {
+		tree := oldBuild(metas, live, decisions, projects)
+		if err := os.Remove(filepath.Join(stateDir, "sessions", sessionID+".meta.json")); err != nil {
+			t.Fatalf("remove session metadata during snapshot interleave: %v", err)
+		}
+		if _, err := past.Rebuild(); err != nil {
+			t.Fatalf("rebuild during snapshot interleave: %v", err)
+		}
+		interleaveObserved = true
+		return tree
+	}
+	t.Cleanup(func() { hubBuildNavigationTree = oldBuild })
+
+	web := NewWebServer(hubcore.WebConfig{
+		Past:     past,
+		Archive:  archive,
+		Favorite: favorite,
+		Roster:   hubcore.NewRosterWithEntries(),
+		Inputs:   inputs,
+	})
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !interleaveObserved {
+		t.Fatal("snapshot/rebuild interleave did not execute")
+	}
+	assertArchiveDecisionPresent(t, archive, "session", sessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", sessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+	assertArchiveDecisionPresent(t, archive, "session", "unrelated-session", true)
+	assertArchiveDecisionPresent(t, archive, "project", "unrelated-project", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", "unrelated-session", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", "unrelated-project", true)
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID+suffix)); err != nil {
+			t.Fatalf("remaining session artifact %s was touched: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID)); err != nil {
+		t.Fatalf("remaining session directory was touched: %v", err)
 	}
 }
 
@@ -624,14 +1117,10 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }
 
-// TestProjectDeleteBroadcastsTreeChangedExactlyOnceWhenNothingRemoved covers
-// the miss path: every session in the target project gets skipped (none
-// actually removed from disk), so Rebuild finds no PastIndex content delta
-// and its composed onChange hook never fires — but the project-level
-// archive/favorite decision rows were still cleared (a different, bump-only
-// store), so the request genuinely succeeded and must still broadcast
-// exactly once, via the handler's compensating call.
-func TestProjectDeleteBroadcastsTreeChangedExactlyOnceWhenNothingRemoved(t *testing.T) {
+// TestProjectDeleteDoesNotBroadcastWhenNothingRemoved covers the no-op path:
+// every session in the target project gets skipped, so neither the artifact
+// index nor any decision row changes.
+func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -686,5 +1175,5 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnceWhenNothingRemoved(t *test
 		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
 	}
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+	assertNoNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

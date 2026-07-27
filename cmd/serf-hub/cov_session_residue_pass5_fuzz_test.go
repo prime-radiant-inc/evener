@@ -85,7 +85,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			}
 			web := NewWebServer(hubcore.WebConfig{Archive: archive, Favorite: favorite})
 			_ = web.archiveDecisions()
-			_ = web.favoriteDecisions()
+			_, _ = web.favoriteDecisions()
 			bad := filepath.Join(dir, "database-is-directory")
 			if err := os.Mkdir(bad, 0o700); err != nil {
 				t.Fatal(err)
@@ -93,7 +93,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			web.cfg.Archive = hubcore.NewArchiveStore(bad)
 			web.cfg.Favorite = hubcore.NewFavoriteStore(bad)
 			_ = web.archiveDecisions()
-			_ = web.favoriteDecisions()
+			_, _ = web.favoriteDecisions()
 
 		case 1:
 			// Cached input path and memo cache hit/versioned recompute.

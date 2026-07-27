@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/serf/appwire"
@@ -32,11 +33,15 @@ type WebServer struct {
 	// source's sessions from the sidebar (which renders a snapshot).
 	lastGoodMu      sync.Mutex
 	lastGoodThreads map[string][]appwire.Thread // sourceID -> last successful list
+	// remoteFetchGeneration invalidates synchronous no-cache tree memoization.
+	// Authority metadata itself stays request-owned in navigationSnapshot.
+	remoteFetchGeneration atomic.Uint64
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
-	// treeCache memoizes the /api/tree BuildTree+attention-summary computation
-	// by inputs-version + 30s time bucket (see hubcore.TreeCache).
+	// treeCache memoizes the complete /api/tree navigation generation — tree,
+	// attention, live entries, and favorite authority — by inputs-version,
+	// remote generation, and 30s time bucket (see hubcore.TreeCache).
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 }

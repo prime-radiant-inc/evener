@@ -93,7 +93,12 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *h
 	refresh := func() {
 		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		cache.Store(web.refreshRemoteThreads(refreshCtx))
+		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
+		cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+			Threads:  snapshot.threads,
+			Complete: snapshot.complete,
+			Sources:  snapshot.sources,
+		})
 	}
 	refresh()
 	for {

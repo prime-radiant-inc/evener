@@ -984,6 +984,9 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
 	if !node.Rename {
 		t.Fatalf("orphan-live row Rename=false, want true (local session): %+v", *node)
 	}
+	if len(got.Favorites) != 1 || got.Favorites[0].SessionID != liveSessionID {
+		t.Fatalf("orphan-live favorite pin = %+v, want the favorited orphan", got.Favorites)
+	}
 }
 
 // projectRawFromResponse decodes body as raw JSON and returns the sole
