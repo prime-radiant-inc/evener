@@ -6,7 +6,12 @@
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { Button, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { credentialLayers, safeCredentialTestMessage, unconfiguredLabel } from "./credentialLabels";
+import {
+  credentialLayers,
+  safeCredentialTestMessage,
+  safeCredentialTestResult,
+  unconfiguredLabel,
+} from "./credentialLabels";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -59,6 +64,9 @@ export function InstanceRow({
   const layers = credentialLayers(instance);
   const unconfigured = unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
+  const safeTestResult = testCredentialsResult
+    ? safeCredentialTestResult(instance.name, testCredentialsResult)
+    : undefined;
 
   return (
     <li className={CLASS.row}>
@@ -111,9 +119,9 @@ export function InstanceRow({
           </Button>
         )}
       </div>
-      {testCredentialsResult && (
+      {safeTestResult && (
         <p className={CLASS.testResult} role="status">
-          {testCredentialsResult.status}: {safeCredentialTestMessage(testCredentialsResult.status)}
+          {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
         </p>
       )}
     </li>
