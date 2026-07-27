@@ -12,26 +12,12 @@
   padding: var(--space-2) 0;
 }
 
-/* The agent's own speaker mark (1fwc), for assistive tech only (kata 8v4n).
- * A short reply and a short user message must not read as one voice, and a
- * screen-reader user should not have to notice an ABSENCE to tell them
- * apart - but the golden reference identifies the agent's prose by giving
- * it NO visible label at all (`grep -c "Agent"` over docs/web-ui/history/
- * examples/01-golden-live-session.html returns 0: unlabelled, full-width
- * prose is the whole "assistant hero" idea - the hero is the thing that
- * needs no introduction). So "Agent" survives as text in the DOM, carried
- * by the same visually-hidden recipe StatusRow/ModelSwitch/RailRow/etc.
- * already use elsewhere in this codebase (see e.g. statusrow.module.css's
- * own copy) rather than a fourth transcription of it: present for a screen
- * reader's linear reading order, absent from the screen. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+/* The agent's speaker eyebrow (tiered-density spec, 2026-07-27): same
+ * sanctioned idiom as the user's - caption, medium, ink-low, sentence
+ * case. Fires at exchange boundaries only. */
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-low);
 }

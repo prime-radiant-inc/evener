@@ -18,7 +18,7 @@
 // forced divergence (T8 sweep). It couples only to the engine's STABLE seams
 // (useTranscript, TurnBlock, LoadOlderRow) and deliberately omits the live
 // flow-overlay/new-content-pill machinery, which is a live-session affordance.
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
@@ -26,6 +26,7 @@ import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from ".
 import { requireClass } from "../../widgets/internal/requireClass";
 import { BackToParentAction } from "../backToParentAction";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
+import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
 import { TurnBlock } from "../session/transcript/TurnBlock";
 import { useTranscript } from "../session/transcript/useTranscript";
 // Side-effect barrels: register every message item renderer and every tool
@@ -96,6 +97,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   // non-empty render (a ref guard), not on every turn-count change, so a
   // later "load older" prepend doesn't yank the view back to the bottom.
   const turnCount = model?.turns.length ?? 0;
+  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
   const didInitialScrollRef = useRef(false);
   useEffect(() => {
     if (!didInitialScrollRef.current && turnCount > 0) {
@@ -138,7 +140,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => <TurnBlock turn={turnAt(index)} />}
+              renderRow={(index) => <TurnBlock turn={turnAt(index)} exchangeOpeners={openers} />}
             />
           </div>
         </div>

@@ -16,17 +16,19 @@
 // own doc comment) and shares its 76rem measure so the input aligns with the
 // transcript's own content column; SessionChrome (the status row) stays
 // full-width beneath, reading like a status bar.
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { modelLabel } from "./chrome/statusFormat";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { TurnBlock } from "./transcript/TurnBlock";
+import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
 import { SYSTEM_PRELUDE_TURN_ID } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
@@ -173,6 +175,8 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
+  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
+  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
 
   if (!model) {
     return (
@@ -234,7 +238,15 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               getItemKey={(index) => turnAt(index).id}
               renderRow={(index) => {
                 const t = turnAt(index);
-                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
+                return (
+                  <TurnBlock
+                    turn={t}
+                    sessionRef={ref}
+                    showSeenDivider={t.id === seenDividerTurnId}
+                    exchangeOpeners={openers}
+                    agentLabel={agentLabel}
+                  />
+                );
               }}
             />
           </div>

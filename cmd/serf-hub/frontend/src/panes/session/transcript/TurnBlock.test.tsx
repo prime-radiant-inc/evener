@@ -276,7 +276,7 @@ test("passes opensExchange and agentLabel through ItemRenderProps", () => {
       seen.push({ opensExchange: props.opensExchange, agentLabel: props.agentLabel });
       return null;
     });
-    const agentItem = { id: "a1", type: "agentMessage", text: "hi", status: "completed" };
+    const agentItem = { id: "a1", turnId: "t1", type: "agentMessage", text: "hi", status: "completed" };
     render(<TurnBlock turn={turn([agentItem])} exchangeOpeners={new Set(["a1"])} agentLabel="k3" />);
     expect(seen).toEqual([{ opensExchange: true, agentLabel: "k3" }]);
   } finally {

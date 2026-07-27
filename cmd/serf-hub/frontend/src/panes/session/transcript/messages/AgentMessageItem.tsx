@@ -18,14 +18,16 @@ import styles from "./agentmessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
-  srOnly: requireClass(styles.srOnly, "agentmessageitem.module.css", "srOnly"),
+  eyebrow: requireClass(styles.eyebrow, "agentmessageitem.module.css", "eyebrow"),
 };
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below), so a fresh turn object on every streaming delta targeting a
 // DIFFERENT item must not re-render an already-settled agent message.
-export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: ItemRenderProps) {
+export const AgentMessageItem = memo(function AgentMessageItem({ item, live, opensExchange, agentLabel }: ItemRenderProps) {
+  const eyebrow = opensExchange ? <div className={CLASS.eyebrow}>{agentLabel ? `Agent · ${agentLabel}` : "Agent"}</div> : null;
+
   if (live) {
     const chunks = item.pendingText;
     // Nothing streamed yet (item just started, zero deltas so far) - an
@@ -33,8 +35,13 @@ export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: I
     // mirroring RawItemView's own "no chunks yet" fallback rule.
     if (!chunks || chunks.length === 0) return null;
     return (
-      <div className={CLASS.message} data-testid="agent-message-item" data-live="true">
-        <span className={CLASS.srOnly}>Agent</span>
+      <div
+        className={CLASS.message}
+        data-testid="agent-message-item"
+        data-live="true"
+        data-opens-exchange={opensExchange ? "true" : undefined}
+      >
+        {eyebrow}
         <StreamingText chunks={chunks} />
       </div>
     );
@@ -46,8 +53,13 @@ export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: I
   // transcript.md #6, renderer.js:2810-2816).
   if (!item.text) return null;
   return (
-    <div className={CLASS.message} data-testid="agent-message-item" data-live="false">
-      <span className={CLASS.srOnly}>Agent</span>
+    <div
+      className={CLASS.message}
+      data-testid="agent-message-item"
+      data-live="false"
+      data-opens-exchange={opensExchange ? "true" : undefined}
+    >
+      {eyebrow}
       <Markdown source={item.text} />
     </div>
   );
