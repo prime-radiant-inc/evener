@@ -139,6 +139,16 @@ describe("inactive-subagent fold", () => {
     expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
   });
 
+  test("the inactive fold includes subagents omitted by the server cap", () => {
+    const parent = Object.assign(parentWith("ended"), { more_subagents: 10 }) as ApiTreeNode;
+    const [rail] = sessionNodes([parent], NEVER_EXPANDED);
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold && "count" in fold && fold.count).toBe(11);
+    expect(fold?.children.map((child) => child.kind)).toEqual(["session", "overflow"]);
+    const overflow = fold?.children[1];
+    expect(overflow && "count" in overflow && overflow.count).toBe(10);
+  });
+
   test("the fold carries how many it hides, so the row can say so without expanding", () => {
     const [rail] = sessionNodes([parentWith("ended", "closed", "errored", "active")], NEVER_EXPANDED);
     const fold = rail?.children.find((c) => c.kind === "inactiveFold");

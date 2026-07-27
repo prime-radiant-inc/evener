@@ -151,10 +151,14 @@ type TreeNode struct {
 	Dormant      bool
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Age          string // pre-formatted "now", "2m", "3h", "5d"
-	Children     []TreeNode
+	// MoreSubagents is the number of subagent children omitted by the sidebar
+	// cap. The client folds this into the parent's inactive-child disclosure so
+	// capped children are counted rather than silently disappearing.
+	MoreSubagents int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Age           string // pre-formatted "now", "2m", "3h", "5d"
+	Children      []TreeNode
 }
 
 // AgeString formats a duration since t as a human-readable string.
@@ -657,9 +661,12 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		sort.SliceStable(subagents, func(i, j int) bool {
 			return sessionMetaLess(subagents[i], subagents[j])
 		})
+		moreSubagents := 0
 		if len(subagents) > maxSidebarSessionsPerTier {
+			moreSubagents = len(subagents) - maxSidebarSessionsPerTier
 			subagents = subagents[:maxSidebarSessionsPerTier]
 		}
+		node.MoreSubagents = moreSubagents
 		sort.SliceStable(forks, func(i, j int) bool {
 			return sessionMetaLess(forks[i], forks[j])
 		})

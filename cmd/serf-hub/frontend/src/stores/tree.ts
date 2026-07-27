@@ -50,9 +50,10 @@ export interface TreeNode {
   updated_at?: string;
   age?: string;
   model?: string;
-  // Normalized: the wire's `children,omitempty` (absent when there are none)
-  // is always a real array here, never absent/undefined - see normalizeNode.
-  children: TreeNode[];
+	// Normalized: the wire's `children,omitempty` (absent when there are none)
+	// is always a real array here, never absent/undefined - see normalizeNode.
+	children: TreeNode[];
+	more_subagents?: number;
 }
 
 export interface TreeProject {

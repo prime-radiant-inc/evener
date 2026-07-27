@@ -106,11 +106,12 @@ type TreeNode struct {
 	// dormant session reports State "idle", exactly like a session that ran and
 	// went quiet, and the two are only distinguishable by this field. See
 	// hubcore.TreeNode.Dormant for why it is not a state value.
-	Dormant   bool       `json:"dormant,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	Age       string     `json:"age,omitempty"`
-	Model     string     `json:"model,omitempty"`
-	Children  []TreeNode `json:"children,omitempty"`
+	Dormant       bool       `json:"dormant,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	Age           string     `json:"age,omitempty"`
+	Model         string     `json:"model,omitempty"`
+	MoreSubagents int        `json:"more_subagents,omitempty"`
+	Children      []TreeNode `json:"children,omitempty"`
 }
 
 // SessionDetail is returned by GET /api/sessions/{ref}.

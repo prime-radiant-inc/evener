@@ -59,6 +59,23 @@ func TestTreeNode_AskPendingRoundTrips(t *testing.T) {
 	}
 }
 
+func TestTreeNode_MoreSubagentsRoundTrips(t *testing.T) {
+	data, err := json.Marshal(TreeNode{MoreSubagents: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"more_subagents":10`) {
+		t.Fatalf("expected more_subagents:10 in wire JSON, got %s", data)
+	}
+	var got TreeNode
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MoreSubagents != 10 {
+		t.Fatalf("MoreSubagents=%d, want 10", got.MoreSubagents)
+	}
+}
+
 // TestTreeNode_UpdatedAtAlwaysShipsOnWire locks in that UpdatedAt has no
 // "omitempty" tag: encoding/json can never omit a struct value regardless of
 // the tag, so the tag was already a no-op lie. The key ships even for the

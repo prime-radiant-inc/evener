@@ -41,7 +41,7 @@ export interface LoadingRailNode extends WidgetTreeNode {
 export interface InactiveFoldRailNode extends WidgetTreeNode {
   kind: "inactiveFold";
   count: number;
-  children: SessionRailNode[];
+  children: (SessionRailNode | OverflowRailNode)[];
 }
 
 /** A quiet "+N older" note standing for the rows the server capped away
@@ -119,16 +119,24 @@ function inactiveFoldId(parentRowID: string): string {
 function splitChildren(parent: ApiTreeNode, isExpanded: IsExpanded): (SessionRailNode | InactiveFoldRailNode)[] {
   const current: SessionRailNode[] = [];
   const inactive: SessionRailNode[] = [];
-  if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
+	if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
   for (const child of parent.children) {
     (CURRENT_SUBAGENT_STATES.has(child.state) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
-  if (inactive.length === 0) return current;
-  const id = inactiveFoldId(parent.row_id);
-  return [
-    ...current,
-    { id, kind: "inactiveFold", count: inactive.length, expanded: isExpanded(id, false), children: inactive },
-  ];
+	const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
+	if (inactiveCount === 0) return current;
+	const id = inactiveFoldId(parent.row_id);
+	const omitted = overflowNode(id, parent.more_subagents ?? 0);
+	return [
+		...current,
+		{
+			id,
+			kind: "inactiveFold",
+			count: inactiveCount,
+			expanded: isExpanded(id, false),
+			children: [...inactive, ...omitted],
+		},
+	];
 }
 
 function toSessionNode(n: ApiTreeNode, isExpanded: IsExpanded): SessionRailNode {

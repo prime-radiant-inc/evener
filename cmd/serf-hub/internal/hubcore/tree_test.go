@@ -1671,6 +1671,28 @@ func fuzzScenarioSubagentChildrenCappedPerTier(t *testing.T) {
 	if subs != maxSidebarSessionsPerTier {
 		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
 	}
+	if got := tree.Projects[0].Current[0].MoreSubagents; got != 10 {
+		t.Fatalf("subagent overage = %d, want 10", got)
+	}
+}
+
+func TestSubagentChildrenCarryOverage(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}}
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
+			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	parent := tree.Projects[0].Current[0]
+	if len(parent.Children) != maxSidebarSessionsPerTier {
+		t.Fatalf("children = %d, want %d", len(parent.Children), maxSidebarSessionsPerTier)
+	}
+	if got := parent.MoreSubagents; got != 10 {
+		t.Fatalf("subagent overage = %d, want 10", got)
+	}
 }
 
 func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {

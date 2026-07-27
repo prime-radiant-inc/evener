@@ -35,11 +35,11 @@
 - Add `MoreSubagents int` to hubcore and hubapi `TreeNode`, serialized as `more_subagents` when nonzero.
 - Set it to the number removed by the existing 50-child cap, while retaining the kept child order.
 - Copy it through `apiTreeNode` recursively and add it to the frontend wire mirror.
-- Make the inactive fold count visible inactive children plus the server-reported omitted-child count, including an omitted-only fold.
+- Make the inactive fold count visible inactive children plus the server-reported omitted-child count, and put an explicit `OverflowRailNode` after retained inactive rows so expansion explains the omitted portion.
 
 - [ ] **Step 1: Write the failing Go tree and projection tests.** Build a parent with 60 subagents, assert 50 children and 10 overage in hubcore, then assert `more_subagents:10` survives `/api/tree` JSON.
 - [ ] **Step 2: Run the focused Go tests and confirm the new assertions fail because the field is absent/zero.**
-- [ ] **Step 3: Write the failing rail-node test.** Feed a parent with `more_subagents:10` and assert the inactive fold label count includes the omitted children without mutating the source node.
+- [ ] **Step 3: Write the failing rail-node test.** Feed a parent with one retained inactive child and `more_subagents:10`; assert the fold count is 11 and its expanded children are the retained session followed by an `OverflowRailNode` with count 10.
 - [ ] **Step 4: Run the focused Vitest test and confirm the expected count fails.**
 - [ ] **Step 5: Implement the smallest hubcore, wire, and rail changes.**
 - [ ] **Step 6: Run focused Go and Vitest tests; run `go generate ./appwire/...` and the relevant drift check.**
@@ -124,4 +124,3 @@
 - [ ] **Step 3: Self-review for ordering/cap preservation, archive/session routing regressions, generated-file drift, and unrelated changes.**
 - [ ] **Step 4: Commit any verification-only fixes separately with detailed intent.**
 - [ ] **Step 5: Add substantive comments to `hhpe`, `1fgd`, `t4fa`, and `ndr0` naming the ready commit(s) and test evidence; do not merge or close them.**
-

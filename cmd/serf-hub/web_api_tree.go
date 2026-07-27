@@ -686,19 +686,20 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, li
 		rowID = scope + ":" + projectKey + ":" + refText
 	}
 	out := hubapi.TreeNode{
-		RowID:      rowID,
-		Ref:        refText,
-		HostID:     ref.HostID,
-		SessionID:  ref.SessionID,
-		Title:      n.Title,
-		Project:    n.Project,
-		State:      n.State,
-		Kind:       n.Kind,
-		Live:       live,
-		UpdatedAt:  n.UpdatedAt,
-		Age:        n.Age,
-		AskPending: n.AskPending,
-		Dormant:    n.Dormant,
+		RowID:         rowID,
+		Ref:           refText,
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		Title:         n.Title,
+		Project:       n.Project,
+		State:         n.State,
+		Kind:          n.Kind,
+		Live:          live,
+		UpdatedAt:     n.UpdatedAt,
+		Age:           n.Age,
+		AskPending:    n.AskPending,
+		Dormant:       n.Dormant,
+		MoreSubagents: n.MoreSubagents,
 	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model

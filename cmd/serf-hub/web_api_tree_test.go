@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,6 +296,23 @@ func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	}
 	if len(p.Sessions) != 1 || p.Sessions[0].Branch != "main" || p.Sessions[0].Tier != "recent" {
 		t.Fatalf("node additive fields wrong: %+v", p.Sessions)
+	}
+}
+
+func TestAPITreeNodeCarriesSubagentOverflow(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{})
+	got := web.apiTreeNode("project", "project-key", hubcore.TreeNode{
+		ID: "parent", Kind: "session", MoreSubagents: 10,
+	}, false)
+	if got.MoreSubagents != 10 {
+		t.Fatalf("MoreSubagents=%d, want 10", got.MoreSubagents)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"more_subagents":10`) {
+		t.Fatalf("missing more_subagents wire field: %s", data)
 	}
 }
 
