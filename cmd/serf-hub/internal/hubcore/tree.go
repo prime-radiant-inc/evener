@@ -148,9 +148,7 @@ func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool
 		return []TreeNode{}, 0, true
 	}
 	end := offset + limit
-	if end > len(rows) {
-		end = len(rows)
-	}
+	end = min(end, len(rows))
 	return rows[offset:end], len(rows) - end, true
 }
 
