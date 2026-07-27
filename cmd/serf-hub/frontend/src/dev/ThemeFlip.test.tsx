@@ -7,7 +7,7 @@ afterEach(() => {
   document.documentElement.removeAttribute("data-theme");
 });
 
-test("renders its children twice: once ambient (dark), once under data-theme=light", () => {
+test("renders its children twice: once under data-theme=dark, once under data-theme=light", () => {
   render(
     <ThemeFlip>
       <button type="button">Go</button>

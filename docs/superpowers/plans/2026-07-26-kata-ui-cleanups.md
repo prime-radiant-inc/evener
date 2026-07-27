@@ -67,6 +67,10 @@ Commit the two-document cleanup with a detailed message naming arx3 and the supe
 **Files:**
 - Modify: `cmd/serf-hub/frontend/src/dev/ThemeFlip.tsx`
 - Test: `cmd/serf-hub/frontend/src/dev/ThemeFlip.test.tsx`
+- Modify: `cmd/serf-hub/frontend/src/styles/tokens.css`
+- Test: `cmd/serf-hub/frontend/src/styles/token-contract.test.ts`
+- Test: `cmd/serf-hub/frontend/src/styles/display-gates.test.ts`
+- Create: `cmd/serf-hub/frontend/scripts/layoutguard/cases/zscn-theme-flip-dark-surface/{case.json,harness.html,assert.mjs}`
 
 - [ ] **Step 1: Write the failing behavioral test**
 
@@ -78,11 +82,11 @@ Run `npm test -- --run src/dev/ThemeFlip.test.tsx -t "explicitly scopes"`. It mu
 
 - [ ] **Step 3: Implement the minimal fix**
 
-Set `data-theme="dark"` on the first pane. Keep the existing light-pane attribute and surface/border token declarations unchanged.
+Set `data-theme="dark"` on the first pane and extend the canonical dark token selector to `:root, [data-theme="dark"]` with `color-scheme: dark`, so the nested pane receives direct dark values without duplicating the palette. Keep the existing light-pane attribute and surface/border token declarations unchanged.
 
 - [ ] **Step 4: Run the focused test and attempt the browser visual check**
 
-Run the ThemeFlip test file. Start the Vite app if needed and use the available Chrome/CDP guard path to inspect `/dev/widgets`; if no Chrome/Chromium is installed, record that browser verification is unavailable rather than changing the test suite to depend on it.
+Run the ThemeFlip, token-contract, and display-gates test files. Run `npm run layoutguard -- zscn-theme-flip-dark-surface` and use its real Chrome computed-style assertion for the nested dark and light surface values; if no Chrome/Chromium is installed, record that browser verification is unavailable rather than changing the test suite to depend on it.
 
 - [ ] **Step 5: Commit**
 
