@@ -70,6 +70,27 @@ func TestLoadClient_WithValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigAtUsesExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	wantedPath := filepath.Join(dir, "selected.toml")
+	if err := os.WriteFile(wantedPath, []byte(validProvidersToml), 0o600); err != nil {
+		t.Fatalf("WriteFile wanted config: %v", err)
+	}
+	otherPath := filepath.Join(dir, "other.toml")
+	if err := os.WriteFile(otherPath, []byte(corruptToml), 0o600); err != nil {
+		t.Fatalf("WriteFile other config: %v", err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", otherPath)
+
+	cfg, hasConfig, err := LoadProviderConfigAt(wantedPath)
+	if err != nil {
+		t.Fatalf("LoadProviderConfigAt: %v", err)
+	}
+	if !hasConfig || len(cfg.Instances) != 3 {
+		t.Fatalf("config=%+v hasConfig=%v, want selected config", cfg, hasConfig)
+	}
+}
+
 func TestLoadClient_SkipsUninitializedUnusedProvider(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")

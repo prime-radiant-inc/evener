@@ -118,6 +118,16 @@ export interface AuthStatusResponse {
   error?: string;
 }
 
+export interface AuthTestParams {
+  provider: string;
+}
+
+export interface AuthTestResponse {
+  provider: string;
+  status: string;
+  message: string;
+}
+
 export interface Capabilities {
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
@@ -1206,6 +1216,7 @@ export const METHOD_NAMES = [
   "serf/harnesses/list",
   "serf/upgrade",
   "serf/auth/status",
+  "serf/auth/test",
   "serf/auth/login/start",
   "serf/auth/login/complete",
   "serf/auth/logout",
@@ -1352,6 +1363,7 @@ export interface MethodTypes {
   "serf/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "serf/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "serf/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
+  "serf/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "serf/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };
   "serf/auth/login/complete": { params: AuthLoginCompleteParams; result: AuthLoginCompleteResponse };
   "serf/auth/logout": { params: AuthLogoutParams; result: AuthLogoutResponse };

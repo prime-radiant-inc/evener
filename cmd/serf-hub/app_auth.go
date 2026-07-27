@@ -43,6 +43,13 @@ type hubAuthController struct {
 	// OAuth state by instance name rather than provider type.
 	providersConfigPath string
 
+	credentialTestLoader credentialProbeLoader
+	credentialTests      map[string]*credentialTestCall
+	credentialTestMu     sync.Mutex
+	// credentialTestJoined is a deterministic test seam for observing a
+	// duplicate caller before the shared probe completes.
+	credentialTestJoined func()
+
 	mu          sync.Mutex
 	flows       map[string]hubAuthFlow
 	deviceFlows map[string]deviceFlow
@@ -81,23 +88,25 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	credsPath := filepath.Join(filepath.Dir(stateDir), "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
 	c := &hubAuthController{
-		stateDir:          stateDir,
-		authEnv:           authEnv,
-		creds:             store,
-		cfg:               cfg,
-		client:            client,
-		now:               time.Now,
-		generateState:     authopenai.GenerateState,
-		generatePKCE:      authopenai.GeneratePKCE,
-		exchangeCode:      authopenai.ExchangeCode,
-		requestDeviceCode: authopenai.RequestDeviceCode,
-		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
-		exchangeDevice:    authopenai.ExchangeDeviceCode,
-		loadAuth:          authopenai.LoadAuth,
-		saveAuth:          authopenai.SaveAuth,
-		deleteAuth:        authopenai.DeleteAuth,
-		flows:             map[string]hubAuthFlow{},
-		deviceFlows:       map[string]deviceFlow{},
+		stateDir:             stateDir,
+		authEnv:              authEnv,
+		creds:                store,
+		cfg:                  cfg,
+		client:               client,
+		now:                  time.Now,
+		generateState:        authopenai.GenerateState,
+		generatePKCE:         authopenai.GeneratePKCE,
+		exchangeCode:         authopenai.ExchangeCode,
+		requestDeviceCode:    authopenai.RequestDeviceCode,
+		pollDeviceOnce:       authopenai.PollDeviceAuthOnce,
+		exchangeDevice:       authopenai.ExchangeDeviceCode,
+		loadAuth:             authopenai.LoadAuth,
+		saveAuth:             authopenai.SaveAuth,
+		deleteAuth:           authopenai.DeleteAuth,
+		flows:                map[string]hubAuthFlow{},
+		deviceFlows:          map[string]deviceFlow{},
+		credentialTestLoader: loadCredentialTestClient,
+		credentialTests:      map[string]*credentialTestCall{},
 	}
 	c.setCredential = c.creds.Set
 	c.clearCredential = c.creds.Clear
@@ -120,23 +129,25 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 		store, _ = credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
 	}
 	c := &hubAuthController{
-		stateDir:          stateDir,
-		authEnv:           authEnv,
-		creds:             store,
-		cfg:               cfg,
-		client:            client,
-		now:               time.Now,
-		generateState:     authopenai.GenerateState,
-		generatePKCE:      authopenai.GeneratePKCE,
-		exchangeCode:      authopenai.ExchangeCode,
-		requestDeviceCode: authopenai.RequestDeviceCode,
-		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
-		exchangeDevice:    authopenai.ExchangeDeviceCode,
-		loadAuth:          authopenai.LoadAuth,
-		saveAuth:          authopenai.SaveAuth,
-		deleteAuth:        authopenai.DeleteAuth,
-		flows:             map[string]hubAuthFlow{},
-		deviceFlows:       map[string]deviceFlow{},
+		stateDir:             stateDir,
+		authEnv:              authEnv,
+		creds:                store,
+		cfg:                  cfg,
+		client:               client,
+		now:                  time.Now,
+		generateState:        authopenai.GenerateState,
+		generatePKCE:         authopenai.GeneratePKCE,
+		exchangeCode:         authopenai.ExchangeCode,
+		requestDeviceCode:    authopenai.RequestDeviceCode,
+		pollDeviceOnce:       authopenai.PollDeviceAuthOnce,
+		exchangeDevice:       authopenai.ExchangeDeviceCode,
+		loadAuth:             authopenai.LoadAuth,
+		saveAuth:             authopenai.SaveAuth,
+		deleteAuth:           authopenai.DeleteAuth,
+		flows:                map[string]hubAuthFlow{},
+		deviceFlows:          map[string]deviceFlow{},
+		credentialTestLoader: loadCredentialTestClient,
+		credentialTests:      map[string]*credentialTestCall{},
 	}
 	c.setCredential = c.creds.Set
 	c.clearCredential = c.creds.Clear

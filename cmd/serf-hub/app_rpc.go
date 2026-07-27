@@ -439,6 +439,9 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthTest, func(ctx context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
+		return authController.TestCredentials(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
 		return authController.LoginStart(params)
 	})

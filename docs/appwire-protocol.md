@@ -117,6 +117,7 @@ no router (reserved).
 | `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `serf/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a serf binary upgrade. |
 | `serf/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
+| `serf/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
 | `serf/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
 | `serf/auth/login/complete` | hub | `AuthLoginCompleteParams` | `AuthLoginCompleteResponse` | Completes OAuth login; broadcasts serf/auth/updated. |
 | `serf/auth/logout` | hub | `AuthLogoutParams` | `AuthLogoutResponse` | Logs out a provider; broadcasts serf/auth/updated. |
@@ -346,6 +347,22 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+
+
+### `AuthTestParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+
+
+### `AuthTestResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+| `status` | `string` |  |  |
+| `message` | `string` |  |  |
 
 
 ### `CommandListResponse`

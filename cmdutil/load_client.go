@@ -38,6 +38,17 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 	if path == "" {
 		path = filepath.Join(DefaultStateRoot(), "providers.toml")
 	}
+	return LoadProviderConfigAt(path, opts...)
+}
+
+// LoadProviderConfigAt applies the runtime provider and credential resolution
+// rules to an explicit providers.toml path. The explicit path is used by hub
+// actions that must inspect the same configured instances as session startup
+// without changing process-wide environment variables.
+func LoadProviderConfigAt(path string, opts ...llm.EnvOption) (providercfg.Config, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return providercfg.Config{}, false, fmt.Errorf("providers config path is empty")
+	}
 
 	cfg, exists, err := providercfg.LoadFile(path)
 	if err != nil {
@@ -109,13 +120,23 @@ func hasAuthorizationHeader(headers map[string]string) bool {
 // LoadClient constructs an LLM client that is always config-driven.
 // Always returns (client, cfg, true, nil) on success.
 func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	cfg, hasConfig, err := LoadProviderConfig(opts...)
+	path := envvars.SERFProvidersConfig.Getenv()
+	if path == "" {
+		path = filepath.Join(DefaultStateRoot(), "providers.toml")
+	}
+	return LoadClientAt(path, opts...)
+}
+
+// LoadClientAt constructs a client using the explicit providers.toml path and
+// the same instance-aware credential resolution as LoadClient.
+func LoadClientAt(path string, opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	cfg, hasConfig, err := LoadProviderConfigAt(path, opts...)
 	if err != nil {
 		return nil, providercfg.Config{}, false, err
 	}
 	client, _, err := newClientFromAvailableProviders(cfg, opts...)
 	if err != nil {
-		return nil, providercfg.Config{}, false, fmt.Errorf("LLM client from config: %w", err)
+		return nil, cfg, hasConfig, fmt.Errorf("LLM client from config: %w", err)
 	}
 	return client, cfg, hasConfig, nil
 }

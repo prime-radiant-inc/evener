@@ -38,6 +38,7 @@ const (
 	MethodSerfHarnessesList         = "serf/harnesses/list"
 	MethodSerfUpgrade               = "serf/upgrade"
 	MethodSerfAuthStatus            = "serf/auth/status"
+	MethodSerfAuthTest              = "serf/auth/test"
 	MethodSerfAuthLoginStart        = "serf/auth/login/start"
 	MethodSerfAuthLoginComplete     = "serf/auth/login/complete"
 	MethodSerfAuthLogout            = "serf/auth/logout"
@@ -1134,6 +1135,24 @@ type UpgradeResponse struct {
 
 type AuthStatusParams struct {
 	Provider string `json:"provider"`
+}
+
+const (
+	AuthTestStatusSuccess         = "success"
+	AuthTestStatusMissing         = "missing"
+	AuthTestStatusAuthRejected    = "auth_rejected"
+	AuthTestStatusEndpointFailure = "endpoint_failure"
+	AuthTestStatusUnsupported     = "unsupported"
+)
+
+type AuthTestParams struct {
+	Provider string `json:"provider"`
+}
+
+type AuthTestResponse struct {
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
+	Message  string `json:"message"`
 }
 
 type AuthStatusResponse struct {

@@ -115,6 +115,7 @@ var Methods = []MethodSpec{
 	{MethodSerfHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodSerfUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a serf binary upgrade."},
 	{MethodSerfAuthStatus, AuthStatusParams{}, AuthStatusResponse{}, ScopeHub, "Reports auth/credential status for a provider."},
+	{MethodSerfAuthTest, AuthTestParams{}, AuthTestResponse{}, ScopeHub, "Tests the effective credentials for one configured provider instance without starting a session."},
 	{MethodSerfAuthLoginStart, AuthLoginStartParams{}, AuthLoginStartResponse{}, ScopeHub, "Begins an OAuth login flow; returns a flow ID and URL."},
 	{MethodSerfAuthLoginComplete, AuthLoginCompleteParams{}, AuthLoginCompleteResponse{}, ScopeHub, "Completes OAuth login; broadcasts serf/auth/updated."},
 	{MethodSerfAuthLogout, AuthLogoutParams{}, AuthLogoutResponse{}, ScopeHub, "Logs out a provider; broadcasts serf/auth/updated."},
