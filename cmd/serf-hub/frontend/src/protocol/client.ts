@@ -282,7 +282,7 @@ export class AppwireClient {
 
     await this.waitForOpen(socket);
     socket.onerror = () => this.handleSocketError();
-    socket.onclose = (ev) => this.handleSocketClose(ev.code);
+    socket.onclose = (ev) => this.handleSocketLoss(socket, ev.code);
 
     const result = await this.request("initialize", {
       clientInfo: this.clientInfo,
@@ -404,17 +404,19 @@ export class AppwireClient {
   // sendHeartbeat sends one app-level ping with an explicit HEARTBEAT_TIMEOUT_MS
   // deadline (reusing request()'s own timeout machinery rather than a second,
   // separately-tracked timer). An open-but-unresponsive socket never recovers
-  // on its own, so any failure to answer in time force-closes it; the close
-  // handler runs the same reconnect lifecycle as a server-initiated drop.
+  // on its own, so any failure to answer in time retires it immediately and
+  // starts the same reconnect lifecycle as a server-initiated drop. close()
+  // remains best-effort cleanup: a half-open transport may never emit onclose.
   private sendHeartbeat(): void {
     if (this.connectionState !== "ready") return;
     const socket = this.socket;
     if (!socket) return;
     this.request("ping", {}, { timeoutMs: HEARTBEAT_TIMEOUT_MS }).catch(() => {
       // Ignore rejections caused by an unrelated disconnect that already
-      // moved the socket on: only force-close if this ping's own socket is
-      // still the live one.
+      // moved the socket on: only retire it if this ping's own socket is still
+      // the live one.
       if (this.socket !== socket || this.connectionState !== "ready") return;
+      this.handleSocketLoss(socket, 1006);
       try {
         socket.close();
       } catch {
@@ -444,13 +446,16 @@ export class AppwireClient {
     // pending cleanup, and — while ready — reconnect scheduling.
   }
 
-  private handleSocketClose(code: number): void {
-    if (this.connectionState === "closed") return;
+  private handleSocketLoss(socket: WebSocketLike, code: number): void {
+    // A client-retired socket may emit onclose after its replacement is
+    // already live. Only the socket that still owns the connection can move
+    // lifecycle state or reject pending requests.
+    if (this.socket !== socket || this.connectionState === "closed") return;
     this.socket = null;
     this.failAllPending(new Error(`AppwireClient: socket closed (code ${code})`));
     if (this.connectionState === "ready") {
       // A previously-healthy connection just dropped (server-initiated close,
-      // or sendHeartbeat's force-close after an unanswered ping): try to get
+      // or sendHeartbeat's retirement after an unanswered ping): try to get
       // back, rather than treating this as terminal.
       this.disarmHeartbeat();
       this.scheduleReconnect();

@@ -66,10 +66,7 @@ export class FakeSocket implements WebSocketLike {
   }
 
   close(code?: number): void {
-    if (!this.emitCloseEventOnClientClose) {
-      this.isClosed = true;
-      return;
-    }
+    if (!this.emitCloseEventOnClientClose) return;
     this.closeInternal(code ?? 1000);
   }
 
@@ -86,6 +83,13 @@ export class FakeSocket implements WebSocketLike {
   // closeFromServer simulates the server closing the connection, unprompted
   // by a client-side close() call.
   closeFromServer(code: number): void {
+    this.closeInternal(code);
+  }
+
+  // Completes a client-initiated close that was configured not to emit its
+  // event synchronously, matching a browser delivering it after a replacement
+  // transport is already live.
+  finishClientClose(code = 1000): void {
     this.closeInternal(code);
   }
 
