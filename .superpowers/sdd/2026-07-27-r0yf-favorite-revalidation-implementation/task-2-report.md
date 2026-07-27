@@ -429,3 +429,94 @@ The new authority tests also assert that both row orders choose the same
 presentation project, retain every conflicting identity, classify every
 affected project favorite as dormant, and leave the ended carried-remote
 success path valid.
+
+## Third fresh whole-branch review correction
+
+The third fresh whole-branch review rejected tip `0c73eb344` with one
+Important finding. The finding is valid. A complete remote snapshot containing
+the same canonical `remote:<id>` thread twice, with the same source and carried
+project identity, left `favoriteRemoteOwnerships` complete because its
+duplicate branch only downgraded an existing ownership when source or
+completeness differed. Session authority detected the duplicate, but project
+owner evidence was map-deduplicated and still produced one complete project
+claim, so a stored project favorite was incorrectly presented as valid.
+
+The correction is committed in `7e0d86a6b`. Every repeated canonical remote
+ownership is now incomplete. A shared non-empty source ID is retained only when
+the duplicate records agree; conflicting duplicate sources clear the source
+ID and remain incomplete. The project row remains in the tree, but its
+favorite classification is dormant. Favorite decision rows are not changed.
+Single-row carried-remote success, remote provenance, project identity
+conflict, colon-local, cache generation, and deletion behavior remain covered
+by the existing tests.
+
+### Exact RED evidence
+
+The deterministic `/api/tree` regression was added and run before the
+production edit:
+
+```text
+go test ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant -count=1 -v
+```
+
+```text
+=== RUN   TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant
+    web_api_tree_favorite_revalidation_test.go:1030: identical remote duplicate made carried project favorite: {Key:teRevalidation-IdenticalRemoteDuplicatesMakeCar3229267637-001-project-HpAEe4G31M Name:project WorkingDir:/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCar3229267637/001/project RollupState: RollupLive:0 RollupAttn:0 DefaultExpanded:false MoreCurrent:0 MoreRecent:0 MoreArchived:0 Worktrees:0 IsArchived:false Favorite:true SessionCount:0 Sessions:[{RowID:project:teRevalidation-IdenticalRemoteDuplicatesMakeCar3229267637-001-project-HpAEe4G31M:remote:033whB8YSU45kj0NLvT524 Ref:remote:033whB8YSU45kj0NLvT524 HostID:remote SessionID:033whB8YSU45kj0NLvT524 Title:033whB8YSU45kj0NLvT524 Project:project State:ended Kind:session Tier:current Branch: ClusterCount:0 Favorite:false Rename:false Live:false AskPending:false Dormant:true UpdatedAt:2026-07-27 12:00:00 +0000 UTC Age:now Model: MoreSubagents:0 Children:[]}]}
+--- FAIL: TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant (0.00s)
+FAIL
+FAIL    primeradiant.com/serf/cmd/serf-hub    0.443s
+exit_code=1
+```
+
+The failure was the intended current-production bug: the carried project row
+was present, but the project was incorrectly marked `Favorite:true`.
+
+### Exact GREEN evidence
+
+```text
+go test ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant -count=20
+ok   primeradiant.com/serf/cmd/serf-hub 0.423s
+
+go test ./cmd/serf-hub -run 'Test(FavoriteProjectAuthorities_|APITreeFavoriteRevalidation_(RemoteCandidate|LocalCandidate|SourceFieldConflictWithoutRef|SourceRefConflictAndMalformedRowDoNotHideHealthyIdentity))' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub 1.088s
+
+go test ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_(EndedRemoteCarriedProjectCanBeFavorited|ClusterSpellingDoesNotDecideValidity)' -count=10
+ok   primeradiant.com/serf/cmd/serf-hub 0.710s
+
+go test -race ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_Memo(CapturesInputsVersionBeforeSnapshot|ReturnsOneGenerationDuringPastRebuildGap)' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub 1.584s
+
+go test -race ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot -count=10
+ok   primeradiant.com/serf/cmd/serf-hub 1.939s
+
+go test ./cmd/serf-hub/internal/hubcore -run '(Favorite|Remote|TreeCache)' -count=5
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.476s
+
+go test ./cmd/serf-hub -run TreeFavorite -count=5
+ok   primeradiant.com/serf/cmd/serf-hub 0.751s
+
+go test ./cmd/serf-hub -run '(ProjectDelete|FavoriteEndpoint)' -count=3
+ok   primeradiant.com/serf/cmd/serf-hub 1.953s
+
+go test ./cmd/serf-hub/internal/hubcore -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.534s
+
+go test ./cmd/serf-hub -count=1
+ok   primeradiant.com/serf/cmd/serf-hub 27.010s
+
+go vet ./cmd/serf-hub/...
+exit_code=0, no output
+
+golangci-lint run ./cmd/serf-hub/...
+0 issues.
+
+gofmt -w cmd/serf-hub/web_api_tree.go cmd/serf-hub/web_api_tree_favorite_revalidation_test.go
+exit_code=0, no output
+
+git diff --check
+exit_code=0, no output
+```
+
+The focused repeated tests, race tests, full hubcore/cmd suites, vet, lint,
+formatting, and diff checks all exited successfully. No controller, Linear
+ticket, new kata, push, hook bypass, or unrelated file change was made.

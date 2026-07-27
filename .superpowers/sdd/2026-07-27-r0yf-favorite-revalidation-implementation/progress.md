@@ -37,3 +37,21 @@ data, marks conflicts incomplete, and derives remote project sources only from
 authoritative ownership. Required repeated focused/race tests, full hubcore
 and cmd/serf-hub, vet, lint, gofmt, and diff checks passed; exact evidence is
 in `task-2-report.md`.
+
+Third fresh whole-branch review rejected tip `0c73eb344` with one valid
+Important finding: identical duplicate canonical remote rows with the same
+source and carried project identity remained complete, allowing one
+map-deduplicated complete project claim to authorize a stored project
+favorite. RED was proven before the production edit by
+`TestAPITreeFavoriteRevalidation_IdenticalRemoteDuplicatesMakeCarriedProjectDormant`:
+the carried project row was `Favorite:true`. Code/tests correction `7e0d86a6b`
+marks every duplicate canonical ownership incomplete, preserves a shared
+source ID only when unambiguous, and clears it for conflicting sources. The
+project row remains present but dormant/non-favorite and the stored row is
+unchanged. The new regression passed `-count=20`; existing remote/provenance/
+project-authority tests passed `-count=20`; ended carried-remote/cluster
+spelling passed `-count=10`; memo and concurrent-cache races passed at
+`-count=20`/`-count=10`; hubcore Favorite/Remote/TreeCache and TreeFavorite
+passed `-count=5`; ProjectDelete/FavoriteEndpoint passed `-count=3`; full
+hubcore and cmd/serf-hub, vet, lint, gofmt, and diff checks all passed. Exact
+commands and outputs are in `task-2-report.md`.
