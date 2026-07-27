@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ModelCatalog } from "../../widgets";
 import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
+import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
 
 afterEach(cleanup);
 
@@ -119,4 +123,64 @@ test("the working-directory sheet uses the existing path panel and closes with E
 
   expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
+});
+
+test("selecting a recent working directory stamps the committed value, not the previous cwd", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
+  const onCwdChange = vi.fn();
+  renderRows({
+    cwd: "/old/project",
+    onCwdChange,
+    listRecents: vi.fn(async () => ["/new/project"]),
+    onCwdPanelClose: setGlobalLastWorkingDir,
+  });
+
+  await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  await user.click(await within(dialog).findByRole("option", { name: /new\/project/ }));
+
+  expect(onCwdChange).toHaveBeenLastCalledWith("/new/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
+});
+
+test("pressing Enter on a typed working directory stamps the committed value, not the previous cwd", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
+  const onCwdChange = vi.fn();
+  renderRows({
+    cwd: "/old/project",
+    onCwdChange,
+    onCwdPanelClose: setGlobalLastWorkingDir,
+  });
+
+  await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
+  await user.keyboard("/new/typed/project{Enter}");
+
+  expect(onCwdChange).toHaveBeenLastCalledWith("/new/typed/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/typed/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
+});
+
+test("a disabled reasoning row is read-only and exposes no picker affordance", () => {
+  renderRows({ reasoningDisabled: true });
+
+  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]') as HTMLElement;
+  expect(row).toBeTruthy();
+  expect(within(row).queryByRole("button")).toBeNull();
+  expect(row.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+  expect(row.textContent).not.toContain("›");
+});
+
+test("mobile setting rows keep the approved 48px body-text baseline", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "MobileSettingRows.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rowRule = css.match(/\.rowButton,\s*\.readOnly\s*\{([\s\S]*?)\n\}/)?.[1];
+
+  expect(rowRule).toContain("min-height: 48px");
+  expect(rowRule).toContain("font-size: var(--font-size-body)");
+  expect(rowRule).not.toContain("font-size: var(--font-size-ui)");
 });

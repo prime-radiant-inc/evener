@@ -43,6 +43,7 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
 let nextId = 0;
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
 const failureCallbacks = new Map<string, (error: unknown) => void>();
+const settledPerformIds = new Set<string>();
 // lastSeenModels is the reconciliation diff baseline: the last ThreadModel
 // this module has actually scanned for each ref. It must advance on EVERY
 // threads-store change (not just when something currently has a pending
@@ -122,6 +123,13 @@ function clearBookkeeping(id: string): void {
   if (timer !== undefined) clearTimeout(timer);
   timeoutHandles.delete(id);
   failureCallbacks.delete(id);
+  settledPerformIds.delete(id);
+}
+
+function clearTimeoutHandle(id: string): void {
+  const timer = timeoutHandles.get(id);
+  if (timer !== undefined) clearTimeout(timer);
+  timeoutHandles.delete(id);
 }
 
 function removeEntry(id: string): void {
@@ -141,7 +149,11 @@ function removeEntry(id: string): void {
 function resolveMany(ids: string[]): void {
   if (ids.length === 0) return;
   for (const id of ids) {
-    clearBookkeeping(id);
+    clearTimeoutHandle(id);
+    // If perform() already settled, no later failure can arrive. When it is
+    // still unresolved, retain the callback so a late rejection remains
+    // visible even though the wire echo already removed the pending chip.
+    if (settledPerformIds.delete(id)) failureCallbacks.delete(id);
   }
   pendingTurnsStore.setState((s) => {
     const next = new Map(s.entries);
@@ -269,6 +281,11 @@ export async function submitWithPendingTracking(
 
   try {
     await perform();
+    settledPerformIds.add(id);
+    if (!pendingTurnsStore.getState().entries.has(id)) {
+      settledPerformIds.delete(id);
+      failureCallbacks.delete(id);
+    }
   } catch (err) {
     failPendingTurn(id, err);
     throw err;
@@ -321,7 +338,7 @@ export function resetPendingTurnsStoreForTests(): void {
   for (const timer of timeoutHandles.values()) clearTimeout(timer);
   timeoutHandles.clear();
   failureCallbacks.clear();
+  settledPerformIds.clear();
   lastSeenModels.clear();
-  nextId = 0;
   pendingTurnsStore.setState({ entries: new Map(), awaitingFirstFrame: new Map() });
 }

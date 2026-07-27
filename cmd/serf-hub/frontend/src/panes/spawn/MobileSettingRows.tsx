@@ -61,13 +61,14 @@ interface MobileSettingRowProps {
 }
 
 function MobileSettingRow({ label, value, onClick, expanded = false, disabled = false }: MobileSettingRowProps) {
+  const interactive = onClick !== undefined && !disabled;
   const content = (
     <>
       <span className={CLASS.rowLabel}>{label}</span>
       <span className={CLASS.rowValue} title={value}>
         {value}
       </span>
-      {onClick !== undefined && (
+      {interactive && (
         <span className={CLASS.caret} aria-hidden="true">
           ›
         </span>
@@ -77,11 +78,11 @@ function MobileSettingRow({ label, value, onClick, expanded = false, disabled = 
 
   return (
     <div
-      className={`${CLASS.row} ${onClick === undefined ? CLASS.readOnly : ""}`}
+      className={`${CLASS.row} ${interactive ? "" : CLASS.readOnly}`}
       data-testid="mobile-spawn-row"
       data-label={label}
     >
-      {onClick === undefined ? (
+      {!interactive ? (
         content
       ) : (
         <button
@@ -91,7 +92,6 @@ function MobileSettingRow({ label, value, onClick, expanded = false, disabled = 
           aria-expanded={expanded}
           aria-label={`${label}: ${value}`}
           onClick={onClick}
-          disabled={disabled}
         >
           {content}
         </button>
@@ -200,8 +200,8 @@ export function MobileSettingRows({
     };
   }, [loadCatalog, openPicker]);
 
-  function closePicker(): void {
-    if (openPicker === "Working directory") onCwdPanelClose(cwd);
+  function closePicker(committedCwd = cwd): void {
+    if (openPicker === "Working directory") onCwdPanelClose(committedCwd);
     setOpenPicker(null);
   }
 
@@ -323,7 +323,7 @@ export function MobileSettingRows({
             onChange={onCwdChange}
             onCommit={(value) => {
               onCwdChange(value);
-              closePicker();
+              closePicker(value);
             }}
             complete={complete}
             listRecents={listRecents}

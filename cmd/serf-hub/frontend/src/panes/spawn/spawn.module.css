@@ -21,6 +21,24 @@
   display: none;
 }
 
+.mobilePromptIntro {
+  display: none;
+}
+
+.mobilePromptHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+}
+
+.mobilePromptSubtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-body);
+}
+
 /* One compact row of configuration, wrapping to stacked rows on a narrow
  * viewport. The working directory is the only field that changes often, so it
  * takes the row's free width and the other two size to their content. */
@@ -138,6 +156,10 @@
   }
 
   .mobileConfig {
+    display: block;
+  }
+
+  .mobilePromptIntro {
     display: block;
   }
 

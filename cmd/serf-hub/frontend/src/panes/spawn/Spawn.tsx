@@ -87,6 +87,9 @@ const CLASS = {
   chips: requireClass(styles.chips, "spawn.module.css", "chips"),
   actionBand: requireClass(styles.actionBand, "spawn.module.css", "actionBand"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
+  mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
+  mobilePromptHeading: requireClass(styles.mobilePromptHeading, "spawn.module.css", "mobilePromptHeading"),
+  mobilePromptSubtitle: requireClass(styles.mobilePromptSubtitle, "spawn.module.css", "mobilePromptSubtitle"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
 };
@@ -482,7 +485,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "serf", label: "serf" }];
 
   return (
-    <PaneScaffold title="Start an agent">
+    <PaneScaffold title="Start an agent" mobileTitle="new">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <div className={CLASS.notice} role="status">
@@ -496,6 +499,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             />
           </div>
         )}
+
+        <div className={CLASS.mobilePromptIntro} data-testid="spawn-mobile-prompt-intro">
+          <h3 className={CLASS.mobilePromptHeading}>What should the agent do?</h3>
+          <p className={CLASS.mobilePromptSubtitle}>Leave blank to start a dormant session.</p>
+        </div>
 
         {/* The prompt comes FIRST and takes the page's slack: writing the
             prompt is what starting an agent IS, and everything below it is

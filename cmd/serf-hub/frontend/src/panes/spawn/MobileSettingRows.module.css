@@ -18,7 +18,7 @@
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-body);
   text-align: left;
 }
 
@@ -80,7 +80,7 @@
   background: transparent;
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-body);
   text-align: left;
   cursor: pointer;
 }

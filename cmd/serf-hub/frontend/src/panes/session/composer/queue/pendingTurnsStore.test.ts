@@ -200,6 +200,41 @@ describe("submitWithPendingTracking", () => {
     expect(awaitingResult.current).toBe(false);
   });
 
+  test("a rejection after the user echo still invokes the failure feedback callback", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        },
+      });
+    });
+
+    const failure = new Error("daemon rejected after echo");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(send).rejects.toBe(failure);
+    });
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledWith(failure);
+  });
+
   test("a rejecting perform() removes the entry immediately, calls onFailure with the raw error, and rethrows", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
@@ -447,7 +482,7 @@ describe("10s timeout reaper", () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
-  test("a send timeout clears awaiting state even when perform() remains unresolved", async () => {
+  test("a late successful perform after timeout cannot resurrect awaiting state", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     let resolvePerform: (() => void) | undefined;
@@ -477,7 +512,7 @@ describe("10s timeout reaper", () => {
 });
 
 describe("awaiting first frame lifecycle cleanup", () => {
-  test("model removal clears awaiting state and a later successful perform cannot restore it", async () => {
+  test("a late successful perform after model release cannot resurrect awaiting state", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     let resolvePerform: (() => void) | undefined;

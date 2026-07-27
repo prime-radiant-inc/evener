@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -206,6 +209,37 @@ test("mobile Spawn exposes Treatment A rows and a pinned action band without los
   expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
 });
 
+test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed mobile work");
+
+  expect(screen.getByTestId("pane-title-mobile").textContent).toBe("new");
+  expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
+  expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+});
+
+test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const spawnCss = readFileSync(join(here, "spawn.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rowsCss = readFileSync(join(here, "MobileSettingRows.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const paneCss = readFileSync(join(here, "../../widgets/panescaffold/panescaffold.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  expect(spawnCss).toContain(".mobilePromptIntro");
+  expect(spawnCss).toContain("@media (max-width: 899px)");
+  expect(rowsCss).toContain("min-height: 48px");
+  expect(rowsCss).toContain("font-size: var(--font-size-body)");
+  expect(paneCss).toContain(".desktopTitle");
+  expect(paneCss).toContain(".mobileTitle");
+  expect(paneCss).toContain("@media (max-width: 899px)");
+});
+
 // Harness moves into Advanced options: most installs have exactly one, so a
 // field whose answer is always "serf" shouldn't lead the page. It stays fully
 // functional there - the switch still blanks a non-serf model (see the harness
@@ -230,7 +264,7 @@ test("the primary verb is Spawn, in the card's own corner, and the page is title
 
   const start = screen.getByTestId("spawn-submit");
   expect(start.textContent).toBe("Spawn");
-  expect(screen.getByRole("heading", { name: "Start an agent" })).toBeTruthy();
+  expect(screen.getByTestId("pane-title-desktop").textContent).toBe("Start an agent");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
   expect(screen.getByRole("button", { name: "Spawn" })).toBeTruthy();
