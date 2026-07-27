@@ -306,7 +306,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 			}
 		}
 	}
-	if !(assistantIdx >= 0 && assistantIdx < hookIdx && hookIdx < resultIdx) {
+	if assistantIdx < 0 || assistantIdx >= hookIdx || hookIdx >= resultIdx {
 		t.Fatalf("transcript order assistant=%d hook=%d result=%d", assistantIdx, hookIdx, resultIdx)
 	}
 }
