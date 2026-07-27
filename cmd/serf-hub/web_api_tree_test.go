@@ -265,6 +265,37 @@ func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
 	}
 }
 
+func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
+	meta, _, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "child",
+		Source: "remote",
+		Serf: appwire.SerfThread{
+			Ref:       "remote:child",
+			ParentRef: "remote:parent",
+			Kind:      "subagent",
+		},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected remote subagent")
+	}
+	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
+		t.Fatalf("remote subagent metadata = %+v", meta)
+	}
+
+	forkMeta, _, ok := appThreadTreeEntries(appwire.Thread{
+		ID:           "fork",
+		Source:       "remote",
+		ForkedFromID: "parent",
+		Serf:         appwire.SerfThread{Ref: "remote:fork"},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected remote fork")
+	}
+	if forkMeta.ParentSessionID != "remote:parent" || forkMeta.IsSubagent {
+		t.Fatalf("remote fork metadata = %+v", forkMeta)
+	}
+}
+
 func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "proj")

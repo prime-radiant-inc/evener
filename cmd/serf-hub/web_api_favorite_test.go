@@ -124,6 +124,38 @@ func TestFavoriteEndpointAcceptsCappedAwayRemoteTopLevelSession(t *testing.T) {
 	}
 }
 
+func TestFavoriteEndpointRejectsRemoteSubagent(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{
+		{
+			ID: "parent", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+			Serf: appwire.SerfThread{Ref: "remote:parent", Kind: "session"},
+		},
+		{
+			ID: "child", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+			Serf: appwire.SerfThread{Ref: "remote:child", ParentRef: "remote:parent", Kind: "subagent"},
+		},
+	})
+	fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(
+		`{"kind":"session","id":"remote:child","favorited":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("remote subagent status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	got, err := fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("rejected remote subagent wrote favorite decisions: %v", got)
+	}
+}
+
 func TestUnarchiveProjectUsesCanonicalID(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "foo")

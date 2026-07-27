@@ -469,6 +469,8 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir: thread.CWD,
 		},
+		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
+		IsSubagent:      thread.Serf.Kind == "subagent",
 	}
 	if thread.GitInfo != nil {
 		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
@@ -488,6 +490,23 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Project:   project,
 	}
 	return meta, entry, true
+}
+
+// appThreadTreeParentSessionID translates the remote thread lineage into the
+// same ref-valued metadata used by the local tree. ParentRef is authoritative
+// for Serf children; ForkedFromID is the Codex fork lineage fallback.
+func appThreadTreeParentSessionID(thread appwire.Thread, childRef appwire.Ref) string {
+	raw := strings.TrimSpace(thread.Serf.ParentRef)
+	if raw == "" {
+		raw = strings.TrimSpace(thread.ForkedFromID)
+	}
+	if raw == "" {
+		return ""
+	}
+	if parentRef, err := appwire.ParseRef(raw); err == nil {
+		return parentRef.String()
+	}
+	return appwire.Ref{SourceID: childRef.SourceID, ThreadID: raw}.String()
 }
 
 func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
