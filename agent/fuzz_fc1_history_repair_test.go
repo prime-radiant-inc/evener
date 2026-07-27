@@ -28,7 +28,11 @@ import (
 //     (count2 == 0) and returns it unchanged — the invariant the production build
 //     only checks under invariant.Enabled, asserted here for arbitrary inputs;
 //   - no orphaned call after repair: every assistant tool call with a non-empty ID
-//     has a matching tool result at a LATER turn;
+//     has at least one matching tool result at a LATER turn, even when arbitrary
+//     malformed history leaves both a synthetic and a late real result;
+//   - pre-boundary reachability: when the original history contains a matching
+//     real result before the first true repair boundary, the repaired history has
+//     exactly one later result for that call;
 //   - preservation: repair only INSERTS synthetic tool-result turns — it never
 //     drops or reorders original turns, so every non-tool-result turn count is
 //     preserved exactly and the tool-result turn count only grows.
@@ -38,6 +42,7 @@ func FuzzFc1RepairOrphanedToolResults(f *testing.F) {
 	f.Add([]byte{0x05, 0x00})             // call then user turn -> flush
 	f.Add([]byte{0x05, 0x0a})             // call then resolve
 	f.Add([]byte{0x09, 0x05, 0x00, 0x0a}) // two calls, one resolved late
+	f.Add([]byte{0x05, 0x07, 0x0a})       // call, hook completion, then resolve
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		history := fc1BuildHistory(data)
@@ -67,6 +72,7 @@ func FuzzFc1RepairOrphanedToolResults(f *testing.F) {
 
 		// No orphaned call: every assistant tool call has a matching later result.
 		fc1AssertNoOrphanedCall(t, out)
+		fc1AssertPreBoundaryResults(t, history, out)
 
 		// Preservation: only synthetic tool-result turns are inserted.
 		before := fc1CountByKind(history)
@@ -87,8 +93,9 @@ func FuzzFc1RepairOrphanedToolResults(f *testing.F) {
 
 // fc1BuildHistory decodes a byte stream into a history. Each byte is one op:
 // the low two bits pick the turn kind and the rest is a parameter (call count or
-// resolve count). Issued-but-unresolved call IDs are tracked so tool-result turns
-// reference real calls; IDs are globally unique and non-empty.
+// resolve count). Op 3 emits either steering or hook telemetry. Issued-but-
+// unresolved call IDs are tracked so tool-result turns reference real calls; IDs
+// are globally unique and non-empty.
 func fc1BuildHistory(data []byte) []schema.Turn {
 	var history []schema.Turn
 	var issued []string // outstanding call IDs available to resolve
@@ -132,10 +139,17 @@ func fc1BuildHistory(data []byte) []schema.Turn {
 				})
 			}
 		default:
-			history = append(history, schema.Turn{
-				Kind:    schema.TurnSteering,
-				Message: llm.User("steer " + strconv.Itoa(counter)),
-			})
+			if param%2 == 0 {
+				history = append(history, schema.Turn{
+					Kind:    schema.TurnSteering,
+					Message: llm.User("steer " + strconv.Itoa(counter)),
+				})
+			} else {
+				history = append(history, schema.NewTurn(
+					schema.TurnHookCompleted,
+					llm.System("PreToolUse hook exit 0"),
+				))
+			}
 			counter++
 		}
 	}
@@ -159,18 +173,82 @@ func fc1AssertNoOrphanedCall(t *testing.T, history []schema.Turn) {
 	}
 }
 
+func fc1AssertPreBoundaryResults(t *testing.T, original, repaired []schema.Turn) {
+	t.Helper()
+	for i, turn := range original {
+		if turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		for _, p := range turn.Message.Content {
+			if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.ID == "" {
+				continue
+			}
+			if !fc1HasRealResultBeforeRepairBoundary(original[i+1:], p.ToolCall.ID) {
+				continue
+			}
+			repairedIdx := fc1AssistantCallIndex(repaired, p.ToolCall.ID)
+			if repairedIdx < 0 {
+				t.Fatalf("repaired history lost assistant tool call %q", p.ToolCall.ID)
+			}
+			if got := fc1LaterResultCount(repaired[repairedIdx+1:], p.ToolCall.ID); got != 1 {
+				t.Fatalf("pre-boundary tool call %q has %d later result(s), want exactly 1", p.ToolCall.ID, got)
+			}
+		}
+	}
+}
+
+func fc1HasRealResultBeforeRepairBoundary(history []schema.Turn, callID string) bool {
+	// The repair switch keeps pending calls open only across HOOK_COMPLETED;
+	// user, steering, subsequent assistant, failure, and other default turns
+	// are true boundaries.
+	for _, turn := range history {
+		switch turn.Kind {
+		case schema.TurnTool, schema.TurnToolResults:
+			if fc1LaterResultCount([]schema.Turn{turn}, callID) > 0 {
+				return true
+			}
+		case schema.TurnHookCompleted:
+			// Hook completion is presentational telemetry, not a repair boundary.
+		case schema.TurnAssistant, schema.TurnFailure:
+			return false
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func fc1AssistantCallIndex(history []schema.Turn, callID string) int {
+	for i, turn := range history {
+		if turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		for _, p := range turn.Message.Content {
+			if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.ID == callID {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 func fc1HasLaterResult(rest []schema.Turn, callID string) bool {
+	return fc1LaterResultCount(rest, callID) > 0
+}
+
+func fc1LaterResultCount(rest []schema.Turn, callID string) int {
+	count := 0
 	for _, turn := range rest {
 		if turn.Kind != schema.TurnTool && turn.Kind != schema.TurnToolResults {
 			continue
 		}
 		for _, p := range turn.Message.Content {
 			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == callID {
-				return true
+				count++
 			}
 		}
 	}
-	return false
+	return count
 }
 
 func fc1ZeroTimestamps(history []schema.Turn) []schema.Turn {

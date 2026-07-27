@@ -2,20 +2,20 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
-// hookPluginDir builds a minimal plugin whose SessionStart hook runs command
-// and returns its directory. The command decides the hook's exit code, which
-// is the value the transcript must carry.
-func hookPluginDir(t *testing.T, command string) string {
+func hookPluginDirForEvent(t *testing.T, event, command string) string {
 	t.Helper()
 	dir := t.TempDir()
 	dir, err := filepath.EvalSymlinks(dir)
@@ -34,11 +34,19 @@ func hookPluginDir(t *testing.T, command string) string {
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		t.Fatalf("mkdir hooks: %v", err)
 	}
-	hooksJSON := `{"hooks": {"SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": "` + command + `"}]}]}}`
+	hooksJSON := `{"hooks":{"` + event + `":[{"matcher":"*","hooks":[{"type":"command","command":"` + command + `"}]}]}}`
 	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0o644); err != nil {
 		t.Fatalf("write hooks: %v", err)
 	}
 	return dir
+}
+
+// hookPluginDir builds a minimal plugin whose SessionStart hook runs command
+// and returns its directory. The command decides the hook's exit code, which
+// is the value the transcript must carry.
+func hookPluginDir(t *testing.T, command string) string {
+	t.Helper()
+	return hookPluginDirForEvent(t, "SessionStart", command)
 }
 
 // transcriptHookTurns returns every HOOK_COMPLETED entry in a transcript.
@@ -204,4 +212,120 @@ func TestHookCompletedTurnIsNeverSentToModel(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("history messages = %d, want 2 (user + assistant)", len(msgs))
 	}
+}
+
+func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
+	t.Parallel()
+	const callID = "call_with_pre_tool_hook"
+	dir := t.TempDir()
+	var requestErr error
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(llm.ToolCallData{
+					ID:        callID,
+					Name:      "hook_probe",
+					Type:      "function",
+					Arguments: json.RawMessage(`{}`),
+				})
+			},
+			func(req llm.Request) llm.Response {
+				requestErr = validateSingleSuccessfulToolResult(req.Messages, callID)
+				return finalResponse("done")
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(
+		client,
+		newAnthropicProfile("k3"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		SessionConfig{
+			StateDir:   dir,
+			PluginDirs: []string{hookPluginDirForEvent(t, "PreToolUse", "exit 0")},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "hook_probe",
+			Description: "return a deterministic successful result",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return "probe succeeded", nil
+		},
+	}); err != nil {
+		t.Fatalf("register hook_probe: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "run the probe", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("ProcessInput output = %q, want done", out)
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+
+	transcriptPath := sess.TranscriptPath()
+	sess.Close()
+	data, err := readTranscriptFull(transcriptPath)
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	assistantIdx, hookIdx, resultIdx := -1, -1, -1
+	for i, entry := range data.Entries {
+		switch entry.Turn.Kind {
+		case schema.TurnAssistant:
+			for _, call := range assistantToolCalls(entry.Turn.Message) {
+				if call.ID == callID {
+					assistantIdx = i
+				}
+			}
+		case schema.TurnHookCompleted:
+			if hookIdx < 0 && entry.Turn.Hook != nil && entry.Turn.Hook.Event == "PreToolUse" {
+				hookIdx = i
+			}
+		case schema.TurnToolResults:
+			if countToolResultsInHistory([]schema.Turn{entry.Turn}, callID) == 1 {
+				resultIdx = i
+			}
+		}
+	}
+	if !(assistantIdx >= 0 && assistantIdx < hookIdx && hookIdx < resultIdx) {
+		t.Fatalf("transcript order assistant=%d hook=%d result=%d", assistantIdx, hookIdx, resultIdx)
+	}
+}
+
+func validateSingleSuccessfulToolResult(messages []llm.Message, callID string) error {
+	results := 0
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.ToolCallID != callID {
+				continue
+			}
+			results++
+			if part.ToolResult.IsError {
+				return fmt.Errorf("tool result %s is synthetic error: %v", callID, part.ToolResult.Content)
+			}
+		}
+	}
+	if results != 1 {
+		return fmt.Errorf("tool results for %s = %d, want exactly 1", callID, results)
+	}
+	return nil
 }

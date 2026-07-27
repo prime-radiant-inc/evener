@@ -64,6 +64,11 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 					removePending(part.ToolResult.ToolCallID)
 				}
 			}
+		case schema.TurnHookCompleted:
+			// Hook completion is presentational telemetry that can legally be
+			// recorded between a tool call and its result. Preserve it in-place
+			// without treating the pending call as interrupted.
+			out = append(out, turn)
 		default:
 			flushPending()
 			out = append(out, turn)

@@ -139,6 +139,39 @@ func TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput(t *t
 	}
 }
 
+func TestRepairOrphanedToolResultsPreservesHookBeforeRealResult(t *testing.T) {
+	t.Parallel()
+	const callID = "call_with_hook"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        callID,
+					Name:      "probe",
+					Type:      "function",
+					Arguments: json.RawMessage(`{}`),
+				},
+			}},
+		}),
+		schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+	}
+
+	got, repairs := repairOrphanedToolResults(history)
+
+	if repairs != 0 {
+		t.Fatalf("repairs = %d, want 0; history=%s", repairs, turnKinds(got))
+	}
+	if gotKinds := turnKinds(got); gotKinds != "ASSISTANT,HOOK_COMPLETED,TOOL_RESULTS" {
+		t.Fatalf("history = %s, want original order", gotKinds)
+	}
+	if results := countToolResultsInHistory(got, callID); results != 1 {
+		t.Fatalf("tool results for %s = %d, want exactly 1", callID, results)
+	}
+}
+
 func validateRecoveredToolCallHistory(messages []llm.Message) error {
 	pending := map[string]string{}
 	results := map[string]int{}
