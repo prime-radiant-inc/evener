@@ -43,9 +43,8 @@ describe("openNestedSessionWithOwner", () => {
     expect(ownerSecondary).toBeUndefined();
     expect(ownerMain?.id).not.toBe(owner);
     expect(childPane?.slot).toBe("secondary");
-    expect(childPane?.id).toBe(child);
     expect(workspaceStore.getState().mainPane()?.id).toBe(ownerMain?.id);
-    expect(workspaceStore.getState().focusedPaneId).toBe(child);
+    expect(workspaceStore.getState().focusedPaneId).toBe(childPane?.id);
     expect(unrelatedPane).toBeUndefined();
   });
 });

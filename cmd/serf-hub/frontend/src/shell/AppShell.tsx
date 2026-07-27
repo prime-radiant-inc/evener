@@ -22,7 +22,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
-import { workspaceStore } from "./workspace";
+import { SETTINGS_PRIMARY_ID, SPAWN_PRIMARY_ID, useWorkspaceStore, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -111,20 +111,48 @@ function sessionRefFromRouteParams(params: unknown): string | null {
   return typeof ref === "string" && ref.length > 0 ? ref : null;
 }
 
-function openSettingsInMain(params: unknown): void {
+function sameRouteParams(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): boolean {
+  const route = urlToPane(pathname);
+  if (route === null || route.type === "welcome") return true;
+
   const workspace = workspaceStore.getState();
-  for (const pane of workspace.panes.filter((item) => item.type === "settings" && item.slot === "secondary")) {
-    workspace.closePane(pane.id);
-  }
-
   const main = workspace.mainPane();
-  if (main?.type === "settings") {
-    workspace.openPane("settings", params);
-    return;
+  if (main === null || workspace.focusedPaneId !== main.id) return false;
+
+  if (route.type === "settings" || route.type === "spawn") {
+    const matchingType = route.type;
+    const matchingPanes = workspace.panes.filter((pane) => pane.type === matchingType);
+    return main.type === matchingType && sameRouteParams(main.params, route.params) && matchingPanes.length === 1;
   }
 
-  if (main) workspace.closePane(main.id);
-  workspace.openPane("settings", params);
+  const ref = sessionRefFromRouteParams(route.params);
+  if (ref === null || tree === null) return false;
+  const ancestorRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], ref);
+  const sessionRefOf = (pane: { params: unknown }): string | null => {
+    const paneRef = (pane.params as { ref?: unknown }).ref;
+    return typeof paneRef === "string" ? paneRef : null;
+  };
+
+  if (ancestorRef === null || ancestorRef === ref) {
+    return (
+      main.type === "session" &&
+      sessionRefOf(main) === ref &&
+      workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ref).length === 1
+    );
+  }
+
+  const owner = main.type === "session" && sessionRefOf(main) === ancestorRef;
+  const child = workspace.panes.find(
+    (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
+  );
+  const duplicateOwner = workspace.panes.some(
+    (pane) => pane.id !== main.id && pane.type === "session" && sessionRefOf(pane) === ancestorRef,
+  );
+  return owner && child !== undefined && workspace.focusedPaneId === child.id && !duplicateOwner;
 }
 
 // Opens (or focuses) the pane a pathname resolves to, while enforcing two
@@ -168,11 +196,11 @@ function openRouteAsPane(
 
   pendingSessionRef.current = null;
   if (route.type === "settings") {
-    openSettingsInMain(route.params);
+    workspaceStore.getState().replacePrimary("settings", route.params, SETTINGS_PRIMARY_ID);
     return;
   }
   if (route.type === "spawn") {
-    workspaceStore.getState().openPane("spawn", route.params);
+    workspaceStore.getState().replacePrimary("spawn", route.params, SPAWN_PRIMARY_ID);
     return;
   }
   workspaceStore.getState().openPane("welcome", {});
@@ -243,6 +271,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const route = urlToPane(pathname);
   const tree = useTreeStore((state) => state.tree);
   const treeError = useTreeStore((state) => state.error);
+  const workspacePanes = useWorkspaceStore((state) => state.panes);
   const isMobile = useIsMobile();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
@@ -277,6 +306,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // first time on a later render" shapes of this race).
   const dockHostHasMountedRef = useRef(false);
   const openedForPathnameRef = useRef<string | null>(null);
+  const routePlacementInProgressRef = useRef(false);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
@@ -284,10 +314,26 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   if (route !== null) dockHostHasMountedRef.current = true;
 
   useEffect(() => {
+    if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
+      if (routePlacementInProgressRef.current) {
+        routePlacementInProgressRef.current = false;
+        return;
+      }
+      if (routePlacementIsApplied(pathname, tree)) return;
+      openedForPathnameRef.current = pathname;
+      const expectWorkspaceTransition = route.type !== "session" || tree !== null;
+      routePlacementInProgressRef.current = expectWorkspaceTransition;
+      try {
+        openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
+      } finally {
+        if (!expectWorkspaceTransition) routePlacementInProgressRef.current = false;
+      }
+      return;
+    }
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
-  }, [pathname, tree, treeError]);
+  }, [pathname, route?.type, tree, treeError, workspacePanes]);
 
   return (
     <ClientProvider client={client}>

@@ -504,7 +504,7 @@ test("rail activation updates the URL and a later Settings activation returns Se
 
   const sessionRow = screen.getByText("Session one").closest('[role="treeitem"]');
   expect(sessionRow).not.toBeNull();
-  await user.click(sessionRow as HTMLElement);
+  await user.click(screen.getByText("Session one"));
 
   expect(window.location.pathname).toBe("/s/local%3As1");
   await waitFor(() => {
@@ -622,7 +622,7 @@ test("a saved session layout is replaced by /settings with Settings as the only 
 
   await waitFor(() => {
     expect(workspaceStore.getState().panes).toEqual([
-      expect.objectContaining({ type: "settings", params: { section: "general" }, slot: "main" }),
+      expect.objectContaining({ type: "settings", params: {}, slot: "main" }),
     ]);
   });
 });

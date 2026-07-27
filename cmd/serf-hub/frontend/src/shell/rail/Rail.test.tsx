@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
+import { resetTreeStoreForTests } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -34,11 +34,8 @@ beforeAll(async () => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
   globalThis.localStorage = new MemoryStorage();
   // Registers the real "session" pane type (side-effect import), mirroring
-  // shell/DockHost.test.tsx's identical precedent - in production this
-  // already happened before Rail ever mounts (AppShell.tsx imports
-  // "../panes/session" at module scope), so activating a session row here
-  // exercises the same workspaceStore.openPane() path against a real,
-  // registered pane type rather than a hand-rolled fixture.
+  // shell/DockHost.test.tsx's identical precedent for tests that inspect the
+  // workspace reset boundary. Rail activation itself is route-only.
   await import("../../panes/session");
 });
 
@@ -547,53 +544,28 @@ describe("row activation", () => {
     renderRail();
     await screen.findByText("Live session");
 
-    const row = screen.getByText("Live session").closest('[role="treeitem"]');
-    expect(row).not.toBeNull();
-    await userEvent.setup().click(row as HTMLElement);
+    await userEvent.setup().click(screen.getByText("Live session"));
 
     expect(window.location.pathname).toBe("/s/local%3Alive1");
   });
 
-  test("activating a session row opens its pane via workspaceStore.openPane", async () => {
+  test("activating a session row leaves pane placement to the routed shell", async () => {
+    window.history.pushState({}, "", "/settings");
     renderRail();
     await screen.findByText("Live session");
     await userEvent.setup().click(screen.getByText("Live session"));
-    const panes = workspaceStore.getState().panes;
-    expect(panes).toHaveLength(1);
-    expect(panes[0]).toMatchObject({ type: "session", params: { ref: "local:live1" } });
-  });
-
-  test("activating a different top-level session replaces the current main session", async () => {
-    renderRail();
-    await screen.findByText("Live session");
-    const user = userEvent.setup();
-
-    await user.click(screen.getByText("Live session"));
-    await user.click(screen.getByText("Pinned session"));
-
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:pin1" });
-    expect(workspaceStore.getState().panes).toHaveLength(1);
-  });
-
-  test("a top-level session already open in secondary is moved into main when activated", async () => {
-    workspaceStore.getState().openPane("session", { ref: "local:live1" });
-    workspaceStore.getState().openPane("session", { ref: "local:pin1" });
-
-    renderRail();
-    await screen.findByText("Live session");
-    await userEvent.setup().click(screen.getByText("Pinned session"));
-
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:pin1" });
-    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(window.location.pathname).toBe("/s/local%3Alive1");
+    expect(workspaceStore.getState().panes).toHaveLength(0);
   });
 
   test("Enter on a focused row activates it the same as a click", async () => {
+    window.history.pushState({}, "", "/settings");
     renderRail();
     await screen.findByText("Live session");
     const row = rowFor("Live session");
     row.focus();
     fireEvent.keyDown(row, { key: "Enter" });
-    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(window.location.pathname).toBe("/s/local%3Alive1");
   });
 });
 
@@ -702,150 +674,6 @@ describe("tier overflow", () => {
   });
 });
 
-// A subagent opens BESIDE the session that spawned it, never as the main pane.
-// See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md - placement
-// used to be decided purely by "is main free?", so a subagent took main
-// whenever it happened to be, and (slot being assign-once and persisted) then
-// stayed there forever with its own parent opening to its right.
-describe("opening a nested session", () => {
-  async function openSubagent() {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    renderRail();
-    await screen.findByText("Session one");
-    const user = userEvent.setup();
-    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
-    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
-    await user.click(screen.getByText("Finished helper"));
-    return user;
-  }
-
-  const paneFor = (ref: string) =>
-    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === ref);
-
-  test("the subagent lands in the secondary slot, not main", async () => {
-    await openSubagent();
-    expect(paneFor("local:sub1")?.slot).toBe("secondary");
-  });
-
-  test("its top-level parent is opened into the empty main slot", async () => {
-    await openSubagent();
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
-  });
-
-  test("the subagent takes focus - it is what you clicked", async () => {
-    await openSubagent();
-    expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:sub1")?.id);
-  });
-
-  test("a parent already in main is reused, not opened twice", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    renderRail();
-    await screen.findByText("Session one");
-    const user = userEvent.setup();
-    await user.click(screen.getByText("Session one")); // parent -> main
-    const mainId = workspaceStore.getState().mainPane()?.id;
-    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
-    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
-    await user.click(screen.getByText("Finished helper"));
-
-    expect(workspaceStore.getState().mainPane()?.id).toBe(mainId);
-    expect(
-      workspaceStore.getState().panes.filter((p) => (p.params as { ref: string }).ref === "local:s1"),
-    ).toHaveLength(1);
-  });
-
-  // The invariant now: nested sessions always sit beside their top-level owner.
-  // If that means replacing an unrelated main pane, we do so.
-  test("an unrelated session already in main is replaced with the nested owner", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    renderRail();
-    await screen.findByText("Live session");
-    const user = userEvent.setup();
-    await user.click(screen.getByText("Live session")); // unrelated -> main
-    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
-    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
-    await user.click(screen.getByText("Finished helper"));
-
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
-    expect(paneFor("local:sub1")?.slot).toBe("secondary");
-    expect(paneFor("local:s1")?.slot).toBe("main");
-  });
-
-  // A layout saved before this fix can have a subagent stamped slot:"main"
-  // permanently - slot is assign-once and persisted. Activating it repairs it
-  // rather than requiring every saved arrangement to be discarded.
-  test("a subagent already stuck in the main slot is moved out of it", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    // Simulate the stale layout: the subagent holds main before the rail mounts.
-    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:sub1" });
-
-    renderRail();
-    await screen.findByText("Session one");
-    const user = userEvent.setup();
-    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
-    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
-    await user.click(screen.getByText("Finished helper"));
-
-    expect(paneFor("local:sub1")?.slot).toBe("secondary");
-    expect(workspaceStore.getState().mainPane()?.params).not.toMatchObject({ ref: "local:sub1" });
-  });
-});
-
-// A deep link (/s/<subagent-ref>) opens through AppShell's route merge, not
-// the rail, and the tree has not been fetched when that route resolves - so
-// nothing on that path can know the ref is nested and it lands in main. The
-// rail owns the tree, so it corrects the placement as soon as the tree
-// arrives, without waiting for a click. This also repairs a layout saved
-// before any of this existed.
-describe("a nested session already sitting in main when the tree loads", () => {
-  const paneFor = (ref: string) =>
-    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === ref);
-
-  test("is moved into the secondary slot", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    workspaceStore.getState().openPane("session", { ref: "local:sub1" }); // as a deep link would
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:sub1" });
-
-    renderRail();
-    await screen.findByText("Session one");
-    await vi.waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("secondary"));
-  });
-
-  test("its parent is pulled into the main slot it vacated", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
-    renderRail();
-    await screen.findByText("Session one");
-    await vi.waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
-  });
-
-  test("a TOP-LEVEL session in main is left exactly where it is", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    const main = workspaceStore.getState().openPane("session", { ref: "local:s1" });
-    renderRail();
-    await screen.findByText("Session one");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(workspaceStore.getState().mainPane()?.id).toBe(main);
-    expect(workspaceStore.getState().panes).toHaveLength(1);
-  });
-
-  // The correction must not fight the tree store's own refetching: it runs on
-  // every tree change, so it has to be a no-op once there is nothing to fix.
-  test("settles - a second tree load changes nothing further", async () => {
-    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
-    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
-    renderRail();
-    await screen.findByText("Session one");
-    await vi.waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("secondary"));
-
-    const before = JSON.stringify(workspaceStore.getState().panes);
-    await treeStore.getState().refresh();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(JSON.stringify(workspaceStore.getState().panes)).toBe(before);
-  });
-});
-
 // A cluster row is a repeated-title FOLD, not a session: its ref is a
 // synthetic "cluster:<hex>" (a SHA of project + title, hubcore/tree.go) that
 // names no session, so opening a pane for it loads a transcript that never
@@ -892,16 +720,18 @@ describe("activating a cluster row", () => {
     expect(await screen.findByText("Member one")).toBeTruthy();
   });
 
-  // Its members are ordinary top-level sessions and still open normally.
-  test("a cluster member still opens its own pane", async () => {
+  // Its members are ordinary top-level sessions and still use the canonical
+  // route activation owned by the shell.
+  test("a cluster member navigates to its canonical URL", async () => {
+    window.history.pushState({}, "", "/settings");
     treeResponseBody = WIRE_TREE_WITH_CLUSTER;
     renderRail();
     await screen.findByText("Repeated title");
     const user = userEvent.setup();
     await user.click(screen.getByText("Repeated title"));
     await user.click(await screen.findByText("Member one"));
-    expect(workspaceStore.getState().panes).toHaveLength(1);
-    expect(workspaceStore.getState().panes[0]).toMatchObject({ params: { ref: "local:m1" } });
+    expect(window.location.pathname).toBe("/s/local%3Am1");
+    expect(workspaceStore.getState().panes).toHaveLength(0);
   });
 });
 

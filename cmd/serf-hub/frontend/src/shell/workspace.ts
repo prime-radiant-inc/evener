@@ -21,6 +21,11 @@ import { type PaneTypeId, paneFor } from "./paneRegistry";
 // point (Jesse: "there should only ever be one pane in the 'main group'").
 export type PaneSlot = "main" | "secondary";
 
+export const SETTINGS_PRIMARY_ID = "settings";
+export const SPAWN_PRIMARY_ID = "spawn";
+
+type PrimaryPaneType = "settings" | "spawn" | "session";
+
 export interface OpenPaneRecord {
   id: string;
   type: PaneTypeId;
@@ -61,6 +66,7 @@ export interface WorkspaceStoreState {
   // affects a pane being CREATED: slot is assign-once, so reopening an
   // already-open pane resolves to that pane wherever it already sits.
   openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
+  replacePrimary(type: PrimaryPaneType, params: unknown, identity: string): string;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -89,6 +95,14 @@ export interface PanePanelParams {
 // deep-equal dependency would be more machinery than this actually needs.
 function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function primaryMatches(pane: OpenPaneRecord | null, type: PrimaryPaneType, identity: string): boolean {
+  if (pane?.type !== type) return false;
+  if (type === "settings") return identity === SETTINGS_PRIMARY_ID;
+  if (type === "spawn") return identity === SPAWN_PRIMARY_ID;
+  const ref = (pane.params as { ref?: unknown }).ref;
+  return typeof ref === "string" && ref === identity;
 }
 
 let nextPaneSeq = 0;
@@ -243,6 +257,28 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const slot: PaneSlot = !refusesMain && (main === undefined || displaced !== undefined) ? "main" : "secondary";
     const kept = displaced ? state.panes.filter((p) => p.id !== displaced.id) : state.panes;
     set({ panes: [...kept, { id, type, params, slot }], focusedPaneId: id });
+    return id;
+  },
+
+  replacePrimary(type, params, identity) {
+    paneFor(type);
+    const state = get();
+    const main = state.panes.find((pane) => pane.slot === "main") ?? null;
+
+    if (main !== null && primaryMatches(main, type, identity)) {
+      const panes = state.panes.filter((pane) => pane.id === main.id || !primaryMatches(pane, type, identity));
+      const paramsChanged = !sameParams(main.params, params);
+      const duplicatesRemoved = panes.length !== state.panes.length;
+      if (!paramsChanged && !duplicatesRemoved && state.focusedPaneId === main.id) return main.id;
+      const mainWithParams = paramsChanged ? { ...main, params } : main;
+      const nextPanes = panes.map((pane) => (pane.id === main.id ? mainWithParams : pane));
+      const nextFocusedPaneId = main.id;
+      set({ panes: nextPanes, focusedPaneId: nextFocusedPaneId });
+      return main.id;
+    }
+
+    const id = nextPaneId(type);
+    set({ panes: [{ id, type, params, slot: "main" }], focusedPaneId: id });
     return id;
   },
 
