@@ -4,7 +4,7 @@ Date: 2026-07-27
 Branch: `wip/kata-favorite-cleanup-policy`
 Task: kata r0yf, Task 3
 Base: `12f548868`
-Production/tests commit: `615a7a95d`
+Production/tests commits: `615a7a95d`, `3055b6bbf`
 
 ## Scope and outcome
 
@@ -12,7 +12,8 @@ The project deletion handler now treats every governed artifact operation as
 part of the deletion gate. Session archive/favorite rows are deleted only
 after flat artifacts, the per-session directory, and the final `.api.jsonl`
 operation succeed. Directory-removal errors are reported as skipped. Project
-archive/favorite rows are deleted only when no governed session was skipped.
+archive/favorite rows are deleted only when at least one governed session
+candidate exists and no governed session was skipped.
 
 Favorite-store deletion errors are collected after physical artifact removal,
 reported as HTTP 500, and do not attempt an artifact rollback. The retained
@@ -57,6 +58,28 @@ The command failed in the expected production paths:
 These failures identify the original ordering bug, ignored directory error,
 unconditional project-row deletion, swallowed store error, and unconditional
 no-op notification.
+
+## Review rejection and correction
+
+The fresh review rejected the earlier implementation with one Critical finding:
+`handleAPIProjectDelete` validated a project from the memoized tree, then read
+`Past.All` separately. A rebuild could make that second read empty, causing
+project rows to be deleted without attempting any governed artifact.
+
+The deterministic regression used the production `InputsVersion` and
+`Past.SetOnChange(inputs.Bump)` wiring. Its wrapped
+`hubBuildNavigationTree` built the matching old tree, removed session metadata,
+and called `Past.Rebuild` before returning. Against `ec7a03f3f`, it failed:
+
+```text
+go test ./cmd/serf-hub -run TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild -count=1 -v
+--- FAIL: TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild
+    archive decision (...) = (false, false), want present=true value=true
+```
+
+The fix in `3055b6bbf` requires `len(entries) > 0 && len(skipped) == 0`
+before project decision cleanup. The regression passed at `-count=1` and
+`-count=10`; all requested focused, package, vet, lint, and diff checks passed.
 
 ## GREEN evidence
 
@@ -112,6 +135,9 @@ failure-path run completed in 0.522s.
 - A partial project deletion removes only the exact decisions for the
   successfully removed session; skipped session, project, and unrelated
   session/project rows remain.
+- A stale-tree/rebuild interleave with zero current candidates removes no
+  artifacts or decisions, including project rows, and preserves unrelated
+  rows.
 - Fully successful canonical deletion removes only target session/project
   rows; unrelated rows remain.
 - Project ID/working-directory mismatch, entry-live refusal, mid-request
@@ -140,11 +166,11 @@ pretend that removed artifacts were restored and does not suppress the one
 notification for the physical mutation. A fully skipped request neither
 deletes project rows nor pokes attention or broadcasts.
 
-The zero-session project case was explicitly considered. The current
-canonical gate requires a matching tree project derived from session
-metadata, so an empty project is rejected before the deletion loop. Per
-Jesse's direction, this task does not broaden that gate or add a zero-session
-deletion path.
+The earlier report's statement that the zero-session case was unreachable was
+too broad: this review exposed a zero-current-candidate state after a matching
+memoized tree. The correction is limited to requiring a non-empty governed
+candidate set; it does not broaden the endpoint or add a zero-session deletion
+path.
 
 No out-of-scope bug or reusable workflow issue was discovered that warranted a
 new kata.
@@ -156,7 +182,12 @@ Changed production/test files:
 - `cmd/serf-hub/web_api_project_delete.go`
 - `cmd/serf-hub/web_api_project_delete_test.go`
 
-Production/tests commit: `615a7a95d` (`Tighten canonical project deletion cleanup`).
+Production/tests commits:
+
+- `615a7a95d` (`Tighten canonical project deletion cleanup`)
+- `3055b6bbf` (`Guard project cleanup against stale past snapshots`)
+
+The fresh review rejection required no new kata; the correction is in scope.
 
 The report is intentionally committed separately because `.superpowers/` is
 ignored.
