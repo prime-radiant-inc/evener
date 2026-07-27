@@ -294,6 +294,10 @@ function reconcileNodes(nodes: TreeNode[], deletedIDs: string[]): TreeNode[] {
   });
 }
 
+function projectHasOverflow(project: TreeProject): boolean {
+  return (project.more_current ?? 0) > 0 || (project.more_recent ?? 0) > 0 || (project.more_archived ?? 0) > 0;
+}
+
 function reconcileProjectList(
   projects: TreeProject[],
   key: string,
@@ -303,13 +307,16 @@ function reconcileProjectList(
   return projects.flatMap((project) => {
     if (project.key !== key) return [project];
     const sessions = reconcileNodes(project.sessions, deletedIDs);
-    const sessionCount = sessions.length > 0 ? sessions.length : skippedIDs.length;
-    if (sessionCount === 0) return [];
+    const sessionCount =
+      sessions.length > 0
+        ? sessions.length
+        : (project.session_count ?? (skippedIDs.length > 0 ? skippedIDs.length : undefined));
+    if (sessionCount === undefined && skippedIDs.length === 0 && !projectHasOverflow(project)) return [];
     return [
       {
         ...project,
         sessions,
-        session_count: sessionCount,
+        ...(sessionCount === undefined ? {} : { session_count: sessionCount }),
       },
     ];
   });
@@ -382,7 +389,7 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
       const detail = nextDetails.get(key);
       if (detail) {
         const sessions = reconcileNodes(detail.sessions, deletedIDs);
-        if (sessions.length === 0 && skippedIDs.length === 0) nextDetails.delete(key);
+        if (sessions.length === 0 && skippedIDs.length === 0 && !projectHasOverflow(detail)) nextDetails.delete(key);
         else nextDetails.set(key, { ...detail, sessions });
       }
       if (!s.tree) return { projectDetails: nextDetails, loading: false };

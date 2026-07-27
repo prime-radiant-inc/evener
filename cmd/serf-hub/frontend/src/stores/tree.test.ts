@@ -311,6 +311,38 @@ describe("reconcileProjectDelete", () => {
     ).toEqual(["remote:new"]);
   });
 
+  test("retains overflow evidence when every loaded row was deleted", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    };
+    const p = {
+      key: "p1",
+      name: "Proj",
+      sessions: [deleted],
+      more_current: 1,
+      more_recent: 2,
+      more_archived: 3,
+    };
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE, projects: [p] } });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    const project = treeStore.getState().tree?.projects[0];
+    expect(project?.sessions).toEqual([]);
+    expect(project).toMatchObject({ more_current: 1, more_recent: 2, more_archived: 3 });
+    expect(project?.session_count).toBeUndefined();
+  });
+
   test("removes a fully deleted project and its hydrated detail", () => {
     const deleted: TreeNode = {
       row_id: "deleted-row",
