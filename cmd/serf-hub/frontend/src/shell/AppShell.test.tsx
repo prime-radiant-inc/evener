@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { InitializeResponse } from "../protocol/types.gen";
+import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
@@ -83,6 +83,67 @@ const TREE_RESPONSE_WITH_NESTED_SESSION = {
   test_runs: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
 };
+
+const TREE_RESPONSE_WITH_OWNER_AND_CHILD = {
+  ...TREE_RESPONSE_WITH_NESTED_SESSION,
+  projects: [
+    {
+      ...TREE_RESPONSE_WITH_NESTED_SESSION.projects[0],
+      sessions: [
+        {
+          ...TREE_SESSION,
+          row_id: "project:proj1:local:owner",
+          ref: "local:owner",
+          session_id: "owner",
+          title: "Owner session",
+          children: [
+            {
+              ...TREE_SESSION.children[0],
+              row_id: "project:proj1:local:child",
+              ref: "local:child",
+              session_id: "child",
+              title: "Child session",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const THREAD_CAPABILITIES = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  queue: false,
+  goal: false,
+  rename: false,
+};
+
+function threadStartResponse(ref: string): ThreadStartResponse {
+  return {
+    thread: {
+      id: ref.slice(ref.indexOf(":") + 1),
+      sessionId: `sess_${ref}`,
+      preview: "test",
+      ephemeral: false,
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      createdAt: 1000,
+      updatedAt: 1000,
+      status: { type: "idle" },
+      cwd: "/tmp/project",
+      cliVersion: "1.0.0",
+      source: "local",
+      serf: { ref, capabilities: THREAD_CAPABILITIES, queue: {} },
+    },
+    turn: { id: "turn_1", itemsView: "full", status: "idle" },
+  };
+}
 
 const paneFor = (ref: string) =>
   workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
@@ -197,6 +258,29 @@ afterEach(() => {
   paletteStore.setState({ open: false, query: "" });
   vi.unstubAllGlobals();
 });
+
+// Build the persisted fixture through the real AppShell/DockHost save path.
+// The route tests below deliberately inspect the restored workspace state,
+// not dockview's serialized representation, so a layout-format change cannot
+// make these assertions tautological.
+async function saveRealSessionLayout(): Promise<void> {
+  window.history.pushState({}, "", "/s/local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:session-a",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+}
 
 test("mounts and renders the welcome pane", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
@@ -406,6 +490,212 @@ test("navigating from one session deep link to another, post-mount, opens the ne
   // The second deep link takes focus and closes the previous top-level session.
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_second"]);
+});
+
+// Rail activation must update the canonical URL as well as the workspace. A
+// direct store-only activation leaves the shell on /settings, so the next
+// Settings click is the same-path navigation the app no longer handles.
+test("rail activation updates the URL and a later Settings activation returns Settings to main", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  await screen.findByText("Session one");
+
+  const sessionRow = screen.getByText("Session one").closest('[role="treeitem"]');
+  expect(sessionRow).not.toBeNull();
+  await user.click(sessionRow as HTMLElement);
+
+  expect(window.location.pathname).toBe("/s/local%3As1");
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+  });
+
+  await user.click(screen.getByTestId("rail-settings"));
+
+  expect(window.location.pathname).toBe("/settings");
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  const settingsPanes = workspaceStore.getState().panes.filter((pane) => pane.type === "settings");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+  expect(settingsPanes).toHaveLength(1);
+  expect(settingsPanes[0]?.slot).toBe("main");
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "settings" && pane.slot === "secondary")).toBe(
+    false,
+  );
+});
+
+// A route replacement that only opens B leaves A's secondary neighbors in the
+// shared workspace. The state assertion catches that additive placement even
+// if DockHost happens to hide the stale panel during reconciliation.
+test("same-tab navigation from one session to another removes the old main and every secondary pane", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+  });
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:session-a",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:session-b");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-b" });
+  });
+  expect(workspaceStore.getState().panes).toEqual([
+    expect.objectContaining({ type: "session", params: { ref: "local:session-b" }, slot: "main" }),
+  ]);
+});
+
+// Reselecting the same primary identity is an in-place update, not a reason
+// to rebuild the workspace and clear useful secondary panes. The encoded
+// second pathname reaches the same route through the real popstate seam while
+// still producing a distinct pathname update for AppShell.
+test("reselecting the same session through a second route notification preserves its secondary pane", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+  });
+
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:session-a",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+  const secondaryId = workspaceStore.getState().panes.find((pane) => pane.slot === "secondary")?.id;
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local%3Asession-a");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(mainId));
+  expect(workspaceStore.getState().mainPane()?.id).toBe(mainId);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === secondaryId)?.slot).toBe("secondary");
+});
+
+test("navigating from Settings to /new replaces Settings and clears secondary panes", async () => {
+  workspaceStore.getState().openPane("settings", { section: "general" });
+  workspaceStore.getState().openPane("doc", {
+    session: "local:settings",
+    path: "README.md",
+    kind: "text",
+  });
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+
+  act(() => {
+    window.history.pushState({}, "", "/new");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.type).toBe("spawn");
+  });
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(workspaceStore.getState().mainPane()?.slot).toBe("main");
+});
+
+test("a saved session layout is replaced by /settings with Settings as the only main pane", async () => {
+  await saveRealSessionLayout();
+
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes).toEqual([
+      expect.objectContaining({ type: "settings", params: { section: "general" }, slot: "main" }),
+    ]);
+  });
+});
+
+test("a saved session layout is replaced by /new with Spawn as the only main pane", async () => {
+  await saveRealSessionLayout();
+
+  window.history.pushState({}, "", "/new");
+  render(<AppShell client={new FakeClient("ready")} />);
+  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes).toEqual([
+      expect.objectContaining({ type: "spawn", params: {}, slot: "main" }),
+    ]);
+  });
+});
+
+test("a nested child route replaces unrelated panes, keeps its owner main, and focuses the child", async () => {
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    return jsonResponse({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
+  workspaceStore.getState().openPane("doc", {
+    session: "local:unrelated",
+    path: "README.md",
+    kind: "text",
+  });
+
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+    expect(paneFor("local:child")?.slot).toBe("secondary");
+  });
+
+  const panes = workspaceStore.getState().panes;
+  expect(panes.find((pane) => (pane.params as { ref?: string }).ref === "local:unrelated")).toBeUndefined();
+  expect(panes.find((pane) => (pane.params as { ref?: string }).ref === "local:owner")?.slot).toBe("main");
+  expect(panes.find((pane) => (pane.params as { ref?: string }).ref === "local:child")?.slot).toBe("secondary");
+  expect(workspaceStore.getState().focusedPaneId).toBe(
+    panes.find((pane) => (pane.params as { ref?: string }).ref === "local:child")?.id,
+  );
+});
+
+test("successful Spawn navigation replaces Spawn with the created session and clears old secondary panes", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => threadStartResponse("local:created"));
+  window.history.pushState({}, "", "/new");
+  render(<AppShell client={fake} />);
+  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("spawn"));
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:spawn",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+  await userEvent.setup().click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Acreated"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:created" });
+  });
+  expect(workspaceStore.getState().panes).toEqual([
+    expect.objectContaining({ type: "session", params: { ref: "local:created" }, slot: "main" }),
+  ]);
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "spawn")).toBe(false);
 });
 
 test("navigating from a 404 straight to a session deep link opens only that pane, no spurious welcome tab", async () => {

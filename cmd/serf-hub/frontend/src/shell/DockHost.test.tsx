@@ -492,6 +492,27 @@ test("reopening a singleton pane with different params updates the existing tab'
   expect(workspaceStore.getState().panes).toHaveLength(1);
 });
 
+// DockHost must reconcile the real dockview panels with a primary replacement,
+// not merely update the store and leave the old main or secondary panels
+// visible in the host.
+test("a primary replacement removes stale panels from the live DockHost", async () => {
+  const workspace = workspaceStore.getState();
+  workspace.openPane("doc", { ref: "main-a" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: main-a/);
+  workspace.openPane("doc", { ref: "secondary" });
+  await screen.findByText(/doc pane: secondary/);
+
+  const replacementId = workspace.replacePrimary("doc", { ref: "main-b" }, "main-b");
+
+  expect(workspaceStore.getState().panes).toEqual([
+    { id: replacementId, type: "doc", params: { ref: "main-b" }, slot: "main" },
+  ]);
+  expect(await screen.findByText(/doc pane: main-b/)).toBeTruthy();
+  expect(screen.queryByText(/doc pane: main-a/)).toBeNull();
+  expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
+});
+
 // --- dockview-native interactions mirror back into the store -------------
 
 // These two drive the tab bar of the SECONDARY group, which needs two panes in

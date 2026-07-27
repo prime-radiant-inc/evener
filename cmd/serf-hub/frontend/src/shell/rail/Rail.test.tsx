@@ -540,6 +540,20 @@ describe("in-sidebar chrome (c8gt)", () => {
 });
 
 describe("row activation", () => {
+  // Activating a row without the canonical URL update leaves AppShell on the
+  // old route, so the next same-path navigation can be treated as a no-op.
+  test("activating a top-level session row navigates to its canonical URL", async () => {
+    window.history.pushState({}, "", "/settings");
+    renderRail();
+    await screen.findByText("Live session");
+
+    const row = screen.getByText("Live session").closest('[role="treeitem"]');
+    expect(row).not.toBeNull();
+    await userEvent.setup().click(row as HTMLElement);
+
+    expect(window.location.pathname).toBe("/s/local%3Alive1");
+  });
+
   test("activating a session row opens its pane via workspaceStore.openPane", async () => {
     renderRail();
     await screen.findByText("Live session");

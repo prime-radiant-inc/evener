@@ -4,7 +4,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Fixture pane types, registered once for the whole file. "settings" is the
 // file's singleton fixture, "doc" its non-singleton fixture - both are real
@@ -28,6 +28,8 @@ function fixtureDescriptor<P>(
 beforeAll(() => {
   registerPane(fixtureDescriptor("settings", { singleton: true }));
   registerPane(fixtureDescriptor("doc"));
+  registerPane(fixtureDescriptor("session"));
+  registerPane(fixtureDescriptor("spawn", { singleton: true }));
   // "welcome" is a real PaneTypeId and the main slot's empty state, so the
   // placement tests below open one. openPane has ALWAYS resolved its type
   // through paneFor (that is where an unregistered type throws), so this is a
@@ -223,6 +225,68 @@ describe("openPane", () => {
 
   test("throws for an unregistered pane type (mirrors paneFor's own contract)", () => {
     expect(() => workspaceStore.getState().openPane("transcript", {})).toThrow(/transcript/);
+  });
+});
+
+describe("replacePrimary", () => {
+  // A replacement that only opens the requested pane leaves old secondary
+  // panes behind; this literal workspace is the contract that catches that
+  // additive-placement break.
+  test("replaces main and clears every secondary pane when the primary identity changes", () => {
+    const workspace = workspaceStore.getState();
+    workspace.openPane("doc", { ref: "secondary-a" });
+    workspace.openPane("doc", { ref: "secondary-b" });
+
+    const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
+
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: sessionId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+    ]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
+  });
+
+  // A replacement that always rebuilds the workspace clears useful secondary
+  // panes even when the requested primary is already the current identity.
+  test("preserves secondary panes when the requested primary identity is already main", () => {
+    const workspace = workspaceStore.getState();
+    const mainId = workspace.replacePrimary("session", { ref: "local:session-a" }, "local:session-a");
+    const secondaryId = workspace.openPane("doc", { ref: "secondary" });
+
+    const repeatedId = workspace.replacePrimary("session", { ref: "local:session-a" }, "local:session-a");
+
+    expect(repeatedId).toBe(mainId);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: mainId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+      { id: secondaryId, type: "doc", params: { ref: "secondary" }, slot: "secondary" },
+    ]);
+  });
+
+  // Settings is a singleton whose section changes without changing its
+  // primary identity; a replacement that closes/reopens it loses the pane id
+  // and its secondary neighbors instead of updating the existing main pane.
+  test("updates a singleton settings section in place while preserving secondary panes", () => {
+    const workspace = workspaceStore.getState();
+    const settingsId = workspace.replacePrimary("settings", { section: "general" }, "settings");
+    const secondaryId = workspace.openPane("doc", { ref: "secondary" });
+
+    const updatedId = workspace.replacePrimary("settings", { section: "credentials" }, "settings");
+
+    expect(updatedId).toBe(settingsId);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: settingsId, type: "settings", params: { section: "credentials" }, slot: "main" },
+      { id: secondaryId, type: "doc", params: { ref: "secondary" }, slot: "secondary" },
+    ]);
+  });
+
+  test("notifies subscribers once for a primary replacement", () => {
+    const snapshots: Array<ReadonlyArray<OpenPaneRecord>> = [];
+    const unsubscribe = workspaceStore.subscribe((state) => snapshots.push(state.panes));
+
+    workspaceStore.getState().replacePrimary("spawn", {}, "spawn");
+
+    unsubscribe();
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toEqual(workspaceStore.getState().panes);
   });
 });
 

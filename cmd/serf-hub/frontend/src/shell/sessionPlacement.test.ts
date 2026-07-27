@@ -16,25 +16,28 @@ function sessionRefOf(pane: { params: unknown }): string | null {
 }
 
 describe("openNestedSessionWithOwner", () => {
-  test("promotes a secondary owner to main and keeps nested child focused", () => {
+  // An owner-promotion implementation that moves only the child, or promotes
+  // the child itself, leaves the unrelated main pane in place and violates
+  // the route's owner/main invariant.
+  test("promotes local:owner to main, keeps local:child secondary and focused, and removes unrelated main", () => {
     const workspace = workspaceStore.getState();
 
-    const unrelated = workspace.openPane("session", { ref: "unrelated" });
-    const owner = workspace.openPane("session", { ref: "owner" });
-    const child = workspace.openPane("session", { ref: "child" });
+    const unrelated = workspace.openPane("session", { ref: "local:unrelated" });
+    const owner = workspace.openPane("session", { ref: "local:owner" });
+    const child = workspace.openPane("session", { ref: "local:child" });
 
     expect(workspaceStore.getState().focusedPaneId).toBe(child);
     expect(workspaceStore.getState().mainPane()?.id).toBe(unrelated);
 
-    openNestedSessionWithOwner("child", "owner");
+    openNestedSessionWithOwner("local:child", "local:owner");
 
     const panes = workspaceStore.getState().panes;
-    const ownerMain = panes.find((pane) => sessionRefOf(pane) === "owner");
-    const ownerSecondary = panes.find((pane) => sessionRefOf(pane) === "owner" && pane.slot === "secondary");
-    const childPane = panes.find((pane) => sessionRefOf(pane) === "child");
-    const unrelatedPane = panes.find((pane) => sessionRefOf(pane) === "unrelated");
+    const ownerMain = panes.find((pane) => sessionRefOf(pane) === "local:owner");
+    const ownerSecondary = panes.find((pane) => sessionRefOf(pane) === "local:owner" && pane.slot === "secondary");
+    const childPane = panes.find((pane) => sessionRefOf(pane) === "local:child");
+    const unrelatedPane = panes.find((pane) => sessionRefOf(pane) === "local:unrelated");
 
-    expect(panes.filter((pane) => sessionRefOf(pane) === "owner")).toHaveLength(1);
+    expect(panes.filter((pane) => sessionRefOf(pane) === "local:owner")).toHaveLength(1);
     expect(ownerMain).not.toBeUndefined();
     expect(ownerMain?.slot).toBe("main");
     expect(ownerSecondary).toBeUndefined();
