@@ -86,11 +86,6 @@ func (c *hubAuthController) TestCredentials(ctx context.Context, params appwire.
 
 func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, loader credentialProbeLoader) appwire.AuthTestResponse {
 	client, cfg, err := loader(c.providersConfigPath)
-	if err != nil || client == nil {
-		return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage)
-	}
-	defer func() { _ = client.Close() }()
-
 	inst, ok := configuredInstance(cfg, name)
 	if !ok {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
@@ -98,6 +93,10 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 	if credentialRequired(inst) && !c.instanceHasEffectiveCredential(name, inst) {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
+	if err != nil || client == nil {
+		return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage)
+	}
+	defer func() { _ = client.Close() }()
 
 	probeCtx, cancel := context.WithTimeout(ctx, credentialTestTimeout)
 	defer cancel()

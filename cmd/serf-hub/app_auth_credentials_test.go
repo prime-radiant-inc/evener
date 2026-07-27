@@ -120,6 +120,26 @@ func TestAuthTestCredentialsReportsMissingCredentialsBeforeProbe(t *testing.T) {
 	}
 }
 
+func TestAuthTestCredentialsReportsMissingWhenClientConstructionSkipsInstance(t *testing.T) {
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "anthropic-work", Type: "anthropic"}}}
+	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newHubAuthControllerWithStore(t.TempDir(), store)
+	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
+		return nil, cfg, errors.New("no providers initialized")
+	}
+
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusMissing {
+		t.Fatalf("status=%q, want missing", resp.Status)
+	}
+}
+
 func TestAuthTestCredentialsSuppressesDuplicateSameInstance(t *testing.T) {
 	client := &credentialProbeFakeClient{started: make(chan struct{}), release: make(chan struct{})}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "custom", Type: "openai-compatible", BaseURL: "http://provider.test/v1", APIKey: "configured"}}}
