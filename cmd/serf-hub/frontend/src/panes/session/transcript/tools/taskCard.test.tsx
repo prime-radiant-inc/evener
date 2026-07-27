@@ -100,7 +100,16 @@ test("a notes-only in_progress reassertion does not render a started row", () =>
       { action: "update", updates: [{ id: 1, status: "in_progress", notes: "found the root cause" }] },
       "Updated 1→in_progress.",
       {
-        raw: [{ id: 1, type: "implement", description: "investigate", prompt: "inspect", status: "in_progress", started: false }],
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "investigate",
+            prompt: "inspect",
+            status: "in_progress",
+            started: false,
+          },
+        ],
       },
     ),
   );
@@ -109,13 +118,11 @@ test("a notes-only in_progress reassertion does not render a started row", () =>
 
 test("a real in_progress transition renders a started row from its authoritative marker", () => {
   renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 1, status: "in_progress" }] },
-      "Updated 1→in_progress.",
-      {
-        raw: [{ id: 1, type: "implement", description: "implement", prompt: "build", status: "in_progress", started: true }],
-      },
-    ),
+    taskItem({ action: "update", updates: [{ id: 1, status: "in_progress" }] }, "Updated 1→in_progress.", {
+      raw: [
+        { id: 1, type: "implement", description: "implement", prompt: "build", status: "in_progress", started: true },
+      ],
+    }),
   );
   expect(screen.getByTestId("task-card-row").getAttribute("data-touch")).toBe("started");
 });
