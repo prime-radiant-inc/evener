@@ -206,6 +206,100 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
   });
 
+  test("replays a threadId-only item completion after an earlier buffered turn start establishes routing", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+      },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        turnId: "turn_live",
+        item: { type: "agentMessage", id: "item_live", turnId: "turn_live", text: "answer", status: "completed" },
+      },
+    });
+
+    resolveRead?.(readResponse("ref_a"));
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns).toHaveLength(1);
+    expect(model?.turns[0]?.id).toBe("turn_live");
+    expect(model?.turns[0]?.items[0]?.text).toBe("answer");
+  });
+
+  test("replays threadId-only status and item completion after a ref-targeted event establishes the thread identity", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", status: { type: "active", activeFlags: ["streaming"] } },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+
+    resolveRead?.(
+      readResponse("ref_a", {
+        status: { type: "active" },
+        turns: [
+          {
+            id: "turn_1",
+            status: "inProgress",
+            itemsView: "full",
+            items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+          },
+        ],
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
   test("hydrates via thread/read and routes a subsequent matching notification through the reducer", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
@@ -534,6 +628,49 @@ describe("reconnect resubscribe", () => {
     expect(model?.activeTurnId).toBeUndefined();
     expect(model?.turns[0]?.status).toBe("completed");
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
+  test("replays a ref-targeted turn start followed by a bare completion after a stale reconnect snapshot", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a");
+    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        reconnectRead.resolve = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => reconnectRead.resolve !== null);
+    expect(reconnectRead.resolve).not.toBeNull();
+
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_live", turn: { id: "turn_live", status: "completed", itemsView: "" } },
+    });
+
+    reconnectRead.resolve?.(staleSnapshot);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns).toHaveLength(1);
+    expect(model?.turns[0]?.id).toBe("turn_live");
+    expect(model?.turns[0]?.status).toBe("completed");
   });
 
   test("onReady refire re-subscribes every tracked ref additively and replaces each model wholesale", async () => {
