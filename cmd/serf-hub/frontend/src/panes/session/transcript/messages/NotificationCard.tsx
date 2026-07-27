@@ -89,12 +89,18 @@ function Field({ label, value, testId }: { label: string; value: string | number
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
   const fields = [
-    notification.status && <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />,
-    notification.jobType && <Field key="job-type" label="Job type" value={notification.jobType} testId="notification-field-job-type" />,
+    notification.status && (
+      <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />
+    ),
+    notification.jobType && (
+      <Field key="job-type" label="Job type" value={notification.jobType} testId="notification-field-job-type" />
+    ),
     notification.outputBytes !== undefined && (
       <Field key="output" label="Output" value={notification.outputBytes} testId="notification-field-output" />
     ),
-    notification.reason && <Field key="reason" label="Reason" value={notification.reason} testId="notification-field-reason" />,
+    notification.reason && (
+      <Field key="reason" label="Reason" value={notification.reason} testId="notification-field-reason" />
+    ),
     notification.exitCode !== undefined && (
       <Field key="exit" label="Exit code" value={notification.exitCode} testId="notification-field-exit" />
     ),

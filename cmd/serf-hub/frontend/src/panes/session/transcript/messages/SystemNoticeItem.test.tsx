@@ -8,8 +8,8 @@ import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { itemRendererFor } from "../types";
-import { SystemNoticeItem } from "./SystemNoticeItem";
 import { formatCharCount } from "./format";
+import { SystemNoticeItem } from "./SystemNoticeItem";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global. These
@@ -195,7 +195,7 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
 
 test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
   showSystemPrompt();
-  const text = "## Identity\n\n" + "You are a careful assistant. ".repeat(40);
+  const text = `## Identity\n\n${"You are a careful assistant. ".repeat(40)}`;
   render(<TurnBlock turn={turnWith([item("prompt", { text, eventKind: "system_prompt" })])} />);
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   const summary = scaffold.querySelector("summary");

@@ -250,24 +250,21 @@ test("a notification restores its owning session to main before opening the chil
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();
   render(
-    <SteeringItem
-      item={item({ text: JOB_NOTIFICATION_STEERING })}
-      turn={turn}
-      live={false}
-      sessionRef="local:owner"
-    />,
+    <SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} sessionRef="local:owner" />,
   );
 
   await user.click(screen.getByRole("button", { name: "Open subagent" }));
 
   const panes = workspaceStore.getState().panes;
-  const owner = panes.find((pane) => pane.type === "session" && pane.params && (pane.params as { ref?: string }).ref === "local:owner");
+  const owner = panes.find(
+    (pane) => pane.type === "session" && pane.params && (pane.params as { ref?: string }).ref === "local:owner",
+  );
   const child = panes.find((pane) => pane.type === "transcript");
   expect(owner?.slot).toBe("main");
   expect(owner?.params).toEqual({ ref: "local:owner" });
-  expect(panes.some((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:unrelated")).toBe(
-    false,
-  );
+  expect(
+    panes.some((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:unrelated"),
+  ).toBe(false);
   expect(child?.slot).toBe("secondary");
   expect(child?.params).toEqual({ ref: "local:ref_x", parentRef: "local:owner" });
 });
