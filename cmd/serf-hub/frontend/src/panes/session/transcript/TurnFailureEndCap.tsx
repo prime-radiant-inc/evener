@@ -16,6 +16,7 @@
 // one-line wiring lands, the diagnostic still renders in full - only the action
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
 
+import { useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
@@ -30,7 +31,6 @@ const CLASS = {
   head: requireClass(styles.head, "turnfailure.module.css", "head"),
   message: requireClass(styles.message, "turnfailure.module.css", "message"),
   hint: requireClass(styles.hint, "turnfailure.module.css", "hint"),
-  hintDisclosure: requireClass(styles.hintDisclosure, "turnfailure.module.css", "hintDisclosure"),
   hintSummary: requireClass(styles.hintSummary, "turnfailure.module.css", "hintSummary"),
 };
 
@@ -81,6 +81,7 @@ export function TurnFailureEndCap({
 }) {
   const info = classifyTurnError(error);
   const toasts = useToasts();
+  const [hintOpen, setHintOpen] = useState(false);
   // Selected down to a plain string so this cap re-renders only when the text
   // it would re-issue actually changes, not on every delta the thread takes.
   const priorInput = useThreadsStore((s) =>
@@ -109,11 +110,16 @@ export function TurnFailureEndCap({
         <Chip tone="danger">{info.badge}</Chip>
         <span className={CLASS.message}>{info.message}</span>
         {info.hint && (
-          <details className={CLASS.hintDisclosure}>
-            <summary className={CLASS.hintSummary}>What can I do?</summary>
-            <div className={CLASS.hint}>{info.hint}</div>
-          </details>
+          <button
+            type="button"
+            className={CLASS.hintSummary}
+            aria-expanded={hintOpen}
+            onClick={() => setHintOpen((o) => !o)}
+          >
+            What can I do?
+          </button>
         )}
+        {hintOpen && info.hint && <div className={CLASS.hint}>{info.hint}</div>}
         {canRetry && (
           <Button variant="primary" size="sm" onClick={() => void retry()}>
             {info.recoveryLabel}

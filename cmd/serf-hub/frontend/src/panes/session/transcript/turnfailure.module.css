@@ -20,12 +20,11 @@
   overflow-wrap: anywhere;
 }
 
-.hintDisclosure {
-  display: inline;
-}
-
 .hintSummary {
-  display: inline;
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
   cursor: pointer;
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
