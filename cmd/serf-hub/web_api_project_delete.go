@@ -30,7 +30,8 @@ var (
 )
 
 // handleAPIProjectDelete removes every session file under a project and scrubs
-// its decision rows. Path-validated; refuses when anything is live at entry.
+// only the decision rows for artifacts it removed. Path-validated; refuses
+// when anything is live at entry.
 func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
@@ -124,6 +125,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 
 	deleted := []string{}
 	skipped := []projectDeleteSkip{}
+	decisionErrors := []string{}
 	for _, e := range entries {
 		owner, err := llm.NewSessionAPILogger(e.StateDir)
 		if err == nil {
@@ -157,12 +159,10 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: removeErr.Error()})
 			continue
 		}
-		_ = removeProjectSessionDir(filepath.Join(sess, e.ID))
-		if s.cfg.Archive != nil {
-			_ = s.cfg.Archive.Delete("session", e.ID)
-		}
-		if s.cfg.Favorite != nil {
-			_ = s.cfg.Favorite.Delete("session", e.ID)
+		if err := removeProjectSessionDir(filepath.Join(sess, e.ID)); err != nil && !os.IsNotExist(err) {
+			_ = owner.Close()
+			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: err.Error()})
+			continue
 		}
 		// The API-log pathname is the ownership boundary. Remove it only after
 		// every other session artifact, so a replacement owner can never acquire
@@ -175,31 +175,49 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		}
 		_ = owner.Close()
 		deleted = append(deleted, e.ID)
+		if s.cfg.Archive != nil {
+			if err := s.cfg.Archive.Delete("session", e.ID); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
+			}
+		}
+		if s.cfg.Favorite != nil {
+			if err := s.cfg.Favorite.Delete("session", e.ID); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
+			}
+		}
 	}
 
-	// Scrub only the canonical project-level decision rows. Display basenames
-	// are never decision keys.
-	if s.cfg.Archive != nil {
-		_ = s.cfg.Archive.Delete("project", project.ID)
-	}
-	if s.cfg.Favorite != nil {
-		_ = s.cfg.Favorite.Delete("project", project.ID)
+	// Scrub only the canonical project-level decision rows after the complete
+	// governed artifact set succeeds. Display basenames are never decision
+	// keys, and any skipped session keeps the project decision retriable.
+	if len(skipped) == 0 {
+		if s.cfg.Archive != nil {
+			if err := s.cfg.Archive.Delete("project", project.ID); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
+			}
+		}
+		if s.cfg.Favorite != nil {
+			if err := s.cfg.Favorite.Delete("project", project.ID); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
+			}
+		}
 	}
 
 	rebuilt, _ := s.cfg.Past.Rebuild() // also the FTS scrub; rebuilt reports whether serf/tree/changed already broadcast (composed onChange, main.go)
-	if s.cfg.PokeAttention != nil {
-		s.cfg.PokeAttention()
+	if len(deleted) > 0 {
+		if s.cfg.PokeAttention != nil {
+			s.cfg.PokeAttention()
+		}
+		if !rebuilt {
+			// PastIndex's composed hook only fires on a content delta. A
+			// successful artifact removal still needs one notification when
+			// Rebuild found no indexed change to report.
+			notifyTreeChanged(s.appRPC)
+		}
 	}
-	if !rebuilt {
-		// Reaching here always means the request succeeded (every earlier
-		// error/conflict path returns before this point), but Rebuild's own
-		// composed hook only fires on a PastIndex content delta — which
-		// doesn't happen when every session in the project was skipped
-		// rather than actually removed. The project-level archive/favorite
-		// rows were still cleared above (a different, bump-only store), so
-		// compensate with an explicit broadcast: a successful mutation must
-		// notify exactly once, never zero.
-		notifyTreeChanged(s.appRPC)
+	if len(decisionErrors) > 0 {
+		writeAPIError(w, http.StatusInternalServerError, strings.Join(decisionErrors, "; "))
+		return
 	}
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
 }
