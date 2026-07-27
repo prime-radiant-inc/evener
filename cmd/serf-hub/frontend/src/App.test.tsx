@@ -1,7 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { resetTreeStoreForTests } from "./stores/tree";
 
 // The default route mounts AppShell -> DockHost -> real dockview-react, which
 // needs a ResizeObserver (jsdom has none) and localStorage (Node 26's own
@@ -27,6 +28,26 @@ class MemoryStorage {
   clear(): void {
     this.store.clear();
   }
+}
+
+const EMPTY_TREE_RESPONSE = {
+  generated_at: "2026-01-01T00:00:00Z",
+  sources: [],
+  live: [],
+  needs_you: [],
+  favorites: [],
+  projects: [],
+  archived_projects: [],
+  test_runs: [],
+  attentionSummary: { needsYou: 0, error: 0, working: 0 },
+};
+
+function stubTreeFetch(): void {
+  vi.stubGlobal("fetch", () =>
+    Promise.resolve(
+      new Response(JSON.stringify(EMPTY_TREE_RESPONSE), { headers: { "Content-Type": "application/json" } }),
+    ),
+  );
 }
 
 // Renders a route to completion so both halves of its lazy-loading cost are
@@ -63,6 +84,7 @@ beforeAll(async () => {
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
+  stubTreeFetch();
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -82,11 +104,15 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  resetTreeStoreForTests();
   localStorage.clear();
+  stubTreeFetch();
 });
 
 afterEach(() => {
   cleanup();
+  resetTreeStoreForTests();
+  vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
 });
 
@@ -96,6 +122,12 @@ test("renders the app shell (welcome pane) at the default route", async () => {
   // DevHarness moved out of the default route onto its own /dev/harness
   // route (see the next test) - it must not also render here.
   expect(screen.queryByText(/connection:/i)).toBeNull();
+});
+
+test("does not show a tree load error while rendering the welcome pane", async () => {
+  render(<App />);
+  await screen.findByText("No session open");
+  expect(screen.queryByText("Couldn't load sessions")).toBeNull();
 });
 
 test("renders the dev widget gallery at /dev/widgets", async () => {
