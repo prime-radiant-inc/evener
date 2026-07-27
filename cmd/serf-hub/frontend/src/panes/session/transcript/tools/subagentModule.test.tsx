@@ -1217,3 +1217,11 @@ test("7f7c: the Mandate section shows the full, unclipped task text past the 80-
   const mandate = await screen.findByTestId("subagent-mandate");
   expect(within(mandate).getByText(longTask)).toBeTruthy();
 });
+
+test("the Mandate keeps task line breaks in sans prose with safe wrapping", () => {
+  const mandate = /\.mandate\s*\{([^}]*)\}/.exec(moduleCss());
+  expect(mandate).not.toBeNull();
+  expect(mandate![1]).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(mandate![1]).toMatch(/white-space:\s*pre-wrap/);
+  expect(mandate![1]).toMatch(/overflow-wrap:\s*anywhere/);
+});
