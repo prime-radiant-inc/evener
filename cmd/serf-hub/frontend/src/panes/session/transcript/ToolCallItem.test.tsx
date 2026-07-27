@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
@@ -10,6 +10,7 @@ import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model"
 import * as paneActions from "../../../shell/paneActions";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
 
 // Node 26 shadows jsdom's real window.localStorage with its own
 // (non-functional under vitest) global - same stand-in TurnSeparator.test.tsx
@@ -47,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
+  resetSubagentModuleStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -767,6 +769,120 @@ test("delegate tool rows keep the human description as purpose and suppress the 
   );
   expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Testing delegation");
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+});
+
+test("task-only delegate purpose previews preserve an emoji at the Unicode clipping boundary", () => {
+  const emojiTask = `${"a".repeat(119)}😀 suffix`;
+  const exactAsciiTask = "b".repeat(120);
+  render(
+    <>
+      <ToolCallItem
+        item={item({
+          id: "unicode_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: emojiTask }),
+          output: JSON.stringify({ status: "completed" }),
+        })}
+        turn={turn}
+        live={false}
+      />
+      <ToolCallItem
+        item={item({
+          id: "ascii_boundary_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: exactAsciiTask }),
+          output: JSON.stringify({ status: "completed" }),
+        })}
+        turn={turn}
+        live={false}
+      />
+    </>,
+  );
+
+  const [unicodeTool, asciiTool] = screen.getAllByTestId("tool-call-item");
+  expect(within(unicodeTool!).getByTestId("tool-row-purpose").textContent).toBe(`${"a".repeat(119)}😀…`);
+  expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
+});
+
+test("task-only delegates show a bounded purpose preview while keeping the full Mandate in one disclosure", () => {
+  const task =
+    "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
+  const { container } = render(
+    <ToolCallItem
+      item={item({
+        id: "task_only_delegate",
+        callId: "call_task_only_delegate",
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ task, mode: "foreground_timeout", delegateId: "dlg_task_only" }),
+        output: JSON.stringify({ job_id: "job_task_only", status: "completed", transcript_ref: "ref_task_only" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+
+  const tool = screen.getByTestId("tool-call-item");
+  const module = screen.getByTestId("subagent-module");
+  const purpose = screen.getByTestId("tool-row-purpose");
+  expect(purpose.textContent).toBe(
+    "**Inspect** the parser and report the `task` field. Keep the full mandate available for the reader. This suffix makes th…",
+  );
+  expect(purpose.textContent).not.toBe(task);
+  const mandate = screen.getByTestId("subagent-mandate");
+  expect(mandate.lastElementChild?.textContent).toBe(task);
+  expect(tool.querySelectorAll("details > summary")).toHaveLength(1);
+  expect(module.querySelectorAll("details > summary")).toHaveLength(0);
+  expect(within(tool).getByTestId("tool-row-status").querySelector('[role="img"]')).toBeTruthy();
+
+  const openTranscript = within(module).getByRole("button", { name: "Open transcript" });
+  expect(openTranscript.textContent).toContain("open");
+  expect(openTranscript.querySelector("svg")).toBeTruthy();
+  expect(container.querySelectorAll('[data-testid="tool-row"]')).toHaveLength(1);
+});
+
+test("malformed delegate arguments keep status without inventing a purpose", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        id: "malformed_delegate",
+        toolName: "delegate",
+        argumentsJSON: "{not-json",
+        output: JSON.stringify({ status: "completed" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+
+  expect(screen.queryByTestId("tool-row-purpose")).toBeNull();
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-status")).toBeTruthy();
+  expect(screen.queryByText("delegate")).toBeNull();
+});
+
+test("blank and non-string delegate tasks keep status without inventing a purpose", () => {
+  const blank = item({
+    id: "blank_delegate",
+    toolName: "delegate",
+    argumentsJSON: JSON.stringify({ task: " \n\t " }),
+    output: JSON.stringify({ status: "completed" }),
+  });
+  const nonString = item({
+    id: "non_string_delegate",
+    toolName: "delegate",
+    argumentsJSON: JSON.stringify({ task: ["not", "text"] }),
+    output: JSON.stringify({ status: "completed" }),
+  });
+  render(
+    <>
+      <ToolCallItem item={blank} turn={turn} live={false} />
+      <ToolCallItem item={nonString} turn={turn} live={false} />
+    </>,
+  );
+
+  expect(screen.queryAllByTestId("tool-row-purpose")).toHaveLength(0);
+  expect(screen.queryAllByTestId("tool-row-summary")).toHaveLength(0);
+  expect(screen.getAllByTestId("tool-row-status")).toHaveLength(2);
 });
 
 test("delegate tool rows use a single top-level details/summary disclosure owned by ToolCallItem", () => {
