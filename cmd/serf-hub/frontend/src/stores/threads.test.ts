@@ -153,6 +153,59 @@ describe("useConnectionStore", () => {
 });
 
 describe("useThreadsStore.ensureThread", () => {
+  test("replays notifications that arrive after the initial subscription but before its snapshot", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(resolveRead).not.toBeNull();
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(staleSnapshot);
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
   test("hydrates via thread/read and routes a subsequent matching notification through the reducer", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {
@@ -452,8 +505,8 @@ describe("reconnect resubscribe", () => {
 
     // This is the notification that arrives after the new subscription is
     // accepted but before its snapshot response is applied. The old snapshot
-    // is intentionally still in progress, so this live completion is the
-    // only source of the finished output in this interleaving.
+    // is intentionally still in progress, so the store buffers this live
+    // completion instead of mutating the model that is about to be replaced.
     fake.emitNotification({
       method: "item/completed",
       params: {
@@ -468,8 +521,8 @@ describe("reconnect resubscribe", () => {
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
     });
 
-    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBeUndefined();
-    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
 
     // The snapshot was captured before the completion. Applying it after the
     // live event must not restore the spinner or erase the completed output.
@@ -528,6 +581,78 @@ describe("reconnect resubscribe", () => {
     });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
+  });
+
+  test("a late old-client hydration cannot overwrite the newest client's replayed completion", async () => {
+    const a = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    let aReadCount = 0;
+    let resolveA: ((response: ThreadReadResponse) => void) | null = null;
+    a.on("thread/read", () => {
+      aReadCount += 1;
+      if (aReadCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveA = resolve;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    a.emitStateChange("reconnecting");
+    a.emitReady();
+    await flushUntil(() => resolveA !== null);
+
+    const b = new FakeClient("ready");
+    let resolveB: ((response: ThreadReadResponse) => void) | null = null;
+    b.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveB = resolve;
+        }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => resolveB !== null);
+
+    b.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    b.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    // B wins publication first, with its buffered live completion replayed.
+    expect(resolveB).not.toBeNull();
+    const finishB = resolveB as unknown as (response: ThreadReadResponse) => void;
+    finishB(staleSnapshot);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.status === "completed");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
+
+    // A's older response arrives after B and must not restore its stale model.
+    const finishA = resolveA as unknown as (response: ThreadReadResponse) => void;
+    resolveA = null;
+    finishA(staleSnapshot);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
   });
 
   test("a released ref is not re-subscribed on the next onReady", async () => {
@@ -1669,6 +1794,34 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
 // when the exact same ref happens to be both ensureThread'd and
 // watchThread'd at once.
 describe("useThreadsStore.watchThread", () => {
+  test("replays notifications that arrive before the initial watched snapshot", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    expect(resolveRead).not.toBeNull();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(readResponse("ref_a", { status: { type: "idle" } }));
+    await watching;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
   test("hydrates via thread/read with includeTurns:false and routes a subsequent matching notification", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", (params) => {

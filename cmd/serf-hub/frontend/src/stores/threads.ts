@@ -208,7 +208,17 @@ export interface ThreadsStoreState {
 // its notification/ready handlers onto (plus that wiring's own unsubscribe
 // functions - see rewireClient below).
 const refCounts = new Map<string, number>();
-const inflightHydrates = new Map<string, Promise<ThreadModel>>();
+const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
+type PendingThreadHydration = {
+  client: AppwireClientLike;
+  notifications: AnyNotification[];
+};
+// A thread/read subscribes before it returns its snapshot. Notifications can
+// therefore arrive in the gap between the source subscription and snapshot
+// response. Keep the newest hydration's notifications out of the old model,
+// then fold them onto the returned snapshot before publishing it.
+const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
@@ -228,7 +238,7 @@ let inflightModelsList: Promise<ModelListResponse> | null = null;
 // refCounts/inflightHydrates above, so a watch and a real pane on the
 // same ref never share (or fight over) one counter.
 const watchRefCounts = new Map<string, number>();
-const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
+const inflightWatchHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightWatchIncludeTurns = new Map<string, boolean>();
 // A generation changes whenever the last watcher releases. Late responses
 // from that retired lifetime must not populate a new one.
@@ -370,6 +380,92 @@ function targetsNotification(n: AnyNotification, model: ThreadModel): boolean {
   return notificationTargetsThread(n, model);
 }
 
+function notificationRef(n: AnyNotification): string | undefined {
+  const params = n.params as { ref?: unknown };
+  return typeof params.ref === "string" ? params.ref : undefined;
+}
+
+function targetsPendingHydration(n: AnyNotification, ref: string, model: ThreadModel | undefined): boolean {
+  if (model) return targetsNotification(n, model);
+  // A bare turn/completed has no ref on the wire. Queue it for every initial
+  // hydration; applyNotification's activeTurnId check will select its owner
+  // when the snapshots are replayed.
+  return n.method === "turn/completed" || notificationRef(n) === ref;
+}
+
+function beginThreadHydration(ref: string, client: AppwireClientLike): PendingThreadHydration {
+  const pending = { client, notifications: [] };
+  pendingThreadHydrations.set(ref, pending);
+  return pending;
+}
+
+function beginWatchedHydration(ref: string, client: AppwireClientLike): PendingThreadHydration {
+  const pending = { client, notifications: [] };
+  pendingWatchedHydrations.set(ref, pending);
+  return pending;
+}
+
+function replayHydrationNotifications(
+  model: ThreadModel,
+  notifications: AnyNotification[],
+): { model: ThreadModel; appliedAt: number[] } {
+  let hydrated = model;
+  const appliedAt: number[] = [];
+  for (const notification of notifications) {
+    const now = Date.now();
+    const updated = applyNotification(hydrated, notification, now);
+    if (updated === hydrated) continue;
+    hydrated = updated;
+    appliedAt.push(now);
+  }
+  return { model: hydrated, appliedAt };
+}
+
+function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
+  if (pendingThreadHydrations.get(ref) !== pending) return null;
+  if (wiredClient !== pending.client) return null;
+  if ((refCounts.get(ref) ?? 0) <= 0) {
+    pendingThreadHydrations.delete(ref);
+    return null;
+  }
+
+  const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
+
+  pendingThreadHydrations.delete(ref);
+  threadsStore.setState((s) => {
+    if ((refCounts.get(ref) ?? 0) <= 0) return s;
+    const nextThreads = new Map(s.threads);
+    nextThreads.set(ref, hydrated);
+    if (appliedAt.length === 0) return { threads: nextThreads };
+    const nextFrameTimes = new Map(s.frameTimes);
+    let times = nextFrameTimes.get(ref) ?? [];
+    for (const now of appliedAt) times = appendFrameTime(times, now);
+    nextFrameTimes.set(ref, times);
+    return { threads: nextThreads, frameTimes: nextFrameTimes };
+  });
+  return hydrated;
+}
+
+function publishWatchedHydration(
+  ref: string,
+  pending: PendingThreadHydration,
+  model: ThreadModel,
+  includeTurns: boolean,
+  generation: number,
+): ThreadModel | null {
+  if (pendingWatchedHydrations.get(ref) !== pending) return null;
+  if (wiredClient !== pending.client) return null;
+  if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) {
+    pendingWatchedHydrations.delete(ref);
+    return null;
+  }
+
+  const replayed = replayHydrationNotifications(model, pending.notifications);
+  pendingWatchedHydrations.delete(ref);
+  storeWatchedModel(ref, replayed.model, includeTurns, generation, replayed.appliedAt);
+  return replayed.model;
+}
+
 // handleNotification routes one live notification to whichever tracked
 // model(s) it targets, folding it through the reducer. A notification for a
 // ref this store isn't tracking (or that targets no tracked model) finds no
@@ -388,10 +484,12 @@ function applyToMap(
   map: Map<string, ThreadModel>,
   n: AnyNotification,
   now: number,
+  skippedRefs?: ReadonlySet<string>,
 ): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   for (const [ref, model] of map) {
+    if (skippedRefs?.has(ref)) continue;
     if (!targetsNotification(n, model)) continue;
     const updated = applyNotification(model, n, now);
     if (updated === model) continue;
@@ -427,8 +525,25 @@ function handleNotification(n: AnyNotification): void {
   applySubagentJobSignal(n);
   const now = Date.now();
   const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
-  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now);
-  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(watchedThreads, n, now);
+  const pendingRefs = new Set<string>();
+  for (const [ref, pending] of pendingThreadHydrations) {
+    if (!targetsPendingHydration(n, ref, threads.get(ref))) continue;
+    pending.notifications.push(n);
+    pendingRefs.add(ref);
+  }
+  const pendingWatchedRefs = new Set<string>();
+  for (const [ref, pending] of pendingWatchedHydrations) {
+    if (!targetsPendingHydration(n, ref, watchedThreads.get(ref))) continue;
+    pending.notifications.push(n);
+    pendingWatchedRefs.add(ref);
+  }
+  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now, pendingRefs);
+  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(
+    watchedThreads,
+    n,
+    now,
+    pendingWatchedRefs,
+  );
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -448,7 +563,13 @@ function handleNotification(n: AnyNotification): void {
   threadsStore.setState(patch);
 }
 
-function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolean, generation: number): void {
+function storeWatchedModel(
+  ref: string,
+  model: ThreadModel,
+  includeTurns: boolean,
+  generation: number,
+  appliedAt: number[] = [],
+): void {
   if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
   if ((watchGenerations.get(ref) ?? 0) !== generation) return;
 
@@ -460,7 +581,12 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   threadsStore.setState((s) => {
     const next = new Map(s.watchedThreads);
     next.set(ref, model);
-    return { watchedThreads: next };
+    if (appliedAt.length === 0) return { watchedThreads: next };
+    const nextFrameTimes = new Map(s.watchedFrameTimes);
+    let times = nextFrameTimes.get(ref) ?? [];
+    for (const now of appliedAt) times = appendFrameTime(times, now);
+    nextFrameTimes.set(ref, times);
+    return { watchedThreads: next, watchedFrameTimes: nextFrameTimes };
   });
 }
 
@@ -480,30 +606,36 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
   const watchRefs = Array.from(threadsStore.getState().watchedThreads.keys());
   await Promise.all([
     ...refs.map(async (ref) => {
+      const pending = beginThreadHydration(ref, client);
       try {
         const model = await hydrateAndSubscribe(client, ref, Date.now());
-        // A concurrent releaseThread() may have dropped this ref while the
-        // re-subscribe was in flight; don't resurrect it.
-        if (!threadsStore.getState().threads.has(ref)) return;
-        threadsStore.setState((s) => {
-          const next = new Map(s.threads);
-          next.set(ref, model);
-          return { threads: next };
-        });
+        // A newer hydration (for example, a fresh client replacing this one)
+        // owns publication. Its pending notification buffer must not be
+        // discarded by this older response.
+        if (wiredClient === client && pendingThreadHydrations.get(ref) === pending) {
+          publishThreadHydration(ref, pending, model);
+        }
       } catch {
         // Best-effort: a failed re-subscribe leaves the stale model in place
         // rather than losing it; the next onReady (another reconnect) or a
         // fresh ensureThread() from a remounting pane will retry.
+      } finally {
+        if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
       }
     }),
     ...watchRefs.map(async (ref) => {
       const generation = watchGenerations.get(ref) ?? 0;
+      const pending = beginWatchedHydration(ref, client);
       try {
         const includeTurns = watchIncludeTurns.get(ref) ?? false;
         const model = await hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns);
-        storeWatchedModel(ref, model, includeTurns, generation);
+        if (wiredClient === client && pendingWatchedHydrations.get(ref) === pending) {
+          publishWatchedHydration(ref, pending, model, includeTurns, generation);
+        }
       } catch {
         // Best-effort, same rationale as the real-pane path above.
+      } finally {
+        if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
       }
     }),
   ]);
@@ -581,7 +713,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
     let inflight = inflightHydrates.get(ref);
     if (!inflight) {
-      inflight = hydrateAndSubscribe(client, ref, Date.now());
+      const pending = beginThreadHydration(ref, client);
+      inflight = hydrateAndSubscribe(client, ref, Date.now())
+        .then((model) => publishThreadHydration(ref, pending, model))
+        .finally(() => {
+          if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
+        });
       inflightHydrates.set(ref, inflight);
       // .finally() re-throws inflight's own rejection on ITS OWN returned
       // promise — a separate object from `inflight` — so without a catch
@@ -593,7 +730,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         })
         .catch(() => {});
     }
-    let model: ThreadModel;
+    let model: ThreadModel | null;
     try {
       model = await inflight;
     } catch (err) {
@@ -610,14 +747,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       threadsStore.getState().releaseThread(ref);
       throw err;
     }
-    // A concurrent releaseThread() may have dropped this ref to zero panes
-    // while the hydrate was in flight; don't resurrect it.
-    if ((refCounts.get(ref) ?? 0) <= 0) return;
-    threadsStore.setState((s) => {
-      const next = new Map(s.threads);
-      next.set(ref, model);
-      return { threads: next };
-    });
+    // The hydration promise publishes its snapshot and buffered notifications
+    // atomically. A newer hydration or a concurrent release may make this
+    // response obsolete; in that case there is nothing for this caller to do.
+    if (!model) return;
   },
 
   releaseThread(ref) {
@@ -682,7 +815,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // lean caller may share a rich request because the richer snapshot is
     // sufficient for both callers.
     if (!inflight || (needTurns && !inflightHasTurns)) {
-      inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
+      const pending = beginWatchedHydration(ref, client);
+      inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns)
+        .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
+        .finally(() => {
+          if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
+        });
       inflightWatchHydrates.set(ref, inflight);
       inflightWatchIncludeTurns.set(ref, needTurns);
       void inflight
@@ -695,7 +833,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         .catch(() => {});
     }
     const model = await inflight;
-    storeWatchedModel(ref, model, needTurns, generation);
+    if (!model) return;
   },
 
   releaseWatchedThread(ref) {
@@ -712,6 +850,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // from publishing into the new lifecycle.
     inflightWatchHydrates.delete(ref);
     inflightWatchIncludeTurns.delete(ref);
+    pendingWatchedHydrations.delete(ref);
     // Drop the monotonic turns flag with the last watcher so a future watch of
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
@@ -999,9 +1138,11 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   inflightHydrates.clear();
+  pendingThreadHydrations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchIncludeTurns.clear();
+  pendingWatchedHydrations.clear();
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
