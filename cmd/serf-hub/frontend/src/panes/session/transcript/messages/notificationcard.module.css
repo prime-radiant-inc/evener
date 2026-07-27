@@ -37,6 +37,10 @@
   color: var(--ink-mid);
 }
 
+.field {
+  min-width: 0;
+}
+
 .fieldLabel {
   color: var(--ink-low);
 }
