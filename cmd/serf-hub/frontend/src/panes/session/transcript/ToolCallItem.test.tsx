@@ -771,6 +771,39 @@ test("delegate tool rows keep the human description as purpose and suppress the 
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
+test("task-only delegate purpose previews preserve an emoji at the Unicode clipping boundary", () => {
+  const emojiTask = `${"a".repeat(119)}😀 suffix`;
+  const exactAsciiTask = "b".repeat(120);
+  render(
+    <>
+      <ToolCallItem
+        item={item({
+          id: "unicode_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: emojiTask }),
+          output: JSON.stringify({ status: "completed" }),
+        })}
+        turn={turn}
+        live={false}
+      />
+      <ToolCallItem
+        item={item({
+          id: "ascii_boundary_delegate",
+          toolName: "delegate",
+          argumentsJSON: JSON.stringify({ task: exactAsciiTask }),
+          output: JSON.stringify({ status: "completed" }),
+        })}
+        turn={turn}
+        live={false}
+      />
+    </>,
+  );
+
+  const [unicodeTool, asciiTool] = screen.getAllByTestId("tool-call-item");
+  expect(within(unicodeTool!).getByTestId("tool-row-purpose").textContent).toBe(`${"a".repeat(119)}😀…`);
+  expect(within(asciiTool!).getByTestId("tool-row-purpose").textContent).toBe(exactAsciiTask);
+});
+
 test("task-only delegates show a bounded purpose preview while keeping the full Mandate in one disclosure", () => {
   const task =
     "**Inspect** the parser\n\nand report the `task` field. Keep the full mandate available for the reader. This suffix makes the preview bounded and honest.";
