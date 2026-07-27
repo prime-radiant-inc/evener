@@ -102,6 +102,12 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
       const touch = TOUCH_BY_STATUS[status ?? ""];
       if (!touch) continue;
       const id = typeof update.id === "number" ? update.id : undefined;
+      const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
+      // The Go task tool marks explicit in_progress updates from its pre-state.
+      // A false marker is a status reassertion carrying notes, not a fresh
+      // start. Unmarked historical state keeps the existing argument-only
+      // rendering for transcripts written before this marker existed.
+      if (touch === "started" && stateTask?.started === false) continue;
       if (id !== undefined) touchedIds.add(id);
       if (touch === "done" || touch === "cancelled") completedAny = true;
       rows.push({

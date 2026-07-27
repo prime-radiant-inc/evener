@@ -94,6 +94,32 @@ test("an in_progress update renders a started row", () => {
   expect(screen.getByTestId("task-card-row").getAttribute("data-touch")).toBe("started");
 });
 
+test("a notes-only in_progress reassertion does not render a started row", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "in_progress", notes: "found the root cause" }] },
+      "Updated 1→in_progress.",
+      {
+        raw: [{ id: 1, type: "implement", description: "investigate", prompt: "inspect", status: "in_progress", started: false }],
+      },
+    ),
+  );
+  expect(screen.queryByTestId("task-card-row")).toBeNull();
+});
+
+test("a real in_progress transition renders a started row from its authoritative marker", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "in_progress" }] },
+      "Updated 1→in_progress.",
+      {
+        raw: [{ id: 1, type: "implement", description: "implement", prompt: "build", status: "in_progress", started: true }],
+      },
+    ),
+  );
+  expect(screen.getByTestId("task-card-row").getAttribute("data-touch")).toBe("started");
+});
+
 test("a failed task_list mutation renders NO card (its error is surfaced by the generic tool-error path instead)", () => {
   renderItem(taskItem({ action: "update", updates: [{ id: 9, status: "done" }] }, "", { error: "task 9 not found" }));
   // The row still exists (the generic error path owns it), but no task card.

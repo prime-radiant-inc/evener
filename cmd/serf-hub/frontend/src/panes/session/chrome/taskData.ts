@@ -30,6 +30,10 @@ export interface TaskRow {
   dependsOn?: number[];
   notes?: string[];
   reasoningEffort?: string;
+  // Mutation snapshots mark whether an explicit in_progress update crossed
+  // into that status. Ordinary task-list responses omit this side-channel
+  // field.
+  started?: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -43,7 +47,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // dropped rather than fabricated or allowed to crash the whole parse.
 function parseRow(raw: unknown): TaskRow | null {
   if (!isPlainObject(raw)) return null;
-  const { id, type, description, prompt, status, depends_on, notes, reasoning_effort } = raw;
+  const { id, type, description, prompt, status, depends_on, notes, reasoning_effort, started } = raw;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
 
@@ -56,6 +60,9 @@ function parseRow(raw: unknown): TaskRow | null {
   }
   if (typeof reasoning_effort === "string" && reasoning_effort !== "") {
     row.reasoningEffort = reasoning_effort;
+  }
+  if (typeof started === "boolean") {
+    row.started = started;
   }
   return row;
 }
