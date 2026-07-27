@@ -37,9 +37,15 @@ type navigationSnapshot struct {
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
 	projects            map[string]identifier.Project
+	remoteOwnership     map[string]favoriteRemoteOwnership
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
 	remoteIncompleteIDs map[string]struct{}
 	remoteGeneration    uint64
+}
+
+type favoriteRemoteOwnership struct {
+	sourceID string
+	complete bool
 }
 
 type remoteThreadFetch struct {
@@ -410,6 +416,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		metas:               metas,
 		live:                live,
 		projects:            projects,
+		remoteOwnership:     favoriteRemoteOwnerships(fetch.threads),
 		remoteSources:       fetch.sources,
 		remoteIncompleteIDs: incompleteIDs,
 		remoteGeneration:    fetch.generation,
@@ -945,7 +952,7 @@ func favoriteAuthorityForNavigation(snapshot navigationSnapshot, tree hubcore.Tr
 			Aliases:  favoriteSessionAliases(meta.ID),
 			TopLevel: isTopLevel,
 			Lineage:  lineage[meta.ID],
-			Source:   favoriteSessionSourceQuality(meta.ID, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
+			Source:   favoriteSessionSourceQuality(meta.ID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
 		})
 	}
 	for _, entry := range snapshot.live {
@@ -960,7 +967,7 @@ func favoriteAuthorityForNavigation(snapshot navigationSnapshot, tree hubcore.Tr
 			Aliases:  favoriteSessionAliases(entry.SessionID),
 			TopLevel: true,
 			Lineage:  hubcore.FavoriteAuthorityComplete,
-			Source:   favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
+			Source:   favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
 		})
 	}
 	authority.Projects = favoriteProjectAuthorities(snapshot)
@@ -978,19 +985,78 @@ func favoriteSessionAliases(id string) []string {
 	return uniqueStrings(aliases)
 }
 
-func favoriteSessionSourceQuality(id string, remoteSources map[string]hubcore.RemoteSourceSnapshot, incompleteIDs map[string]struct{}) hubcore.FavoriteAuthorityQuality {
+func favoriteSessionSourceQuality(id string, remoteOwnership map[string]favoriteRemoteOwnership, remoteSources map[string]hubcore.RemoteSourceSnapshot, incompleteIDs map[string]struct{}) hubcore.FavoriteAuthorityQuality {
 	if _, incomplete := incompleteIDs[id]; incomplete {
+		return hubcore.FavoriteAuthorityIncomplete
+	}
+	ownership, isRemote := remoteOwnership[id]
+	if !isRemote {
+		return hubcore.FavoriteAuthorityComplete
+	}
+	if !ownership.complete {
 		return hubcore.FavoriteAuthorityIncomplete
 	}
 	ref, err := appwire.ParseRef(id)
 	if err != nil {
-		return hubcore.FavoriteAuthorityComplete
+		return hubcore.FavoriteAuthorityIncomplete
 	}
-	source, isRemote := remoteSources[ref.SourceID]
-	if !isRemote || source.Complete {
-		return hubcore.FavoriteAuthorityComplete
+	if ownership.sourceID != ref.SourceID {
+		return hubcore.FavoriteAuthorityIncomplete
+	}
+	source, sourceKnown := remoteSources[ownership.sourceID]
+	if !sourceKnown || !source.Complete {
+		return hubcore.FavoriteAuthorityIncomplete
+	}
+	for _, thread := range source.Threads {
+		if sourceID := strings.TrimSpace(thread.Source); sourceID != "" && sourceID != ref.SourceID {
+			continue
+		}
+		threadRef, ok := favoriteRemoteThreadRef(thread)
+		if ok && threadRef == ref {
+			return hubcore.FavoriteAuthorityComplete
+		}
 	}
 	return hubcore.FavoriteAuthorityIncomplete
+}
+
+func favoriteRemoteOwnerships(threads []appwire.Thread) map[string]favoriteRemoteOwnership {
+	ownerships := make(map[string]favoriteRemoteOwnership)
+	for _, thread := range threads {
+		ref, ok := appThreadTreeRef(thread)
+		if !ok || ref.SourceID == "local" {
+			continue
+		}
+		sourceID := strings.TrimSpace(thread.Source)
+		if sourceID == "" {
+			sourceID = ref.SourceID
+		}
+		complete := sourceID == ref.SourceID
+		if rawRef := strings.TrimSpace(thread.Serf.Ref); rawRef != "" {
+			parsed, err := appwire.ParseRef(rawRef)
+			if err != nil || parsed != ref {
+				complete = false
+			}
+		}
+		candidate := favoriteRemoteOwnership{sourceID: sourceID, complete: complete}
+		if previous, exists := ownerships[ref.String()]; exists {
+			if previous.sourceID != candidate.sourceID || !previous.complete || !candidate.complete {
+				candidate = favoriteRemoteOwnership{complete: false}
+			}
+		}
+		ownerships[ref.String()] = candidate
+	}
+	return ownerships
+}
+
+func favoriteRemoteThreadRef(thread appwire.Thread) (appwire.Ref, bool) {
+	if strings.TrimSpace(thread.Serf.Ref) != "" {
+		ref, err := appwire.ParseRef(thread.Serf.Ref)
+		if err != nil {
+			return appwire.Ref{}, false
+		}
+		return ref, true
+	}
+	return appThreadTreeRef(thread)
 }
 
 func uniqueStrings(values []string) []string {
@@ -1096,12 +1162,12 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 		owners := make(map[string]hubcore.FavoriteAuthorityQuality)
 		for _, meta := range snapshot.metas {
 			if hubcore.EffectiveWorkingDir(meta) == path {
-				owners[favoriteProjectSourceClaim(meta.ID)] = favoriteSessionSourceQuality(meta.ID, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
+				owners[favoriteProjectSourceClaim(meta.ID)] = favoriteSessionSourceQuality(meta.ID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
 			}
 		}
 		for _, entry := range snapshot.live {
 			if entry.WorkingDir == path {
-				owners[favoriteProjectSourceClaim(entry.SessionID)] = favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
+				owners[favoriteProjectSourceClaim(entry.SessionID)] = favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
 			}
 		}
 		if len(owners) == 0 {

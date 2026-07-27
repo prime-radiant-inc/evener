@@ -638,6 +638,136 @@ func TestAPITreeFavoriteRevalidation_MalformedParentRefIsDormant(t *testing.T) {
 	}
 }
 
+func TestAPITreeFavoriteRevalidation_RemoteCandidateWithoutOwningSourceSnapshotIsDormant(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	threadID := hubtest.SessionID(t)
+	ref := "remote:" + threadID
+	thread := revalidationClosedThread("remote", threadID, favoriteRevalidationTreeTime)
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{thread},
+		Complete: true,
+		Sources:  map[string]hubcore.RemoteSourceSnapshot{},
+	})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.cfg.RemoteThreadCache = cache
+
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, ref) {
+		t.Fatalf("remote candidate without owning source snapshot was pinned")
+	}
+	if node, ok := treeResponseNode(response, ref); !ok || node.Favorite {
+		t.Fatalf("remote candidate without owning source snapshot node = found %t, %+v; want rendered non-favorite", ok, node)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("missing remote source snapshot changed stored favorite row")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_RemoteCandidateMissingExactSourceMembershipIsDormant(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	targetID := hubtest.SessionID(t)
+	otherID := hubtest.SessionID(t)
+	targetRef := "remote:" + targetID
+	other := revalidationClosedThread("remote", otherID, favoriteRevalidationTreeTime)
+	target := revalidationClosedThread("remote", targetID, favoriteRevalidationTreeTime)
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{target},
+		Complete: true,
+		Sources: map[string]hubcore.RemoteSourceSnapshot{
+			"remote": {Threads: []appwire.Thread{other}, Complete: true},
+		},
+	})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", targetRef, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.cfg.RemoteThreadCache = cache
+
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, targetRef) {
+		t.Fatalf("remote candidate absent from exact source membership was pinned")
+	}
+	if node, ok := treeResponseNode(response, targetRef); !ok || node.Favorite {
+		t.Fatalf("remote candidate absent from exact source membership node = found %t, %+v; want rendered non-favorite", ok, node)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("missing remote source membership changed stored favorite row")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_RemoteCandidateWithExactSourceMembershipIsValid(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	threadID := hubtest.SessionID(t)
+	ref := "remote:" + threadID
+	thread := revalidationClosedThread("remote", threadID, favoriteRevalidationTreeTime)
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{thread},
+		Complete: true,
+		Sources: map[string]hubcore.RemoteSourceSnapshot{
+			"remote": {Threads: []appwire.Thread{thread}, Complete: true},
+		},
+	})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	web := favoriteRevalidationWeb(t, favorites, nil)
+	web.cfg.RemoteThreadCache = cache
+
+	response := getTreeResponse(t, web)
+	if !treeResponseHasFavorite(response, ref) {
+		t.Fatalf("remote candidate with exact complete source membership was not pinned")
+	}
+	if node, ok := treeResponseNode(response, ref); !ok || !node.Favorite {
+		t.Fatalf("remote candidate with exact complete source membership node = found %t, %+v; want rendered favorite", ok, node)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("valid remote source membership changed stored favorite row")
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_LocalCandidateUnaffectedByMissingRemoteSourceMetadata(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	threadID := hubtest.SessionID(t)
+	ref := "local:" + threadID
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Complete: true,
+		Sources:  map[string]hubcore.RemoteSourceSnapshot{},
+	})
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	before := favoriteDecisionRows(t, favorites)
+	web := favoriteRevalidationWeb(t, favorites, []schema.SessionMeta{{
+		ID: ref, CreatedAt: favoriteRevalidationTreeTime.Add(-time.Hour), UpdatedAt: favoriteRevalidationTreeTime,
+	}})
+	web.cfg.RemoteThreadCache = cache
+
+	response := getTreeResponse(t, web)
+	if !treeResponseHasFavorite(response, ref) {
+		t.Fatalf("local candidate was downgraded when remote source metadata was absent")
+	}
+	if node, ok := treeResponseNode(response, ref); !ok || !node.Favorite {
+		t.Fatalf("local candidate node = found %t, %+v; want rendered favorite", ok, node)
+	}
+	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
+		t.Fatalf("local candidate check changed stored favorite row")
+	}
+}
+
 func TestAPITreeFavoriteRevalidation_EndedRemoteCarriedProjectCanBeFavorited(t *testing.T) {
 	useFavoriteRevalidationTreeClock(t)
 	projectDir := filepath.Join(t.TempDir(), "project")
