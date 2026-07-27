@@ -395,7 +395,6 @@ const SEMANTIC_USE_ALLOWLIST = [
   "badge", // tone prop
   "statusdot", // state color
   "meter", // danger/attention fill tone
-  "diffblock", // add/del line tints via alive/danger -bg companions
   "toast", // tone prop
   "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
@@ -515,6 +514,109 @@ function colorTokenNames(block: string): Set<string> {
   }
   return names;
 }
+
+function declaredToken(block: string, name: string): string | undefined {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escapedName}\\s*:\\s*([^;]+);`).exec(block)?.[1]?.trim();
+}
+
+function declarationInRule(css: string, selector: string, property: string): string | undefined {
+  const withoutComments = css.replace(COMMENT_RE, " ");
+  const rule = new RegExp(`\\.${selector}\\s*\\{([^{}]*)\\}`).exec(withoutComments)?.[1];
+  if (!rule) return undefined;
+  return new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(rule)?.[1]?.trim();
+}
+
+type RGB = [number, number, number];
+
+function parseHexColor(value: string): RGB {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) throw new Error(`token-contract test: expected a six-digit hex color, got ${value}`);
+  return [0, 2, 4].map((offset) => Number.parseInt(match[1]!.slice(offset, offset + 2), 16)) as RGB;
+}
+
+function channelLuminance(channel: number): number {
+  const normalized = channel / 255;
+  return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance([red, green, blue]: RGB): number {
+  return 0.2126 * channelLuminance(red) + 0.7152 * channelLuminance(green) + 0.0722 * channelLuminance(blue);
+}
+
+function contrastRatio(foreground: RGB, background: RGB): number {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+const DIFF_TOKEN_NAMES = ["--diff-add-bg", "--diff-del-bg"];
+const DIFFBLOCK_STYLESHEET = STYLESHEETS["widgets/diffblock/diffblock.module.css"];
+
+test("DiffBlock uses exactly the dedicated non-semantic background pair", () => {
+  expect(DIFFBLOCK_STYLESHEET).toBeDefined();
+  if (!DIFFBLOCK_STYLESHEET) return;
+
+  expect(DIFFBLOCK_STYLESHEET.match(SEMANTIC_VAR_RE) ?? []).toEqual([]);
+  expect(declarationInRule(DIFFBLOCK_STYLESHEET, "add", "background")).toBe("var(--diff-add-bg)");
+  expect(declarationInRule(DIFFBLOCK_STYLESHEET, "del", "background")).toBe("var(--diff-del-bg)");
+
+  const diffTokenNames = [...TOKENS_CSS.matchAll(/(--diff-[a-z0-9-]+)\s*:/gi)].map((match) => match[1]!);
+  expect([...new Set(diffTokenNames)].sort()).toEqual([...DIFF_TOKEN_NAMES].sort());
+});
+
+test("dedicated diff backgrounds preserve quiet contrast and grayscale separation in both themes", () => {
+  const themes = [
+    {
+      name: "dark",
+      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+    },
+    {
+      name: "light",
+      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+    },
+  ];
+
+  for (const theme of themes) {
+    const surface = declaredToken(theme.block, "--surface-0");
+    const content = declaredToken(theme.block, "--ink-hi");
+    const marker = declaredToken(theme.block, "--ink-low");
+    const add = declaredToken(theme.block, "--diff-add-bg");
+    const del = declaredToken(theme.block, "--diff-del-bg");
+    expect(
+      [surface, content, marker, add, del],
+      `${theme.name} theme declares all DiffBlock contrast tokens`,
+    ).not.toContain(undefined);
+    if (!surface || !content || !marker || !add || !del) continue;
+
+    const surfaceRgb = parseHexColor(surface);
+    const contentRgb = parseHexColor(content);
+    const markerRgb = parseHexColor(marker);
+    const addRgb = parseHexColor(add);
+    const delRgb = parseHexColor(del);
+
+    for (const [kind, background] of [
+      ["add", addRgb],
+      ["del", delRgb],
+    ] as const) {
+      const contentRatio = contrastRatio(contentRgb, background);
+      const markerRatio = contrastRatio(markerRgb, background);
+      const surfaceRatio = contrastRatio(background, surfaceRgb);
+      expect(contentRatio, `${theme.name} ${kind} content contrast`).toBeGreaterThanOrEqual(4.5);
+      expect(markerRatio, `${theme.name} ${kind} marker contrast`).toBeGreaterThanOrEqual(3);
+      expect(surfaceRatio, `${theme.name} ${kind} background contrast`).toBeGreaterThanOrEqual(1.05);
+      expect(surfaceRatio, `${theme.name} ${kind} background quietness`).toBeLessThanOrEqual(1.2);
+    }
+
+    expect(relativeLuminance(addRgb), `${theme.name} additions are lighter in grayscale`).toBeGreaterThan(
+      relativeLuminance(delRgb),
+    );
+    expect(addRgb[1], `${theme.name} additions retain a green channel`).toBeGreaterThan(addRgb[0]);
+    expect(delRgb[0], `${theme.name} deletions retain a red channel`).toBeGreaterThan(delRgb[1]);
+  }
+});
 
 test("tokens.css dark and light blocks declare the same color token names", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/);

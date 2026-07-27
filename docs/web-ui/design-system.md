@@ -81,8 +81,10 @@ but not the other's.
 
 **Color** — surfaces/ink (`--surface-0/1/2`, `--edge`, `--ink-hi/mid/low`) plus the four
 semantic families (`--attention`, `--alive`, `--danger`, `--accent`), each with `-bg` (15% mix
-into the surface) and `-edge` (40% mix into the hairline border) companions — 19 color tokens
-total, all declared identically-named in both theme blocks. Light-theme semantic hues are
+into the surface) and `-edge` (40% mix into the hairline border) companions. The two dedicated
+diff-notation backgrounds (`--diff-add-bg`/`--diff-del-bg`) are separate from that semantic
+family — 21 color tokens total, all declared identically-named in both theme blocks.
+Light-theme semantic hues are
 WCAG-computed (not eyeballed): `--attention: #9D6513`, `--alive: #2B7D60`, `--danger: #DB1F25`,
 `--accent: #1668EF`, each clearing ≥4.5:1 against both `#F5F7FA` and `#FFFFFF`.
 
@@ -141,7 +143,7 @@ during implementation (noted inline); this table is the one to trust.
 | **PaneScaffold** | `{title; cadence?; actions?; footer?; children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional footer. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; language?: string; showLineNumbers?: boolean}` | Mono block with a copy button (renders a real `Button` internally); no syntax highlighting (YAGNI this wave). |
 | **Markdown** | `{source: string}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access. |
-| **DiffBlock** | `{unified: string}` | Per-line tone on already-diffed text (additions alive, deletions danger); does not compute a diff itself. |
+| **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
 | **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. |
 | **VirtualList** | `{count; estimateSize; renderRow; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone, no `measureElement`. |
 
@@ -174,7 +176,7 @@ four independent checks:
    values is never a violation, at any scope — it introduces no new color.
 3. **The three attention-family vars stay on a reviewed allowlist.** Currently: `cadence`,
    `button` (danger variant), `chip`/`badge`/`toast` (tone props), `statusdot` (state color),
-   `meter` (danger/attention fill), `diffblock` (add/del tints), `dialog` (danger footer). A
+   `meter` (danger/attention fill), `dialog` (danger footer). A
    widget earns a place on this list only when it has a state that genuinely needs one of the
    three hues — never for decoration. **`--accent` is deliberately exempt from this check
    entirely** — it's interaction chrome by definition (every interactive widget needs an accent
@@ -190,14 +192,15 @@ four independent checks:
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.
 
-**Ruling (Jesse, 2026-07-26): diffs may use the semantic colours.** `diffblock`'s add/del tints
-are `--alive-bg`/`--danger-bg` and stay that way. This settles a live contradiction: the 2026-06
-mockup set carried an explicit, capitalised "CRITICAL CONSTRAINT" that diff add/remove "must NOT
-use the semantic colors", on the theory that diffs are common enough to drain the meaning out of
-the three attention hues. That constraint is **retired**. The rule above wins — chroma is scarce,
-and the answer to "this needs green and red" is to reuse the two we have, not to mint a fourth
-and fifth. Recorded here rather than beside `diffblock` so nobody re-opens it from the mockup
-side; `docs/web-ui/decisions.md` topic 19 has the full history.
+**Ruling (Jesse, 2026-07-26, kata 9jew): dedicated diff colors are syntax/domain notation, not
+status.** DiffBlock uses exactly `--diff-add-bg` and `--diff-del-bg` in both themes. They are
+quiet, conventionally green/rose structural washes, with the `+`/`−` marker carrying the
+meaning independently of color; their foregrounds remain the existing neutral ink tokens.
+DiffBlock must not expose or reuse `--alive`/`--danger`, and it must not join the semantic
+allowlist or create a broader status hue family. This ruling supersedes mockup 19's historical
+palette details as an implementation authority: the mockup may show the visual intent, but it
+cannot reopen the semantic-color contradiction. Recorded here so the token contract and the
+widget stay aligned.
 
 ---
 

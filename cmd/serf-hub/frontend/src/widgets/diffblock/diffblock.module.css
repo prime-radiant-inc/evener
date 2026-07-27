@@ -35,16 +35,15 @@
   text-overflow: ellipsis;
 }
 
-/* additions/deletions: tinted via the alive/danger -bg companions (not the
- * hues directly) - see diffblock's entry in
- * src/styles/token-contract.test.ts's semantic-use allowlist. */
+/* Additions/deletions are structural diff notation, not status. The marker
+ * glyph remains the independent meaning channel for color-vision support. */
 .add {
-  background: var(--alive-bg);
+  background: var(--diff-add-bg);
   color: var(--ink-hi);
 }
 
 .del {
-  background: var(--danger-bg);
+  background: var(--diff-del-bg);
   color: var(--ink-hi);
 }
 

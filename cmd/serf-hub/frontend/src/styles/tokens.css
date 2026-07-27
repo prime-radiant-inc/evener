@@ -50,6 +50,15 @@
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
+  /* --- diff notation (dark) -------------------------------------------
+   * Structural add/remove washes are deliberately separate from the
+   * attention-family hues. Additions are slightly lighter than deletions in
+   * grayscale as well as green/rose shifted, so the distinction does not
+   * depend on saturation or perfect color vision.
+   */
+  --diff-add-bg: #131A1B;
+  --diff-del-bg: #1D1519;
+
   /* --- type -------------------------------------------------------------
    * IBM Plex Sans for UI + prose, IBM Plex Mono for code/tool output/paths/
    * timings (never for chrome labels). Font files: src/styles/global.css.
@@ -129,6 +138,10 @@
   --danger-edge: color-mix(in oklab, var(--danger) 40%, var(--edge));
   --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
+
+  /* Diff notation remains domain-specific rather than a status signal. */
+  --diff-add-bg: #E9F3EC;
+  --diff-del-bg: #F5E7EB;
 }
 
 /* --- font-size + phone-density preference application ------------------

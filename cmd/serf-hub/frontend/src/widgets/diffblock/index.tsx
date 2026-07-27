@@ -94,9 +94,10 @@ function parseUnifiedDiff(unified: string): DiffLine[] {
 }
 
 /**
- * Renders unified-diff text with per-line tone: additions alive-tinted,
- * deletions danger-tinted, file/hunk headers muted. No external diff
- * library - this only classifies already-diffed text; it doesn't compute
+ * Renders unified-diff text with per-line domain notation: additions and
+ * deletions use dedicated quiet diff tints, while file/hunk headers remain
+ * muted. The +/− marker is an independent meaning channel. No external
+ * diff library - this only classifies already-diffed text; it doesn't compute
  * a diff of its own.
  */
 export function DiffBlock({ unified }: DiffBlockProps) {
