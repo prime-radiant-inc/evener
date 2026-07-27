@@ -141,13 +141,44 @@ async function measureAt(cdpPort, url) {
       returnByValue: true,
     });
 
+    const exceptionSafety = await send("Runtime.evaluate", {
+      expression: `(() => {
+        const systemPrompt = [...document.querySelectorAll('[data-testid="system-notice-scaffold"]')].find((details) =>
+          details.querySelector(':scope > summary')?.textContent?.startsWith('System prompt'),
+        );
+        const rawNotification = document.querySelector('[data-testid="notification-raw-disclosure"]');
+        const details = [systemPrompt, rawNotification].filter(Boolean);
+        const originalOpen = details.map((details) => details.open);
+        const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+        let threw = false;
+        HTMLElement.prototype.getBoundingClientRect = function () {
+          if (this.closest('[data-testid="system-notice-scaffold"], [data-testid="notification-raw-disclosure"]')) {
+            throw new Error("forced disclosure geometry failure");
+          }
+          return originalGetBoundingClientRect.call(this);
+        };
+        try {
+          window.measure();
+        } catch {
+          threw = true;
+        } finally {
+          HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+        }
+        return { found: details.length, threw, originalOpen, restoredOpen: details.map((details) => details.open) };
+      })()`,
+      returnByValue: true,
+    });
+    if (exceptionSafety.result.exceptionDetails) {
+      throw new Error(`exception-safety eval threw: ${JSON.stringify(exceptionSafety.result.exceptionDetails)}`);
+    }
+
     const out = await send("Runtime.evaluate", {
       expression: "JSON.stringify(window.measure())",
       returnByValue: true,
       awaitPromise: true,
     });
     if (out.result.exceptionDetails) throw new Error(`page eval threw: ${JSON.stringify(out.result.exceptionDetails)}`);
-    return JSON.parse(out.result.result.value);
+    return { ...JSON.parse(out.result.result.value), exceptionSafety: exceptionSafety.result.result.value };
   } finally {
     ws.close();
   }
@@ -212,26 +243,88 @@ async function main() {
 
     for (const width of sweep) {
       const result = await measureAt(cdpPort, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
+      let widthFailed = false;
+      if (
+        result.exceptionSafety.found !== 2 ||
+        !result.exceptionSafety.threw ||
+        JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+      ) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure exception safety: ` +
+            `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
+            `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
+            `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
+        );
+      }
+      if (result.disclosures.length !== 2) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+        );
+      }
+      for (const disclosure of result.disclosures) {
+        if (!disclosure.openDuringOverflowScan) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+        }
+        if (disclosure.restoredOpen !== disclosure.originalOpen) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+        }
+        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
+          );
+        }
+        const fullWidth =
+          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
+        if (
+          disclosure.summaryDisplay !== "list-item" ||
+          disclosure.markerDisplay === "none" ||
+          !fullWidth ||
+          !stacked ||
+          !aligned
+        ) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
+          );
+        }
+      }
       // Never silent about what was excluded: a 1px-wide box is a
       // visually-hidden clip container (the standard screen-reader recipe),
       // not a pane anyone can scroll - but it is reported, not dropped.
       if (result.ignored.length > 0) {
-        console.log(`${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`);
+        console.log(
+          `${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
+        );
       }
       if (result.scrollers.length === 0) {
-        console.log(`${width}px ... PASS - nothing inside the pane scrolls horizontally`);
-        continue;
-      }
-      failed++;
-      console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
-      for (const s of result.scrollers) {
-        console.log(`    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`);
-        // Deepest first: the innermost escapee is the element actually too
-        // wide; its ancestors are only carrying that width upward.
-        for (const e of s.escapees) {
-          console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+        if (!widthFailed)
+          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+      } else {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+        for (const s of result.scrollers) {
+          console.log(
+            `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
+          );
+          // Deepest first: the innermost escapee is the element actually too
+          // wide; its ancestors are only carrying that width upward.
+          for (const e of s.escapees) {
+            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+          }
         }
       }
+      if (widthFailed) failed++;
     }
   } finally {
     cleanup();

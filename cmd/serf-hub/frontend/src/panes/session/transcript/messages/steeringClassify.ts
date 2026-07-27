@@ -15,10 +15,31 @@ export interface ParsedNotification {
   title: string;
   tone: NotificationTone;
   secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
+  jobId?: string;
+  jobType?: string;
+  status?: string;
+  reason?: string;
+  outputBytes?: number;
+  exitCode?: number;
+  transcriptRef?: string;
   excerpt: string;
   message?: string; // a communicate envelope's message (rendered as markdown)
   concerns: string[];
   rawText: string; // the verbatim block, always kept inspectable
+}
+
+const REF_PART_PATTERN = /^[A-Za-z0-9._~-]+$/;
+
+// isValidTranscriptRef mirrors appwire/refs.go's qualified source:thread
+// grammar. Keeping the check at the parser boundary means malformed daemon
+// metadata cannot become a dead navigation control in the card.
+export function isValidTranscriptRef(value: string | undefined): value is string {
+  if (value === undefined || value === "") return false;
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) return false;
+  const source = value.slice(0, separator);
+  const thread = value.slice(separator + 1);
+  return REF_PART_PATTERN.test(source) && REF_PART_PATTERN.test(thread) && !thread.includes("..");
 }
 
 function stripSystemReminder(text: string): string {
@@ -36,6 +57,13 @@ function parseQuotedAttrs(src: string): Record<string, string> {
     if (key !== undefined && value !== undefined) attrs[key] = value;
   }
   return attrs;
+}
+
+function optionalNonNegativeInteger(attrs: Record<string, string>, key: string): number | undefined {
+  const raw = attrs[key]?.trim();
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 // splitJobNotificationBlocks extracts each individual <job-notification …>…
@@ -154,11 +182,19 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
   if (attrs.event === "watch_send") type = "watch-send";
   const tone = notificationTone(attrs, communicate);
+  const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   return {
     type,
     title: titleForJobNotification(attrs, type),
     tone,
     secondary: notificationSecondary(attrs, tone),
+    jobId: attrs.job_id?.trim() || undefined,
+    jobType: attrs.job_type?.trim() || undefined,
+    status: attrs.status?.trim() || undefined,
+    reason: attrs.reason?.trim() || undefined,
+    outputBytes: optionalNonNegativeInteger(attrs, "output_bytes"),
+    exitCode: optionalNonNegativeInteger(attrs, "exit_code"),
+    transcriptRef,
     excerpt,
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],

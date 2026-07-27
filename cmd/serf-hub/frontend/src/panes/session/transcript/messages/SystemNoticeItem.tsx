@@ -118,7 +118,7 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
       >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
       </summary>
-      <div className={CLASS.scaffoldBody}>
+      <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
         <Markdown source={item.text} />
       </div>
     </details>

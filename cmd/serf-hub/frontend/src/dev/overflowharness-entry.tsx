@@ -51,6 +51,15 @@ const TASK =
   "Please test delegation by inspecting the current working directory. " +
   "Report the directory and three notable entries. Do not change any files.";
 
+const SYSTEM_PROMPT =
+  "## Identity\n\nYou are a careful assistant working inside a transcript UI.\n\n" +
+  "## Working agreement\n\n" +
+  "Use the available context precisely, explain decisions plainly, and keep useful output readable at narrow widths.\n\n".repeat(
+    233,
+  );
+
+const RAW_UNBROKEN_PAYLOAD = "R".repeat(12_000);
+
 const snapshot: ThreadReadResponse = {
   thread: {
     id: "thr_overflow",
@@ -105,6 +114,24 @@ const snapshot: ThreadReadResponse = {
             text: "Directory: /Users/jesse/prime-radiant/toil-suite/serf Three notable entries: README.md, go.mod, agent/",
             eventKind: "compaction",
           },
+          {
+            type: "systemMessage",
+            id: "i6",
+            turnId: "turn_1",
+            text: SYSTEM_PROMPT,
+            eventKind: "system_prompt",
+          },
+          {
+            type: "steering",
+            id: "i7",
+            turnId: "turn_1",
+            steeringKind: "notification",
+            text: `<job-notification job_id="job_overflow" event="completed" job_type="delegate" status="completed" output_bytes="4" transcript_ref="local:child">
+Job job_overflow completed.
+excerpt:
+${RAW_UNBROKEN_PAYLOAD}
+</job-notification>`,
+          },
         ],
       },
     ],
@@ -146,6 +173,29 @@ interface Scroller {
   escapees: Escapee[];
 }
 
+interface DisclosureContract {
+  kind: string;
+  originalOpen: boolean;
+  openDuringOverflowScan: boolean;
+  restoredOpen: boolean;
+  summaryDisplay: string;
+  markerDisplay: string;
+  summaryWidth: number;
+  bodyWidth: number;
+  bodyTextLength: number;
+  summaryLeft: number;
+  bodyLeft: number;
+  bodyTop: number;
+  summaryBottom: number;
+  expectedWidth: number;
+}
+
+interface DisclosureTarget {
+  kind: string;
+  details: HTMLDetailsElement;
+  originalOpen: boolean;
+}
+
 // A scroll container is horizontally overflowing when its content is wider
 // than its own content box. Reporting the container alone is not actionable,
 // so each one also names the deepest descendants whose right edge is past its
@@ -166,55 +216,120 @@ interface Scroller {
 // The second: the standard visually-hidden recipe (`width: 1px; overflow:
 // hidden`) is a 1px box on every page that has one, and is not a pane anyone
 // can see or scroll.
-function measure(): { width: number; scrollers: Scroller[]; ignored: string[] } {
+function disclosureContract(target: DisclosureTarget): DisclosureContract | null {
+  const { kind, details, originalOpen } = target;
+  const summary = details.firstElementChild;
+  const body = details.children[1];
+  if (!(summary instanceof HTMLElement) || !(body instanceof HTMLElement) || summary.tagName !== "SUMMARY") return null;
+
+  const summaryBox = summary.getBoundingClientRect();
+  const bodyBox = body.getBoundingClientRect();
+  const detailsStyle = getComputedStyle(details);
+  const expectedWidth =
+    details.clientWidth - Number.parseFloat(detailsStyle.paddingLeft) - Number.parseFloat(detailsStyle.paddingRight);
+  const result = {
+    kind,
+    originalOpen,
+    openDuringOverflowScan: originalOpen,
+    restoredOpen: originalOpen,
+    summaryDisplay: getComputedStyle(summary).display,
+    markerDisplay: getComputedStyle(summary, "::marker").display,
+    summaryWidth: summaryBox.width,
+    bodyWidth: bodyBox.width,
+    bodyTextLength: body.textContent?.length ?? 0,
+    summaryLeft: summaryBox.left,
+    bodyLeft: bodyBox.left,
+    bodyTop: bodyBox.top,
+    summaryBottom: summaryBox.bottom,
+    expectedWidth,
+  };
+  return result;
+}
+
+function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; disclosures: DisclosureContract[] } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
   const ignored: string[] = [];
+  const disclosureTargets: DisclosureTarget[] = [];
+  let disclosures: DisclosureContract[] = [];
 
-  for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
-    const overflowPx = el.scrollWidth - el.clientWidth;
-    if (overflowPx <= 1) continue;
-    if (el.clientWidth <= 1) {
-      ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""} (1px clip box)`);
-      continue;
+  try {
+    const systemPrompt = Array.from(
+      pane.querySelectorAll<HTMLDetailsElement>('[data-testid="system-notice-scaffold"]'),
+    ).find((details) => details.querySelector(":scope > summary")?.textContent?.startsWith("System prompt"));
+    if (systemPrompt)
+      disclosureTargets.push({ kind: "system-prompt", details: systemPrompt, originalOpen: systemPrompt.open });
+
+    const rawNotification = pane.querySelector<HTMLDetailsElement>('[data-testid="notification-raw-disclosure"]');
+    if (rawNotification) {
+      disclosureTargets.push({
+        kind: "raw-notification",
+        details: rawNotification,
+        originalOpen: rawNotification.open,
+      });
     }
-    const overflowX = getComputedStyle(el).overflowX;
-    if (overflowX === "hidden" || overflowX === "clip") {
-      ignored.push(
-        `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
-      );
-      continue;
-    }
 
-    const before = el.scrollLeft;
-    el.scrollLeft = 0;
-    const box = el.getBoundingClientRect();
-    const contentRight = box.left + el.clientLeft + el.clientWidth;
-
-    const escapees: Escapee[] = [];
-    for (const child of Array.from(el.querySelectorAll<HTMLElement>("*"))) {
-      const over = child.getBoundingClientRect().right - contentRight;
-      if (over <= 1) continue;
-      let depth = 0;
-      for (let p = child.parentElement; p && p !== el; p = p.parentElement) depth++;
-      escapees.push({ tag: child.tagName.toLowerCase(), cls: child.className || "", overflowPx: over, depth });
-    }
-    el.scrollLeft = before;
-
-    // Deepest first: the innermost escapee is the one actually too wide;
-    // everything above it is just carrying the width upward.
-    escapees.sort((a, b) => b.depth - a.depth || b.overflowPx - a.overflowPx);
-    scrollers.push({
-      tag: el.tagName.toLowerCase(),
-      cls: el.className || "",
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      overflowPx,
-      escapees: escapees.slice(0, 12),
+    for (const target of disclosureTargets) target.details.open = true;
+    disclosures = disclosureTargets.flatMap((target) => {
+      const measured = disclosureContract(target);
+      return measured ? [measured] : [];
     });
+
+    const openDuringOverflowScan =
+      disclosureTargets.length === 2 && disclosureTargets.every((target) => target.details.open);
+    for (const disclosure of disclosures) disclosure.openDuringOverflowScan = openDuringOverflowScan;
+
+    for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
+      const overflowPx = el.scrollWidth - el.clientWidth;
+      if (overflowPx <= 1) continue;
+      if (el.clientWidth <= 1) {
+        ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""} (1px clip box)`);
+        continue;
+      }
+      const overflowX = getComputedStyle(el).overflowX;
+      if (overflowX === "hidden" || overflowX === "clip") {
+        ignored.push(
+          `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
+        );
+        continue;
+      }
+
+      const before = el.scrollLeft;
+      el.scrollLeft = 0;
+      const box = el.getBoundingClientRect();
+      const contentRight = box.left + el.clientLeft + el.clientWidth;
+
+      const escapees: Escapee[] = [];
+      for (const child of Array.from(el.querySelectorAll<HTMLElement>("*"))) {
+        const over = child.getBoundingClientRect().right - contentRight;
+        if (over <= 1) continue;
+        let depth = 0;
+        for (let p = child.parentElement; p && p !== el; p = p.parentElement) depth++;
+        escapees.push({ tag: child.tagName.toLowerCase(), cls: child.className || "", overflowPx: over, depth });
+      }
+      el.scrollLeft = before;
+
+      // Deepest first: the innermost escapee is the one actually too wide;
+      // everything above it is just carrying the width upward.
+      escapees.sort((a, b) => b.depth - a.depth || b.overflowPx - a.overflowPx);
+      scrollers.push({
+        tag: el.tagName.toLowerCase(),
+        cls: el.className || "",
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        overflowPx,
+        escapees: escapees.slice(0, 12),
+      });
+    }
+  } finally {
+    for (const target of disclosureTargets) target.details.open = target.originalOpen;
+    for (const disclosure of disclosures) {
+      const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
+      disclosure.restoredOpen = target?.details.open ?? false;
+    }
   }
-  return { width, scrollers, ignored };
+  return { width, scrollers, ignored, disclosures };
 }
 
 // Direct-children geometry for one selector: which flex line each item landed

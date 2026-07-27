@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
@@ -5,6 +8,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { itemRendererFor } from "../types";
+import { formatCharCount } from "./format";
 import { SystemNoticeItem } from "./SystemNoticeItem";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
@@ -187,6 +191,43 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
   expect(scaffold.tagName).toBe("DETAILS");
   expect(scaffold.open).toBe(false);
   expect(scaffold.querySelector("summary")?.textContent).toBe("System prompt · 5 chars");
+});
+
+test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
+  showSystemPrompt();
+  const text = `## Identity\n\n${"You are a careful assistant. ".repeat(1000)}`;
+  render(<TurnBlock turn={turnWith([item("prompt", { text, eventKind: "system_prompt" })])} />);
+  const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
+  const summary = scaffold.querySelector("summary");
+  const body = scaffold.querySelector('[data-testid="system-notice-scaffold-body"]');
+  expect(summary?.textContent).toBe(`System prompt · ${formatCharCount(text.length)}`);
+  expect(scaffold.open).toBe(false);
+  expect(scaffold.querySelectorAll("details")).toHaveLength(0);
+  expect(scaffold.children).toHaveLength(2);
+  expect(scaffold.children[0]).toBe(summary);
+  expect(scaffold.children[1]).toBe(body);
+  expect(summary?.tagName).toBe("SUMMARY");
+  expect(summary?.getAttribute("role")).toBeNull();
+
+  fireEvent.click(summary!);
+  expect(scaffold.open).toBe(true);
+  expect(body?.querySelector("h2")?.textContent).toBe("Identity");
+  expect(body?.textContent).toContain("You are a careful assistant.");
+});
+
+test("the system prompt scaffold CSS makes the summary and body block rows", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "systemnoticeitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (selector: string): string => {
+    const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
+    return match?.[1] ?? "";
+  };
+  expect(rule("scaffold")).toContain("display: block");
+  expect(rule("scaffold")).not.toContain("display: flex");
+  expect(rule("scaffoldSummary")).toContain("display: list-item");
+  expect(rule("scaffoldSummary")).toContain("min-width: 0");
+  expect(rule("scaffoldSummary")).toContain("max-width: 100%");
+  expect(rule("scaffoldBody")).toContain("width: 100%");
 });
 
 test("a compaction eventKind item renders as a scaffold disclosure", () => {

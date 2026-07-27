@@ -148,7 +148,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     return (
       <>
         {notifications.map((n) => (
-          <NotificationCard key={n.rawText} notification={n} />
+          <NotificationCard key={n.rawText} notification={n} sessionRef={sessionRef} />
         ))}
         {leftover && (
           <SteeringDivider
