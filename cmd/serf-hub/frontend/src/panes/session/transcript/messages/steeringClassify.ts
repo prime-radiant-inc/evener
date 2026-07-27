@@ -21,7 +21,7 @@ export interface ParsedNotification {
   rawText: string; // the verbatim block, always kept inspectable
 }
 
-export function stripSystemReminder(text: string): string {
+function stripSystemReminder(text: string): string {
   return text
     .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
     .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
