@@ -675,36 +675,26 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const upgrading = tracked && wantTurns && !hadTurns;
     if (tracked && !upgrading) return; // already hydrated at the level we need
 
-    let model: ThreadModel;
-    try {
-      let inflight = inflightWatchHydrates.get(ref);
-      const inflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
-      // A rich caller cannot share a lean request already in flight: the
-      // response would be structurally missing the turns it requested. A
-      // lean caller may share a rich request because the richer snapshot is
-      // sufficient for both callers.
-      if (!inflight || (needTurns && !inflightHasTurns)) {
-        inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
-        inflightWatchHydrates.set(ref, inflight);
-        inflightWatchIncludeTurns.set(ref, needTurns);
-        void inflight
-          .finally(() => {
-            if (inflightWatchHydrates.get(ref) === inflight) {
-              inflightWatchHydrates.delete(ref);
-              inflightWatchIncludeTurns.delete(ref);
-            }
-          })
-          .catch(() => {});
-      }
-      model = await inflight;
-    } catch (err) {
-      // This call's own claim never landed: undo it via releaseWatchedThread,
-      // same rationale as ensureThread's own catch above.
-      if ((watchGenerations.get(ref) ?? 0) === generation) {
-        threadsStore.getState().releaseWatchedThread(ref);
-      }
-      throw err;
+    let inflight = inflightWatchHydrates.get(ref);
+    const inflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
+    // A rich caller cannot share a lean request already in flight: the
+    // response would be structurally missing the turns it requested. A
+    // lean caller may share a rich request because the richer snapshot is
+    // sufficient for both callers.
+    if (!inflight || (needTurns && !inflightHasTurns)) {
+      inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
+      inflightWatchHydrates.set(ref, inflight);
+      inflightWatchIncludeTurns.set(ref, needTurns);
+      void inflight
+        .finally(() => {
+          if (inflightWatchHydrates.get(ref) === inflight) {
+            inflightWatchHydrates.delete(ref);
+            inflightWatchIncludeTurns.delete(ref);
+          }
+        })
+        .catch(() => {});
     }
+    const model = await inflight;
     storeWatchedModel(ref, model, needTurns, generation);
   },
 

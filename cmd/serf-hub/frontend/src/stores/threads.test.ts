@@ -1854,6 +1854,47 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
+  test("a rejected shared hydrate leaves the mounted watcher claim until cleanup", async () => {
+    const fake = connectFakeClient();
+    const pending: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          pending.push({ resolve, reject });
+        }),
+    );
+
+    const first = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 1);
+    const second = threadsStore.getState().watchThread("ref_a");
+    expect(pending).toHaveLength(1);
+
+    // The first watcher has already unmounted; the second watcher still owns
+    // its claim when the shared request fails.
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    pending[0]!.reject(new Error("hydrate failed"));
+    await expect(first).rejects.toThrow("hydrate failed");
+    await expect(second).rejects.toThrow("hydrate failed");
+
+    // A fresh watch provides a model so the remaining original claim can be
+    // observed through the normal last-release behavior.
+    const probe = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 2);
+    pending[1]!.resolve(readResponse("ref_a"));
+    await probe;
+
+    // Releasing the probe must leave the still-mounted original watcher
+    // tracked; only its later cleanup may clear the ref.
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
   test("a rich upgrade wins over a slower lean reconnect hydrate", async () => {
     const fake = connectFakeClient();
     let readCount = 0;
