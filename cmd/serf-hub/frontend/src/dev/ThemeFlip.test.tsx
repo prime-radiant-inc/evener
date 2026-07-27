@@ -2,7 +2,10 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { ThemeFlip } from "./ThemeFlip";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  document.documentElement.removeAttribute("data-theme");
+});
 
 test("renders its children twice: once ambient (dark), once under data-theme=light", () => {
   render(
@@ -28,4 +31,16 @@ test("labels the dark and light panes", () => {
   );
   expect(screen.getByText("Dark")).toBeTruthy();
   expect(screen.getByText("Light")).toBeTruthy();
+});
+
+test("explicitly scopes both panes when the gallery is nested under a light root", () => {
+  document.documentElement.dataset.theme = "light";
+  render(
+    <ThemeFlip>
+      <span>content</span>
+    </ThemeFlip>,
+  );
+
+  expect(screen.getByText("Dark").parentElement?.getAttribute("data-theme")).toBe("dark");
+  expect(screen.getByText("Light").parentElement?.getAttribute("data-theme")).toBe("light");
 });
