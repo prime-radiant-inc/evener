@@ -3,10 +3,10 @@
 // access of its own. CredentialsSection supplies every action as a plain
 // callback and owns what happens next (opening an editor, a confirm
 // dialog, or calling the store directly).
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { Button, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { credentialLayers, unconfiguredLabel } from "./credentialLabels";
+import { credentialLayers, safeCredentialTestMessage, unconfiguredLabel } from "./credentialLabels";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -18,6 +18,7 @@ const CLASS = {
   layer: requireClass(styles.layer, "InstanceRow.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceRow.module.css", "unconfigured"),
   actions: requireClass(styles.actions, "InstanceRow.module.css", "actions"),
+  testResult: requireClass(styles.testResult, "InstanceRow.module.css", "testResult"),
 };
 
 function styleInfoText(instance: InstanceEntry): string | null {
@@ -35,6 +36,9 @@ export interface InstanceRowProps {
   onClear: () => void;
   onRemove: () => void;
   onSetDefault: () => void;
+  onTestCredentials: () => void;
+  testCredentialsPending?: boolean;
+  testCredentialsResult?: AuthTestResponse;
 }
 
 export function InstanceRow({
@@ -45,6 +49,9 @@ export function InstanceRow({
   onClear,
   onRemove,
   onSetDefault,
+  onTestCredentials,
+  testCredentialsPending = false,
+  testCredentialsResult,
 }: InstanceRowProps) {
   const supportsApiKey = (instance.authModes ?? []).includes("apiKey");
   const supportsOAuth = (instance.authModes ?? []).includes("oauth");
@@ -74,6 +81,9 @@ export function InstanceRow({
         </div>
       )}
       <div className={CLASS.actions}>
+        <Button variant="quiet" size="sm" onClick={onTestCredentials} disabled={testCredentialsPending}>
+          {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
+        </Button>
         {supportsApiKey && (
           <Button variant="quiet" size="sm" onClick={onSetApiKey}>
             {instance.hasStoredFile ? "Replace key" : "Set key"}
@@ -101,6 +111,11 @@ export function InstanceRow({
           </Button>
         )}
       </div>
+      {testCredentialsResult && (
+        <p className={CLASS.testResult} role="status">
+          {testCredentialsResult.status}: {safeCredentialTestMessage(testCredentialsResult.status)}
+        </p>
+      )}
     </li>
   );
 }

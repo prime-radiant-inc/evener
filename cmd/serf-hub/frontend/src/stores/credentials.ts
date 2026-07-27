@@ -22,6 +22,7 @@ import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  AuthTestResponse,
   AuthDevicePollResponse,
   AuthDeviceStartResponse,
   AuthLoginCompleteResponse,
@@ -64,6 +65,7 @@ export interface CredentialsStoreState {
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
   deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
   devicePoll(provider: string, flowId: string): Promise<AuthDevicePollResponse>;
+  testCredentials(provider: string): Promise<AuthTestResponse>;
 }
 
 function applyList(resp: InstanceListResponse): void {
@@ -135,6 +137,11 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async devicePoll(provider, flowId) {
     const client = requireClient();
     return client.request("serf/auth/device/poll", { provider, flowId });
+  },
+
+  async testCredentials(provider) {
+    const client = requireClient();
+    return client.request("serf/auth/test", { provider });
   },
 }));
 

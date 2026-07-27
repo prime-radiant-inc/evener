@@ -3,7 +3,7 @@
 // (oauth > file > env precedence, effective vs. shadowed) and the type
 // grouping, from InstanceEntry's boolean/string fields - no rendering, no
 // store access, easily unit-tested in isolation.
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 
 export type CredentialSourceKind = "oauth" | "file" | "env";
 
@@ -77,4 +77,21 @@ export function groupByType(instances: InstanceEntry[]): InstanceTypeGroup[] {
     group.instances.push(instance);
   }
   return groups;
+}
+
+const CREDENTIAL_TEST_MESSAGES: Record<string, string> = {
+  success: "Credentials verified.",
+  missing: "No credentials are configured for this instance. Add a key or sign in first.",
+  auth_rejected: "The provider rejected these credentials. Replace the key or sign in again.",
+  endpoint_failure: "The provider endpoint could not be reached. Check the endpoint and network connection.",
+  unsupported: "This provider does not support harmless credential verification.",
+};
+
+export function safeCredentialTestResult(provider: string, response: AuthTestResponse): AuthTestResponse {
+  const status = CREDENTIAL_TEST_MESSAGES[response.status] ? response.status : "endpoint_failure";
+  return { provider, status, message: CREDENTIAL_TEST_MESSAGES[status] };
+}
+
+export function safeCredentialTestMessage(status: string): string {
+  return CREDENTIAL_TEST_MESSAGES[status] ?? CREDENTIAL_TEST_MESSAGES.endpoint_failure;
 }

@@ -8,13 +8,13 @@
 // `openEditor` variable - no per-row state, no dirty-check on replace.
 import { useCallback, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsSection.module.css";
-import { groupByType } from "./credentialLabels";
+import { groupByType, safeCredentialTestResult } from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
 import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -39,6 +39,7 @@ type OpenEditor =
   | null;
 
 type PendingConfirm = { kind: "clear" | "remove"; name: string } | null;
+type CredentialTestState = { pending: boolean; result?: AuthTestResponse };
 
 export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -51,6 +52,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
   const toast = useToasts();
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
@@ -92,6 +94,26 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       await credentialsStore.getState().setDefault(name);
     } catch (err) {
       toast.push("error", `Set default failed: ${errorText(err)}`);
+    }
+  }
+
+  async function handleTestCredentials(name: string): Promise<void> {
+    if (credentialTests[name]?.pending) return;
+    setCredentialTests((current) => ({ ...current, [name]: { pending: true } }));
+    try {
+      const response = await credentialsStore.getState().testCredentials(name);
+      setCredentialTests((current) => ({
+        ...current,
+        [name]: { pending: false, result: safeCredentialTestResult(name, response) },
+      }));
+    } catch {
+      setCredentialTests((current) => ({
+        ...current,
+        [name]: {
+          pending: false,
+          result: safeCredentialTestResult(name, { provider: name, status: "endpoint_failure", message: "" }),
+        },
+      }));
     }
   }
 
@@ -162,6 +184,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
                       onClear={() => setPendingConfirm({ kind: "clear", name: instance.name })}
                       onRemove={() => setPendingConfirm({ kind: "remove", name: instance.name })}
                       onSetDefault={() => void handleSetDefault(instance.name)}
+                      onTestCredentials={() => void handleTestCredentials(instance.name)}
+                      testCredentialsPending={credentialTests[instance.name]?.pending ?? false}
+                      testCredentialsResult={credentialTests[instance.name]?.result}
                     />
                   ))}
                 </ul>
