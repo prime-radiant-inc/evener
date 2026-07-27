@@ -1820,6 +1820,151 @@ describe("useThreadsStore.watchThread", () => {
     expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2);
   });
 
+  test("a concurrent rich watch does not share an in-flight lean hydrate or lose its turns", async () => {
+    const fake = connectFakeClient();
+    const pending: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+    }> = [];
+    fake.on("thread/read", (params) => {
+      return new Promise<ThreadReadResponse>((resolve) => {
+        pending.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve });
+      });
+    });
+
+    const lean = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 1);
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => pending.length === 2);
+
+    expect(pending.map((request) => request.includeTurns)).toEqual([false, true]);
+
+    pending[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_rich", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
+    await Promise.all([lean, rich]);
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("a rejected shared hydrate leaves the mounted watcher claim until cleanup", async () => {
+    const fake = connectFakeClient();
+    const pending: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          pending.push({ resolve, reject });
+        }),
+    );
+
+    const first = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 1);
+    const second = threadsStore.getState().watchThread("ref_a");
+    expect(pending).toHaveLength(1);
+
+    // The first watcher has already unmounted; the second watcher still owns
+    // its claim when the shared request fails.
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    pending[0]!.reject(new Error("hydrate failed"));
+    await expect(first).rejects.toThrow("hydrate failed");
+    await expect(second).rejects.toThrow("hydrate failed");
+
+    // A fresh watch provides a model so the remaining original claim can be
+    // observed through the normal last-release behavior.
+    const probe = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 2);
+    pending[1]!.resolve(readResponse("ref_a"));
+    await probe;
+
+    // Releasing the probe must leave the still-mounted original watcher
+    // tracked; only its later cleanup may clear the ref.
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("a rich upgrade wins over a slower lean reconnect hydrate", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    const pending: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+    }> = [];
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return readResponse("ref_a", { turns: [] });
+      return new Promise<ThreadReadResponse>((resolve) => {
+        pending.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve });
+      });
+    });
+
+    await threadsStore.getState().watchThread("ref_a");
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => pending.length === 1);
+
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => pending.length === 2);
+    expect(pending.map((request) => request.includeTurns)).toEqual([false, true]);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+
+    pending[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_reconnect_rich", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    pending[0]!.resolve(readResponse("ref_a", { turns: [] }));
+    await rich;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_reconnect_rich");
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("a new watcher starts a fresh hydrate after the previous lifecycle is released", async () => {
+    const fake = connectFakeClient();
+    const pending: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => pending.push(resolve)));
+
+    const first = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 1);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+
+    const second = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => pending.length === 2);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+
+    pending[1]!(
+      readResponse("ref_a", { turns: [{ id: "turn_new", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await second;
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_new");
+
+    pending[0]!(
+      readResponse("ref_a", { turns: [{ id: "turn_old", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await first;
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_new");
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
   test("monotonic: once turns are loaded, a later lean watch does not downgrade them away", async () => {
     const fake = connectFakeClient();
     turnsAwareRead(fake);

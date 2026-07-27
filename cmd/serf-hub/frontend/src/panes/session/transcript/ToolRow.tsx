@@ -32,6 +32,7 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
+  status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   duration: requireClass(styles.duration, "toolcallitem.module.css", "duration"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
@@ -49,6 +50,9 @@ export interface ToolRowProps {
   onToggle?: () => void;
   /** Trailing controls (e.g. the "Open beside" button). */
   trailing?: ReactNode;
+  /** Optional status rail content for tools that need a one-glance
+   * progression/health signal before human-facing purpose text. */
+  status?: ReactNode;
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
   title?: string;
@@ -82,9 +86,11 @@ export function ToolRow({
   trailing,
   title,
   duration,
+  status,
 }: ToolRowProps) {
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
+  const hasSummary = summary.trim() !== "";
   const content = (
     <>
       {expandable && (
@@ -104,24 +110,34 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failed && <FailureGlyph />}
+      {status !== undefined && (
+        <span className={CLASS.status} data-testid="tool-row-status">
+          {status}
+        </span>
+      )}
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
           {statedPurpose}
         </span>
       )}
-      <span className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary} data-testid="tool-row-summary">
-        {summary}
-        {/* Nested rather than appended to `summary` itself: a stable hook to
+      {hasSummary && (
+        <span
+          className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary}
+          data-testid="tool-row-summary"
+        >
+          {summary}
+          {/* Nested rather than appended to `summary` itself: a stable hook to
             query the duration apart from the demoted summary text (both
             .demoted and .duration render --ink-mid; kata rdry moved .demoted
             off the sub-AA --ink-low it used to inherit). */}
-        {duration && (
-          <span className={CLASS.duration} data-testid="tool-row-duration">
-            {" · "}
-            {duration}
-          </span>
-        )}
-      </span>
+          {duration && (
+            <span className={CLASS.duration} data-testid="tool-row-duration">
+              {" · "}
+              {duration}
+            </span>
+          )}
+        </span>
+      )}
       {trailing}
     </>
   );

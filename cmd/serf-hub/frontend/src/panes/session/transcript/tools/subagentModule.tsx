@@ -32,14 +32,14 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { openBeside } from "../../../../shell/paneActions";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, Chip, type ChipTone } from "../../../../widgets";
-import { Disclosure } from "../../../../widgets/disclosure";
+import { Button, type CadenceState, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../../liveness";
+import { OpenBesideIcon } from "../fileOpenBeside";
 import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
+import { formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
 import {
   claimLeader,
   classifyJobStatus,
@@ -48,14 +48,14 @@ import {
   resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
+  setWatchedLiveKind,
   turnScopeKey,
   upsertSubagentRow,
+  useLeader,
   useSubagentRows,
 } from "./subagentModuleStore";
 import styles from "./subagentmodule.module.css";
-import { WatchedChildIndicator } from "./watchedChild";
 
-const TASK_CLIP = 80;
 const DONE_VISIBLE_CAP = 6;
 // mhcf: "the ~5 most recent tool-call rationales" (product ask) - see
 // ChildActivityBody's own comment for the cap+ordering reasoning.
@@ -67,6 +67,7 @@ const CLASS = {
   rows: requireClass(styles.rows, "subagentmodule.module.css", "rows"),
   row: requireClass(styles.row, "subagentmodule.module.css", "row"),
   summary: requireClass(styles.summary, "subagentmodule.module.css", "summary"),
+  status: requireClass(styles.status, "subagentmodule.module.css", "status"),
   task: requireClass(styles.task, "subagentmodule.module.css", "task"),
   meta: requireClass(styles.meta, "subagentmodule.module.css", "meta"),
   preview: requireClass(styles.preview, "subagentmodule.module.css", "preview"),
@@ -78,6 +79,7 @@ const CLASS = {
   activityItem: requireClass(styles.activityItem, "subagentmodule.module.css", "activityItem"),
   activityLatest: requireClass(styles.activityLatest, "subagentmodule.module.css", "activityLatest"),
   summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
+  openTranscriptIcon: requireClass(styles.openTranscriptIcon, "subagentmodule.module.css", "openTranscriptIcon"),
 };
 
 // classifyJobStatus and resolveRowKey now live in subagentModuleStore.ts (dr7e):
@@ -85,7 +87,7 @@ const CLASS = {
 // classification/keying a delegate item's own frozen tool output uses, and
 // subagentModuleStore.ts is the layer stores/threads.ts is allowed to import
 // (a plain data store, no React/UI deps) - subagentModule.tsx itself pulls in
-// Button/Chip/Disclosure/CSS modules a core store must never transitively
+// Button/CSS modules a core store must never transitively
 // bundle. Re-exported here unchanged so every existing import site (this
 // file's own uses below, subagentModule.test.tsx) keeps working.
 export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
@@ -150,23 +152,20 @@ export function statusWordFromText(text: string): string | undefined {
   return undefined;
 }
 
-const KIND_TONE: Record<SubagentRowKind, ChipTone> = {
-  running: "alive",
-  done: "neutral",
-  // stopped shares done's neutral tone (3zf8): nothing broke, so it earns no
-  // danger/attention hue - the distinct LABEL below is what keeps it from
-  // reading as a clean success, not a new color.
-  stopped: "neutral",
-  failed: "danger",
-  unknown: "attention",
-};
-
 const KIND_LABEL: Record<SubagentRowKind, string> = {
   running: "running",
   done: "done",
   stopped: "stopped",
   failed: "failed",
   unknown: "unknown",
+};
+
+const KIND_STATE: Record<SubagentRowKind, CadenceState> = {
+  running: "working",
+  done: "ended",
+  stopped: "ended",
+  failed: "failed",
+  unknown: "needs-you",
 };
 
 function durationLabel(row: SubagentRow): string | undefined {
@@ -249,8 +248,19 @@ function JobDetailSection({ row }: { row: SubagentRow }) {
   );
 }
 
-function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcriptRef: string }) {
+function ChildActivityBody({
+  row,
+  transcriptRef,
+  showMandate,
+  scopeKey,
+}: {
+  row: SubagentRow;
+  transcriptRef?: string;
+  showMandate: boolean;
+  scopeKey: string;
+}) {
   useEffect(() => {
+    if (transcriptRef === undefined) return;
     threadsStore
       .getState()
       .watchThread(transcriptRef, { includeTurns: true })
@@ -258,7 +268,13 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
     return () => threadsStore.getState().releaseWatchedThread(transcriptRef);
   }, [transcriptRef]);
 
-  const model = useThreadsStore((s) => s.watchedThreads.get(transcriptRef));
+  const model = useThreadsStore((s) => (transcriptRef !== undefined ? s.watchedThreads.get(transcriptRef) : undefined));
+  const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
+  useEffect(() => {
+    if (liveKind && transcriptRef) {
+      setWatchedLiveKind(scopeKey, row.rowKey, liveKind);
+    }
+  }, [scopeKey, row.rowKey, liveKind, transcriptRef]);
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   // Same "does this item state a purpose" rule the main transcript's tool row
   // uses (ToolRow.tsx's statedPurposeOf) - the PRESENTATION differs deliberately
@@ -282,13 +298,21 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
   const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
 
+  const details = (
+    <>
+      {showMandate && (
+        <section className={CLASS.section} data-testid="subagent-mandate">
+          <div className={CLASS.sectionLabel}>Mandate</div>
+          <div className={CLASS.mandate}>{row.task}</div>
+        </section>
+      )}
+      <JobDetailSection row={row} />
+    </>
+  );
+
   return (
     <div className={CLASS.body}>
-      <section className={CLASS.section} data-testid="subagent-mandate">
-        <div className={CLASS.sectionLabel}>Mandate</div>
-        <div className={CLASS.mandate}>{row.task}</div>
-      </section>
-      <JobDetailSection row={row} />
+      {details}
       {activity.length > 0 && (
         <section className={CLASS.section} data-testid="subagent-activity">
           <div className={CLASS.sectionLabel}>Activity</div>
@@ -325,10 +349,12 @@ function SubagentRowView({
   row,
   turnId,
   sessionRef,
+  showSummary,
 }: {
   row: SubagentRow;
   turnId: string;
   sessionRef: string | undefined;
+  showSummary: boolean;
 }) {
   const duration = durationLabel(row);
   // Captured once so the onClick closure below references this narrowed
@@ -344,22 +370,33 @@ function SubagentRowView({
   // and arrives independent of the delegate item's frozen tool output - over
   // the frozen output's own reason.
   const preview = row.liveReason ?? row.resultPreview;
+  const openTranscriptButton = transcriptRef ? (
+    <Button
+      variant="quiet"
+      size="sm"
+      aria-label="Open transcript"
+      onClick={(e) => {
+        e.stopPropagation();
+        openTranscript(transcriptRef, sessionRef);
+      }}
+    >
+      open
+      <span className={CLASS.openTranscriptIcon}>
+        <OpenBesideIcon />
+      </span>
+    </Button>
+  ) : null;
 
-  // Collapsed one-liner: status pill + (live cadence while running) + task +
-  // duration/preview + the always-available "Open transcript" link. Clicking
-  // anywhere here toggles the disclosure except the button, which stops the
-  // click from bubbling to the summary's toggle.
+  // Collapsed one-liner: status dot + (live cadence while running) + task +
+  // duration/preview + the always-available "Open transcript" link.
   const summary = (
     <span className={CLASS.summary}>
-      <Chip tone={KIND_TONE[displayKind]}>{KIND_LABEL[displayKind]}</Chip>
-      {/* Live watched-child indicator: only while the row is genuinely
-          still running AND we know where to watch (transcriptRef) - a
-          done/failed/unknown row has nothing live left to show. It also
-          writes the live child status back onto the row as liveKind. */}
-      {row.kind === "running" && transcriptRef && (
-        <WatchedChildIndicator ref={transcriptRef} scopeKey={turnScopeKey(sessionRef, turnId)} rowKey={row.rowKey} />
+      {showSummary && (
+        <span className={CLASS.status} title={KIND_LABEL[displayKind]}>
+          <StatusDot state={KIND_STATE[displayKind]} />
+        </span>
       )}
-      <span className={CLASS.task}>{clip(row.task, TASK_CLIP)}</span>
+      {showSummary && <span className={CLASS.task}>{row.task}</span>}
       {(duration ?? preview) && (
         <span className={CLASS.meta}>
           {duration}
@@ -367,18 +404,7 @@ function SubagentRowView({
           {preview && <span className={CLASS.preview}>{preview}</span>}
         </span>
       )}
-      {transcriptRef && (
-        <Button
-          variant="quiet"
-          size="sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            openTranscript(transcriptRef, sessionRef);
-          }}
-        >
-          Open transcript
-        </Button>
-      )}
+      {openTranscriptButton}
     </span>
   );
 
@@ -392,26 +418,22 @@ function SubagentRowView({
           own last-resort fallback (call:${item.id}) is per-session
           sequential, so two sessions can otherwise land on the identical id
           and silently share one open/closed boolean. */}
-      <Disclosure id={`subagent:${turnScopeKey(sessionRef, turnId)}:${row.rowKey}`} summary={summary}>
-        {transcriptRef ? (
-          <ChildActivityBody row={row} transcriptRef={transcriptRef} />
-        ) : (
-          <div className={CLASS.body}>
-            <section className={CLASS.section} data-testid="subagent-mandate">
-              <div className={CLASS.sectionLabel}>Mandate</div>
-              <div className={CLASS.mandate}>{row.task}</div>
-            </section>
-            <JobDetailSection row={row} />
-          </div>
-        )}
-      </Disclosure>
+      <div>
+        {summary}
+        <ChildActivityBody
+          row={row}
+          transcriptRef={transcriptRef}
+          scopeKey={turnScopeKey(sessionRef, turnId)}
+          showMandate={!showSummary}
+        />
+      </div>
     </div>
   );
 }
 
 function tally(rows: SubagentRow[]): string {
   const counts: Record<SubagentRowKind, number> = { running: 0, done: 0, stopped: 0, failed: 0, unknown: 0 };
-  for (const row of rows) counts[row.kind] += 1;
+  for (const row of rows) counts[effectiveRowKind(row)] += 1;
   const parts: string[] = [];
   // stopped is never counted among "done"'s successes (3zf8) - it gets its
   // own tally segment, ordered with the same worst-first sense as everything
@@ -430,9 +452,10 @@ function tally(rows: SubagentRow[]): string {
 function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: string | undefined }) {
   const rows = useSubagentRows(turnScopeKey(sessionRef, turnId));
   const [expanded, setExpanded] = useState(false);
-  const hasFailure = rows.some((r) => r.kind === "failed");
+  const hasFailure = rows.some((r) => effectiveRowKind(r) === "failed");
+  const showSummary = rows.length > 1;
 
-  const doneRows = rows.filter((r) => r.kind === "done");
+  const doneRows = rows.filter((r) => effectiveRowKind(r) === "done");
   const foldedCount = expanded ? 0 : Math.max(0, doneRows.length - DONE_VISIBLE_CAP);
   const hiddenKeys = new Set(expanded ? [] : doneRows.slice(DONE_VISIBLE_CAP).map((r) => r.rowKey));
   const visibleRows = rows.filter((r) => !hiddenKeys.has(r.rowKey));
@@ -441,10 +464,16 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
 
   return (
     <div className={CLASS.module} data-testid="subagent-module" data-has-failure={hasFailure ? "true" : "false"}>
-      <div className={CLASS.header}>{tally(rows)}</div>
+      {showSummary && <div className={CLASS.header}>{tally(rows)}</div>}
       <div className={CLASS.rows}>
         {visibleRows.map((row) => (
-          <SubagentRowView key={row.rowKey} row={row} turnId={turnId} sessionRef={sessionRef} />
+          <SubagentRowView
+            key={row.rowKey}
+            row={row}
+            turnId={turnId}
+            sessionRef={sessionRef}
+            showSummary={showSummary}
+          />
         ))}
       </div>
       {foldedCount > 0 && (
@@ -461,7 +490,11 @@ function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: st
   );
 }
 
-function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<SubagentRow, "spawnIndex" | "rowKey"> } {
+export function rowFromDelegateItem(item: ItemModel): {
+  rowKey: string;
+  migrateFromRowKey?: string;
+  row: Omit<SubagentRow, "spawnIndex" | "rowKey">;
+} {
   const args = parseArgs(item.argumentsJSON);
   // Full, unclipped task text - it is the entire specification of what the
   // delegate was asked to do (7f7c). Callers that need a one-line preview
@@ -475,9 +508,11 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
   const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
+  const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
   const rowKey = resolveRowKey(delegateId, jobId, item.callId ?? item.id);
   return {
     rowKey,
+    migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
       kind: classifyJobStatus(status),
       task,
@@ -491,33 +526,23 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
 }
 
 function DelegateBody({ item, sessionRef }: ToolRenderProps) {
-  const [isLeader, setIsLeader] = useState(false);
   const scopeKey = turnScopeKey(sessionRef, item.turnId);
+  const leaderId = useLeader(scopeKey);
+  const isLeader = leaderId === item.id;
 
   useLayoutEffect(() => {
-    const { rowKey, row } = rowFromDelegateItem(item);
-    upsertSubagentRow(scopeKey, { rowKey, ...row });
-  });
+    const { rowKey, migrateFromRowKey, row } = rowFromDelegateItem(item);
+    upsertSubagentRow(scopeKey, { rowKey, ...row }, migrateFromRowKey);
+  }, [scopeKey, item]);
 
-  // Claim AND release inside the SAME effect - never a useState lazy
-  // initializer, which runs at render time (store setState during render is
-  // an impure-render anti-pattern on its own, StrictMode aside). This makes
-  // the claim self-healing across StrictMode's dev-only mount -> cleanup ->
-  // remount double-invoke: a split where claiming happened once at render
-  // but releasing/re-claiming only happened in the effect meant the interim
-  // cleanup pass freed the store's leader slot while this component stayed
-  // mounted (its own isLeader would never be recomputed to notice) - a
-  // later-mounting delegate in the same turn could then also claim the now-
-  // vacant slot. Keeping both calls in one effect means the double-invoke's
-  // immediately-following remount pass re-runs this exact body and
-  // re-claims before anything else gets a chance to. See this file's own
-  // StrictMode test for the failure mode this fixes.
+  // The reactive leader read lets a mounted follower retry after the current
+  // leader unmounts. The effect only claims an empty slot and releases it
+  // from the elected component's cleanup, keeping StrictMode's mount/cleanup
+  // cycle symmetric without making followers poll or render nested details.
   useLayoutEffect(() => {
-    const leader = claimLeader(scopeKey, item.id);
-    setIsLeader(leader);
-    if (!leader) return;
-    return () => releaseLeader(scopeKey, item.id);
-  }, [scopeKey, item.id]);
+    if (leaderId === undefined) claimLeader(scopeKey, item.id);
+  }, [scopeKey, item.id, leaderId]);
+  useLayoutEffect(() => () => releaseLeader(scopeKey, item.id), [scopeKey, item.id]);
 
   return isLeader ? <SubagentModule turnId={item.turnId} sessionRef={sessionRef} /> : null;
 }
@@ -525,18 +550,16 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
 registerToolRenderer({
   match: "delegate",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    return `Delegated: ${clip(str(args, "task") ?? "", TASK_CLIP)}`;
+    return item.description ?? "";
   },
   body: DelegateBody,
   // A delegate call is a status card, not a fold-to-open tool row - the same
   // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
-  // default, the module (and the live watch that drives it) never mounts at
-  // all: a delegate that announces itself and ends its turn would show a
-  // bare one-line "Delegated: ..." summary with no visible way to tell
-  // whether it is running, done, or failed (evch). Opening it at settle
-  // makes the tally/status/live-cadence/result visible without a click; a
-  // manual collapse afterward still sticks (ToolCallItem's own autoDefault
-  // vs. store-backed toggle).
+  // default, the rich module body and its activity watch never mount until
+  // opened: the ToolCallItem-owned lean watch still keeps the top-level dot
+  // current while collapsed (evch). Opening it at settle makes the
+  // tally/status/live-cadence/result visible without a click; a manual
+  // collapse afterward still sticks (ToolCallItem's own autoDefault vs.
+  // store-backed toggle).
   autoExpand: () => true,
 });

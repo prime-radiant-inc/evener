@@ -31,7 +31,7 @@ import type { DocParams } from "../../doc/openDoc";
 // second, currentColor so it inherits IconButton's variant colour exactly as
 // the text label it replaces did (kata 3qnd - the surrounding pane chrome,
 // Pop out/Fork from here, is all icons; this was the one text label left).
-function OpenBesideIcon() {
+export function OpenBesideIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
       <rect x="1.5" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />

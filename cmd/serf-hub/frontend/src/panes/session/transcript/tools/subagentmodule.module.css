@@ -60,6 +60,12 @@
   min-width: 0;
 }
 
+.status {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 /* The expanded body: Mandate / Activity / Summary sections stacked. */
 .body {
   display: flex;
@@ -79,6 +85,11 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-low);
+}
+
+.openTranscriptIcon {
+  margin-left: var(--space-1);
+  display: inline-flex;
 }
 
 .mandate {
