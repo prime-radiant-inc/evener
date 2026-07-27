@@ -223,8 +223,8 @@ describe("action callbacks fire", () => {
     const handlers = noopHandlers();
     render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} testCredentialsPending />);
 
-    expect(screen.getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Edit" })).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "Remove" })).not.toBeDisabled();
+    expect((screen.getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

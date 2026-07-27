@@ -136,13 +136,13 @@ describe("credential verification", () => {
     const testButton = within(row!).getByRole("button", { name: "Test credentials" });
     await userEvent.setup().click(testButton);
 
-    expect(within(row!).getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
-    expect(within(row!).getByRole("button", { name: "Edit" })).not.toBeDisabled();
+    expect((within(row!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(row!).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
 
     response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
-    await screen.findByText("Credentials verified.");
-    expect(within(row!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+    expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
+    expect((within(row!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("suppresses duplicate clicks for one pending instance while another instance stays enabled", async () => {
@@ -167,8 +167,8 @@ describe("credential verification", () => {
     await user.click(workButton);
     await user.click(workButton);
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
-    expect(within(workRow!).getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
-    expect(within(personalRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+    expect((within(workRow!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(within(personalRow!).getByRole("button", { name: "Test credentials" }));
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(2);
@@ -176,8 +176,8 @@ describe("credential verification", () => {
     workResponse.resolve({ provider: WORK.name, status: "success", message: "Credentials verified." });
     personalResponse.resolve({ provider: PERSONAL.name, status: "success", message: "Credentials verified." });
     await waitFor(() => {
-      expect(within(workRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
-      expect(within(personalRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+      expect((within(workRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
+      expect((within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
     });
   });
 
@@ -197,7 +197,8 @@ describe("credential verification", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
     response.resolve({ provider: WORK.name, status, message });
 
-    expect(await screen.findByRole("status")).toHaveTextContent(`${status}: ${message}`);
+    const statusNode = await screen.findByRole("status");
+    expect(statusNode.textContent).toBe(`${status}: ${message}`);
   });
 
   test("does not render a supplied secret from a response message", async () => {
@@ -209,7 +210,8 @@ describe("credential verification", () => {
     await screen.findByText(WORK.name);
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
 
-    expect(await screen.findByText("The provider rejected these credentials. Replace the key or sign in again.")).toBeTruthy();
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("The provider rejected these credentials. Replace the key or sign in again.");
     expect(document.body.textContent).not.toContain(secret);
   });
 
@@ -224,7 +226,8 @@ describe("credential verification", () => {
     await screen.findByText(WORK.name);
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
 
-    expect(await screen.findByText("The provider endpoint could not be reached. Check the endpoint and network connection.")).toBeTruthy();
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("The provider endpoint could not be reached. Check the endpoint and network connection.");
     expect(document.body.textContent).not.toContain(secret);
   });
 });
