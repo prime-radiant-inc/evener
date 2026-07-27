@@ -138,6 +138,10 @@ test("lastMeaningfulThoughtLine extracts readable Markdown without damaging iden
   );
 });
 
+test("lastMeaningfulThoughtLine flattens Markdown inside image alt text", () => {
+  expect(lastMeaningfulThoughtLine(["![**diagram**](https://x)"], 80)).toBe("diagram");
+});
+
 test("formatThoughtDuration chooses the seconds tier before rounding", () => {
   expect(formatThoughtDuration(9_999)).toBe("10.0s");
   expect(formatThoughtDuration(10_000)).toBe("10s");

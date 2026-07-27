@@ -112,7 +112,7 @@ export function formatThoughtDuration(durationMs: number): string {
 function plainTextFromToken(token: Token): string {
   switch (token.type) {
     case "image":
-      return token.text;
+      return token.tokens?.map(plainTextFromToken).join("") ?? token.text;
     case "link":
       return token.tokens?.map(plainTextFromToken).join("") ?? token.text;
     case "code":
