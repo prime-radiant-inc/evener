@@ -121,9 +121,10 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): b
 
   const workspace = workspaceStore.getState();
   const main = workspace.mainPane();
-  if (main === null || workspace.focusedPaneId !== main.id) return false;
+  if (main === null) return false;
 
   if (route.type === "settings" || route.type === "spawn") {
+    if (workspace.focusedPaneId !== main.id) return false;
     const matchingType = route.type;
     const matchingPanes = workspace.panes.filter((pane) => pane.type === matchingType);
     return main.type === matchingType && sameRouteParams(main.params, route.params) && matchingPanes.length === 1;
@@ -139,20 +140,23 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): b
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
+      workspace.focusedPaneId === main.id &&
       main.type === "session" &&
       sessionRefOf(main) === ref &&
       workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ref).length === 1
     );
   }
 
-  const owner = main.type === "session" && sessionRefOf(main) === ancestorRef;
-  const child = workspace.panes.find(
+  const ownerPanes = workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ancestorRef);
+  const childPanes = workspace.panes.filter(
     (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ref,
   );
-  const duplicateOwner = workspace.panes.some(
-    (pane) => pane.id !== main.id && pane.type === "session" && sessionRefOf(pane) === ancestorRef,
+  return (
+    ownerPanes.length === 1 &&
+    ownerPanes[0]?.id === main.id &&
+    childPanes.length === 1 &&
+    workspace.focusedPaneId === childPanes[0]?.id
   );
-  return owner && child !== undefined && workspace.focusedPaneId === child.id && !duplicateOwner;
 }
 
 // Opens (or focuses) the pane a pathname resolves to, while enforcing two

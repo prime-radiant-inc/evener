@@ -787,6 +787,24 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
   await waitFor(() => {
     expect(paneFor("local:sub1")?.slot).toBe("secondary");
   });
+
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  const childId = paneFor("local:sub1")?.id;
+  let workspaceUpdates = 0;
+  const unsubscribe = workspaceStore.subscribe(() => {
+    workspaceUpdates += 1;
+  });
+  act(() => {
+    window.history.pushState({}, "", "/s/local%3Asub1");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Asub1"));
+  unsubscribe();
+
+  expect(workspaceUpdates).toBe(0);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(mainId);
+  expect(paneFor("local:sub1")?.id).toBe(childId);
+  expect(workspaceStore.getState().focusedPaneId).toBe(childId);
 });
 
 test("nested deep-link waits for successful tree refresh on same pathname after an initial fetch failure", async () => {
