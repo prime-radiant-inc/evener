@@ -383,6 +383,25 @@ func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, f
 	return nested, forkChildren
 }
 
+// TopLevelSessionIDs returns the session IDs that the navigation tree treats
+// as independently addressable rows. It is intentionally based on the full
+// metadata snapshot so callers do not mistake a capped rail projection for
+// the complete set of valid top-level sessions.
+func TopLevelSessionIDs(metas []schema.SessionMeta) map[string]struct{} {
+	nested, _ := nestedSessionIDs(metas)
+	ids := make(map[string]struct{}, len(metas))
+	for _, m := range metas {
+		if m.ID == "" || m.IsSubagent || m.ForkLabel != "" {
+			continue
+		}
+		if _, ok := nested[m.ID]; ok {
+			continue
+		}
+		ids[m.ID] = struct{}{}
+	}
+	return ids
+}
+
 // BuildTree assembles the sidebar Tree from all session metas, the
 // currently-live set, and the user's explicit archive decisions, using the
 // current wall clock for tier classification.

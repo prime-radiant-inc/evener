@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
@@ -24,8 +25,10 @@ func timeNowForTest() time.Time {
 func TestFavoriteEndpointSetsDecision(t *testing.T) {
 	dir := t.TempDir()
 	fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
-	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(`{"kind":"session","id":"01A","favorited":true}`))
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{ID: "01A", UpdatedAt: timeNowForTest()}})
+	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: past})
+	req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(`{"kind":"session","id":"local:01A","favorited":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
@@ -35,6 +38,36 @@ func TestFavoriteEndpointSetsDecision(t *testing.T) {
 	got, _ := fav.Favorites()
 	if !got[hubcore.ArchiveKey{Kind: "session", ID: "01A"}] {
 		t.Fatalf("favorite not persisted: %v", got)
+	}
+}
+
+func TestFavoriteEndpointRejectsNonTopLevelSession(t *testing.T) {
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{
+		{ID: "top", UpdatedAt: timeNowForTest()},
+		{ID: "sub", ParentSessionID: "top", IsSubagent: true, UpdatedAt: timeNowForTest()},
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: timeNowForTest()},
+	})
+	fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: past})
+
+	for _, id := range []string{"local:sub", "local:fork", "cluster:deadbeef"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(
+			`{"kind":"session","id":"`+id+`","favorited":true}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("id %q status=%d body=%s, want 400", id, rec.Code, rec.Body.String())
+		}
+	}
+	got, err := fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("rejected ids wrote favorite decisions: %v", got)
 	}
 }
 
@@ -68,7 +101,9 @@ func TestUnarchiveProjectUsesCanonicalID(t *testing.T) {
 func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex("")})
+	past := hubcore.NewPastIndex("")
+	past.SeedForTest([]schema.SessionMeta{{ID: "01A", UpdatedAt: timeNowForTest()}})
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -76,7 +111,7 @@ func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	resp, err := http.Post(hub.URL+"/api/favorite", "application/json", strings.NewReader(`{"kind":"session","id":"01A","favorited":true}`))
+	resp, err := http.Post(hub.URL+"/api/favorite", "application/json", strings.NewReader(`{"kind":"session","id":"local:01A","favorited":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}

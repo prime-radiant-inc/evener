@@ -28,3 +28,32 @@ func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 		t.Fatalf("row should be gone after Delete: %v", got)
 	}
 }
+
+func TestFavoriteStoreUpdatesAndHidesUnfavoritedDecisions(t *testing.T) {
+	fav := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	now := time.Unix(1_700_000_000, 0)
+	key := ArchiveKey{Kind: "session", ID: "top"}
+	if err := fav.Set(key.Kind, key.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := fav.Set(key.Kind, key.ID, false, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[key] {
+		t.Fatalf("unfavorited decision should not be returned: %v", got)
+	}
+	if err := fav.Set(key.Kind, key.ID, true, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[key] {
+		t.Fatalf("re-favorited decision missing: %v", got)
+	}
+}
