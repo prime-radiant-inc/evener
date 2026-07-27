@@ -990,6 +990,92 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
+func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, sessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, sessionID)
+	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+		t.Fatal(err)
+	}
+
+	inputs := &hubcore.InputsVersion{}
+	past.SetOnChange(inputs.Bump)
+	oldBuild := hubBuildNavigationTree
+	interleaveObserved := false
+	hubBuildNavigationTree = func(metas []schema.SessionMeta, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, projects map[string]identifier.Project) hubcore.Tree {
+		tree := oldBuild(metas, live, decisions, projects)
+		if err := os.Remove(filepath.Join(stateDir, "sessions", sessionID+".meta.json")); err != nil {
+			t.Fatalf("remove session metadata during snapshot interleave: %v", err)
+		}
+		if _, err := past.Rebuild(); err != nil {
+			t.Fatalf("rebuild during snapshot interleave: %v", err)
+		}
+		interleaveObserved = true
+		return tree
+	}
+	t.Cleanup(func() { hubBuildNavigationTree = oldBuild })
+
+	web := NewWebServer(hubcore.WebConfig{
+		Past:     past,
+		Archive:  archive,
+		Favorite: favorite,
+		Roster:   hubcore.NewRosterWithEntries(),
+		Inputs:   inputs,
+	})
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !interleaveObserved {
+		t.Fatal("snapshot/rebuild interleave did not execute")
+	}
+	assertArchiveDecisionPresent(t, archive, "session", sessionID, true)
+	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", sessionID, true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+	assertArchiveDecisionPresent(t, archive, "session", "unrelated-session", true)
+	assertArchiveDecisionPresent(t, archive, "project", "unrelated-project", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "session", "unrelated-session", true)
+	assertProjectDeleteDecisionPresent(t, dbPath, "project", "unrelated-project", true)
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID+suffix)); err != nil {
+			t.Fatalf("remaining session artifact %s was touched: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", sessionID)); err != nil {
+		t.Fatalf("remaining session directory was touched: %v", err)
+	}
+}
+
 func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")

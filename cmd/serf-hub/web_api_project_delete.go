@@ -190,7 +190,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	// Scrub only the canonical project-level decision rows after the complete
 	// governed artifact set succeeds. Display basenames are never decision
 	// keys, and any skipped session keeps the project decision retriable.
-	if len(skipped) == 0 {
+	if len(entries) > 0 && len(skipped) == 0 {
 		if s.cfg.Archive != nil {
 			if err := s.cfg.Archive.Delete("project", project.ID); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
