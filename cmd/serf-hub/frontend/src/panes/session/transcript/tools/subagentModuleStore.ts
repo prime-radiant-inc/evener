@@ -105,6 +105,13 @@ export function turnScopeKey(sessionRef: string | undefined, turnId: string): st
   return `${sessionRef ?? ""}\0${turnId}`;
 }
 
+// itemScopeKey applies the same session-local identity rule to disclosure
+// state. Item ids restart with each session, so a page-lifetime disclosure
+// store must not let opening item_1 in one session open item_1 in another.
+export function itemScopeKey(sessionRef: string | undefined, itemId: string): string {
+  return `${sessionRef ?? ""}\0${itemId}`;
+}
+
 // rowKeyForDelegateItem mirrors subagentModule.tsx's rowFromDelegateItem keying
 // logic so the top-level tool-row status can always target the same row that
 // powers the module.

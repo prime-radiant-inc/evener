@@ -50,6 +50,7 @@ import { Markdown } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
+import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { joinedReasoningParagraphs, thoughtSeconds } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
@@ -85,7 +86,7 @@ function thoughtLabel(seconds: number | undefined): string {
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below), so a fresh turn object on every streaming delta targeting a
 // DIFFERENT item must not re-render an already-settled think block.
-export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderProps) {
+export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: ItemRenderProps) {
   if (live) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-live="true">
@@ -119,10 +120,11 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
   if (paragraphs.length === 0) return null; // empty thoughts removed
 
   const seconds = thoughtSeconds(item.startedAt, item.completedAt, item.observedStartedAt, item.observedCompletedAt);
-  // Open/closed state lives in the shared disclosureStore keyed by item.id
-  // (yt2q), so an expanded thought survives the VirtualList/dockview remount
-  // that would reset a native uncontrolled <details>. Collapsed by default.
-  const open = isDisclosureOpen(item.id, false);
+  // Open/closed state lives in the shared disclosureStore keyed by session ref
+  // plus item id, so an expanded thought survives a remount without colliding
+  // with the same item id in another session. Collapsed by default.
+  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const open = isDisclosureOpen(disclosureKey, false);
 
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
@@ -132,7 +134,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
           className={CLASS.summary}
           onClick={(e) => {
             e.preventDefault();
-            toggleDisclosure(item.id, false);
+            toggleDisclosure(disclosureKey, false);
           }}
         >
           {thoughtLabel(seconds)}

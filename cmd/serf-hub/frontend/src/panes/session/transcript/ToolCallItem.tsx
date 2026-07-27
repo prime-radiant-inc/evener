@@ -23,6 +23,7 @@ import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
   effectiveRowKind,
+  itemScopeKey,
   rowKeyForDelegateItem,
   type SubagentRow,
   turnScopeKey,
@@ -142,9 +143,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // so a settled row's later re-renders never re-fight the reader's toggle).
   //
   // The open/closed state itself lives in the shared disclosureStore keyed by
-  // item.id (yt2q), so it survives the VirtualList/dockview remount that would
-  // reset a component-local useState. autoDefault is only the store's FALLBACK:
-  // the moment the reader toggles, the store holds an explicit entry that wins.
+  // session ref plus item id, so it survives the VirtualList/dockview remount
+  // without colliding with identical item ids in another session.
+  // autoDefault is only the store's FALLBACK: the moment the reader toggles,
+  // the store holds an explicit entry that wins.
   const [autoDefault, setAutoDefault] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
@@ -173,7 +175,8 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const superseded = useThreadsStore((s) =>
     supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
-  const expanded = isDisclosureOpen(item.id, autoDefault && !superseded);
+  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const expanded = isDisclosureOpen(disclosureKey, autoDefault && !superseded);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -237,10 +240,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         status={delegateStatus}
         expandable
         expanded={expanded}
-        // toggleDisclosure writes an explicit store entry against this id, so
-        // the user's own choice wins over autoDefault (the fallback) from here
-        // on AND survives a remount (yt2q).
-        onToggle={() => toggleDisclosure(item.id, autoDefault && !superseded)}
+        // toggleDisclosure writes an explicit store entry against this
+        // session-scoped item key, so the user's own choice wins over
+        // autoDefault (the fallback) from here on and survives a remount.
+        onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
         trailing={openBesideButton}
         title={detail}
         duration={duration}

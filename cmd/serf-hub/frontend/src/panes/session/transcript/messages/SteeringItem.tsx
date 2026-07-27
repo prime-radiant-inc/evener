@@ -29,6 +29,7 @@ import { NotificationCard } from "./NotificationCard";
 import { parseSteeringNotifications } from "./steeringClassify";
 import styles from "./steeringitem.module.css";
 import { UserMessageView } from "./UserMessageItem";
+import { itemScopeKey } from "../tools/subagentModuleStore";
 
 const CLASS = {
   details: requireClass(styles.details, "steeringitem.module.css", "details"),
@@ -87,11 +88,22 @@ const SUPPRESSED: ReadonlySet<SteeringKind> = new Set(["current-task", "task-lis
 // appendSteeringDivider) - summary is the glyph, the kind label (or the bare
 // fallback), and a trailing chevron; body is the verbatim steered text in a
 // <pre> (never re-rendered as markdown). Open/closed state lives in the
-// shared disclosureStore keyed by `id` (yt2q), so an expanded divider
-// survives the VirtualList/dockview remount that would reset a native
-// uncontrolled <details>. Collapsed by default.
-function SteeringDivider({ id, label, text }: { id: string; label: string; text: string }) {
-  const open = isDisclosureOpen(id, false);
+// shared disclosureStore keyed by session ref plus item id, so an expanded
+// divider survives a remount without colliding with another session's item.
+// Collapsed by default.
+function SteeringDivider({
+  id,
+  label,
+  text,
+  sessionRef,
+}: {
+  id: string;
+  label: string;
+  text: string;
+  sessionRef?: string;
+}) {
+  const disclosureKey = itemScopeKey(sessionRef, id);
+  const open = isDisclosureOpen(disclosureKey, false);
   return (
     <details className={CLASS.details} data-testid="steering-item" open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
@@ -99,7 +111,7 @@ function SteeringDivider({ id, label, text }: { id: string; label: string; text:
         className={CLASS.summary}
         onClick={(e) => {
           e.preventDefault();
-          toggleDisclosure(id, false);
+          toggleDisclosure(disclosureKey, false);
         }}
       >
         <SteeringGlyph />
@@ -118,7 +130,7 @@ function SteeringDivider({ id, label, text }: { id: string; label: string; text:
   );
 }
 
-export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps) {
+export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
   // work already under way rather than starting a new exchange, so it renders
   // like a prompt without claiming the boundary a prompt marks.
@@ -138,12 +150,26 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
         {notifications.map((n) => (
           <NotificationCard key={n.rawText} notification={n} />
         ))}
-        {leftover && <SteeringDivider id={item.id} label={label ? `${STEERED}: ${label}` : STEERED} text={leftover} />}
+        {leftover && (
+          <SteeringDivider
+            id={item.id}
+            label={label ? `${STEERED}: ${label}` : STEERED}
+            text={leftover}
+            sessionRef={sessionRef}
+          />
+        )}
       </>
     );
   }
 
-  return <SteeringDivider id={item.id} label={label ? `${STEERED}: ${label}` : STEERED} text={leftover} />;
+  return (
+    <SteeringDivider
+      id={item.id}
+      label={label ? `${STEERED}: ${label}` : STEERED}
+      text={leftover}
+      sessionRef={sessionRef}
+    />
+  );
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);
