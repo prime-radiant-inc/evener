@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,6 +118,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
+	buckets := navigationProjectBuckets(tree)
 	// TestRuns takes precedence over ArchivedProjects (round-2 B6): a project
 	// where every session carries Origin=="test" is routed there even if it
 	// would otherwise also qualify as archived. Every branch marks
@@ -124,28 +126,26 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	// "project" below; only the active (non-archived, non-test) branch
 	// populates projectIndexes, since that's the only bucket the orphan-live
 	// loop can append into (it indexes into resp.Projects specifically).
-	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
-		if p.IsTestRun {
-			for _, n := range projectSessions(p) {
-				markTreeNodeIDs(seenProjectRefs, n)
-			}
-			resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
-			continue
+	for _, p := range buckets.testRuns {
+		for _, n := range projectSessions(p) {
+			markTreeNodeIDs(seenProjectRefs, n)
 		}
-		if p.IsArchived {
-			for _, n := range projectSessions(p) {
-				markTreeNodeIDs(seenProjectRefs, n)
-			}
-			// Archived projects ship as stubs: the archive is unbounded, so its
-			// sessions never ride in the snapshot. Sessions stays nil (wire:
-			// null) and SessionCount carries the row count; the sidebar
-			// lazy-loads the full project from /api/tree/project?key= on expand.
-			stub := s.apiTreeProject("project", favs, p)
-			stub.SessionCount = len(stub.Sessions)
-			stub.Sessions = nil
-			resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
-			continue
+		resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
+	}
+	for _, p := range buckets.archived {
+		for _, n := range projectSessions(p) {
+			markTreeNodeIDs(seenProjectRefs, n)
 		}
+		// Archived projects ship as stubs: the archive is unbounded, so its
+		// sessions never ride in the snapshot. Sessions stays nil (wire:
+		// null) and SessionCount carries the row count; the sidebar
+		// lazy-loads the full project from /api/tree/project?key= on expand.
+		stub := s.apiTreeProject("project", favs, p)
+		stub.SessionCount = p.TotalSessionCount()
+		stub.Sessions = nil
+		resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
+	}
+	for _, p := range buckets.active {
 		projectIndexes[p.Key] = len(resp.Projects)
 		ap := s.apiTreeProject("project", favs, p)
 		for _, n := range projectSessions(p) {
@@ -261,15 +261,82 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, http.StatusBadRequest, "key is required")
 		return
 	}
+	query := r.URL.Query()
+	pageRequested := query.Has("tier") || query.Has("offset") || query.Has("limit")
+	tier := query.Get("tier")
+	offset, limit := 0, hubcore.SidebarSessionPageSize
+	if pageRequested {
+		switch tier {
+		case "current", "recent", "archived":
+		default:
+			writeAPIError(w, http.StatusBadRequest, "tier must be current, recent, or archived")
+			return
+		}
+		if raw := query.Get("offset"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				writeAPIError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+				return
+			}
+			offset = parsed
+		}
+		if raw := query.Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > hubcore.SidebarSessionPageSize {
+				writeAPIError(w, http.StatusBadRequest, "limit must be between 1 and 50")
+				return
+			}
+			limit = parsed
+		}
+	}
 	tree, _ := s.memoTree(r.Context())
 	favs := s.favoriteDecisions()
-	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+	projects := navigationProjectBuckets(tree).all()
+	for _, p := range projects {
 		if p.Key == key {
+			if pageRequested {
+				rows, remaining, ok := p.Page(tier, offset, limit)
+				if !ok {
+					writeAPIError(w, http.StatusBadRequest, "invalid project page")
+					return
+				}
+				writeAPIJSON(w, http.StatusOK, s.apiTreeProjectPage("project", favs, p, tier, offset, rows, remaining))
+				return
+			}
 			writeAPIJSON(w, http.StatusOK, s.apiTreeProject("project", favs, p))
 			return
 		}
 	}
 	writeAPIError(w, http.StatusNotFound, "project not found")
+}
+
+type navigationProjectBucket struct {
+	active   []hubcore.TreeProject
+	archived []hubcore.TreeProject
+	testRuns []hubcore.TreeProject
+}
+
+func navigationProjectBuckets(tree hubcore.Tree) navigationProjectBucket {
+	buckets := navigationProjectBucket{}
+	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		switch {
+		case p.IsTestRun:
+			buckets.testRuns = append(buckets.testRuns, p)
+		case p.IsArchived:
+			buckets.archived = append(buckets.archived, p)
+		default:
+			buckets.active = append(buckets.active, p)
+		}
+	}
+	return buckets
+}
+
+func (b navigationProjectBucket) all() []hubcore.TreeProject {
+	projects := make([]hubcore.TreeProject, 0, len(b.active)+len(b.archived)+len(b.testRuns))
+	projects = append(projects, b.active...)
+	projects = append(projects, b.archived...)
+	projects = append(projects, b.testRuns...)
+	return projects
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
@@ -402,6 +469,8 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir: thread.CWD,
 		},
+		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
+		IsSubagent:      thread.Serf.Kind == "subagent",
 	}
 	if thread.GitInfo != nil {
 		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
@@ -421,6 +490,23 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Project:   project,
 	}
 	return meta, entry, true
+}
+
+// appThreadTreeParentSessionID translates the remote thread lineage into the
+// same ref-valued metadata used by the local tree. ParentRef is authoritative
+// for Serf children; ForkedFromID is the Codex fork lineage fallback.
+func appThreadTreeParentSessionID(thread appwire.Thread, childRef appwire.Ref) string {
+	raw := strings.TrimSpace(thread.Serf.ParentRef)
+	if raw == "" {
+		raw = strings.TrimSpace(thread.ForkedFromID)
+	}
+	if raw == "" {
+		return ""
+	}
+	if parentRef, err := appwire.ParseRef(raw); err == nil {
+		return parentRef.String()
+	}
+	return appwire.Ref{SourceID: childRef.SourceID, ThreadID: raw}.String()
 }
 
 func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
@@ -641,6 +727,22 @@ func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]boo
 	return ap
 }
 
+func (s *WebServer) apiTreeProjectPage(
+	scope string,
+	favs map[hubcore.ArchiveKey]bool,
+	p hubcore.TreeProject,
+	tier string,
+	offset int,
+	rows []hubcore.TreeNode,
+	remaining int,
+) hubapi.TreeProjectPage {
+	page := hubapi.TreeProjectPage{Key: p.Key, Tier: tier, Offset: offset, Remaining: remaining}
+	for _, n := range rows {
+		page.Sessions = append(page.Sessions, s.apiTreeNodeTier(scope, p.Key, tier, favs, n))
+	}
+	return page
+}
+
 // apiTreeNodeTier wraps apiTreeNode and stamps the row-level fields a tiered
 // projection (project sessions, NeedsYou, Pinned) carries but a bare Live row
 // doesn't. favs is the once-per-request favorite-decisions map computed by
@@ -686,19 +788,20 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, li
 		rowID = scope + ":" + projectKey + ":" + refText
 	}
 	out := hubapi.TreeNode{
-		RowID:      rowID,
-		Ref:        refText,
-		HostID:     ref.HostID,
-		SessionID:  ref.SessionID,
-		Title:      n.Title,
-		Project:    n.Project,
-		State:      n.State,
-		Kind:       n.Kind,
-		Live:       live,
-		UpdatedAt:  n.UpdatedAt,
-		Age:        n.Age,
-		AskPending: n.AskPending,
-		Dormant:    n.Dormant,
+		RowID:         rowID,
+		Ref:           refText,
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		Title:         n.Title,
+		Project:       n.Project,
+		State:         n.State,
+		Kind:          n.Kind,
+		Live:          live,
+		UpdatedAt:     n.UpdatedAt,
+		Age:           n.Age,
+		AskPending:    n.AskPending,
+		Dormant:       n.Dormant,
+		MoreSubagents: n.MoreSubagents,
 	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model

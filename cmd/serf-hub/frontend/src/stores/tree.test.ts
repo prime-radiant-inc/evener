@@ -6,7 +6,7 @@ import {
   threadStartedNotification,
 } from "../protocol/testing/notifications";
 import { connectionStore } from "./connection";
-import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, treeStore } from "./tree";
+import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "./tree";
 
 // A minimal, well-formed Response stand-in - only what refresh()/
 // loadProjectDetail() actually touch (ok/status/statusText/json()).
@@ -155,7 +155,7 @@ describe("refresh", () => {
 
   test("a non-ok response records an error and never throws", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500));
-    await expect(treeStore.getState().refresh()).resolves.toBeUndefined();
+    await expect(treeStore.getState().refresh()).resolves.toBe(false);
     const { tree, loading, error } = treeStore.getState();
     expect(tree).toBeNull();
     expect(loading).toBe(false);
@@ -164,7 +164,7 @@ describe("refresh", () => {
 
   test("a rejected fetch (network failure) is caught, not thrown", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("network down"));
-    await expect(treeStore.getState().refresh()).resolves.toBeUndefined();
+    await expect(treeStore.getState().refresh()).resolves.toBe(false);
     expect(treeStore.getState().error).toContain("network down");
   });
 
@@ -177,6 +177,229 @@ describe("refresh", () => {
     await treeStore.getState().refresh();
     expect(treeStore.getState().error).toBeNull();
     expect(treeStore.getState().tree).toEqual(NORMALIZED_EMPTY_TREE);
+  });
+
+  test("reports refresh failure without replacing the current tree", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    expect(await treeStore.getState().refresh()).toBe(true);
+    fetchMock.mockRejectedValueOnce(new TypeError("refresh down"));
+
+    expect(await treeStore.getState().refresh()).toBe(false);
+    expect(treeStore.getState().tree).toEqual(NORMALIZED_EMPTY_TREE);
+    expect(treeStore.getState().error).toContain("refresh down");
+  });
+
+  test("only the newest refresh response can update the tree", async () => {
+    let resolveOlder!: (response: Response) => void;
+    let resolveNewer!: (response: Response) => void;
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveOlder = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveNewer = resolve;
+        }),
+      );
+
+    const older = treeStore.getState().refresh();
+    const newer = treeStore.getState().refresh();
+    resolveNewer(jsonResponse({ ...EMPTY_WIRE_TREE, generated_at: "newer" }));
+    expect(await newer).toBe(true);
+    resolveOlder(jsonResponse({ ...EMPTY_WIRE_TREE, generated_at: "older" }));
+    expect(await older).toBe(false);
+
+    expect(treeStore.getState().tree?.generated_at).toBe("newer");
+    expect(treeStore.getState().loading).toBe(false);
+  });
+});
+
+describe("reconcileProjectDelete", () => {
+  test("filters deleted sessions while retaining skipped and unmentioned rows", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const skipped = {
+      ...deleted,
+      row_id: "skipped-row",
+      ref: "local:skipped",
+      session_id: "skipped",
+      title: "Skipped",
+    };
+    const unknownChild = {
+      ...deleted,
+      row_id: "unknown-child-row",
+      ref: "remote:child",
+      host_id: "remote",
+      session_id: "child",
+      title: "Unknown child",
+    };
+    const unknown = {
+      ...deleted,
+      row_id: "unknown-row",
+      ref: "remote:new",
+      host_id: "remote",
+      session_id: "new",
+      title: "Unknown",
+      children: [unknownChild],
+    };
+    const p = { key: "p1", name: "Proj", sessions: [deleted, skipped, unknown] };
+    const detail = { ...p, sessions: [deleted, skipped, unknown] };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [p], archived_projects: [p] },
+      projectDetails: new Map([["p1", detail]]),
+    });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["deleted"], ["local:skipped"]);
+
+    const state = treeStore.getState();
+    const expected = ["local:skipped", "remote:new"];
+    expect(state.tree?.projects[0]?.sessions.map((n) => n.ref)).toEqual(expected);
+    expect(state.tree?.projects[0]?.session_count).toBe(2);
+    expect(state.tree?.projects[0]?.sessions[1]?.children.map((n) => n.ref)).toEqual(["remote:child"]);
+    expect(state.tree?.archived_projects[0]?.sessions.map((n) => n.ref)).toEqual(expected);
+    expect(state.projectDetails.get("p1")?.sessions.map((n) => n.ref)).toEqual(expected);
+  });
+
+  test("retains unmentioned remote rows when no sessions were skipped", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const unknown = {
+      ...deleted,
+      row_id: "remote-row",
+      ref: "remote:new",
+      host_id: "remote",
+      session_id: "new",
+      title: "Remote",
+    };
+    const p = { key: "p1", name: "Proj", sessions: [deleted, unknown] };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [p] },
+      projectDetails: new Map([["p1", { ...p }]]),
+    });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    expect(treeStore.getState().tree?.projects[0]?.sessions.map((n) => n.ref)).toEqual(["remote:new"]);
+    expect(treeStore.getState().tree?.projects[0]?.session_count).toBe(1);
+    expect(
+      treeStore
+        .getState()
+        .projectDetails.get("p1")
+        ?.sessions.map((n) => n.ref),
+    ).toEqual(["remote:new"]);
+  });
+
+  test("retains overflow evidence when every loaded row was deleted", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    };
+    const p = {
+      key: "p1",
+      name: "Proj",
+      sessions: [deleted],
+      more_current: 1,
+      more_recent: 2,
+      more_archived: 3,
+    };
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE, projects: [p] } });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    const project = treeStore.getState().tree?.projects[0];
+    expect(project?.sessions).toEqual([]);
+    expect(project).toMatchObject({ more_current: 1, more_recent: 2, more_archived: 3 });
+    expect(project?.session_count).toBeUndefined();
+  });
+
+  test("removes a fully deleted project and its hydrated detail", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const p = { key: "p1", name: "Proj", sessions: [deleted] };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [p] },
+      projectDetails: new Map([["p1", { ...p }]]),
+    });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    expect(treeStore.getState().tree?.projects).toEqual([]);
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(false);
+  });
+
+  test("keeps current-tree survivors when stale hydrated detail becomes empty", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const survivor: TreeNode = {
+      ...deleted,
+      row_id: "survivor-row",
+      ref: "remote:survivor",
+      host_id: "remote",
+      session_id: "survivor",
+      title: "Survivor",
+    };
+    const currentTreeProject = { key: "p1", name: "Proj", sessions: [deleted, survivor] };
+    const staleDetail = { ...currentTreeProject, sessions: [deleted] };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [currentTreeProject] },
+      projectDetails: new Map([["p1", staleDetail]]),
+    });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    expect(treeStore.getState().tree?.projects[0]?.sessions.map((n) => n.ref)).toEqual(["remote:survivor"]);
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(false);
   });
 });
 
@@ -218,6 +441,127 @@ describe("loadProjectDetail", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
     await expect(treeStore.getState().loadProjectDetail("missing")).resolves.toBeUndefined();
     expect(treeStore.getState().projectDetails.has("missing")).toBe(false);
+  });
+
+  test("a late detail response cannot resurrect a reconciled project", async () => {
+    let resolveDetail!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+    const loading = treeStore.getState().loadProjectDetail("p1");
+
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE, projects: [{ key: "p1", name: "Proj", sessions: [] }] } });
+    treeStore.getState().reconcileProjectDelete("p1", [], []);
+    resolveDetail(jsonResponse({ key: "p1", name: "Proj", sessions: [{ ref: "local:deleted" }] }));
+
+    await loading;
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(false);
+    expect(treeStore.getState().tree?.projects).toEqual([]);
+  });
+});
+
+describe("loadProjectPage", () => {
+  test("fetches an offset page and merges it into the requested tier", async () => {
+    const current: TreeNode[] = Array.from({ length: 50 }, (_, i) => ({
+      row_id: `r${i}`,
+      ref: `local:${i}`,
+      host_id: "local",
+      session_id: `${i}`,
+      title: `Current ${i}`,
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    }));
+    const recent: TreeNode = { ...current[0]!, row_id: "recent", ref: "local:recent", tier: "recent", title: "Recent" };
+    const tree: TreeResponse = {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [],
+      needs_you: [],
+      favorites: [],
+      projects: [{ key: "p1", name: "Proj", sessions: [...current, recent], more_current: 1 }],
+      archived_projects: [],
+      test_runs: [],
+      attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    };
+    treeStore.setState({ tree });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        key: "p1",
+        tier: "current",
+        offset: 50,
+        sessions: [{ ...current[0]!, row_id: "r50", ref: "local:50", session_id: "50", title: "Current 50" }],
+        remaining: 0,
+      }),
+    );
+
+    await treeStore.getState().loadProjectPage("p1", "current", 50, 50);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tree/project?key=p1&tier=current&offset=50&limit=50", {
+      credentials: "same-origin",
+    });
+    const project = treeStore.getState().tree?.projects[0];
+    expect(project?.sessions.filter((n) => n.tier === "current")).toHaveLength(51);
+    expect(project?.sessions[50]?.title).toBe("Current 50");
+    expect(project?.sessions[51]?.title).toBe("Recent");
+    expect(project?.more_current).toBe(0);
+  });
+
+  test("a late page response cannot overwrite a reconciled project", async () => {
+    let resolvePage!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolvePage = resolve;
+      }),
+    );
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const remote = {
+      ...deleted,
+      row_id: "remote-row",
+      ref: "remote:new",
+      host_id: "remote",
+      session_id: "new",
+      title: "Remote",
+    };
+    const p = { key: "p1", name: "Proj", sessions: [deleted, remote] };
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE, projects: [p] }, projectDetails: new Map([["p1", p]]) });
+    const loading = treeStore.getState().loadProjectPage("p1", "current", 50, 50);
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+    resolvePage(
+      jsonResponse({
+        key: "p1",
+        tier: "current",
+        offset: 50,
+        sessions: [{ ...remote, row_id: "late-row", ref: "local:late", session_id: "late", title: "Late" }],
+        remaining: 0,
+      }),
+    );
+
+    await loading;
+    expect(treeStore.getState().tree?.projects[0]?.sessions.map((n) => n.ref)).toEqual(["remote:new"]);
+    expect(
+      treeStore
+        .getState()
+        .projectDetails.get("p1")
+        ?.sessions.map((n) => n.ref),
+    ).toEqual(["remote:new"]);
   });
 });
 

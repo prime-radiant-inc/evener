@@ -1671,6 +1671,57 @@ func fuzzScenarioSubagentChildrenCappedPerTier(t *testing.T) {
 	if subs != maxSidebarSessionsPerTier {
 		t.Fatalf("subagent children should cap at %d, got %d", maxSidebarSessionsPerTier, subs)
 	}
+	if got := tree.Projects[0].Current[0].MoreSubagents; got != 10 {
+		t.Fatalf("subagent overage = %d, want 10", got)
+	}
+}
+
+func TestSubagentChildrenCarryOverage(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}}
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
+			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	parent := tree.Projects[0].Current[0]
+	if len(parent.Children) != maxSidebarSessionsPerTier {
+		t.Fatalf("children = %d, want %d", len(parent.Children), maxSidebarSessionsPerTier)
+	}
+	if got := parent.MoreSubagents; got != 10 {
+		t.Fatalf("subagent overage = %d, want 10", got)
+	}
+}
+
+func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01PAGE%02d", i), CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/page"},
+		})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(tree.Projects))
+	}
+	project := tree.Projects[0]
+	if len(project.Current) != maxSidebarSessionsPerTier || project.MoreCurrent != 10 {
+		t.Fatalf("capped project = %d rows + %d more, want 50 + 10", len(project.Current), project.MoreCurrent)
+	}
+	page, remaining, ok := project.Page("current", maxSidebarSessionsPerTier, maxSidebarSessionsPerTier)
+	if !ok {
+		t.Fatal("current tier page was rejected")
+	}
+	if len(page) != 10 || remaining != 0 {
+		t.Fatalf("page = %d rows + %d remaining, want 10 + 0", len(page), remaining)
+	}
+	if page[0].ID == project.Current[0].ID {
+		t.Fatalf("page repeated a retained row %q", page[0].ID)
+	}
 }
 
 func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
@@ -1857,4 +1908,28 @@ func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *tes
 
 func TestNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) {
 	fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t)
+}
+
+func TestTopLevelSessionIDsExcludesNestedAndForkRows(t *testing.T) {
+	ids := TopLevelSessionIDs([]schema.SessionMeta{
+		{ID: "top"},
+		{ID: "sub", ParentSessionID: "top", IsSubagent: true},
+		{ID: "orphan-fork", ForkLabel: "before edit"},
+		{ID: "nested-fork", ForkLabel: "before another edit"},
+		{ID: "branch", ParentSessionID: "nested-fork"},
+	})
+	if _, ok := ids["top"]; !ok {
+		t.Fatalf("top-level session missing: %v", ids)
+	}
+	for _, id := range []string{"sub", "nested-fork"} {
+		if _, ok := ids[id]; ok {
+			t.Fatalf("nested session %q incorrectly accepted: %v", id, ids)
+		}
+	}
+	if _, ok := ids["branch"]; !ok {
+		t.Fatalf("active fork branch should remain top-level: %v", ids)
+	}
+	if _, ok := ids["orphan-fork"]; !ok {
+		t.Fatalf("orphan fork should remain top-level: %v", ids)
+	}
 }

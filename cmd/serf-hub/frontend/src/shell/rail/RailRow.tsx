@@ -623,16 +623,23 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
 
 // The "+N older" note for rows the server capped away (hubcore's
 // maxSidebarSessionsPerTier). Sits in the chevron/signal gutters like every
-// other row so it lines up with the list it belongs to, but carries no
-// controls: the rows it counts were never sent, so there is nothing to expand
-// and nothing to act on. It exists so a capped list stops quietly presenting
-// itself as complete.
-function OverflowRow({ node }: { node: OverflowRailNode }) {
+// other row so it lines up with the list it belongs to. Project overflow rows
+// activate a bounded fetch for the capped-away tier rows; synthetic child
+// overflow remains an honest non-actionable count.
+function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
     <span className={CLASS.row}>
       <RowGutter className={CLASS.chevron} testId="rail-row-chevron-gutter" />
       <RowGutter className={CLASS.signal} testId="rail-row-signal" />
-      <span data-testid="rail-row-overflow" className={CLASS.overflow}>{`+${node.count} older`}</span>
+      {/* The treeitem's Enter handler is the keyboard path; this click makes
+          the visible affordance usable with a mouse as well. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: treeitem owns keyboard activation */}
+      <span
+        data-testid="rail-row-overflow"
+        className={CLASS.overflow}
+        onClick={info.activate}
+      >{`+${node.count} older`}</span>
     </span>
   );
 }
@@ -655,7 +662,7 @@ export function RailRow({ node, info, actions }: RailRowProps) {
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
     case "overflow":
-      return <OverflowRow node={node} />;
+      return <OverflowRow node={node} info={info} />;
     case "project":
       return <ProjectRow node={node} info={info} actions={actions} />;
     case "session":

@@ -139,6 +139,16 @@ describe("inactive-subagent fold", () => {
     expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
   });
 
+  test("the inactive fold includes subagents omitted by the server cap", () => {
+    const parent = Object.assign(parentWith("ended"), { more_subagents: 10 }) as ApiTreeNode;
+    const [rail] = sessionNodes([parent], NEVER_EXPANDED);
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold && "count" in fold && fold.count).toBe(11);
+    expect(fold?.children.map((child) => child.kind)).toEqual(["session", "overflow"]);
+    const overflow = fold?.children[1];
+    expect(overflow && "count" in overflow && overflow.count).toBe(10);
+  });
+
   test("the fold carries how many it hides, so the row can say so without expanding", () => {
     const [rail] = sessionNodes([parentWith("ended", "closed", "errored", "active")], NEVER_EXPANDED);
     const fold = rail?.children.find((c) => c.kind === "inactiveFold");
@@ -305,6 +315,15 @@ describe("archivedCount", () => {
 
   test("counts a hydrated archived project by its real sessions", () => {
     expect(archivedCount([project({ sessions: [node(), node({ ref: "r2" })] })], [])).toBe(2);
+  });
+
+  test("counts capped hydrated rows plus archived overflow without adding stub sentinels", () => {
+    const detail = project({
+      sessions: Array.from({ length: 50 }, (_, i) => node({ ref: `r${i}` })),
+      more_archived: 10,
+    });
+    expect(archivedCount([detail], [])).toBe(60);
+    expect(archivedCount([project({ session_count: 60, sessions: [], more_archived: 10 })], [])).toBe(60);
   });
 
   test("adds the archived-tier sessions living inside active projects", () => {
@@ -500,6 +519,19 @@ describe("per-tier overflow", () => {
       NEVER_EXPANDED,
     );
     expect(rail?.children.map((c) => c.kind)).toEqual(["session", "session", "overflow"]);
+  });
+
+  test("describes each capped tier page so the overflow row can reveal older sessions", () => {
+    const [rail] = projectNodes(
+      [project({ sessions: [node({ tier: "current" })], more_current: 7, more_recent: 5 })],
+      NEVER_EXPANDED,
+    );
+    const last = rail?.children.at(-1);
+    expect(last?.kind).toBe("overflow");
+    expect(last && "pages" in last && last.pages).toEqual([
+      { projectKey: "p1", tier: "current", offset: 1, limit: 7 },
+      { projectKey: "p1", tier: "recent", offset: 0, limit: 5 },
+    ]);
   });
 
   test("no overflow row when nothing was capped", () => {

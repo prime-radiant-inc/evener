@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,6 +265,37 @@ func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
 	}
 }
 
+func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
+	meta, _, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "child",
+		Source: "remote",
+		Serf: appwire.SerfThread{
+			Ref:       "remote:child",
+			ParentRef: "remote:parent",
+			Kind:      "subagent",
+		},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected remote subagent")
+	}
+	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
+		t.Fatalf("remote subagent metadata = %+v", meta)
+	}
+
+	forkMeta, _, ok := appThreadTreeEntries(appwire.Thread{
+		ID:           "fork",
+		Source:       "remote",
+		ForkedFromID: "parent",
+		Serf:         appwire.SerfThread{Ref: "remote:fork"},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected remote fork")
+	}
+	if forkMeta.ParentSessionID != "remote:parent" || forkMeta.IsSubagent {
+		t.Fatalf("remote fork metadata = %+v", forkMeta)
+	}
+}
+
 func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "proj")
@@ -298,6 +331,23 @@ func TestTreeResponseProjectsCarryAdditiveFields(t *testing.T) {
 	}
 }
 
+func TestAPITreeNodeCarriesSubagentOverflow(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{})
+	got := web.apiTreeNode("project", "project-key", hubcore.TreeNode{
+		ID: "parent", Kind: "session", MoreSubagents: 10,
+	}, false)
+	if got.MoreSubagents != 10 {
+		t.Fatalf("MoreSubagents=%d, want 10", got.MoreSubagents)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"more_subagents":10`) {
+		t.Fatalf("missing more_subagents wire field: %s", data)
+	}
+}
+
 func TestAPITreeProjectServedFromTree(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "proj")
@@ -326,6 +376,109 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 	if p.Key != key || len(p.Sessions) != 1 {
 		t.Fatalf("want the single project with its session, got %+v", p)
+	}
+}
+
+func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "paged")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01PAGE%02d", i), CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/tree/project?key="+project.ID+"&tier=current&offset=50&limit=50", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Key       string            `json:"key"`
+		Tier      string            `json:"tier"`
+		Offset    int               `json:"offset"`
+		Sessions  []hubapi.TreeNode `json:"sessions"`
+		Remaining int               `json:"remaining"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Key != project.ID || page.Tier != "current" || page.Offset != 50 {
+		t.Fatalf("page identity = %+v", page)
+	}
+	if len(page.Sessions) != 10 || page.Remaining != 0 {
+		t.Fatalf("page = %d rows + %d remaining, want 10 + 0", len(page.Sessions), page.Remaining)
+	}
+	if page.Sessions[0].SessionID == "" || page.Sessions[0].SessionID == "01PAGE00" {
+		t.Fatalf("page did not contain a capped-away session: %+v", page.Sessions[0])
+	}
+}
+
+func TestAPITreeProjectPageServesCappedAwayTestRunRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	projectDir := filepath.Join(t.TempDir(), "test-run-paged")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01TEST%02d", i), Origin: "test", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	treeRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(treeRec, treeReq)
+	if treeRec.Code != http.StatusOK {
+		t.Fatalf("tree status=%d body=%s", treeRec.Code, treeRec.Body.String())
+	}
+	var treeResp hubapi.TreeResponse
+	if err := json.Unmarshal(treeRec.Body.Bytes(), &treeResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(treeResp.TestRuns) != 1 || treeResp.TestRuns[0].Key != project.ID || treeResp.TestRuns[0].MoreArchived != 10 {
+		t.Fatalf("test-run tree project = %+v", treeResp.TestRuns)
+	}
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/tree/project?key="+project.ID+"&tier=archived&offset=50&limit=50", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Key      string            `json:"key"`
+		Tier     string            `json:"tier"`
+		Offset   int               `json:"offset"`
+		Sessions []hubapi.TreeNode `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Key != project.ID || page.Tier != "archived" || page.Offset != 50 {
+		t.Fatalf("page identity = %+v", page)
+	}
+	if len(page.Sessions) != 10 {
+		t.Fatalf("page rows = %d, want 10", len(page.Sessions))
 	}
 }
 
@@ -455,6 +608,53 @@ func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
 	}
 	if len(full.Sessions) != 2 {
 		t.Fatalf("/api/tree/project must keep full archived sessions, got %+v", full)
+	}
+}
+
+func TestAPITree_ArchivedProjectStubReportsRowsBeyondSidebarCap(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "old")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	if err := store.Set("project", project.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		updatedAt := now.Add(-15 * 24 * time.Hour).Add(-time.Duration(i) * time.Minute)
+		metas = append(metas, schema.SessionMeta{
+			ID:        fmt.Sprintf("01OLD%02d", i),
+			CreatedAt: updatedAt,
+			UpdatedAt: updatedAt,
+			Name:      fmt.Sprintf("old session %d", i),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: store})
+	web.injectMetasForTest(metas)
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ArchivedProjects) != 1 {
+		t.Fatalf("want 1 archived project, got %+v", resp.ArchivedProjects)
+	}
+	stub := resp.ArchivedProjects[0]
+	if stub.SessionCount != 60 {
+		t.Fatalf("archived stub session_count=%d, want authoritative total 60", stub.SessionCount)
+	}
+	if stub.MoreArchived != 10 {
+		t.Fatalf("archived stub more_archived=%d, want sidebar overflow 10", stub.MoreArchived)
 	}
 }
 

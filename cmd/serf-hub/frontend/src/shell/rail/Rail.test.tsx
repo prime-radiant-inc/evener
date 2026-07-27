@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
+import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { Rail } from "./Rail";
 
@@ -200,6 +201,10 @@ let treeResponseBody: unknown;
 let postResponses: Record<string, { status: number; body: unknown }>;
 let postCalls: { path: string; body: unknown }[];
 let projectDetailResponses: Record<string, unknown>;
+let projectPageResponses: Record<string, unknown>;
+let pendingProjectPageResponses: Record<string, Promise<Response>>;
+let treeRefreshResponses: Response[];
+let pendingTreeRefresh: Promise<Response> | null;
 
 function defaultPostResponses(): Record<string, { status: number; body: unknown }> {
   return {
@@ -219,12 +224,31 @@ beforeEach(() => {
   postResponses = defaultPostResponses();
   postCalls = [];
   projectDetailResponses = { archproj: ARCHIVED_PROJECT_DETAIL };
+  projectPageResponses = {};
+  pendingProjectPageResponses = {};
+  treeRefreshResponses = [];
+  pendingTreeRefresh = null;
 
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
-    if (method === "GET" && url === "/api/tree") return jsonResponse(treeResponseBody);
+    if (method === "GET" && url === "/api/tree") {
+      if (pendingTreeRefresh) {
+        const response = await pendingTreeRefresh;
+        pendingTreeRefresh = null;
+        return response;
+      }
+      if (treeRefreshResponses.length > 0) return treeRefreshResponses.shift()!;
+      return jsonResponse(treeResponseBody);
+    }
     if (method === "GET" && url.startsWith("/api/tree/project?key=")) {
-      const key = decodeURIComponent(url.slice("/api/tree/project?key=".length));
+      const parsed = new URL(url, "http://serf.test");
+      const key = parsed.searchParams.get("key") ?? "";
+      if (parsed.searchParams.has("tier")) {
+        const pageKey = `${key}:${parsed.searchParams.get("tier")}:${parsed.searchParams.get("offset")}`;
+        if (pendingProjectPageResponses[pageKey]) return await pendingProjectPageResponses[pageKey];
+        const page = projectPageResponses[pageKey];
+        return page ? jsonResponse(page) : jsonResponse({ error: "page not found" }, 404);
+      }
       const body = projectDetailResponses[key];
       return body ? jsonResponse(body) : jsonResponse({ error: "not found" }, 404);
     }
@@ -246,6 +270,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetToastStoreForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -555,6 +580,111 @@ describe("row activation", () => {
     row.focus();
     fireEvent.keyDown(row, { key: "Enter" });
     expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+});
+
+describe("tier overflow", () => {
+  test("activating +N older fetches and reveals the next tier page", async () => {
+    const visible = wireNode({ ...PROJECT_SESSION, tier: "current" });
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [wireProject({ ...PROJECT, sessions: [visible], more_current: 1 })],
+    };
+    projectPageResponses["proj1:current:1"] = {
+      key: "proj1",
+      tier: "current",
+      offset: 1,
+      sessions: [
+        wireNode({
+          ...visible,
+          row_id: "project:proj1:local:older",
+          ref: "local:older",
+          session_id: "older",
+          title: "Older session",
+          tier: "current",
+        }),
+      ],
+      remaining: 0,
+    };
+
+    renderRail();
+    await screen.findByText("Session one");
+    await userEvent.setup().click(screen.getByTestId("rail-row-overflow"));
+
+    expect(await screen.findByText("Older session")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith("/api/tree/project?key=proj1&tier=current&offset=1&limit=1", {
+      credentials: "same-origin",
+    });
+  });
+
+  test("repeated keyboard activation while a page is loading issues one request", async () => {
+    const visible = wireNode({ ...PROJECT_SESSION, tier: "current" });
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [wireProject({ ...PROJECT, sessions: [visible], more_current: 1 })],
+    };
+    let resolvePage!: (response: Response) => void;
+    pendingProjectPageResponses["proj1:current:1"] = new Promise<Response>((resolve) => {
+      resolvePage = resolve;
+    });
+
+    renderRail();
+    await screen.findByText("Session one");
+    const overflow = screen.getByRole("treeitem", { name: "+1 older" });
+    fireEvent.keyDown(overflow, { key: "Enter" });
+    fireEvent.keyDown(overflow, { key: "Enter" });
+
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("tier=current")).length).toBe(1);
+    resolvePage(
+      jsonResponse({
+        key: "proj1",
+        tier: "current",
+        offset: 1,
+        sessions: [
+          wireNode({
+            ...visible,
+            row_id: "project:proj1:local:older",
+            ref: "local:older",
+            title: "Older session",
+            tier: "current",
+          }),
+        ],
+        remaining: 0,
+      }),
+    );
+    await screen.findByText("Older session");
+  });
+
+  test("page failure shows an error toast and permits retry", async () => {
+    const visible = wireNode({ ...PROJECT_SESSION, tier: "current" });
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [wireProject({ ...PROJECT, sessions: [visible], more_current: 1 })],
+    };
+
+    renderRail();
+    await screen.findByText("Session one");
+    const overflow = screen.getByRole("treeitem", { name: "+1 older" });
+    fireEvent.keyDown(overflow, { key: "Enter" });
+    await screen.findByText("Couldn't load older sessions: page not found");
+
+    projectPageResponses["proj1:current:1"] = {
+      key: "proj1",
+      tier: "current",
+      offset: 1,
+      sessions: [
+        wireNode({
+          ...visible,
+          row_id: "project:proj1:local:retry",
+          ref: "local:retry",
+          title: "Retried older",
+          tier: "current",
+        }),
+      ],
+      remaining: 0,
+    };
+    fireEvent.keyDown(overflow, { key: "Enter" });
+    await screen.findByText("Retried older");
   });
 });
 
@@ -1283,6 +1413,99 @@ describe("rename flow", () => {
 });
 
 describe("delete project flow", () => {
+  test("keeps a fully deleted hydrated project hidden when refresh fails", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived/i }));
+    await user.click(within(rowFor("old-project")).getByText("old-project"));
+    await screen.findByText("Old session");
+    await user.click(within(rowFor("old-project")).getByRole("button", { name: /actions for old-project/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+
+    treeRefreshResponses = [jsonResponse({ error: "refresh failed" }, 500)];
+    postResponses["/api/project/delete"] = { status: 200, body: { deleted: ["local:old1"], skipped: [] } };
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => expect(screen.queryByText("old-project")).toBeNull());
+    expect(screen.queryByText("Old session")).toBeNull();
+  });
+
+  test("retains skipped sessions while filtering deleted detail rows when refresh fails", async () => {
+    projectDetailResponses.archproj = {
+      ...ARCHIVED_PROJECT_DETAIL,
+      sessions: [
+        wireNode({ row_id: "r-old1", ref: "local:old1", title: "Skipped live session" }),
+        wireNode({ row_id: "r-old2", ref: "local:old2", title: "Deleted session" }),
+      ],
+    };
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived/i }));
+    await user.click(within(rowFor("old-project")).getByText("old-project"));
+    await screen.findByText("Skipped live session");
+    await user.click(within(rowFor("old-project")).getByRole("button", { name: /actions for old-project/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+
+    treeRefreshResponses = [jsonResponse({ error: "refresh failed" }, 500)];
+    postResponses["/api/project/delete"] = {
+      status: 200,
+      body: { deleted: ["local:old2"], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+    };
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await screen.findByText("Skipped live session");
+    expect(screen.queryByText("Deleted session")).toBeNull();
+  });
+
+  test("hides the project optimistically, then restores a skipped live project after refresh", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByRole("button", { name: /archived/i }));
+    await screen.findByText("old-project");
+
+    const user = userEvent.setup();
+    const row = rowFor("old-project");
+    await user.click(within(row).getByRole("button", { name: /actions for old-project/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+
+    let resolveRefresh!: (response: Response) => void;
+    pendingTreeRefresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    postResponses["/api/project/delete"] = {
+      status: 200,
+      body: { deleted: [], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+    };
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => expect(screen.queryByText("old-project")).toBeNull());
+    resolveRefresh(
+      jsonResponse({
+        ...SAMPLE_WIRE_TREE,
+        archived_projects: [],
+        projects: [
+          ...SAMPLE_WIRE_TREE.projects,
+          wireProject({
+            key: "archproj",
+            name: "old-project",
+            default_expanded: true,
+            sessions: [
+              wireNode({
+                row_id: "project:archproj:local:old1",
+                ref: "local:old1",
+                title: "Skipped live session",
+                tier: "current",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    await screen.findByText("Skipped live session");
+  });
+
   test("opens a confirmation dialog; confirming POSTs the delete and refetches", async () => {
     renderRail();
     await screen.findByText("Live session");

@@ -81,10 +81,27 @@ type TreeProject struct {
 	MoreCurrent  int
 	MoreRecent   int
 	MoreArchived int
-	Age          string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
+	// The uncapped tier slices remain available for an explicit page request.
+	// They are intentionally private: the baseline tree only exposes the kept
+	// rows and additive overflow counts, while Page is the controlled seam for
+	// revealing older rows.
+	allCurrent  []TreeNode
+	allRecent   []TreeNode
+	allArchived []TreeNode
+	Age         string // pre-formatted relative age of LastActivity ("now", "2m", "3h", "5d")
 	// Worktrees is the count of distinct non-empty WorktreePath values across
 	// the project's sessions, surfaced in the delete confirmation.
 	Worktrees int
+}
+
+// TotalSessionCount returns the authoritative number of top-level rows in a
+// project. It uses the uncapped tier slices retained for pagination rather
+// than adding the capped-away counts, which are pagination metadata.
+func (p TreeProject) TotalSessionCount() int {
+	if p.allCurrent != nil || p.allRecent != nil || p.allArchived != nil {
+		return len(p.allCurrent) + len(p.allRecent) + len(p.allArchived)
+	}
+	return len(p.Current) + len(p.Recent) + len(p.Archived)
 }
 
 const (
@@ -95,6 +112,9 @@ const (
 	// of one-shot runs would otherwise bloat the partial; the kept rows are the
 	// most-recent N and the overflow is summarised as a quiet "+N older" note.
 	maxSidebarSessionsPerTier = 50
+	// SidebarSessionPageSize is the maximum number of capped-away rows a
+	// single rail pagination request may reveal.
+	SidebarSessionPageSize = maxSidebarSessionsPerTier
 )
 
 // capTier keeps the first n rows (the input is already most-recent first) and
@@ -104,6 +124,42 @@ func capTier(rows []TreeNode, n int) ([]TreeNode, int) {
 		return rows, 0
 	}
 	return rows[:n], len(rows) - n
+}
+
+// Page returns one bounded, ordered slice from a project's uncapped tier and
+// the number still beyond the returned end. The baseline tree keeps only the
+// newest 50 rows, so callers use the same offset to reveal the next page
+// without changing the tier's ordering contract.
+func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool) {
+	if offset < 0 || limit <= 0 {
+		return nil, 0, false
+	}
+	var rows []TreeNode
+	switch tier {
+	case "current":
+		rows = p.allCurrent
+		if rows == nil {
+			rows = p.Current
+		}
+	case "recent":
+		rows = p.allRecent
+		if rows == nil {
+			rows = p.Recent
+		}
+	case "archived":
+		rows = p.allArchived
+		if rows == nil {
+			rows = p.Archived
+		}
+	default:
+		return nil, 0, false
+	}
+	if offset >= len(rows) {
+		return []TreeNode{}, 0, true
+	}
+	end := offset + limit
+	end = min(end, len(rows))
+	return rows[offset:end], len(rows) - end, true
 }
 
 // classifySession returns a session's sidebar tier from its last activity and
@@ -151,10 +207,14 @@ type TreeNode struct {
 	Dormant      bool
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Age          string // pre-formatted "now", "2m", "3h", "5d"
-	Children     []TreeNode
+	// MoreSubagents is the number of subagent children omitted by the sidebar
+	// cap. The client folds this into the parent's inactive-child disclosure so
+	// capped children are counted rather than silently disappearing.
+	MoreSubagents int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Age           string // pre-formatted "now", "2m", "3h", "5d"
+	Children      []TreeNode
 }
 
 // AgeString formats a duration since t as a human-readable string.
@@ -329,6 +389,25 @@ func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, f
 		}
 	}
 	return nested, forkChildren
+}
+
+// TopLevelSessionIDs returns the session IDs that the navigation tree treats
+// as independently addressable rows. It is intentionally based on the full
+// metadata snapshot so callers do not mistake a capped rail projection for
+// the complete set of valid top-level sessions.
+func TopLevelSessionIDs(metas []schema.SessionMeta) map[string]struct{} {
+	nested, _ := nestedSessionIDs(metas)
+	ids := make(map[string]struct{}, len(metas))
+	for _, m := range metas {
+		if m.ID == "" || m.IsSubagent {
+			continue
+		}
+		if _, ok := nested[m.ID]; ok {
+			continue
+		}
+		ids[m.ID] = struct{}{}
+	}
+	return ids
 }
 
 // BuildTree assembles the sidebar Tree from all session metas, the
@@ -657,9 +736,12 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		sort.SliceStable(subagents, func(i, j int) bool {
 			return sessionMetaLess(subagents[i], subagents[j])
 		})
+		moreSubagents := 0
 		if len(subagents) > maxSidebarSessionsPerTier {
+			moreSubagents = len(subagents) - maxSidebarSessionsPerTier
 			subagents = subagents[:maxSidebarSessionsPerTier]
 		}
+		node.MoreSubagents = moreSubagents
 		sort.SliceStable(forks, func(i, j int) bool {
 			return sessionMetaLess(forks[i], forks[j])
 		})
@@ -768,9 +850,10 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
 		// sidebar payload; the kept rows are the most-recent N (already ordered).
-		current, moreCurrent := capTier(current, maxSidebarSessionsPerTier)
-		recent, moreRecent := capTier(recent, maxSidebarSessionsPerTier)
-		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
+		allCurrent, allRecent, allArchived := current, recent, archived
+		current, moreCurrent := capTier(allCurrent, maxSidebarSessionsPerTier)
+		recent, moreRecent := capTier(allRecent, maxSidebarSessionsPerTier)
+		archived, moreArchived := capTier(allArchived, maxSidebarSessionsPerTier)
 
 		treeProjects = append(treeProjects, TreeProject{
 			Name:         acc.name,
@@ -791,6 +874,9 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			MoreCurrent:  moreCurrent,
 			MoreRecent:   moreRecent,
 			MoreArchived: moreArchived,
+			allCurrent:   allCurrent,
+			allRecent:    allRecent,
+			allArchived:  allArchived,
 			Age:          AgeString(lastActivity),
 		})
 	}

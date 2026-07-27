@@ -44,6 +44,7 @@ import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
+  type OverflowRailNode,
   overrideLookup,
   projectNodeIdForSessionRef,
   projectNodes,
@@ -179,6 +180,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   });
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const overflowPagesInFlight = useRef(new Set<string>());
 
   // applyPending returns the same object when nothing is pending, so the
   // common case allocates nothing and every downstream memo stays stable.
@@ -315,7 +317,11 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   function handleActivate(node: RailNode) {
-    if (node.kind === "loading" || node.kind === "overflow") return;
+    if (node.kind === "loading") return;
+    if (node.kind === "overflow") {
+      void revealOverflow(node);
+      return;
+    }
     if (node.kind === "session") {
       // A cluster row is a repeated-title FOLD, not a session: its ref is a
       // synthetic "cluster:<hex>" naming no session, so opening a pane for it
@@ -333,6 +339,27 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       return;
     }
     handleToggle(node); // a project row has nowhere to "open" - Enter/click toggles it, same as its chevron
+  }
+
+  async function revealOverflow(node: OverflowRailNode): Promise<void> {
+    const pages = node.pages.filter((page) => {
+      const key = `${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`;
+      if (overflowPagesInFlight.current.has(key)) return false;
+      overflowPagesInFlight.current.add(key);
+      return true;
+    });
+    if (pages.length === 0) return;
+    try {
+      await Promise.all(
+        pages.map((page) => treeStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit)),
+      );
+    } catch (err) {
+      toasts.push("error", `Couldn't load older sessions: ${errorText(err)}`);
+    } finally {
+      for (const page of pages) {
+        overflowPagesInFlight.current.delete(`${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`);
+      }
+    }
   }
 
   // runAction is the one path every rail mutation takes. `optimistic` is what
@@ -428,17 +455,34 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     const target = deleteTarget;
     if (!target) return;
     closeDeleteDialog();
+    const optimistic: PendingOp = { kind: "hideProject", key: target.key };
+    setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
+      // The response may contain both deleted and skipped sessions when a
+      // session resumes during the destructive pass. Awaiting this refresh
+      // while the optimistic project hide is still active makes the next
+      // render authoritative: deleted rows stay gone, while skipped live
+      // rows/projects return from the rebuilt index honestly.
+      await treeStore.getState().refresh();
+      // Refresh is best effort. The delete response is authoritative for the
+      // identities it processed, so reconcile it even when the follow-up GET
+      // failed and would otherwise leave hydrated stale detail visible.
+      treeStore.getState().reconcileProjectDelete(
+        target.key,
+        result.deleted,
+        result.skipped.map((session) => session.id),
+      );
       if (result.skipped.length > 0) {
         toasts.push(
           "warning",
           `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
         );
       }
-      void treeStore.getState().refresh();
     } catch (err) {
       toasts.push("error", `Couldn't delete project: ${errorText(err)}`);
+    } finally {
+      setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
 

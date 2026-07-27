@@ -53,6 +53,7 @@ export interface TreeNode {
   // Normalized: the wire's `children,omitempty` (absent when there are none)
   // is always a real array here, never absent/undefined - see normalizeNode.
   children: TreeNode[];
+  more_subagents?: number;
 }
 
 export interface TreeProject {
@@ -84,6 +85,16 @@ export interface TreeProject {
   sessions: TreeNode[];
 }
 
+export type TreeTier = "current" | "recent" | "archived";
+
+export interface TreeProjectPage {
+  key: string;
+  tier: TreeTier;
+  offset: number;
+  sessions: TreeNode[];
+  remaining: number;
+}
+
 export interface AttentionSummary {
   needsYou: number;
   error: number;
@@ -112,6 +123,9 @@ interface WireTreeNode extends Omit<TreeNode, "children"> {
 interface WireTreeProject extends Omit<TreeProject, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
+interface WireTreeProjectPage extends Omit<TreeProjectPage, "sessions"> {
+  sessions: WireTreeNode[] | null;
+}
 interface WireTreeResponse
   extends Omit<
     TreeResponse,
@@ -131,6 +145,10 @@ function normalizeNode(n: WireTreeNode): TreeNode {
 }
 
 function normalizeProject(p: WireTreeProject): TreeProject {
+  return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
+}
+
+function normalizeProjectPage(p: WireTreeProjectPage): TreeProjectPage {
   return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
 }
 
@@ -177,6 +195,65 @@ async function fetchProjectDetail(key: string): Promise<TreeProject> {
   return normalizeProject((await res.json()) as WireTreeProject);
 }
 
+async function fetchProjectPage(key: string, tier: TreeTier, offset: number, limit: number): Promise<TreeProjectPage> {
+  const res = await fetch(
+    `/api/tree/project?key=${encodeURIComponent(key)}&tier=${tier}&offset=${offset}&limit=${limit}`,
+    FETCH_INIT,
+  );
+  if (!res.ok) throw new Error(await parseErrorBody(res));
+  return normalizeProjectPage((await res.json()) as WireTreeProjectPage);
+}
+
+const TREE_TIERS: readonly TreeTier[] = ["current", "recent", "archived"];
+
+function tierField(tier: TreeTier): "more_current" | "more_recent" | "more_archived" {
+  switch (tier) {
+    case "current":
+      return "more_current";
+    case "recent":
+      return "more_recent";
+    case "archived":
+      return "more_archived";
+  }
+}
+
+/** Merges a page at its tier offset while retaining the server's tier order. */
+export function mergeProjectPage(project: TreeProject, page: TreeProjectPage): TreeProject {
+  const tierRows = project.sessions.filter((n) => n.tier === page.tier);
+  const nextTierRows = [...tierRows];
+  for (const [index, row] of page.sessions.entries()) {
+    const existing = nextTierRows.findIndex((n) => n.row_id === row.row_id);
+    if (existing >= 0) {
+      nextTierRows[existing] = row;
+    } else {
+      nextTierRows.splice(Math.min(page.offset + index, nextTierRows.length), 0, row);
+    }
+  }
+
+  const byTier = new Map<TreeTier, TreeNode[]>();
+  byTier.set(page.tier, nextTierRows);
+  for (const tier of TREE_TIERS) {
+    if (!byTier.has(tier))
+      byTier.set(
+        tier,
+        project.sessions.filter((n) => n.tier === tier),
+      );
+  }
+  const currentRows = byTier.get("current") ?? [];
+  const recentRows = byTier.get("recent") ?? [];
+  const archivedRows = byTier.get("archived") ?? [];
+  const untyped = project.sessions.filter((n) => !TREE_TIERS.includes(n.tier as TreeTier));
+  return {
+    ...project,
+    sessions: [...currentRows, ...recentRows, ...archivedRows, ...untyped],
+    [tierField(page.tier)]: page.remaining,
+  };
+}
+
+function mergeProjectInList(projects: TreeProject[], page: TreeProjectPage): TreeProject[] {
+  return projects.map((project) => (project.key === page.key ? mergeProjectPage(project, page) : project));
+}
+
 export interface TreeStoreState {
   // null until the first successful load; a failed refresh leaves whatever
   // was last successfully loaded in place rather than blanking it (a
@@ -189,8 +266,68 @@ export interface TreeStoreState {
   // Never cleared on refresh() - a project's key is stable identity, and a
   // fresh /api/tree stub is worse than what's already loaded, not better.
   projectDetails: Map<string, TreeProject>;
-  refresh(): Promise<void>;
+  // true means this call's response became authoritative; false means the
+  // request failed or was superseded by a newer refresh.
+  refresh(): Promise<boolean>;
   loadProjectDetail(key: string): Promise<void>;
+  loadProjectPage(key: string, tier: TreeTier, offset: number, limit: number): Promise<void>;
+  reconcileProjectDelete(key: string, deletedIDs: string[], skippedIDs: string[]): void;
+}
+
+let refreshGeneration = 0;
+const projectMutationGenerations = new Map<string, number>();
+
+function sessionIDMatches(node: TreeNode, id: string): boolean {
+  if (node.ref === id || node.session_id === id) return true;
+  if (node.host_id === "local") {
+    const raw = id.startsWith("local:") ? id.slice("local:".length) : id;
+    return node.session_id === raw || node.ref === `local:${raw}`;
+  }
+  return false;
+}
+
+function reconcileNodes(nodes: TreeNode[], deletedIDs: string[]): TreeNode[] {
+  return nodes.flatMap((node) => {
+    if (deletedIDs.some((id) => sessionIDMatches(node, id))) return [];
+    const children = reconcileNodes(node.children, deletedIDs);
+    return [{ ...node, children }];
+  });
+}
+
+function projectHasOverflow(project: TreeProject): boolean {
+  return (project.more_current ?? 0) > 0 || (project.more_recent ?? 0) > 0 || (project.more_archived ?? 0) > 0;
+}
+
+function reconcileProjectList(
+  projects: TreeProject[],
+  key: string,
+  deletedIDs: string[],
+  skippedIDs: string[],
+  hydratedDetailIsEmpty: boolean,
+): TreeProject[] {
+  return projects.flatMap((project) => {
+    if (project.key !== key) return [project];
+    const sessions = reconcileNodes(project.sessions, deletedIDs);
+    const sessionCount =
+      sessions.length > 0
+        ? sessions.length
+        : (project.session_count ?? (skippedIDs.length > 0 ? skippedIDs.length : undefined));
+    if (
+      skippedIDs.length === 0 &&
+      !projectHasOverflow(project) &&
+      sessions.length === 0 &&
+      (hydratedDetailIsEmpty || sessionCount === undefined)
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...project,
+        sessions,
+        ...(sessionCount === undefined ? {} : { session_count: sessionCount }),
+      },
+    ];
+  });
 }
 
 export const treeStore = createStore<TreeStoreState>((set) => ({
@@ -200,19 +337,26 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
   projectDetails: new Map(),
 
   async refresh() {
+    const generation = ++refreshGeneration;
     set({ loading: true, error: null });
     try {
       const tree = await fetchTree();
+      if (generation !== refreshGeneration) return false;
       set({ tree, loading: false, error: null });
+      return true;
     } catch (err) {
+      if (generation !== refreshGeneration) return false;
       set({ loading: false, error: errorText(err) });
+      return false;
     }
   },
 
   async loadProjectDetail(key) {
+    const generation = projectMutationGenerations.get(key) ?? 0;
     try {
       const detail = await fetchProjectDetail(key);
       set((s) => {
+        if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
         const next = new Map(s.projectDetails);
         next.set(key, detail);
         return { projectDetails: next };
@@ -222,6 +366,60 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
       // rail's disclosure stays retriable (collapse + re-expand tries
       // again) instead of getting stuck showing a hard failure state.
     }
+  },
+
+  async loadProjectPage(key, tier, offset, limit) {
+    const generation = projectMutationGenerations.get(key) ?? 0;
+    const page = await fetchProjectPage(key, tier, offset, limit);
+    set((s) => {
+      if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
+      const nextDetails = new Map(s.projectDetails);
+      const detail = nextDetails.get(key);
+      if (detail) nextDetails.set(key, mergeProjectPage(detail, page));
+      if (!s.tree) return { projectDetails: nextDetails };
+      return {
+        projectDetails: nextDetails,
+        tree: {
+          ...s.tree,
+          projects: mergeProjectInList(s.tree.projects, page),
+          archived_projects: mergeProjectInList(s.tree.archived_projects, page),
+          test_runs: mergeProjectInList(s.tree.test_runs, page),
+        },
+      };
+    });
+  },
+
+  reconcileProjectDelete(key, deletedIDs, skippedIDs) {
+    refreshGeneration++;
+    projectMutationGenerations.set(key, (projectMutationGenerations.get(key) ?? 0) + 1);
+    set((s) => {
+      const nextDetails = new Map(s.projectDetails);
+      const detail = nextDetails.get(key);
+      let hydratedDetailIsEmpty = false;
+      if (detail) {
+        const sessions = reconcileNodes(detail.sessions, deletedIDs);
+        hydratedDetailIsEmpty = sessions.length === 0 && skippedIDs.length === 0 && !projectHasOverflow(detail);
+        if (hydratedDetailIsEmpty) nextDetails.delete(key);
+        else nextDetails.set(key, { ...detail, sessions });
+      }
+      if (!s.tree) return { projectDetails: nextDetails, loading: false };
+      return {
+        projectDetails: nextDetails,
+        loading: false,
+        tree: {
+          ...s.tree,
+          projects: reconcileProjectList(s.tree.projects, key, deletedIDs, skippedIDs, hydratedDetailIsEmpty),
+          archived_projects: reconcileProjectList(
+            s.tree.archived_projects,
+            key,
+            deletedIDs,
+            skippedIDs,
+            hydratedDetailIsEmpty,
+          ),
+          test_runs: reconcileProjectList(s.tree.test_runs, key, deletedIDs, skippedIDs, hydratedDetailIsEmpty),
+        },
+      };
+    });
   },
 }));
 
@@ -299,6 +497,8 @@ if (initialClient) attachNotifications(initialClient);
 // call this (mirrors threads.ts's resetThreadsStoreForTests precedent).
 export function resetTreeStoreForTests(): void {
   wiredClient = null;
+  refreshGeneration = 0;
+  projectMutationGenerations.clear();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
   treeStore.setState({ tree: null, loading: false, error: null, projectDetails: new Map() });
