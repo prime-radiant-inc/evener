@@ -11,7 +11,11 @@ tested + honed. Interactive testing + the persona panels will **augment** the ta
 
 Each target gets ≥4 distinct alternatives.
 
-### A. Deferred edge cases (design-system.md §7 — "still needs rules + exemplars")
+### A. Historical deferred edge cases
+
+This inventory belongs to the superseded planning pass. The current design system's documented
+gaps are tracked in [§8](../design-system.md#8-known-gaps-documented-not-fixed-wave-close-adjudication).
+
 1. Main-agent error promotion (to the chrome, not just a transcript row)
 2. Nested subagents (a subagent that itself fans out)
 3. Multiple steers in one turn

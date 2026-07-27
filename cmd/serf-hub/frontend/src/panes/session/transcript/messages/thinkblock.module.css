@@ -34,7 +34,7 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
-  color: var(--ink-mid);
+  --prose-ink: var(--ink-mid);
 }
 
 .paragraph:last-child {

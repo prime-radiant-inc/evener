@@ -474,10 +474,11 @@ test("the askdock.module.css semantic-var exception is scoped to its exact path,
 
 // --- (c) dark and light blocks declare the same color tokens -----------
 //
-// tokens.css defines one unqualified `:root { }` block (base tokens, dark
-// by default) and one `[data-theme="light"] { }` block (light overrides).
-// A color token declared in only one of the two silently breaks the other
-// theme - it either falls back to the wrong hue or resolves to nothing.
+// tokens.css defines one canonical dark block for `:root` plus nested
+// `[data-theme="dark"]` wrappers, and one `[data-theme="light"]` block
+// (light overrides). A color token declared in only one of the two silently
+// breaks the other theme - it either falls back to the wrong hue or resolves
+// to nothing.
 // This does a bracket-depth extraction rather than pulling in a CSS
 // parser dependency; it works because tokens.css (authored alongside this
 // test) never nests braces inside either block.
@@ -516,7 +517,7 @@ function colorTokenNames(block: string): Set<string> {
 }
 
 test("tokens.css dark and light blocks declare the same color token names", () => {
-  const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*\{/);
+  const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/);
   const lightBlock = extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/);
   const darkNames = colorTokenNames(darkBlock);
   const lightNames = colorTokenNames(lightBlock);
@@ -524,4 +525,10 @@ test("tokens.css dark and light blocks declare the same color token names", () =
   const missingFromLight = [...darkNames].filter((name) => !lightNames.has(name)).sort();
   const missingFromDark = [...lightNames].filter((name) => !darkNames.has(name)).sort();
   expect({ missingFromLight, missingFromDark }).toEqual({ missingFromLight: [], missingFromDark: [] });
+});
+
+test("the canonical dark token block directly scopes nested dark wrappers", () => {
+  const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
+  expect(darkBlock).toContain("color-scheme: dark;");
+  expect(darkBlock).toContain("--surface-1: #161B22;");
 });

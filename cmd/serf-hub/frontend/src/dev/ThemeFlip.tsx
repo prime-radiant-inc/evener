@@ -10,8 +10,9 @@ const CLASS = {
 
 /**
  * Gallery-only utility: renders `children` twice side by side, once under
- * the ambient (dark) theme and once wrapped in a `data-theme="light"` div,
- * so a widget's every state can be eyeballed in both themes at once.
+ * an explicit `data-theme="dark"` wrapper and once under a
+ * `data-theme="light"` wrapper, so a widget's every state can be eyeballed
+ * in both themes at once regardless of the app's ambient theme.
  * tokens.css scopes its light overrides as both `:root[data-theme="light"]`
  * and the bare attribute selector precisely so this nested flip resolves
  * correctly (light theme applied on a div nested well below <html>).
@@ -19,7 +20,7 @@ const CLASS = {
 export function ThemeFlip({ children }: { children: ReactNode }) {
   return (
     <div className={CLASS.flip}>
-      <div className={CLASS.pane}>
+      <div className={CLASS.pane} data-theme="dark">
         <p className={CLASS.label}>Dark</p>
         {children}
       </div>
