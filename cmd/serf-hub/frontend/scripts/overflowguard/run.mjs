@@ -218,6 +218,18 @@ async function main() {
         console.log(`${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`);
       }
       for (const disclosure of result.disclosures) {
+        if (!disclosure.openDuringOverflowScan) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+        }
+        if (disclosure.restoredOpen !== disclosure.originalOpen) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+        }
+        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`);
+        }
         const fullWidth =
           disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
           disclosure.bodyWidth >= disclosure.expectedWidth - 1;

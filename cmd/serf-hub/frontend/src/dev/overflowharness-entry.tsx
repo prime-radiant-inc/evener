@@ -58,6 +58,8 @@ const SYSTEM_PROMPT =
     233,
   );
 
+const RAW_UNBROKEN_PAYLOAD = "R".repeat(12_000);
+
 const snapshot: ThreadReadResponse = {
   thread: {
     id: "thr_overflow",
@@ -127,7 +129,7 @@ const snapshot: ThreadReadResponse = {
             text: `<job-notification job_id="job_overflow" event="completed" job_type="delegate" status="completed" output_bytes="4" transcript_ref="local:child">
 Job job_overflow completed.
 excerpt:
-The child report is ready.
+${RAW_UNBROKEN_PAYLOAD}
 </job-notification>`,
           },
         ],
@@ -173,15 +175,25 @@ interface Scroller {
 
 interface DisclosureContract {
   kind: string;
+  originalOpen: boolean;
+  openDuringOverflowScan: boolean;
+  restoredOpen: boolean;
   summaryDisplay: string;
   markerDisplay: string;
   summaryWidth: number;
   bodyWidth: number;
+  bodyTextLength: number;
   summaryLeft: number;
   bodyLeft: number;
   bodyTop: number;
   summaryBottom: number;
   expectedWidth: number;
+}
+
+interface DisclosureTarget {
+  kind: string;
+  details: HTMLDetailsElement;
+  originalOpen: boolean;
 }
 
 // A scroll container is horizontally overflowing when its content is wider
@@ -204,13 +216,12 @@ interface DisclosureContract {
 // The second: the standard visually-hidden recipe (`width: 1px; overflow:
 // hidden`) is a 1px box on every page that has one, and is not a pane anyone
 // can see or scroll.
-function disclosureContract(kind: string, details: HTMLDetailsElement): DisclosureContract | null {
+function disclosureContract(target: DisclosureTarget): DisclosureContract | null {
+  const { kind, details, originalOpen } = target;
   const summary = details.firstElementChild;
   const body = details.children[1];
   if (!(summary instanceof HTMLElement) || !(body instanceof HTMLElement) || summary.tagName !== "SUMMARY") return null;
 
-  const wasOpen = details.open;
-  details.open = true;
   const summaryBox = summary.getBoundingClientRect();
   const bodyBox = body.getBoundingClientRect();
   const detailsStyle = getComputedStyle(details);
@@ -218,17 +229,20 @@ function disclosureContract(kind: string, details: HTMLDetailsElement): Disclosu
     details.clientWidth - Number.parseFloat(detailsStyle.paddingLeft) - Number.parseFloat(detailsStyle.paddingRight);
   const result = {
     kind,
+    originalOpen,
+    openDuringOverflowScan: originalOpen,
+    restoredOpen: originalOpen,
     summaryDisplay: getComputedStyle(summary).display,
     markerDisplay: getComputedStyle(summary, "::marker").display,
     summaryWidth: summaryBox.width,
     bodyWidth: bodyBox.width,
+    bodyTextLength: body.textContent?.length ?? 0,
     summaryLeft: summaryBox.left,
     bodyLeft: bodyBox.left,
     bodyTop: bodyBox.top,
     summaryBottom: summaryBox.bottom,
     expectedWidth,
   };
-  details.open = wasOpen;
   return result;
 }
 
@@ -241,53 +255,71 @@ function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; d
     ["system-prompt", "[data-testid=system-notice-scaffold]"],
     ["raw-notification", "[data-testid=notification-raw-disclosure]"],
   ];
-  const disclosures = disclosureSelectors.flatMap(([kind, selector]) => {
+  const disclosureTargets: DisclosureTarget[] = disclosureSelectors.flatMap(([kind, selector]) => {
     const details = pane.querySelector<HTMLDetailsElement>(selector);
-    const measured = details ? disclosureContract(kind, details) : null;
+    return details ? [{ kind, details, originalOpen: details.open }] : [];
+  });
+  for (const target of disclosureTargets) target.details.open = true;
+
+  const disclosures = disclosureTargets.flatMap((target) => {
+    const measured = disclosureContract(target);
     return measured ? [measured] : [];
   });
 
-  for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
-    const overflowPx = el.scrollWidth - el.clientWidth;
-    if (overflowPx <= 1) continue;
-    if (el.clientWidth <= 1) {
-      ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""} (1px clip box)`);
-      continue;
-    }
-    const overflowX = getComputedStyle(el).overflowX;
-    if (overflowX === "hidden" || overflowX === "clip") {
-      ignored.push(
-        `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
-      );
-      continue;
-    }
+  try {
+    const openDuringOverflowScan =
+      disclosureTargets.length === disclosureSelectors.length &&
+      disclosureTargets.every((target) => target.details.open);
+    for (const disclosure of disclosures) disclosure.openDuringOverflowScan = openDuringOverflowScan;
 
-    const before = el.scrollLeft;
-    el.scrollLeft = 0;
-    const box = el.getBoundingClientRect();
-    const contentRight = box.left + el.clientLeft + el.clientWidth;
+    for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
+      const overflowPx = el.scrollWidth - el.clientWidth;
+      if (overflowPx <= 1) continue;
+      if (el.clientWidth <= 1) {
+        ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""} (1px clip box)`);
+        continue;
+      }
+      const overflowX = getComputedStyle(el).overflowX;
+      if (overflowX === "hidden" || overflowX === "clip") {
+        ignored.push(
+          `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
+        );
+        continue;
+      }
 
-    const escapees: Escapee[] = [];
-    for (const child of Array.from(el.querySelectorAll<HTMLElement>("*"))) {
-      const over = child.getBoundingClientRect().right - contentRight;
-      if (over <= 1) continue;
-      let depth = 0;
-      for (let p = child.parentElement; p && p !== el; p = p.parentElement) depth++;
-      escapees.push({ tag: child.tagName.toLowerCase(), cls: child.className || "", overflowPx: over, depth });
+      const before = el.scrollLeft;
+      el.scrollLeft = 0;
+      const box = el.getBoundingClientRect();
+      const contentRight = box.left + el.clientLeft + el.clientWidth;
+
+      const escapees: Escapee[] = [];
+      for (const child of Array.from(el.querySelectorAll<HTMLElement>("*"))) {
+        const over = child.getBoundingClientRect().right - contentRight;
+        if (over <= 1) continue;
+        let depth = 0;
+        for (let p = child.parentElement; p && p !== el; p = p.parentElement) depth++;
+        escapees.push({ tag: child.tagName.toLowerCase(), cls: child.className || "", overflowPx: over, depth });
+      }
+      el.scrollLeft = before;
+
+      // Deepest first: the innermost escapee is the one actually too wide;
+      // everything above it is just carrying the width upward.
+      escapees.sort((a, b) => b.depth - a.depth || b.overflowPx - a.overflowPx);
+      scrollers.push({
+        tag: el.tagName.toLowerCase(),
+        cls: el.className || "",
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+        overflowPx,
+        escapees: escapees.slice(0, 12),
+      });
     }
-    el.scrollLeft = before;
-
-    // Deepest first: the innermost escapee is the one actually too wide;
-    // everything above it is just carrying the width upward.
-    escapees.sort((a, b) => b.depth - a.depth || b.overflowPx - a.overflowPx);
-    scrollers.push({
-      tag: el.tagName.toLowerCase(),
-      cls: el.className || "",
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      overflowPx,
-      escapees: escapees.slice(0, 12),
-    });
+  } finally {
+    for (const target of disclosureTargets) target.details.open = target.originalOpen;
+    for (const disclosure of disclosures) {
+      const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
+      disclosure.restoredOpen = target?.details.open ?? false;
+    }
   }
   return { width, scrollers, ignored, disclosures };
 }
