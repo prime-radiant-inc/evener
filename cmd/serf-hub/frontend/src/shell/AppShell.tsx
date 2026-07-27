@@ -317,6 +317,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanes is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
