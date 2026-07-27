@@ -418,6 +418,71 @@ describe("notification routing", () => {
 });
 
 describe("reconnect resubscribe", () => {
+  test("does not let pending reconnect hydration erase a live completion", async () => {
+    const fake = connectFakeClient();
+    const staleSnapshot = readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      expect((params as { subscribe: boolean }).subscribe).toBe(true);
+      if (readCount === 1) return staleSnapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        reconnectRead.resolve = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => reconnectRead.resolve !== null);
+    expect(reconnectRead.resolve).not.toBeNull();
+
+    // This is the notification that arrives after the new subscription is
+    // accepted but before its snapshot response is applied. The old snapshot
+    // is intentionally still in progress, so this live completion is the
+    // only source of the finished output in this interleaving.
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+      },
+    });
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    });
+
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("done");
+
+    // The snapshot was captured before the completion. Applying it after the
+    // live event must not restore the spinner or erase the completed output.
+    reconnectRead.resolve?.(staleSnapshot);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.activeTurnId).toBeUndefined();
+    expect(model?.turns[0]?.status).toBe("completed");
+    expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
   test("onReady refire re-subscribes every tracked ref additively and replaces each model wholesale", async () => {
     const fake = connectFakeClient();
     let readCount = 0;
