@@ -61,6 +61,24 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
   expect((UserMessageItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
+
+
+test("renders a stacked eyebrow, not an inline gutter tag", () => {
+  render(<UserMessageView item={item({ text: "hello world" })} />);
+  const root = screen.getByTestId("user-message-item");
+  const header = root.firstElementChild;
+  expect(header).not.toBeNull();
+  expect(header!.textContent).toBe("You");
+  expect(root.querySelector("[class*=tag]")).toBeNull();
+});
+
+test("actions live in the eyebrow header row", () => {
+  render(<UserMessageView item={item({ text: "hello" })} actions={<button type="button">act</button>} />);
+  const root = screen.getByTestId("user-message-item");
+  const header = root.firstElementChild as HTMLElement;
+  expect(header.contains(screen.getByRole("button", { name: "act" }))).toBe(true);
+});
+
 test("renders the prompt text", () => {
   render(<UserMessageItem item={item({ text: "hello there" })} turn={turn} live={false} />);
   expect(screen.getByText("hello there")).toBeTruthy();
@@ -90,8 +108,9 @@ test("the approved You row keeps identity, attachments, and text in one baseline
 test("the You row layout is token-backed and has no prose card treatment", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
-  expect(css).toMatch(/\.tag\s*\{[\s\S]*flex:\s*none;[\s\S]*width:\s*var\(--space-7\);/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;/);
+  expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
+  expect(css).toMatch(/\.eyebrow\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-low\);/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
