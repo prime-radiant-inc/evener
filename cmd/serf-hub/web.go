@@ -32,6 +32,15 @@ type WebServer struct {
 	// source's sessions from the sidebar (which renders a snapshot).
 	lastGoodMu      sync.Mutex
 	lastGoodThreads map[string][]appwire.Thread // sourceID -> last successful list
+	// remoteAuthority records the completeness and generation of the exact
+	// remote snapshot consumed by navigationTreeInputs. It is kept beside the
+	// cached rows so a last-known-good render cannot be mistaken for current
+	// authority during favorite revalidation.
+	remoteAuthorityMu       sync.RWMutex
+	remoteAuthorityComplete bool
+	remoteAuthorityKnown    bool
+	remoteGeneration        uint64
+	remoteAuthorityIDs      map[string]bool
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
@@ -56,13 +65,16 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}
 	web := &WebServer{
-		cfg:             cfg,
-		sources:         sources,
-		startedAt:       time.Now().UTC(),
-		lastGoodThreads: map[string][]appwire.Thread{},
-		liveModels:      &modelsCache{},
-		treeCache:       &hubcore.TreeCache{},
-		manifestFS:      assetsRoot(),
+		cfg:                     cfg,
+		sources:                 sources,
+		startedAt:               time.Now().UTC(),
+		lastGoodThreads:         map[string][]appwire.Thread{},
+		remoteAuthorityComplete: true,
+		remoteAuthorityKnown:    true,
+		remoteAuthorityIDs:      map[string]bool{},
+		liveModels:              &modelsCache{},
+		treeCache:               &hubcore.TreeCache{},
+		manifestFS:              assetsRoot(),
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -31,6 +32,20 @@ var (
 	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
 )
+
+type navigationSnapshot struct {
+	metas                   []schema.SessionMeta
+	live                    []hubcore.LiveEntry
+	projects                map[string]identifier.Project
+	remoteAuthorityComplete bool
+	remoteGeneration        uint64
+	remoteSessionIDs        map[string]bool
+}
+
+type remoteThreadFetch struct {
+	threads  []appwire.Thread
+	complete bool
+}
 
 // notifyTreeChanged broadcasts serf/tree/changed to every connected client so
 // the sidebar refetches /api/tree (spec §7.3, debounced client-side). It is
@@ -103,8 +118,13 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
 	}
-	favs := s.favoriteDecisions()
-	tree, attentionSummary, live := s.memoTreeWithLive(r.Context())
+	tree, attentionSummary, live, authority := s.memoTreeWithAuthority(r.Context())
+	decisions, err := s.favoriteDecisions()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
+		return
+	}
+	favs := hubcore.ClassifyFavoriteDecisions(decisions, authority).Presentation
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),
@@ -204,16 +224,14 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	for _, n := range resp.NeedsYou {
 		needsYouIDs[n.SessionID] = true
 	}
-	for _, p := range tree.Projects {
-		for _, n := range append(append([]hubcore.TreeNode{}, p.Current...), p.Recent...) {
-			if n.Kind != "session" || !favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}] {
-				continue
-			}
-			if needsYouIDs[hubRefFromTreeNodeID(n.ID).SessionID] {
-				continue
-			}
-			resp.Favorites = append(resp.Favorites, s.apiTreeNodeTier("pinned", "", "pinned", favs, n))
+	for _, n := range tree.FavoriteCandidates() {
+		if n.Kind != "session" && n.Kind != "fork" || !favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}] {
+			continue
 		}
+		if needsYouIDs[hubRefFromTreeNodeID(n.ID).SessionID] {
+			continue
+		}
+		resp.Favorites = append(resp.Favorites, s.apiTreeNodeTier("pinned", "", "pinned", favs, n))
 	}
 	sort.SliceStable(resp.Favorites, func(i, j int) bool {
 		return resp.Favorites[i].UpdatedAt.After(resp.Favorites[j].UpdatedAt)
@@ -223,29 +241,28 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 }
 
 // memoTree returns the memoized full tree + attention summary, single-sourced
-// so handleAPITree and handleAPITreeProject never diverge on what "the tree"
-// is. Memoization key is the inputs version + a coarse time bucket (see
-// treeCache.Get); callers that also need live/favs must fetch those
-// themselves, since memoTree's return shape only carries what treeCache
-// stores.
+// so callers never diverge on what "the tree" is. The full tree endpoint uses
+// memoTreeWithAuthority below when it also needs the exact raw snapshot used
+// to build this value.
 func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary) {
-	tree, summary, _ := s.memoTreeWithLive(ctx)
+	tree, summary, _, _ := s.memoTreeWithAuthority(ctx)
 	return tree, summary
 }
 
-func (s *WebServer) memoTreeWithLive(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary, []hubcore.LiveEntry) {
-	metas, live, projects := hubNavigationInputs(s, ctx)
+func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary, []hubcore.LiveEntry, hubcore.FavoriteAuthority) {
+	snapshot := s.navigationSnapshot(ctx)
 	decisions := s.archiveDecisions()
 	var version uint64
 	if s.cfg.Inputs != nil {
 		version = s.cfg.Inputs.Load()
 	}
+	version = version*2 + snapshot.remoteGeneration
 	tree, summary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, appwire.AttentionSummary) {
-		t := hubBuildNavigationTree(metas, live, decisions, projects)
-		_, sum := hubDeriveNavigationAttention(metas, live, decisions)
+		t := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
+		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 		return t, sum
 	})
-	return tree, summary, live
+	return tree, summary, snapshot.live, favoriteAuthorityForNavigation(snapshot, tree)
 }
 
 // handleAPITreeProject serves a single project's node by indexing the
@@ -289,8 +306,13 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 			limit = parsed
 		}
 	}
-	tree, _ := s.memoTree(r.Context())
-	favs := s.favoriteDecisions()
+	tree, _, _, authority := s.memoTreeWithAuthority(r.Context())
+	decisions, err := s.favoriteDecisions()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
+		return
+	}
+	favs := hubcore.ClassifyFavoriteDecisions(decisions, authority).Presentation
 	projects := navigationProjectBuckets(tree).all()
 	for _, p := range projects {
 		if p.Key == key {
@@ -339,6 +361,19 @@ func (b navigationProjectBucket) all() []hubcore.TreeProject {
 	return projects
 }
 
+func (s *WebServer) navigationSnapshot(ctx context.Context) navigationSnapshot {
+	metas, live, projects := hubNavigationInputs(s, ctx)
+	complete, generation, remoteSessionIDs := s.remoteAuthorityState()
+	return navigationSnapshot{
+		metas:                   metas,
+		live:                    live,
+		projects:                projects,
+		remoteAuthorityComplete: complete,
+		remoteGeneration:        generation,
+		remoteSessionIDs:        remoteSessionIDs,
+	}
+}
+
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
 	var live []hubcore.LiveEntry
 	if s.cfg.Roster != nil {
@@ -377,10 +412,18 @@ func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionM
 // Tests that construct a WebServer without a cache fall back to the old
 // synchronous behavior via refreshRemoteThreads.
 func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
+	var fetch remoteThreadFetch
+	var generation uint64
 	if s.cfg.RemoteThreadCache != nil {
-		return s.cfg.RemoteThreadCache.Get()
+		snapshot := s.cfg.RemoteThreadCache.Snapshot()
+		fetch = remoteThreadFetch{threads: snapshot.Threads, complete: snapshot.Complete}
+		generation = snapshot.Generation
+	} else {
+		fetch = s.refreshRemoteThreadSnapshot(ctx)
+		generation = s.nextRemoteGeneration()
 	}
-	return s.refreshRemoteThreads(ctx)
+	s.setRemoteAuthority(fetch.complete, generation, fetch.threads)
+	return fetch.threads
 }
 
 // refreshRemoteThreads performs the synchronous walk across every configured
@@ -391,16 +434,31 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 // ~30s ticker + poke (main.go), Storing its result into a RemoteThreadCache
 // for remoteTreeThreads to read.
 func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
+	return s.refreshRemoteThreadSnapshot(ctx).threads
+}
+
+func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
 	if s.sources == nil {
-		return nil
+		return remoteThreadFetch{complete: true}
 	}
 	s.ensureManagedCodexSources(ctx)
 	var threads []appwire.Thread
+	complete := true
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
 			continue
 		}
-		for _, thread := range s.listThreadsWithFallback(ctx, source) {
+		listed, sourceComplete := s.listThreadsWithFallbackState(ctx, source)
+		if !sourceComplete {
+			complete = false
+		}
+		for _, thread := range listed {
+			malformedRef := false
+			if thread.Serf.Ref != "" {
+				if _, err := appwire.ParseRef(thread.Serf.Ref); err != nil {
+					malformedRef = true
+				}
+			}
 			sourceID := threadListSourceID(source.ID(), thread)
 			thread.Source = sourceID
 			if thread.Serf.Ref == "" {
@@ -409,10 +467,16 @@ func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 					thread.Serf.Ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 				}
 			}
+			if malformedRef {
+				complete = false
+			}
+			if _, _, ok := appThreadTreeEntries(thread); !ok {
+				complete = false
+			}
 			threads = append(threads, thread)
 		}
 	}
-	return threads
+	return remoteThreadFetch{threads: threads, complete: complete}
 }
 
 // sourceThreadLister is the minimal slice of appsource.Source that
@@ -429,6 +493,11 @@ type sourceThreadLister interface {
 // sidebar. An empty *successful* list does clear the cache, so a genuinely-gone
 // source ages out instead of lingering forever.
 func (s *WebServer) listThreadsWithFallback(ctx context.Context, source sourceThreadLister) []appwire.Thread {
+	threads, _ := s.listThreadsWithFallbackState(ctx, source)
+	return threads
+}
+
+func (s *WebServer) listThreadsWithFallbackState(ctx context.Context, source sourceThreadLister) ([]appwire.Thread, bool) {
 	resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
 	s.lastGoodMu.Lock()
 	defer s.lastGoodMu.Unlock()
@@ -436,10 +505,45 @@ func (s *WebServer) listThreadsWithFallback(ctx context.Context, source sourceTh
 		s.lastGoodThreads = map[string][]appwire.Thread{}
 	}
 	if err != nil {
-		return s.lastGoodThreads[source.ID()]
+		return s.lastGoodThreads[source.ID()], false
 	}
 	s.lastGoodThreads[source.ID()] = resp.Data
-	return resp.Data
+	return resp.Data, true
+}
+
+func (s *WebServer) setRemoteAuthority(complete bool, generation uint64, threads []appwire.Thread) {
+	remoteSessionIDs := make(map[string]bool)
+	for _, thread := range threads {
+		if ref, ok := appThreadTreeRef(thread); ok {
+			remoteSessionIDs[ref.String()] = true
+		}
+	}
+	s.remoteAuthorityMu.Lock()
+	s.remoteAuthorityComplete = complete
+	s.remoteAuthorityKnown = true
+	s.remoteGeneration = generation
+	s.remoteAuthorityIDs = remoteSessionIDs
+	s.remoteAuthorityMu.Unlock()
+}
+
+func (s *WebServer) nextRemoteGeneration() uint64 {
+	s.remoteAuthorityMu.Lock()
+	defer s.remoteAuthorityMu.Unlock()
+	s.remoteGeneration++
+	return s.remoteGeneration
+}
+
+func (s *WebServer) remoteAuthorityState() (bool, uint64, map[string]bool) {
+	s.remoteAuthorityMu.RLock()
+	defer s.remoteAuthorityMu.RUnlock()
+	if !s.remoteAuthorityKnown {
+		return true, 0, map[string]bool{}
+	}
+	return s.remoteAuthorityComplete, s.remoteGeneration, cloneRemoteSessionIDs(s.remoteAuthorityIDs)
+}
+
+func cloneRemoteSessionIDs(values map[string]bool) map[string]bool {
+	return maps.Clone(values)
 }
 
 func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
@@ -759,19 +863,204 @@ func (s *WebServer) apiTreeNodeTier(scope, projectKey, tier string, favs map[hub
 }
 
 // favoriteDecisions returns the current set of user-explicit favorite
-// decisions. Returns an empty map (never nil) when cfg.Favorite is nil or
-// Favorites() fails. Computed once per /api/tree request and threaded through
-// apiTreeProject/apiTreeNodeTier so a node-count-sized page never opens the
-// favorite store more than once.
-func (s *WebServer) favoriteDecisions() map[hubcore.ArchiveKey]bool {
+// decisions. A store read failure is returned to the request instead of being
+// turned into an empty decision set. The returned map is computed once per
+// tree request and threaded through apiTreeProject/apiTreeNodeTier so a
+// node-count-sized page never opens the favorite store more than once.
+func (s *WebServer) favoriteDecisions() (map[hubcore.ArchiveKey]bool, error) {
 	if s.cfg.Favorite == nil {
-		return map[hubcore.ArchiveKey]bool{}
+		return map[hubcore.ArchiveKey]bool{}, nil
 	}
 	f, err := s.cfg.Favorite.Favorites()
 	if err != nil {
-		return map[hubcore.ArchiveKey]bool{}
+		return nil, err
 	}
-	return f
+	return f, nil
+}
+
+func favoriteAuthorityForNavigation(snapshot navigationSnapshot, tree hubcore.Tree) hubcore.FavoriteAuthority {
+	topLevel := hubcore.TopLevelSessionIDs(snapshot.metas)
+	lineage := favoriteLineageQualities(snapshot.metas)
+	metaIDs := make(map[string]struct{}, len(snapshot.metas))
+	authority := hubcore.FavoriteAuthority{}
+	for _, meta := range snapshot.metas {
+		if meta.ID == "" {
+			continue
+		}
+		metaIDs[meta.ID] = struct{}{}
+		_, isTopLevel := topLevel[meta.ID]
+		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
+			ID:       meta.ID,
+			Aliases:  favoriteSessionAliases(meta.ID),
+			TopLevel: isTopLevel,
+			Lineage:  lineage[meta.ID],
+			Source:   favoriteSessionSourceQuality(meta.ID, snapshot.remoteSessionIDs, snapshot.remoteAuthorityComplete),
+		})
+	}
+	for _, entry := range snapshot.live {
+		if entry.SessionID == "" {
+			continue
+		}
+		if _, exists := metaIDs[entry.SessionID]; exists {
+			continue
+		}
+		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
+			ID:       entry.SessionID,
+			Aliases:  favoriteSessionAliases(entry.SessionID),
+			TopLevel: true,
+			Lineage:  hubcore.FavoriteAuthorityComplete,
+			Source:   favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteSessionIDs, snapshot.remoteAuthorityComplete),
+		})
+	}
+	authority.Projects = favoriteProjectAuthorities(snapshot)
+	authority.Nodes = tree.FavoriteNodeAuthorities()
+	if !snapshot.remoteAuthorityComplete {
+		for i := range authority.Nodes {
+			if authority.Nodes[i].Kind == hubcore.FavoriteNodeCluster {
+				authority.Nodes[i].Quality = hubcore.FavoriteAuthorityIncomplete
+			}
+		}
+	}
+	return authority
+}
+
+func favoriteSessionAliases(id string) []string {
+	aliases := []string{id}
+	if ref, err := hubapi.ParseRef(id); err == nil && ref.HostID == "local" {
+		aliases = append(aliases, ref.SessionID, "local:"+ref.SessionID)
+	} else if !strings.Contains(id, ":") {
+		aliases = append(aliases, "local:"+id)
+	}
+	return uniqueStrings(aliases)
+}
+
+func favoriteSessionSourceQuality(id string, remoteSessionIDs map[string]bool, remoteComplete bool) hubcore.FavoriteAuthorityQuality {
+	if !remoteSessionIDs[id] || remoteComplete {
+		return hubcore.FavoriteAuthorityComplete
+	}
+	return hubcore.FavoriteAuthorityIncomplete
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func favoriteLineageQualities(metas []schema.SessionMeta) map[string]hubcore.FavoriteAuthorityQuality {
+	qualities := make(map[string]hubcore.FavoriteAuthorityQuality, len(metas))
+	byID := make(map[string]int, len(metas))
+	children := make(map[string][]string)
+	for _, meta := range metas {
+		if meta.ID == "" {
+			continue
+		}
+		byID[meta.ID]++
+		qualities[meta.ID] = hubcore.FavoriteAuthorityComplete
+		if meta.ParentSessionID != "" && !meta.IsSubagent {
+			children[meta.ParentSessionID] = append(children[meta.ParentSessionID], meta.ID)
+		}
+	}
+	markIncomplete := func(id string) {
+		if id != "" {
+			qualities[id] = hubcore.FavoriteAuthorityIncomplete
+		}
+	}
+	for _, meta := range metas {
+		if meta.ID == "" {
+			continue
+		}
+		if meta.IsSubagent && meta.ParentSessionID == "" {
+			markIncomplete(meta.ID)
+		}
+		if meta.ParentSessionID != "" {
+			if meta.ParentSessionID == meta.ID || byID[meta.ParentSessionID] != 1 {
+				markIncomplete(meta.ID)
+			}
+		}
+	}
+	for parentID, childIDs := range children {
+		if len(uniqueStrings(childIDs)) > 1 {
+			markIncomplete(parentID)
+			for _, childID := range childIDs {
+				markIncomplete(childID)
+			}
+		}
+	}
+	for _, meta := range metas {
+		if meta.ID == "" || meta.ParentSessionID == "" {
+			continue
+		}
+		seen := map[string]struct{}{}
+		current := meta.ID
+		for current != "" {
+			if _, ok := seen[current]; ok {
+				markIncomplete(current)
+				for id := range seen {
+					markIncomplete(id)
+				}
+				break
+			}
+			seen[current] = struct{}{}
+			parent, ok := findMetaByID(metas, current)
+			if !ok {
+				break
+			}
+			current = parent.ParentSessionID
+		}
+	}
+	return qualities
+}
+
+func findMetaByID(metas []schema.SessionMeta, id string) (schema.SessionMeta, bool) {
+	for _, meta := range metas {
+		if meta.ID == id {
+			return meta, true
+		}
+	}
+	return schema.SessionMeta{}, false
+}
+
+func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteProjectAuthority {
+	byID := make(map[string]hubcore.FavoriteAuthorityQuality)
+	for path, project := range snapshot.projects {
+		if project.ID == "" {
+			continue
+		}
+		quality := hubcore.FavoriteAuthorityIncomplete
+		for _, meta := range snapshot.metas {
+			if hubcore.EffectiveWorkingDir(meta) == path && favoriteSessionSourceQuality(meta.ID, snapshot.remoteSessionIDs, snapshot.remoteAuthorityComplete) == hubcore.FavoriteAuthorityComplete {
+				quality = hubcore.FavoriteAuthorityComplete
+				break
+			}
+		}
+		if quality != hubcore.FavoriteAuthorityComplete {
+			for _, entry := range snapshot.live {
+				if entry.WorkingDir == path && favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteSessionIDs, snapshot.remoteAuthorityComplete) == hubcore.FavoriteAuthorityComplete {
+					quality = hubcore.FavoriteAuthorityComplete
+					break
+				}
+			}
+		}
+		if previous, ok := byID[project.ID]; !ok || previous == hubcore.FavoriteAuthorityIncomplete && quality == hubcore.FavoriteAuthorityComplete {
+			byID[project.ID] = quality
+		}
+	}
+	projects := make([]hubcore.FavoriteProjectAuthority, 0, len(byID))
+	for id, quality := range byID {
+		projects = append(projects, hubcore.FavoriteProjectAuthority{ID: id, Quality: quality})
+	}
+	return projects
 }
 
 // rowRenameable reports whether a tree row exposes the rename menu item. Local

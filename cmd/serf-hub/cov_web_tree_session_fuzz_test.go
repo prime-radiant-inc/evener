@@ -149,7 +149,7 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 			sb.Web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodGet, target, nil))
 		}
 		_ = sb.Web.archiveDecisions()
-		_ = sb.Web.favoriteDecisions()
+		_, _ = sb.Web.favoriteDecisions()
 		_, _ = sb.Web.memoTree(t.Context())
 		_, _, _ = sb.Web.navigationTreeInputs(t.Context())
 		_ = sb.Web.remoteTreeThreads(t.Context())
