@@ -118,6 +118,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
+	buckets := navigationProjectBuckets(tree)
 	// TestRuns takes precedence over ArchivedProjects (round-2 B6): a project
 	// where every session carries Origin=="test" is routed there even if it
 	// would otherwise also qualify as archived. Every branch marks
@@ -125,28 +126,26 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	// "project" below; only the active (non-archived, non-test) branch
 	// populates projectIndexes, since that's the only bucket the orphan-live
 	// loop can append into (it indexes into resp.Projects specifically).
-	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
-		if p.IsTestRun {
-			for _, n := range projectSessions(p) {
-				markTreeNodeIDs(seenProjectRefs, n)
-			}
-			resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
-			continue
+	for _, p := range buckets.testRuns {
+		for _, n := range projectSessions(p) {
+			markTreeNodeIDs(seenProjectRefs, n)
 		}
-		if p.IsArchived {
-			for _, n := range projectSessions(p) {
-				markTreeNodeIDs(seenProjectRefs, n)
-			}
-			// Archived projects ship as stubs: the archive is unbounded, so its
-			// sessions never ride in the snapshot. Sessions stays nil (wire:
-			// null) and SessionCount carries the row count; the sidebar
-			// lazy-loads the full project from /api/tree/project?key= on expand.
-			stub := s.apiTreeProject("project", favs, p)
-			stub.SessionCount = len(stub.Sessions)
-			stub.Sessions = nil
-			resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
-			continue
+		resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
+	}
+	for _, p := range buckets.archived {
+		for _, n := range projectSessions(p) {
+			markTreeNodeIDs(seenProjectRefs, n)
 		}
+		// Archived projects ship as stubs: the archive is unbounded, so its
+		// sessions never ride in the snapshot. Sessions stays nil (wire:
+		// null) and SessionCount carries the row count; the sidebar
+		// lazy-loads the full project from /api/tree/project?key= on expand.
+		stub := s.apiTreeProject("project", favs, p)
+		stub.SessionCount = len(stub.Sessions)
+		stub.Sessions = nil
+		resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
+	}
+	for _, p := range buckets.active {
 		projectIndexes[p.Key] = len(resp.Projects)
 		ap := s.apiTreeProject("project", favs, p)
 		for _, n := range projectSessions(p) {
@@ -292,7 +291,7 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 	}
 	tree, _ := s.memoTree(r.Context())
 	favs := s.favoriteDecisions()
-	projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
+	projects := navigationProjectBuckets(tree).all()
 	for _, p := range projects {
 		if p.Key == key {
 			if pageRequested {
@@ -309,6 +308,35 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeAPIError(w, http.StatusNotFound, "project not found")
+}
+
+type navigationProjectBucket struct {
+	active   []hubcore.TreeProject
+	archived []hubcore.TreeProject
+	testRuns []hubcore.TreeProject
+}
+
+func navigationProjectBuckets(tree hubcore.Tree) navigationProjectBucket {
+	buckets := navigationProjectBucket{}
+	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		switch {
+		case p.IsTestRun:
+			buckets.testRuns = append(buckets.testRuns, p)
+		case p.IsArchived:
+			buckets.archived = append(buckets.archived, p)
+		default:
+			buckets.active = append(buckets.active, p)
+		}
+	}
+	return buckets
+}
+
+func (b navigationProjectBucket) all() []hubcore.TreeProject {
+	projects := make([]hubcore.TreeProject, 0, len(b.active)+len(b.archived)+len(b.testRuns))
+	projects = append(projects, b.active...)
+	projects = append(projects, b.archived...)
+	projects = append(projects, b.testRuns...)
+	return projects
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {

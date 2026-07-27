@@ -286,14 +286,10 @@ function sessionIDMatches(node: TreeNode, id: string): boolean {
   return false;
 }
 
-function reconcileNodes(nodes: TreeNode[], deletedIDs: string[], skippedIDs: string[]): TreeNode[] {
+function reconcileNodes(nodes: TreeNode[], deletedIDs: string[]): TreeNode[] {
   return nodes.flatMap((node) => {
     if (deletedIDs.some((id) => sessionIDMatches(node, id))) return [];
-    const children = reconcileNodes(node.children, deletedIDs, skippedIDs);
-    if (skippedIDs.length > 0) {
-      const skipped = skippedIDs.some((id) => sessionIDMatches(node, id));
-      if (!skipped && children.length === 0) return [];
-    }
+    const children = reconcileNodes(node.children, deletedIDs);
     return [{ ...node, children }];
   });
 }
@@ -306,12 +302,14 @@ function reconcileProjectList(
 ): TreeProject[] {
   return projects.flatMap((project) => {
     if (project.key !== key) return [project];
-    if (skippedIDs.length === 0) return [];
+    const sessions = reconcileNodes(project.sessions, deletedIDs);
+    const sessionCount = sessions.length > 0 ? sessions.length : skippedIDs.length;
+    if (sessionCount === 0) return [];
     return [
       {
         ...project,
-        sessions: reconcileNodes(project.sessions, deletedIDs, skippedIDs),
-        session_count: skippedIDs.length,
+        sessions,
+        session_count: sessionCount,
       },
     ];
   });
@@ -383,8 +381,9 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
       const nextDetails = new Map(s.projectDetails);
       const detail = nextDetails.get(key);
       if (detail) {
-        if (skippedIDs.length === 0) nextDetails.delete(key);
-        else nextDetails.set(key, { ...detail, sessions: reconcileNodes(detail.sessions, deletedIDs, skippedIDs) });
+        const sessions = reconcileNodes(detail.sessions, deletedIDs);
+        if (sessions.length === 0 && skippedIDs.length === 0) nextDetails.delete(key);
+        else nextDetails.set(key, { ...detail, sessions });
       }
       if (!s.tree) return { projectDetails: nextDetails, loading: false };
       return {

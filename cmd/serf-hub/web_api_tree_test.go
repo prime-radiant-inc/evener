@@ -395,6 +395,62 @@ func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
 	}
 }
 
+func TestAPITreeProjectPageServesCappedAwayTestRunRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	projectDir := filepath.Join(t.TempDir(), "test-run-paged")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		metas = append(metas, schema.SessionMeta{
+			ID: fmt.Sprintf("01TEST%02d", i), Origin: "test", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	treeRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(treeRec, treeReq)
+	if treeRec.Code != http.StatusOK {
+		t.Fatalf("tree status=%d body=%s", treeRec.Code, treeRec.Body.String())
+	}
+	var treeResp hubapi.TreeResponse
+	if err := json.Unmarshal(treeRec.Body.Bytes(), &treeResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(treeResp.TestRuns) != 1 || treeResp.TestRuns[0].Key != project.ID || treeResp.TestRuns[0].MoreArchived != 10 {
+		t.Fatalf("test-run tree project = %+v", treeResp.TestRuns)
+	}
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/tree/project?key="+project.ID+"&tier=archived&offset=50&limit=50", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Key      string            `json:"key"`
+		Tier     string            `json:"tier"`
+		Offset   int               `json:"offset"`
+		Sessions []hubapi.TreeNode `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Key != project.ID || page.Tier != "archived" || page.Offset != 50 {
+		t.Fatalf("page identity = %+v", page)
+	}
+	if len(page.Sessions) != 10 {
+		t.Fatalf("page rows = %d, want 10", len(page.Sessions))
+	}
+}
+
 func TestAPITreeDoesNotReprojectLiveNestedForkAsTopLevel(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
