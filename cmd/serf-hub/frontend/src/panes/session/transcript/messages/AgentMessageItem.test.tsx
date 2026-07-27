@@ -164,13 +164,14 @@ test("the srOnly class actually applies the visually-hidden recipe, not just a d
 test("sets --prose-font-size once, on the .message ancestor the live and settled children share", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
-  expect(css).toContain("--prose-font-size: var(--font-size-pane-title)");
+  expect(css).not.toContain("--prose-font-size");
 });
 
 test("the agent message keeps the approved unlabelled hero surface without a card frame", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*--prose-font-size:\s*var\(--font-size-pane-title\)/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--space-2\)\s+0;/);
+  expect(css).not.toMatch(/\.message\s*\{[\s\S]*--prose-font-size:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
   expect(css).not.toMatch(/\.tag\s*\{/);
