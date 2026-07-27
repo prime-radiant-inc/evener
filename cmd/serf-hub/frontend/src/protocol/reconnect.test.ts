@@ -30,13 +30,16 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 // dialer hands out a socketFactory that mints a fresh FakeSocket on every
 // call, the way a real reconnect dials a new transport each attempt, plus
 // the list of every socket it has minted so far, in dial order.
-function dialer(options: { autoInitialize?: boolean } = {}): {
+function dialer(options: { autoInitialize?: boolean; emitCloseEventOnClientClose?: boolean } = {}): {
   factory: (url: string) => FakeSocket;
   sockets: FakeSocket[];
 } {
   const sockets: FakeSocket[] = [];
   const factory = () => {
-    const fake = new FakeSocket({ autoInitialize: options.autoInitialize ?? true });
+    const fake = new FakeSocket({
+      autoInitialize: options.autoInitialize ?? true,
+      emitCloseEventOnClientClose: options.emitCloseEventOnClientClose,
+    });
     sockets.push(fake);
     return fake;
   };
@@ -104,6 +107,24 @@ describe("AppwireClient heartbeat", () => {
     await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS);
     expect(client.state).toBe("reconnecting");
     expect(states).toContain("reconnecting");
+  });
+
+  test("a heartbeat timeout reconnects when client-side close emits no close event", async () => {
+    const { factory, sockets } = dialer({ emitCloseEventOnClientClose: false });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).autoInitialize = false;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS);
+
+    expect(client.state).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    expect(sockets).toHaveLength(2);
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+
+    expect(client.state).toBe("ready");
   });
 });
 

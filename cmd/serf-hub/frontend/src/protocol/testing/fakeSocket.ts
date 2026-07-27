@@ -32,6 +32,7 @@ export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
 
 export interface FakeSocketOptions {
   autoInitialize?: boolean;
+  emitCloseEventOnClientClose?: boolean;
 }
 
 export class FakeSocket implements WebSocketLike {
@@ -43,9 +44,11 @@ export class FakeSocket implements WebSocketLike {
   onerror: (() => void) | null = null;
 
   private isClosed = false;
+  private readonly emitCloseEventOnClientClose: boolean;
 
   constructor(options: FakeSocketOptions = {}) {
     this.autoInitialize = options.autoInitialize ?? false;
+    this.emitCloseEventOnClientClose = options.emitCloseEventOnClientClose ?? true;
   }
 
   send(data: string): void {
@@ -63,6 +66,10 @@ export class FakeSocket implements WebSocketLike {
   }
 
   close(code?: number): void {
+    if (!this.emitCloseEventOnClientClose) {
+      this.isClosed = true;
+      return;
+    }
     this.closeInternal(code ?? 1000);
   }
 
