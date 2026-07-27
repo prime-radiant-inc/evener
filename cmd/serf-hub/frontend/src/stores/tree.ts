@@ -315,7 +315,8 @@ function reconcileProjectList(
     if (
       skippedIDs.length === 0 &&
       !projectHasOverflow(project) &&
-      (hydratedDetailIsEmpty || (sessionCount === undefined && sessions.length === 0))
+      sessions.length === 0 &&
+      (hydratedDetailIsEmpty || sessionCount === undefined)
     ) {
       return [];
     }

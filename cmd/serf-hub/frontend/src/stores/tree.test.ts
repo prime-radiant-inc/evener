@@ -367,6 +367,40 @@ describe("reconcileProjectDelete", () => {
     expect(treeStore.getState().tree?.projects).toEqual([]);
     expect(treeStore.getState().projectDetails.has("p1")).toBe(false);
   });
+
+  test("keeps current-tree survivors when stale hydrated detail becomes empty", () => {
+    const deleted: TreeNode = {
+      row_id: "deleted-row",
+      ref: "local:deleted",
+      host_id: "local",
+      session_id: "deleted",
+      title: "Deleted",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      live: false,
+      children: [],
+    };
+    const survivor: TreeNode = {
+      ...deleted,
+      row_id: "survivor-row",
+      ref: "remote:survivor",
+      host_id: "remote",
+      session_id: "survivor",
+      title: "Survivor",
+    };
+    const currentTreeProject = { key: "p1", name: "Proj", sessions: [deleted, survivor] };
+    const staleDetail = { ...currentTreeProject, sessions: [deleted] };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [currentTreeProject] },
+      projectDetails: new Map([["p1", staleDetail]]),
+    });
+
+    treeStore.getState().reconcileProjectDelete("p1", ["local:deleted"], []);
+
+    expect(treeStore.getState().tree?.projects[0]?.sessions.map((n) => n.ref)).toEqual(["remote:survivor"]);
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(false);
+  });
 });
 
 describe("loadProjectDetail", () => {

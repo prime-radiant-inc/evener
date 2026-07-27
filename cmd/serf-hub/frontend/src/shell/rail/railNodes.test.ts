@@ -318,7 +318,10 @@ describe("archivedCount", () => {
   });
 
   test("counts capped hydrated rows plus archived overflow without adding stub sentinels", () => {
-    const detail = project({ sessions: Array.from({ length: 50 }, (_, i) => node({ ref: `r${i}` })), more_archived: 10 });
+    const detail = project({
+      sessions: Array.from({ length: 50 }, (_, i) => node({ ref: `r${i}` })),
+      more_archived: 10,
+    });
     expect(archivedCount([detail], [])).toBe(60);
     expect(archivedCount([project({ session_count: 60, sessions: [], more_archived: 10 })], [])).toBe(60);
   });
