@@ -1,8 +1,8 @@
 # Cold-start onboarding and mobile Spawn implementation plan
 
-Date: 2026-07-26  
-Branch: `wip/kata-cold-start-mobile-spawn`  
-Base: `b1b05cc1a`  
+Date: 2026-07-26
+Branch: `wip/kata-cold-start-mobile-spawn`
+Base: `b1b05cc1a`
 Katas: `pc8q`, `rdt8`
 
 ## Authority and current assessment

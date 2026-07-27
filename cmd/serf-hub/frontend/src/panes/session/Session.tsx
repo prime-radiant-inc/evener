@@ -197,6 +197,53 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     return turn;
   };
 
+  const transcript = (
+    <div className={styles.transcript}>
+      <FlowOverlay
+        top={
+          <>
+            {model.olderCursor && (
+              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            )}
+            <LivenessLine
+              lastFrameAt={model.lastFrameAt}
+              now={now}
+              active={model.status.type === "active"}
+              sessionRef={ref}
+              turnId={model.activeTurnId}
+            />
+          </>
+        }
+        pill={
+          <NewContentPill
+            count={flow.pillCount}
+            needsYou={flow.pillNeedsYou}
+            error={flow.pillError}
+            pillArrowDirection={flow.pillArrowDirection}
+            onClick={flow.jumpToBottom}
+          />
+        }
+      >
+        <div className={styles.transcriptContent}>
+          <div className={styles.transcriptList}>
+            <VirtualList
+              ref={virtualListRef}
+              dynamic
+              count={model.turns.length}
+              estimateSize={() => ESTIMATED_TURN_HEIGHT}
+              getItemKey={(index) => turnAt(index).id}
+              renderRow={(index) => {
+                const t = turnAt(index);
+                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
+              }}
+            />
+          </div>
+          {showColdStartSkeleton && <ColdStartSkeleton />}
+        </div>
+      </FlowOverlay>
+    </div>
+  );
+
   return (
     <PaneScaffold
       title={model.name || ref}
@@ -212,50 +259,12 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       }
     >
       <SandboxEscalationRail sessionRef={ref} />
-      {showColdStartSkeleton ? (
+      {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
         <ColdStartSkeleton />
       ) : isDormantTranscript(model.turns) ? (
         <EmptyTranscript active={model.status.type === "active"} />
       ) : (
-        <div className={styles.transcript}>
-          <FlowOverlay
-            top={
-              <>
-                {model.olderCursor && (
-                  <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-                )}
-                <LivenessLine
-                  lastFrameAt={model.lastFrameAt}
-                  now={now}
-                  active={model.status.type === "active"}
-                  sessionRef={ref}
-                  turnId={model.activeTurnId}
-                />
-              </>
-            }
-            pill={
-              <NewContentPill
-                count={flow.pillCount}
-                needsYou={flow.pillNeedsYou}
-                error={flow.pillError}
-                pillArrowDirection={flow.pillArrowDirection}
-                onClick={flow.jumpToBottom}
-              />
-            }
-          >
-            <VirtualList
-              ref={virtualListRef}
-              dynamic
-              count={model.turns.length}
-              estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => {
-                const t = turnAt(index);
-                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
-              }}
-            />
-          </FlowOverlay>
-        </div>
+        transcript
       )}
     </PaneScaffold>
   );

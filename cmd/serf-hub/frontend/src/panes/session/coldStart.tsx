@@ -19,6 +19,10 @@ function hasAuthoritativeFrame(turn: TurnModel): boolean {
   return turn.items.some((item) => item.type !== "userMessage" && item.type !== "systemMessage");
 }
 
+function hasUserInput(turn: TurnModel): boolean {
+  return turn.items.some((item) => item.type === "userMessage");
+}
+
 function shouldShowColdStart(model: ThreadModel, hasPendingSend: boolean): boolean {
   if (isTerminalStatus(model.status.type)) return false;
 
@@ -28,6 +32,12 @@ function shouldShowColdStart(model: ThreadModel, hasPendingSend: boolean): boole
 
   const [firstTurn] = turns;
   if (!firstTurn || hasAuthoritativeFrame(firstTurn) || isTerminalStatus(firstTurn.status)) return false;
+
+  // An active turn is not enough to prove that this send is still alive:
+  // stale activeTurnId/status fields can remain after the request rejected
+  // and the pending entry was removed. A pending entry or the authoritative
+  // user echo is the evidence that this first turn belongs to a live send.
+  if (!hasPendingSend && !hasUserInput(firstTurn)) return false;
 
   return (
     hasPendingSend ||

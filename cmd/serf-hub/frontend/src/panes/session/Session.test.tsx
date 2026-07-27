@@ -236,6 +236,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
   await act(async () => seedPendingSend());
   expect(screen.getByTestId("pending-chips")).toBeTruthy();
+  expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
@@ -261,7 +262,11 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
       },
     } as AnyNotification);
   });
-  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+  const userMessage = screen.getByTestId("user-message-item");
+  const skeleton = screen.getByTestId("cold-start-skeleton");
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
+  expect(userMessage.textContent).toContain("hello");
+  expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
   act(() => {
     fake.emitNotification({
@@ -304,6 +309,98 @@ test("cold-start skeleton clears when the first turn terminates without an autho
   });
 
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+});
+
+test("a rejected first send clears the skeleton even when active turn state is stale", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+
+  let rejectSend: ((error: unknown) => void) | undefined;
+  const send = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        rejectSend = reject;
+      }),
+  );
+  await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+    } as AnyNotification);
+  });
+  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+
+  await act(async () => {
+    rejectSend?.(new Error("daemon rejected the send"));
+    await expect(send).rejects.toThrow("daemon rejected the send");
+  });
+  await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+});
+
+test.each(["failed", "error", "cancelled"])(
+  "a first turn marked %s clears the skeleton even when active flags remain",
+  async (status) => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+    await act(async () => seedPendingSend());
+    expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+
+    act(() => {
+      fake.emitNotification({
+        method: "turn/started",
+        params: { ref: "ref_a", turn: { id: "turn_1", status, itemsView: "full" } },
+      } as AnyNotification);
+    });
+
+    await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+  },
+);
+
+test("a later turn never gets the first-turn skeleton", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { id: "user_1", turnId: "turn_1", type: "userMessage", text: "earlier", status: "completed" },
+            { id: "agent_1", turnId: "turn_1", type: "agentMessage", text: "done", status: "completed" },
+          ],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText("earlier")).toBeTruthy());
+  await act(async () => seedPendingSend());
+
+  expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
+  expect(screen.getByTestId("turn-block")).toBeTruthy();
 });
 
 test("cold-start skeleton is scoped to the session ref and disappears on session change", async () => {
