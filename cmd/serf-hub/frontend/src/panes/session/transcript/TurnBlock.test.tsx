@@ -271,14 +271,17 @@ test("passes the owning turn through to each item renderer", () => {
 test("passes opensExchange and agentLabel through ItemRenderProps", () => {
   const seen: Array<{ opensExchange?: boolean; agentLabel?: string }> = [];
   const originalAgentMessageRenderer = itemRendererFor("agentMessage");
-  registerItemRenderer("agentMessage", (props) => {
-    seen.push({ opensExchange: props.opensExchange, agentLabel: props.agentLabel });
-    return null;
-  });
-  const agentItem = { id: "a1", type: "agentMessage", text: "hi", status: "completed" };
-  render(<TurnBlock turn={turn([agentItem])} exchangeOpeners={new Set(["a1"])} agentLabel="k3" />);
-  expect(seen).toEqual([{ opensExchange: true, agentLabel: "k3" }]);
-  registerItemRenderer("agentMessage", originalAgentMessageRenderer);
+  try {
+    registerItemRenderer("agentMessage", (props) => {
+      seen.push({ opensExchange: props.opensExchange, agentLabel: props.agentLabel });
+      return null;
+    });
+    const agentItem = { id: "a1", type: "agentMessage", text: "hi", status: "completed" };
+    render(<TurnBlock turn={turn([agentItem])} exchangeOpeners={new Set(["a1"])} agentLabel="k3" />);
+    expect(seen).toEqual([{ opensExchange: true, agentLabel: "k3" }]);
+  } finally {
+    registerItemRenderer("agentMessage", originalAgentMessageRenderer);
+  }
 });
 
 // The exact mechanism wave-4 T5c wraps most registered item renderers with
