@@ -16,6 +16,11 @@ export interface ItemRenderProps {
   // The owning session's ref, threaded from Session.tsx via TurnBlock so an
   // item renderer can scope a disclosure or action to the owning session.
   sessionRef?: string;
+  // True on the first agentMessage item of an exchange, threaded from the
+  // transcript exchange-openers set so renderers can show an eyebrow.
+  opensExchange?: boolean;
+  // The session's short model/provider label, threaded from Session.tsx.
+  agentLabel?: string;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
@@ -54,5 +59,11 @@ export function itemRendererFor(type: string): ComponentType<ItemRenderProps> {
 // wrapped with this; don't add it to a new renderer without first checking
 // what it reads off `turn`.
 export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): boolean {
-  return prev.item === next.item && prev.live === next.live && prev.sessionRef === next.sessionRef;
+  return (
+    prev.item === next.item &&
+    prev.live === next.live &&
+    prev.sessionRef === next.sessionRef &&
+    prev.opensExchange === next.opensExchange &&
+    prev.agentLabel === next.agentLabel
+  );
 }

@@ -70,3 +70,10 @@ test("ignoringTurn: a different live value -> treated as different (re-renders)"
   const turn = turnModel();
   expect(ignoringTurn({ item, turn, live: false }, { item, turn, live: true })).toBe(false);
 });
+
+test("ignoringTurn re-renders when opensExchange or agentLabel changes", () => {
+  const base = { item: {} as never, turn: {} as never, live: false };
+  expect(ignoringTurn(base, { ...base, opensExchange: true })).toBe(false);
+  expect(ignoringTurn(base, { ...base, agentLabel: "k3" })).toBe(false);
+  expect(ignoringTurn({ ...base, opensExchange: true }, { ...base, opensExchange: true })).toBe(true);
+});
