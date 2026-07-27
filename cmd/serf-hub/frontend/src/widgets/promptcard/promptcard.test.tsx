@@ -16,12 +16,20 @@ function moduleCss(): string {
 
 /** A live card wrapping a controlled seamless field, the shape both real
  * callers (the session composer and the spawn form) render. */
-function LiveCard(props: { leading?: React.ReactNode; actions?: React.ReactNode; hidden?: boolean }) {
+function LiveCard(props: {
+  leading?: React.ReactNode;
+  actions?: React.ReactNode;
+  hidden?: boolean;
+  controlsClassName?: string;
+  controlsTestId?: string;
+}) {
   const [value, setValue] = useState("");
   return (
     <PromptCard
       data-testid="card"
       hidden={props.hidden}
+      controlsClassName={props.controlsClassName}
+      controlsTestId={props.controlsTestId}
       leading={props.leading}
       actions={props.actions}
       field={
@@ -65,6 +73,20 @@ test("renders the caller's leading and action controls", () => {
   expect(screen.getByRole("button", { name: "Attach" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+});
+
+test("forwards the caller's control-row hook without changing its child order", () => {
+  render(
+    <LiveCard
+      controlsClassName="mobile-action-band"
+      controlsTestId="controls"
+      leading={<button type="button">Attach</button>}
+      actions={<button type="button">Send</button>}
+    />,
+  );
+
+  expect(screen.getByTestId("controls").className).toContain("mobile-action-band");
+  expect(screen.getByTestId("controls").querySelectorAll("button")).toHaveLength(2);
 });
 
 // The action cluster's DOM order IS its visual order (the row is a plain flex

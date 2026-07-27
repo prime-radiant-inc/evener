@@ -80,8 +80,9 @@ test("option sheets commit a selection and return focus to the row", async () =>
   const onHarnessChange = vi.fn();
   renderRows({ onHarnessChange });
 
-  const row = screen.getByTestId("mobile-spawn-row-Harness");
-  await user.click(within(row).getByRole("button"));
+  const rowButton = screen.getByRole("button", { name: "Harness: serf" });
+  const row = rowButton.parentElement!;
+  await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose harness" });
   await user.click(within(dialog).getByRole("button", { name: "codex-cli" }));
 
@@ -95,7 +96,7 @@ test("the model sheet uses the existing searchable catalog panel", async () => {
   const onModelChange = vi.fn();
   renderRows({ onModelChange });
 
-  await user.click(within(screen.getByTestId("mobile-spawn-row-Model")).getByRole("button"));
+  await user.click(screen.getByRole("button", { name: "Model: (default)" }));
   const dialog = await screen.findByRole("dialog", { name: "Choose model" });
   expect(within(dialog).getByRole("combobox", { name: "Model" })).toBeTruthy();
   await user.click(within(dialog).getByRole("option", { name: /Fast model/ }));
@@ -109,8 +110,9 @@ test("the working-directory sheet uses the existing path panel and closes with E
   const onCwdChange = vi.fn();
   renderRows({ onCwdChange });
 
-  const row = screen.getByTestId("mobile-spawn-row-Working directory");
-  await user.click(within(row).getByRole("button"));
+  const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
+  const row = rowButton.parentElement!;
+  await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
   expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
   await user.keyboard("{Escape}");
