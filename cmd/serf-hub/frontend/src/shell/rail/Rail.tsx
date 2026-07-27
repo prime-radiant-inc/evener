@@ -180,6 +180,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   });
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const overflowPagesInFlight = useRef(new Set<string>());
 
   // applyPending returns the same object when nothing is pending, so the
   // common case allocates nothing and every downstream memo stays stable.
@@ -341,15 +342,23 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   async function revealOverflow(node: OverflowRailNode): Promise<void> {
-    if (node.pages.length === 0) return;
+    const pages = node.pages.filter((page) => {
+      const key = `${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`;
+      if (overflowPagesInFlight.current.has(key)) return false;
+      overflowPagesInFlight.current.add(key);
+      return true;
+    });
+    if (pages.length === 0) return;
     try {
       await Promise.all(
-        node.pages.map((page) =>
-          treeStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit),
-        ),
+        pages.map((page) => treeStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit)),
       );
     } catch (err) {
       toasts.push("error", `Couldn't load older sessions: ${errorText(err)}`);
+    } finally {
+      for (const page of pages) {
+        overflowPagesInFlight.current.delete(`${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`);
+      }
     }
   }
 
@@ -456,6 +465,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       // render authoritative: deleted rows stay gone, while skipped live
       // rows/projects return from the rebuilt index honestly.
       await treeStore.getState().refresh();
+      // Refresh is best effort. The delete response is authoritative for the
+      // identities it processed, so reconcile it even when the follow-up GET
+      // failed and would otherwise leave hydrated stale detail visible.
+      treeStore.getState().reconcileProjectDelete(
+        target.key,
+        result.deleted,
+        result.skipped.map((session) => session.id),
+      );
       if (result.skipped.length > 0) {
         toasts.push(
           "warning",

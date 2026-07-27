@@ -266,9 +266,55 @@ export interface TreeStoreState {
   // Never cleared on refresh() - a project's key is stable identity, and a
   // fresh /api/tree stub is worse than what's already loaded, not better.
   projectDetails: Map<string, TreeProject>;
-  refresh(): Promise<void>;
+  // true means this call's response became authoritative; false means the
+  // request failed or was superseded by a newer refresh.
+  refresh(): Promise<boolean>;
   loadProjectDetail(key: string): Promise<void>;
   loadProjectPage(key: string, tier: TreeTier, offset: number, limit: number): Promise<void>;
+  reconcileProjectDelete(key: string, deletedIDs: string[], skippedIDs: string[]): void;
+}
+
+let refreshGeneration = 0;
+const projectMutationGenerations = new Map<string, number>();
+
+function sessionIDMatches(node: TreeNode, id: string): boolean {
+  if (node.ref === id || node.session_id === id) return true;
+  if (node.host_id === "local") {
+    const raw = id.startsWith("local:") ? id.slice("local:".length) : id;
+    return node.session_id === raw || node.ref === `local:${raw}`;
+  }
+  return false;
+}
+
+function reconcileNodes(nodes: TreeNode[], deletedIDs: string[], skippedIDs: string[]): TreeNode[] {
+  return nodes.flatMap((node) => {
+    if (deletedIDs.some((id) => sessionIDMatches(node, id))) return [];
+    const children = reconcileNodes(node.children, deletedIDs, skippedIDs);
+    if (skippedIDs.length > 0) {
+      const skipped = skippedIDs.some((id) => sessionIDMatches(node, id));
+      if (!skipped && children.length === 0) return [];
+    }
+    return [{ ...node, children }];
+  });
+}
+
+function reconcileProjectList(
+  projects: TreeProject[],
+  key: string,
+  deletedIDs: string[],
+  skippedIDs: string[],
+): TreeProject[] {
+  return projects.flatMap((project) => {
+    if (project.key !== key) return [project];
+    if (skippedIDs.length === 0) return [];
+    return [
+      {
+        ...project,
+        sessions: reconcileNodes(project.sessions, deletedIDs, skippedIDs),
+        session_count: skippedIDs.length,
+      },
+    ];
+  });
 }
 
 export const treeStore = createStore<TreeStoreState>((set) => ({
@@ -278,19 +324,26 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
   projectDetails: new Map(),
 
   async refresh() {
+    const generation = ++refreshGeneration;
     set({ loading: true, error: null });
     try {
       const tree = await fetchTree();
+      if (generation !== refreshGeneration) return false;
       set({ tree, loading: false, error: null });
+      return true;
     } catch (err) {
+      if (generation !== refreshGeneration) return false;
       set({ loading: false, error: errorText(err) });
+      return false;
     }
   },
 
   async loadProjectDetail(key) {
+    const generation = projectMutationGenerations.get(key) ?? 0;
     try {
       const detail = await fetchProjectDetail(key);
       set((s) => {
+        if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
         const next = new Map(s.projectDetails);
         next.set(key, detail);
         return { projectDetails: next };
@@ -303,8 +356,10 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
   },
 
   async loadProjectPage(key, tier, offset, limit) {
+    const generation = projectMutationGenerations.get(key) ?? 0;
     const page = await fetchProjectPage(key, tier, offset, limit);
     set((s) => {
+      if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
       const nextDetails = new Map(s.projectDetails);
       const detail = nextDetails.get(key);
       if (detail) nextDetails.set(key, mergeProjectPage(detail, page));
@@ -316,6 +371,30 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
           projects: mergeProjectInList(s.tree.projects, page),
           archived_projects: mergeProjectInList(s.tree.archived_projects, page),
           test_runs: mergeProjectInList(s.tree.test_runs, page),
+        },
+      };
+    });
+  },
+
+  reconcileProjectDelete(key, deletedIDs, skippedIDs) {
+    refreshGeneration++;
+    projectMutationGenerations.set(key, (projectMutationGenerations.get(key) ?? 0) + 1);
+    set((s) => {
+      const nextDetails = new Map(s.projectDetails);
+      const detail = nextDetails.get(key);
+      if (detail) {
+        if (skippedIDs.length === 0) nextDetails.delete(key);
+        else nextDetails.set(key, { ...detail, sessions: reconcileNodes(detail.sessions, deletedIDs, skippedIDs) });
+      }
+      if (!s.tree) return { projectDetails: nextDetails, loading: false };
+      return {
+        projectDetails: nextDetails,
+        loading: false,
+        tree: {
+          ...s.tree,
+          projects: reconcileProjectList(s.tree.projects, key, deletedIDs, skippedIDs),
+          archived_projects: reconcileProjectList(s.tree.archived_projects, key, deletedIDs, skippedIDs),
+          test_runs: reconcileProjectList(s.tree.test_runs, key, deletedIDs, skippedIDs),
         },
       };
     });
@@ -396,6 +475,8 @@ if (initialClient) attachNotifications(initialClient);
 // call this (mirrors threads.ts's resetThreadsStoreForTests precedent).
 export function resetTreeStoreForTests(): void {
   wiredClient = null;
+  refreshGeneration = 0;
+  projectMutationGenerations.clear();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
   treeStore.setState({ tree: null, loading: false, error: null, projectDetails: new Map() });
