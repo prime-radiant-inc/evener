@@ -4,12 +4,15 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -70,6 +73,9 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 
+	fixtureRoot := copyTrackedWorkingTree(t, repoRoot)
+	sourceNodeModulesPath := filepath.Join(repoRoot, "cmd", "serf-hub", "frontend", "node_modules")
+	sourceNodeModulesBefore := fingerprintInstallTree(t, sourceNodeModulesPath)
 	home := t.TempDir()
 	configHome := filepath.Join(home, ".config")
 	stateHome := filepath.Join(home, ".local", "state")
@@ -80,7 +86,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		"XDG_CACHE_HOME":  cacheHome,
 	})
 
-	runCommand(t, repoRoot, npmShimEnv(t, env), "make", "install")
+	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
@@ -119,11 +125,11 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	}
 
 	serfBin := filepath.Join(binDir, "serf")
-	runCommand(t, repoRoot, env, serfBin, "--version")
-	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-hub"), "--help")
-	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-tui"), "--help")
-	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-doctor"), "--help")
-	runCommand(t, repoRoot, env, serfBin, "--list-sessions")
+	runCommand(t, fixtureRoot, env, serfBin, "--version")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-hub"), "--help")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-tui"), "--help")
+	runCommand(t, fixtureRoot, env, filepath.Join(binDir, "serf-doctor"), "--help")
+	runCommand(t, fixtureRoot, env, serfBin, "--list-sessions")
 
 	for _, dir := range []string{
 		filepath.Join(configHome, "serf", "skills"),
@@ -143,7 +149,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	expectedAgents := expectedBundledAgents(t, repoRoot)
 	expectedSkills := expectedBundledSkills(t, repoRoot)
-	status := installedServeStatus(t, repoRoot, env, serfBin)
+	status := installedServeStatus(t, fixtureRoot, env, serfBin)
 
 	if status.Detailed == nil {
 		t.Fatal("installed serf serve /status omitted detailed status")
@@ -151,6 +157,11 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	installedSkillNames := status.Detailed.SkillNames()
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
 	assertSameSet(t, "bundled skills", installedSkillNames, expectedSkills)
+
+	sourceNodeModulesAfter := fingerprintInstallTree(t, sourceNodeModulesPath)
+	if sourceNodeModulesBefore != sourceNodeModulesAfter {
+		t.Fatalf("install mutated source checkout node_modules: before=%+v after=%+v", sourceNodeModulesBefore, sourceNodeModulesAfter)
+	}
 }
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
@@ -468,6 +479,165 @@ func assertSameSet(t *testing.T, label string, got, want []string) {
 	}
 }
 
+type installTreeFingerprint struct {
+	exists bool
+	mode   fs.FileMode
+	digest [sha256.Size]byte
+}
+
+func fingerprintInstallTree(t *testing.T, root string) installTreeFingerprint {
+	t.Helper()
+
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return installTreeFingerprint{}
+	}
+	if err != nil {
+		t.Fatalf("stat install tree %s: %v", root, err)
+	}
+
+	fingerprint := installTreeFingerprint{exists: true, mode: info.Mode()}
+	if info.IsDir() {
+		hash := sha256.New()
+		hashInstallTree(t, hash, root, "")
+		copy(fingerprint.digest[:], hash.Sum(nil))
+		return fingerprint
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(root)
+		if err != nil {
+			t.Fatalf("read install tree symlink %s: %v", root, err)
+		}
+		fingerprint.digest = sha256.Sum256([]byte(target))
+		return fingerprint
+	}
+	data, err := os.ReadFile(root)
+	if err != nil {
+		t.Fatalf("read install tree %s: %v", root, err)
+	}
+	fingerprint.digest = sha256.Sum256(data)
+	return fingerprint
+}
+
+func hashInstallTree(t *testing.T, hash interface{ Write([]byte) (int, error) }, root, relative string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read install tree %s: %v", root, err)
+	}
+	for _, entry := range entries {
+		entryPath := filepath.Join(root, entry.Name())
+		entryRelative := filepath.ToSlash(filepath.Join(relative, entry.Name()))
+		info, err := os.Lstat(entryPath)
+		if err != nil {
+			t.Fatalf("stat install tree entry %s: %v", entryPath, err)
+		}
+
+		_, _ = hash.Write([]byte("entry\x00" + entryRelative + "\x00" + info.Mode().String() + "\x00"))
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(entryPath)
+			if err != nil {
+				t.Fatalf("read install tree symlink %s: %v", entryPath, err)
+			}
+			_, _ = hash.Write([]byte(target))
+		case info.IsDir():
+			hashInstallTree(t, hash, entryPath, entryRelative)
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(entryPath)
+			if err != nil {
+				t.Fatalf("read install tree entry %s: %v", entryPath, err)
+			}
+			_, _ = hash.Write(data)
+		default:
+			t.Fatalf("unsupported install tree entry %s: mode %s", entryPath, info.Mode())
+		}
+		_, _ = hash.Write([]byte{0})
+	}
+}
+
+func copyTrackedWorkingTree(t *testing.T, repoRoot string) string {
+	t.Helper()
+
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatalf("make repository root absolute: %v", err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve repository root %s: %v", root, err)
+	}
+
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("list tracked working-tree files: %v", err)
+	}
+	parts := bytes.Split(output, []byte{0})
+	if len(parts) == 0 || len(parts[len(parts)-1]) != 0 {
+		t.Fatalf("git ls-files output is not NUL terminated")
+	}
+	parts = parts[:len(parts)-1]
+	sort.Slice(parts, func(i, j int) bool { return string(parts[i]) < string(parts[j]) })
+
+	fixtureRoot := t.TempDir()
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		relative := string(part)
+		clean := path.Clean(relative)
+		if relative == "" || path.IsAbs(relative) || clean != relative || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(relative, "\\") {
+			t.Fatalf("unsafe tracked path %q", relative)
+		}
+		if _, ok := seen[relative]; ok {
+			t.Fatalf("duplicate tracked path %q", relative)
+		}
+		seen[relative] = struct{}{}
+
+		sourcePath := filepath.Join(root, filepath.FromSlash(relative))
+		sourceInfo, err := os.Lstat(sourcePath)
+		if err != nil {
+			t.Fatalf("stat tracked working-tree file %s: %v", relative, err)
+		}
+		if sourceInfo.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("tracked working-tree symlink is not supported: %s", relative)
+		}
+		if !sourceInfo.Mode().IsRegular() {
+			t.Fatalf("tracked working-tree entry is not a regular file: %s mode %s", relative, sourceInfo.Mode())
+		}
+		resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+		if err != nil {
+			t.Fatalf("resolve tracked working-tree file %s: %v", relative, err)
+		}
+		withinRoot, err := filepath.Rel(resolvedRoot, resolvedSource)
+		if err != nil || filepath.IsAbs(withinRoot) || withinRoot == ".." || strings.HasPrefix(withinRoot, ".."+string(os.PathSeparator)) {
+			t.Fatalf("tracked working-tree path escapes repository root: %s", relative)
+		}
+
+		destinationPath := filepath.Join(fixtureRoot, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+			t.Fatalf("make fixture parent for %s: %v", relative, err)
+		}
+		if _, err := os.Lstat(destinationPath); err == nil {
+			t.Fatalf("fixture destination already exists: %s", relative)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat fixture destination %s: %v", relative, err)
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("read tracked working-tree file %s: %v", relative, err)
+		}
+		if err := os.WriteFile(destinationPath, data, sourceInfo.Mode().Perm()); err != nil {
+			t.Fatalf("copy tracked working-tree file %s: %v", relative, err)
+		}
+		if err := os.Chmod(destinationPath, sourceInfo.Mode().Perm()); err != nil {
+			t.Fatalf("preserve mode for tracked working-tree file %s: %v", relative, err)
+		}
+	}
+	return fixtureRoot
+}
+
 func runCommand(t *testing.T, dir string, env []string, name string, args ...string) {
 	t.Helper()
 
@@ -481,12 +651,12 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 }
 
 // npmShimEnv prepends a fake-bin directory containing a network-free npm to
-// env's PATH, for the `make install` invocation above only. install now
-// depends on build-web (Makefile-coherence rule: a shipped/installed hub must
-// embed a fresh SPA, never the tracked PLACEHOLDER), which would otherwise
-// run a real npm ci + vite build inside this test — slow, and it would fail
-// entirely in environments without node. This test's subject is install's
-// layout/symlinks, not web freshness; that is pinned separately by
+// env's PATH, for the `make install` invocation above only. install depends on
+// build-web (Makefile-coherence rule: a shipped/installed hub must embed a
+// fresh SPA, never the tracked PLACEHOLDER), which would otherwise run a real
+// npm ci + vite build inside this test — slow, and it would fail entirely in
+// environments without node. This test's subject is install's layout/symlinks,
+// not web freshness; that is pinned separately by
 // TestMakeRuntimeAliasesBuildThePair in runtime_pair_build_test.go. The shim
 // models only the local compiler contract that web-preflight checks: npm ci
 // creates an executable tsc stub, while npm run build remains a no-op and
@@ -577,16 +747,9 @@ func installTestEnv(t *testing.T, home string, extra map[string]string) []string
 		"GOCACHE":    goEnv(t, "GOCACHE"),
 		"GOPATH":     goEnv(t, "GOPATH"),
 		// The Makefile stages binaries through INSTALL_BUILD_DIR, which
-		// defaults to .build/install - a fixed path inside the checkout,
-		// shared by every `make install` run against it. These tests run
-		// `make install` in the REAL repo root (they have to; that is the
-		// target under test), so without this they isolate the install
-		// DESTINATION carefully via PREFIX and the XDG vars while sharing
-		// the staging area with anything else building in the same tree.
-		// Two overlapping runs then have one `go build -o` truncating a
-		// binary the other is about to install, which surfaces as a
-		// mystery failure in whichever lost - observed once as a
-		// TestInstallHomeGeneratedHome failure that passed on a re-run.
+		// defaults to .build/install. The install integration test runs from
+		// a temporary tracked-working-tree fixture, so this explicit home
+		// path keeps its staging output isolated from other test processes.
 		"INSTALL_BUILD_DIR": filepath.Join(home, "install-build"),
 	}
 	maps.Copy(overrides, extra)
