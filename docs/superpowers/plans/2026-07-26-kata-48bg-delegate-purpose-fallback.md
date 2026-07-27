@@ -63,4 +63,3 @@
 - [ ] **Step 4: Capture real screenshots.** Start the existing frontend harness and capture the real Session at 390px and 1400px. Check that the summary visibly combines chevron, status dot, and human purpose; the expanded body is a sans/prose Mandate; there is no nested row disclosure; and the quiet `open` plus icon action remains.
 - [ ] **Step 5: Open katas for unrelated findings.** Record any unrelated rail, notification, routing, ThinkBlock, User, Agent, or other weirdness in separate katas; do not fix it in this branch.
 - [ ] **Step 6: Run final verification and leave the tree clean.** Check `git diff`, `git status --short`, and the final `HEAD`; do not merge or close `48bg`.
-
