@@ -107,6 +107,14 @@ type TaskUpdateSnapshot struct {
 	After  []Task
 }
 
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func cloneTasks(tasks []Task) []Task {
 	if tasks == nil {
 		return nil
@@ -120,6 +128,9 @@ func cloneTasks(tasks []Task) []Task {
 		if tasks[i].Notes != nil {
 			cloned[i].Notes = append([]string(nil), tasks[i].Notes...)
 		}
+		cloned[i].CreatedAt = cloneTime(tasks[i].CreatedAt)
+		cloned[i].UpdatedAt = cloneTime(tasks[i].UpdatedAt)
+		cloned[i].CompletedAt = cloneTime(tasks[i].CompletedAt)
 	}
 	return cloned
 }
