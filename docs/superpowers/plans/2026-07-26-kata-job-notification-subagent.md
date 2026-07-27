@@ -1,10 +1,10 @@
-# Job Notification Subagent Link Implementation Plan
+# Job Notification Subagent Link and Disclosure Layout Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make completed job-notification cards link valid child transcript references through the existing open-beside action, while presenting parsed notification data as readable full-width transcript content.
+**Goal:** Make completed job-notification cards link valid child transcript references through the existing open-beside action, while presenting parsed notification data as readable full-width transcript content. Also fix ftex so system-prompt disclosures keep their summary and expanded Markdown in full-width rows at desktop and 390px widths, while retaining the collapsed character count and virtualization-safe disclosure identity.
 
-**Architecture:** Preserve the existing structured notification parser and card boundary. Extend the parser with validated semantic fields from the XML-like attributes, including `transcript_ref`; centralize the existing transcript-pane opener and quiet open-beside button so delegate rows and notification cards use one action path; pass no new navigation state through rail or steering routing. The card will render one compact header, semantic metadata, normal-text output/excerpt, and exactly one full-width raw-payload disclosure.
+**Architecture:** Preserve the existing structured notification parser and card boundary. Extend the parser with validated semantic fields from the XML-like attributes, including `transcript_ref`; centralize the existing transcript-pane opener and quiet open-beside button so delegate rows and notification cards use one action path; pass no new navigation state through rail or steering routing. The card will render one compact header, semantic metadata, normal-text output/excerpt, and exactly one full-width raw-payload disclosure. The system-prompt disclosure has a different semantic and visual contract, so fix its scoped styles independently rather than introducing a generic primitive solely because both bugs came from a flex-row layout.
 
 **Tech Stack:** React 19, TypeScript, Vitest, Testing Library, CSS Modules, Zustand workspace store, existing `Button`, `OpenBesideIcon`, `paneActions.openBeside`, and transcript pane registration.
 
@@ -16,6 +16,7 @@
 - Reuse the existing transcript pane (`type: "transcript"`) and `openBeside` action so parent/main-pane placement, mobile fallback, and deduplication remain inherited behavior.
 - Render literal raw payload only in one secondary disclosure; do not add nested disclosures or make XML/preformatted content the primary message.
 - Keep the raw disclosure a normal block/full-width row; do not touch rail code or steering routing/navigation paths.
+- Keep the system-prompt disclosure at one native `details`/`summary` level, retain its collapsed character count, and keep its existing stable disclosure key so virtualization does not lose open state.
 - Use sentence-case accessible labels and the existing quiet button/icon grammar.
 
 ## File Map
@@ -28,6 +29,9 @@
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`: render semantic fields, conditionally expose the shared open-subagent action, and keep one raw disclosure.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`: make raw content a block/full-width row and style compact metadata/action content with existing tokens.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`: cover real action/navigation identity, fallback behavior, semantic rendering, raw-row structure, and accessibility/disclosure contracts.
+- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.tsx` and `systemnoticeitem.module.css`: preserve the existing system-prompt disclosure behavior while stacking its summary and Markdown body as full-width rows.
+- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`: cover character count, one disclosure level, full-width summary/body structure, and readable expanded content.
+- Modify `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx`: add a long system-prompt fixture so the existing 390px-to-desktop overflow sweep exercises ftex in a real browser.
 
 ### Task 1: Extend the parser with a safe child reference and semantic fields
 
@@ -160,7 +164,43 @@
   git commit -m "fix(web): link job notifications to subagents"
   ```
 
-### Task 4: Run the complete verification gates
+### Task 4: Stack system-prompt disclosure rows without changing its semantic contract (red-green)
+
+**Files:**
+- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx`
+- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css`
+- Modify: `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx`
+
+- [ ] **Step 1: Add the failing system-prompt component tests.**
+
+  Add a long `system_prompt` case that opens through the native summary, retains `System prompt · N chars`, places Markdown in a sibling body below the summary, and has exactly one `details`/ARIA level. Assert structured DOM relationships and semantic Markdown rather than a giant serialized string. Add a focused CSS declaration assertion only for the required layout contract because jsdom does not apply stylesheets.
+
+- [ ] **Step 2: Run the system-prompt tests and observe red.**
+
+  Run:
+
+  ```bash
+  cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/SystemNoticeItem.test.tsx
+  ```
+
+  Expected: the existing scaffold is a flex row, so the new full-width row contract fails.
+
+- [ ] **Step 3: Implement the scoped system-prompt layout fix.**
+
+  Remove only the scaffold's row flex layout, make the summary and Markdown body block/full-width rows, and preserve its controlled open state, stable key, native keyboard semantics, and collapsed character count. Do not merge this style change with the raw-notification styles.
+
+- [ ] **Step 4: Add the real overflow fixture and verify it at 390px and desktop widths.**
+
+  Include long useful Markdown with an Identity heading in the existing overflow harness, then run the focused test and `npm run overflowguard`.
+
+- [ ] **Step 5: Commit the system-prompt slice.**
+
+  ```bash
+  git add cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/messages/systemnoticeitem.module.css cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+  git commit -m "fix(web): stack system prompt disclosure content"
+  ```
+
+### Task 5: Run the complete verification gates
 
 **Files:**
 - Modify: none unless a verification command identifies a defect in the files above.
