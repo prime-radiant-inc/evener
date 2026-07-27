@@ -144,8 +144,8 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 		if started := taskStateEntry(t, state, 2).Started; started == nil || !*started {
 			t.Fatalf("task 2 marker = %v, want true", started)
 		}
-		if started := taskStateEntry(t, state, 1).Started; started == nil || *started {
-			t.Fatalf("task 1 marker = %v, want explicit false", started)
+		if started := taskStateEntry(t, state, 1).Started; started != nil {
+			t.Fatalf("task 1 marker = %v, want absent for final done status", started)
 		}
 	})
 }
@@ -171,5 +171,58 @@ func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 	}
 	if found[0].Total != 1 || found[0].Done != 0 {
 		t.Fatalf("task-updated event = %+v, want total=1 done=0", found[0])
+	}
+}
+
+func TestTaskTool_UpdateClassifiesDuplicateIDsFromFinalBatchState(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{
+		{Description: "finish", Prompt: "finish"},
+		{Description: "continue", Prompt: "continue"},
+	})
+
+	result := h.update(t,
+		map[string]any{"id": 1, "status": "in_progress"},
+		map[string]any{"id": 1, "status": "done"},
+	)
+	if result.IsError {
+		t.Fatalf("duplicate-ID update failed: %s", result.Output)
+	}
+	if len(h.steers) != 1 || !strings.Contains(h.steers[0], "continue") {
+		t.Fatalf("steering = %q, want auto-start for task 2 only", h.steers)
+	}
+	state := decodeTaskToolState(t, result)
+	if got := taskStateEntry(t, state, 1); got.Status != taskpkg.TaskDone || got.Started != nil {
+		t.Fatalf("task 1 state = %+v, want done without a start marker", got)
+	}
+	if got := taskStateEntry(t, state, 2); got.Status != taskpkg.TaskInProgress {
+		t.Fatalf("task 2 state = %+v, want auto-started in_progress", got)
+	}
+}
+
+func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "open", status: "open"},
+		{name: "done", status: "done"},
+		{name: "cancelled", status: "cancelled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: tc.name, Prompt: tc.name}})
+			if tc.status == "done" || tc.status == "cancelled" {
+				if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+					t.Fatalf("start task: %v", err)
+				}
+			}
+			result := h.update(t, map[string]any{"id": 1, "status": tc.status})
+			if result.IsError {
+				t.Fatalf("%s update failed: %s", tc.status, result.Output)
+			}
+			if got := taskStateEntry(t, decodeTaskToolState(t, result), 1); got.Started != nil {
+				t.Fatalf("%s update marker = %v, want absent", tc.status, got.Started)
+			}
+		})
 	}
 }

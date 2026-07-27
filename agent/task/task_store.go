@@ -99,6 +99,31 @@ type TaskUpdate struct {
 	ReasoningEffort string     `json:"reasoning_effort,omitempty"` // empty: no change; non-empty: replace
 }
 
+// TaskUpdateSnapshot is the atomic before-and-after view of one validated
+// update batch. Both slices are copies captured while the store lock is held;
+// callers can classify the mutation without a race between View and Update.
+type TaskUpdateSnapshot struct {
+	Before []Task
+	After  []Task
+}
+
+func cloneTasks(tasks []Task) []Task {
+	if tasks == nil {
+		return nil
+	}
+	cloned := make([]Task, len(tasks))
+	copy(cloned, tasks)
+	for i := range cloned {
+		if tasks[i].DependsOn != nil {
+			cloned[i].DependsOn = append([]int(nil), tasks[i].DependsOn...)
+		}
+		if tasks[i].Notes != nil {
+			cloned[i].Notes = append([]string(nil), tasks[i].Notes...)
+		}
+	}
+	return cloned
+}
+
 // TaskStore manages a persistent list of tasks stored as JSON.
 type TaskStore struct {
 	mu     sync.Mutex
@@ -455,9 +480,29 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 
 // Update changes the status of existing tasks.
 func (s *TaskStore) Update(updates []TaskUpdate) error {
+	_, err := s.UpdateWithSnapshot(updates)
+	return err
+}
+
+// UpdateWithSnapshot applies one validated update batch and returns the exact
+// task state immediately before and after that mutation. Validation, mutation,
+// and both snapshots share one store lock so consumers can classify a batch
+// against the same state that the store validated.
+func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	before := cloneTasks(s.tasks)
+	if err := s.updateLocked(updates); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
+	return TaskUpdateSnapshot{
+		Before: before,
+		After:  cloneTasks(s.tasks),
+	}, nil
+}
+
+func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 	// Validate status values up front so a bad status doesn't half-apply.
 	for _, u := range updates {
 		switch u.Status {

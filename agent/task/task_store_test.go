@@ -102,6 +102,31 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	}
 }
 
+func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: added[0].ID, Status: TaskInProgress},
+		{ID: added[0].ID, Status: TaskDone},
+	})
+	if err != nil {
+		t.Fatalf("UpdateWithSnapshot: %v", err)
+	}
+	if got := snapshot.Before[0].Status; got != TaskOpen {
+		t.Fatalf("before task 1 status = %q, want open", got)
+	}
+	if got := snapshot.After[0].Status; got != TaskDone {
+		t.Fatalf("after task 1 status = %q, want done", got)
+	}
+	if got := s.View()[0].Status; got != TaskDone {
+		t.Fatalf("store task 1 status = %q, want done", got)
+	}
+}
+
 func TestUpdate_DependsOnChangeAndClear(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
