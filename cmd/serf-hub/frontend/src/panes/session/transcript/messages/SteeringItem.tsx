@@ -138,13 +138,7 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
         {notifications.map((n) => (
           <NotificationCard key={n.rawText} notification={n} />
         ))}
-        {leftover && (
-          <SteeringDivider
-            id={item.id}
-            label={label ? `${STEERED}: ${label}` : STEERED}
-            text={leftover}
-          />
-        )}
+        {leftover && <SteeringDivider id={item.id} label={label ? `${STEERED}: ${label}` : STEERED} text={leftover} />}
       </>
     );
   }
