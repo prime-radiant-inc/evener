@@ -251,25 +251,33 @@ function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; d
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
   const ignored: string[] = [];
-  const disclosureSelectors: Array<[string, string]> = [
-    ["system-prompt", "[data-testid=system-notice-scaffold]"],
-    ["raw-notification", "[data-testid=notification-raw-disclosure]"],
-  ];
-  const disclosureTargets: DisclosureTarget[] = disclosureSelectors.flatMap(([kind, selector]) => {
-    const details = pane.querySelector<HTMLDetailsElement>(selector);
-    return details ? [{ kind, details, originalOpen: details.open }] : [];
-  });
-  for (const target of disclosureTargets) target.details.open = true;
-
-  const disclosures = disclosureTargets.flatMap((target) => {
-    const measured = disclosureContract(target);
-    return measured ? [measured] : [];
-  });
+  const disclosureTargets: DisclosureTarget[] = [];
+  let disclosures: DisclosureContract[] = [];
 
   try {
+    const systemPrompt = Array.from(
+      pane.querySelectorAll<HTMLDetailsElement>('[data-testid="system-notice-scaffold"]'),
+    ).find((details) => details.querySelector(":scope > summary")?.textContent?.startsWith("System prompt"));
+    if (systemPrompt)
+      disclosureTargets.push({ kind: "system-prompt", details: systemPrompt, originalOpen: systemPrompt.open });
+
+    const rawNotification = pane.querySelector<HTMLDetailsElement>('[data-testid="notification-raw-disclosure"]');
+    if (rawNotification) {
+      disclosureTargets.push({
+        kind: "raw-notification",
+        details: rawNotification,
+        originalOpen: rawNotification.open,
+      });
+    }
+
+    for (const target of disclosureTargets) target.details.open = true;
+    disclosures = disclosureTargets.flatMap((target) => {
+      const measured = disclosureContract(target);
+      return measured ? [measured] : [];
+    });
+
     const openDuringOverflowScan =
-      disclosureTargets.length === disclosureSelectors.length &&
-      disclosureTargets.every((target) => target.details.open);
+      disclosureTargets.length === 2 && disclosureTargets.every((target) => target.details.open);
     for (const disclosure of disclosures) disclosure.openDuringOverflowScan = openDuringOverflowScan;
 
     for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
