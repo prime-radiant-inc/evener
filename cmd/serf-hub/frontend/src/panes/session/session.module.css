@@ -2,6 +2,29 @@
   height: 100%;
 }
 
+.transcriptContent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.transcriptList {
+  flex: 1;
+  min-height: 0;
+}
+
+.coldStart {
+  width: 100%;
+  max-width: 76rem;
+  margin-inline: auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.coldStart > div {
+  max-width: 42rem;
+}
+
 /* Composer + status row, stacked in PaneScaffold's pinned footer slot. */
 .footer {
   display: flex;

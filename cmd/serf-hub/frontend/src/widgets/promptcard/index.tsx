@@ -12,6 +12,12 @@ export interface PromptCardProps {
   /** Trailing control-row slot, after the spacer - the primary verb and
    * whatever sits beside it. */
   actions?: ReactNode;
+  /** Optional caller styling for the control row. Spawn uses this to pin the
+   * existing controls into its mobile action band without changing the shared
+   * composer layout. */
+  controlsClassName?: string;
+  /** Optional stable hook for a caller-owned control-row behavior test. */
+  controlsTestId?: string;
   /** Forwarded to the card element so a test can address it by a stable hook
    * (the composer's `composer-input-card`, spawn's `spawn-prompt-card`). */
   "data-testid"?: string;
@@ -39,12 +45,20 @@ const CLASS = {
  * none of its own). Callers own the field's props and their own buttons - this
  * widget has no opinion about verbs, and no state at all.
  */
-export function PromptCard({ field, leading, actions, hidden, "data-testid": testId }: PromptCardProps) {
+export function PromptCard({
+  field,
+  leading,
+  actions,
+  hidden,
+  controlsClassName,
+  controlsTestId,
+  "data-testid": testId,
+}: PromptCardProps) {
   return (
     <div className={CLASS.card} data-testid={testId} hidden={hidden} inert={hidden}>
       {field}
       {(leading !== undefined || actions !== undefined) && (
-        <div className={CLASS.controls}>
+        <div className={`${CLASS.controls} ${controlsClassName ?? ""}`} data-testid={controlsTestId}>
           {leading}
           <div className={CLASS.actions}>{actions}</div>
         </div>

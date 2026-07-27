@@ -171,7 +171,7 @@ beforeAll(async () => {
   // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", () => screen.findByText("No session open"));
-  await warmRoute("/new", () => screen.findByRole("button", { name: "Start" }));
+  await warmRoute("/new", () => screen.findByRole("button", { name: "Spawn" }));
   await warmRoute("/s/local:ref_warm", () => screen.findByText(/loading transcript/i));
   await warmRoute("/settings/general", () => screen.findByRole("navigation", { name: "Settings sections" }));
 });
@@ -239,10 +239,10 @@ test('clicking "New session" navigates to /new and opens the spawn pane', async 
   expect(window.location.pathname).toBe("/new");
   // /new now opens the real spawn pane (the old "not available yet" welcome
   // fallback is gone) - its Spawn button proves the pane mounted.
-  // The spawn pane's own submit verb is "Start" - it lives in the prompt
+  // The spawn pane's own submit verb is "Spawn" - it lives in the prompt
   // card's corner the way Send does in the composer, both surfaces being the
   // same shared card.
-  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
 });
 
 // --- command palette wiring (this task) -------------------------------

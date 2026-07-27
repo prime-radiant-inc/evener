@@ -1,0 +1,186 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
+import type { ModelCatalog } from "../../widgets";
+import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
+import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
+
+afterEach(cleanup);
+
+const catalog: ModelCatalog = {
+  models: [
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      displayName: "Fast model",
+      supportsTools: true,
+    },
+  ],
+  recent: [],
+};
+
+function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRowsProps {
+  return {
+    harness: "serf",
+    harnessOptions: [
+      { value: "serf", label: "serf" },
+      { value: "codex-cli", label: "codex-cli" },
+    ],
+    onHarnessChange: vi.fn(),
+    model: "",
+    modelDisplay: "(default)",
+    modelRequired: false,
+    loadCatalog: vi.fn(async () => catalog),
+    onModelChange: vi.fn(),
+    cwd: "/tmp/project",
+    onCwdChange: vi.fn(),
+    complete: vi.fn(async () => []),
+    listRecents: vi.fn(async () => []),
+    fallbackDir: "/tmp",
+    onCwdPanelClose: vi.fn(),
+    branch: "main",
+    reasoningEffort: "",
+    reasoningOptions: [
+      { value: "", label: "(default)" },
+      { value: "low", label: "low" },
+    ],
+    reasoningDisabled: false,
+    onReasoningChange: vi.fn(),
+    accessMode: "",
+    accessOptions: [
+      { value: "", label: "(default)" },
+      { value: "workspace-write", label: "workspace write" },
+    ],
+    onAccessChange: vi.fn(),
+    ...overrides,
+  };
+}
+
+function renderRows(overrides: Partial<MobileSettingRowsProps> = {}) {
+  return render(<MobileSettingRows {...props(overrides)} />);
+}
+
+test("renders all Treatment A rows in order with full-row controls", () => {
+  renderRows();
+
+  const rows = within(screen.getByTestId("mobile-spawn-config")).getAllByTestId("mobile-spawn-row");
+  expect(rows.map((row) => row.getAttribute("data-label"))).toEqual([
+    "Harness",
+    "Model",
+    "Working directory",
+    "Branch",
+    "Reasoning effort",
+    "Access mode",
+  ]);
+  expect(within(rows[0]!).getByRole("button", { name: /harness/i })).toBeTruthy();
+  expect(within(rows[3]!).queryByRole("button")).toBeNull();
+});
+
+test("option sheets commit a selection and return focus to the row", async () => {
+  const user = userEvent.setup();
+  const onHarnessChange = vi.fn();
+  renderRows({ onHarnessChange });
+
+  const rowButton = screen.getByRole("button", { name: "Harness: serf" });
+  const row = rowButton.parentElement!;
+  await user.click(rowButton);
+  const dialog = await screen.findByRole("dialog", { name: "Choose harness" });
+  await user.click(within(dialog).getByRole("button", { name: "codex-cli" }));
+
+  expect(onHarnessChange).toHaveBeenCalledWith("codex-cli");
+  expect(screen.queryByRole("dialog", { name: "Choose harness" })).toBeNull();
+  expect(document.activeElement).toBe(within(row).getByRole("button"));
+});
+
+test("the model sheet uses the existing searchable catalog panel", async () => {
+  const user = userEvent.setup();
+  const onModelChange = vi.fn();
+  renderRows({ onModelChange });
+
+  await user.click(screen.getByRole("button", { name: "Model: (default)" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose model" });
+  expect(within(dialog).getByRole("combobox", { name: "Model" })).toBeTruthy();
+  await user.click(within(dialog).getByRole("option", { name: /Fast model/ }));
+
+  expect(onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
+});
+
+test("the working-directory sheet uses the existing path panel and closes with Escape", async () => {
+  const user = userEvent.setup();
+  const onCwdChange = vi.fn();
+  renderRows({ onCwdChange });
+
+  const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
+  const row = rowButton.parentElement!;
+  await user.click(rowButton);
+  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
+  expect(document.activeElement).toBe(within(row).getByRole("button"));
+});
+
+test("selecting a recent working directory stamps the committed value, not the previous cwd", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
+  const onCwdChange = vi.fn();
+  renderRows({
+    cwd: "/old/project",
+    onCwdChange,
+    listRecents: vi.fn(async () => ["/new/project"]),
+    onCwdPanelClose: setGlobalLastWorkingDir,
+  });
+
+  await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  await user.click(await within(dialog).findByRole("option", { name: /new\/project/ }));
+
+  expect(onCwdChange).toHaveBeenLastCalledWith("/new/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
+});
+
+test("pressing Enter on a typed working directory stamps the committed value, not the previous cwd", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
+  const onCwdChange = vi.fn();
+  renderRows({
+    cwd: "/old/project",
+    onCwdChange,
+    onCwdPanelClose: setGlobalLastWorkingDir,
+  });
+
+  await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
+  await user.keyboard("/new/typed/project{Enter}");
+
+  expect(onCwdChange).toHaveBeenLastCalledWith("/new/typed/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/typed/project");
+  expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
+});
+
+test("a disabled reasoning row is read-only and exposes no picker affordance", () => {
+  renderRows({ reasoningDisabled: true });
+
+  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]') as HTMLElement;
+  expect(row).toBeTruthy();
+  expect(within(row).queryByRole("button")).toBeNull();
+  expect(row.querySelector('[aria-haspopup="dialog"]')).toBeNull();
+  expect(row.textContent).not.toContain("›");
+});
+
+test("mobile setting rows keep the approved 48px body-text baseline", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "MobileSettingRows.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rowRule = css.match(/\.rowButton,\s*\.readOnly\s*\{([\s\S]*?)\n\}/)?.[1];
+
+  expect(rowRule).toContain("min-height: 48px");
+  expect(rowRule).toContain("font-size: var(--font-size-body)");
+  expect(rowRule).not.toContain("font-size: var(--font-size-ui)");
+});

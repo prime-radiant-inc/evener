@@ -9,6 +9,12 @@ const CLASS = {
   actions: requireClass(styles.actions, "welcome.module.css", "actions"),
 };
 
+const EXAMPLE_PROMPTS = [
+  "Find and fix the root cause of a flaky test",
+  "Audit error handling across the auth package",
+  "Explain how requests flow from router to handler",
+] as const;
+
 export interface WelcomePaneParams {
   // Shown as the empty state's hint - e.g. the note /new renders while the
   // spawn pane doesn't exist yet (Wave 6). Absent on the plain "/" welcome.
@@ -18,6 +24,11 @@ export interface WelcomePaneParams {
 function goToNewSession(): void {
   const url = paneToURL("spawn", {});
   if (url) navigate(url);
+}
+
+function goToExample(prompt: string): void {
+  const url = paneToURL("spawn", {});
+  if (url) navigate(`${url}?prompt=${encodeURIComponent(prompt)}`);
 }
 
 function goToSession(ref: string): void {
@@ -61,6 +72,17 @@ export default function Welcome({ params }: PaneProps<WelcomePaneParams>) {
             <Button variant="quiet" onClick={goToNewSession}>
               New session
             </Button>
+            <p className={styles.orientation}>
+              A session can read and edit the repository, run commands, and delegate work to helpers.
+            </p>
+            <div className={styles.examples}>
+              <p className={styles.examplesLabel}>Try a task to get started</p>
+              {EXAMPLE_PROMPTS.map((prompt) => (
+                <Button key={prompt} variant="quiet" size="sm" onClick={() => goToExample(prompt)}>
+                  {prompt}
+                </Button>
+              ))}
+            </div>
           </div>
         }
       />
