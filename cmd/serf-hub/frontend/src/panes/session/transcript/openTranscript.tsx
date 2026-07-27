@@ -1,11 +1,13 @@
+import * as paneActions from "../../../shell/paneActions";
+import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import { Button } from "../../../widgets";
 import { OpenBesideIcon } from "./fileOpenBeside";
-import * as paneActions from "../../../shell/paneActions";
 
 // Opens the read-only transcript surface through the workspace action so its
 // desktop beside-placement, mobile fallback, and pane deduplication stay one
 // behavior for every transcript link.
 export function openTranscript(ref: string, parentRef?: string): void {
+  if (parentRef !== undefined) openTopLevelSession(parentRef);
   paneActions.openBeside({
     type: "transcript",
     params: parentRef === undefined ? { ref } : { ref, parentRef },

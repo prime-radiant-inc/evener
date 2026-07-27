@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { lazy } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { registerPane } from "../../../../shell/paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { SteeringItem } from "./SteeringItem";
@@ -8,6 +12,13 @@ import { SteeringItem } from "./SteeringItem";
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
+  resetWorkspaceStoreForTests();
+});
+
+registerPane({
+  id: "session",
+  title: () => "test session",
+  component: lazy(() => Promise.resolve({ default: () => null })),
 });
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
@@ -222,7 +233,7 @@ test('source "user" is checked before suppression - a user-sourced steer is neve
 // pattern like /completed all tasks/ could - so a card renders whether or not
 // the steer carries a kind at all (contracts §17).
 
-const JOB_NOTIFICATION_STEERING = `<job-notification job_id="job_7" event="completed" job_type="delegate" status="completed" reason="" output_bytes="9" transcript_ref="ref_x">
+const JOB_NOTIFICATION_STEERING = `<job-notification job_id="job_7" event="completed" job_type="delegate" status="completed" reason="" output_bytes="9" transcript_ref="local:ref_x">
 Job job_7 completed.
 excerpt:
 finished the lane
@@ -233,6 +244,32 @@ test("a job-notification steer renders a notification card (not a steering divid
   expect(screen.getByTestId("notification-card")).toBeTruthy();
   expect(screen.queryByTestId("steering-item")).toBeNull();
   expect(screen.getByText("Job completed")).toBeTruthy();
+});
+
+test("a notification restores its owning session to main before opening the child beside it", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
+  const user = userEvent.setup();
+  render(
+    <SteeringItem
+      item={item({ text: JOB_NOTIFICATION_STEERING })}
+      turn={turn}
+      live={false}
+      sessionRef="local:owner"
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Open subagent" }));
+
+  const panes = workspaceStore.getState().panes;
+  const owner = panes.find((pane) => pane.type === "session" && pane.params && (pane.params as { ref?: string }).ref === "local:owner");
+  const child = panes.find((pane) => pane.type === "transcript");
+  expect(owner?.slot).toBe("main");
+  expect(owner?.params).toEqual({ ref: "local:owner" });
+  expect(panes.some((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:unrelated")).toBe(
+    false,
+  );
+  expect(child?.slot).toBe("secondary");
+  expect(child?.params).toEqual({ ref: "local:ref_x", parentRef: "local:owner" });
 });
 
 test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {

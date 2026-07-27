@@ -103,7 +103,13 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
   return <div className={CLASS.metadata}>{fields}</div>;
 }
 
-export function NotificationCard({ notification }: { notification: ParsedNotification }) {
+export function NotificationCard({
+  notification,
+  sessionRef,
+}: {
+  notification: ParsedNotification;
+  sessionRef?: string;
+}) {
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   return (
@@ -115,7 +121,7 @@ export function NotificationCard({ notification }: { notification: ParsedNotific
           {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
           {transcriptRef && (
             <span className={CLASS.action}>
-              <OpenTranscriptButton transcriptRef={transcriptRef} label="Open subagent" />
+              <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
             </span>
           )}
         </div>
