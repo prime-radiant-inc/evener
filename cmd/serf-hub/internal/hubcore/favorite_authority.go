@@ -203,7 +203,10 @@ func indexFavoriteNodes(authorities []FavoriteNodeAuthority, sessions favoriteSe
 			continue
 		}
 		node := authorities[0]
-		if node.Kind == FavoriteNodeCluster {
+		switch node.Kind {
+		case FavoriteNodeSession, FavoriteNodeSubagent, FavoriteNodeFork:
+			// Known non-cluster node kinds do not change session validity.
+		case FavoriteNodeCluster:
 			if len(sessions.byID[id]) != 0 || len(sessions.byAlias[id]) != 0 {
 				// A real canonical session and a synthetic node share an
 				// identity or alias. Neither interpretation is safe to present.
@@ -211,6 +214,8 @@ func indexFavoriteNodes(authorities []FavoriteNodeAuthority, sessions favoriteSe
 				continue
 			}
 			index.clusterIDs[id] = true
+		default:
+			index.ambiguousIDs[id] = true
 		}
 	}
 	return index

@@ -179,6 +179,31 @@ func TestClassifyFavoriteDecisions_ClusterAliasCollisionsAreDormant(t *testing.T
 	assertFavoriteClassification(t, got, aliasKey, FavoriteDecisionDormant)
 }
 
+func TestClassifyFavoriteDecisions_UnknownNodeKindCollisionIsDormant(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind FavoriteNodeKind
+	}{
+		{name: "zero", kind: ""},
+		{name: "unknown", kind: FavoriteNodeKind("future-node")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sessionID := hubtest.SessionID(t)
+			key := ArchiveKey{Kind: "session", ID: sessionID}
+			authority := FavoriteAuthority{
+				Sessions: []FavoriteSessionAuthority{{
+					ID: sessionID, TopLevel: true,
+					Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
+				}},
+				Nodes: []FavoriteNodeAuthority{{ID: sessionID, Kind: test.kind, Quality: FavoriteAuthorityComplete}},
+			}
+
+			got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{key: true}, authority)
+			assertFavoriteClassification(t, got, key, FavoriteDecisionDormant)
+		})
+	}
+}
+
 func TestClassifyFavoriteDecisions_LocalRefAliasMustResolveOneToOne(t *testing.T) {
 	canonicalID := hubtest.SessionID(t)
 	aliasKey := ArchiveKey{Kind: "session", ID: "local:" + canonicalID}
