@@ -9,6 +9,7 @@ import {
   PENDING_TIMEOUT_MS,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
+  useAwaitingFirstFrameSend,
   usePendingTurnEntries,
 } from "./pendingTurnsStore";
 
@@ -110,6 +111,93 @@ describe("submitWithPendingTracking", () => {
     });
 
     expect(result.current).toHaveLength(1);
+  });
+
+  test("a send is awaiting its first frame before perform() resolves, survives its user echo, and clears on an authoritative frame", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let resolvePerform: (() => void) | undefined;
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePerform = resolve;
+        }),
+    );
+    const { result: awaitingResult } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    const { result: pendingResult } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+    expect(resolvePerform).toBeTruthy();
+    expect(awaitingResult.current).toBe(true);
+    expect(pendingResult.current).toHaveLength(1);
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        },
+      });
+    });
+    expect(pendingResult.current).toHaveLength(0);
+    expect(awaitingResult.current).toBe(true);
+
+    await act(async () => {
+      resolvePerform?.();
+      await send;
+    });
+    expect(awaitingResult.current).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        },
+      });
+    });
+    expect(awaitingResult.current).toBe(false);
+  });
+
+  test("a rejecting send clears awaiting state after its user echo", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const { result: awaitingResult } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    const { result: pendingResult } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        },
+      });
+    });
+    expect(pendingResult.current).toHaveLength(0);
+    expect(awaitingResult.current).toBe(true);
+
+    await act(async () => {
+      rejectPerform?.(new Error("rejected"));
+      await expect(send).rejects.toThrow("rejected");
+    });
+    expect(awaitingResult.current).toBe(false);
   });
 
   test("a rejecting perform() removes the entry immediately, calls onFailure with the raw error, and rethrows", async () => {
@@ -357,6 +445,134 @@ describe("10s timeout reaper", () => {
     });
 
     expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  test("a send timeout clears awaiting state even when perform() remains unresolved", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let resolvePerform: (() => void) | undefined;
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePerform = resolve;
+        }),
+    );
+    const { result: awaitingResult } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    const { result: pendingResult } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+    expect(awaitingResult.current).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+    });
+    expect(pendingResult.current).toHaveLength(0);
+    expect(awaitingResult.current).toBe(false);
+
+    await act(async () => {
+      resolvePerform?.();
+      await send;
+    });
+    expect(awaitingResult.current).toBe(false);
+  });
+});
+
+describe("awaiting first frame lifecycle cleanup", () => {
+  test("model removal clears awaiting state and a later successful perform cannot restore it", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let resolvePerform: (() => void) | undefined;
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePerform = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    expect(result.current).toBe(true);
+
+    act(() => {
+      threadsStore.getState().releaseThread("ref_a");
+    });
+    expect(result.current).toBe(false);
+
+    await act(async () => {
+      resolvePerform?.();
+      await send;
+    });
+    expect(result.current).toBe(false);
+  });
+
+  test("awaiting state is scoped to each ref", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await hydrate(fake, "ref_b");
+    let resolveA: (() => void) | undefined;
+    let resolveB: (() => void) | undefined;
+    const sendA = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "a", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolveA = resolve;
+        }),
+    );
+    const sendB = submitWithPendingTracking(
+      { ref: "ref_b", method: "send", text: "b", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolveB = resolve;
+        }),
+    );
+    const { result: aResult } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    const { result: bResult } = renderHook(() => useAwaitingFirstFrameSend("ref_b"));
+    expect(aResult.current).toBe(true);
+    expect(bResult.current).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "agent_a", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        },
+      });
+    });
+    expect(aResult.current).toBe(false);
+    expect(bResult.current).toBe(true);
+
+    await act(async () => {
+      resolveA?.();
+      resolveB?.();
+      await Promise.all([sendA, sendB]);
+    });
+  });
+
+  test("reset cleanup removes awaiting state before an unresolved perform settles", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let resolvePerform: (() => void) | undefined;
+    const send = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePerform = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+    expect(result.current).toBe(true);
+
+    act(() => {
+      resetPendingTurnsStoreForTests();
+    });
+    expect(result.current).toBe(false);
+
+    await act(async () => {
+      resolvePerform?.();
+      await send;
+    });
+    expect(result.current).toBe(false);
   });
 });
 

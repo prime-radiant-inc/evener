@@ -283,6 +283,73 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
 });
 
+test("cold-start skeleton stays through a user echo before a successful send resolves", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+
+  let resolveSend: (() => void) | undefined;
+  const send = submitWithPendingTracking(
+    { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  await waitFor(() => expect(resolveSend).toBeTruthy());
+  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+      },
+    } as AnyNotification);
+  });
+  const userMessage = screen.getByTestId("user-message-item");
+  const skeleton = screen.getByTestId("cold-start-skeleton");
+  expect(userMessage.textContent).toContain("hello");
+  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  await act(async () => {
+    resolveSend?.();
+    await send;
+  });
+  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+
+  act(() => {
+    fake.emitNotification({
+      method: "item/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+      },
+    } as AnyNotification);
+  });
+  await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+});
+
 test("cold-start skeleton clears when the first turn terminates without an authoritative frame", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -354,6 +421,7 @@ test("a rejected first send clears the skeleton after its retained user echo eve
   });
   expect(screen.getByTestId("user-message-item").textContent).toContain("hello");
   expect(screen.queryByTestId("pending-chips")).toBeNull();
+  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   await act(async () => {
     rejectSend?.(new Error("daemon rejected the send"));
@@ -381,6 +449,32 @@ test.each(["failed", "error", "cancelled"])(
       fake.emitNotification({
         method: "turn/started",
         params: { ref: "ref_a", turn: { id: "turn_1", status, itemsView: "full" } },
+      } as AnyNotification);
+    });
+
+    await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+  },
+);
+
+test.each(["closed", "systemError"] as const)(
+  "the raw terminal thread status %s clears cold-start awaiting state",
+  async (status) => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+    await act(async () => seedPendingSend());
+    expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: status } },
       } as AnyNotification);
     });
 

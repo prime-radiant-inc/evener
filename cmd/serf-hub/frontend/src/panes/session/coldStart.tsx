@@ -4,10 +4,15 @@ import { useAwaitingFirstFrameSend, usePendingTurnEntries } from "./composer/que
 import styles from "./session.module.css";
 import { SYSTEM_PRELUDE_TURN_ID } from "./transcript/transcriptVisibility";
 
-const TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
+const THREAD_TERMINAL_STATUSES = new Set(["closed", "systemError"]);
+const TURN_TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
 
-function isTerminalStatus(status: string): boolean {
-  return TERMINAL_STATUSES.has(status.toLowerCase());
+function isThreadTerminalStatus(status: string): boolean {
+  return THREAD_TERMINAL_STATUSES.has(status);
+}
+
+function isTurnTerminalStatus(status: string): boolean {
+  return TURN_TERMINAL_STATUSES.has(status.toLowerCase());
 }
 
 function realTurns(turns: readonly TurnModel[]): TurnModel[] {
@@ -19,14 +24,14 @@ function hasAuthoritativeFrame(turn: TurnModel): boolean {
 }
 
 function shouldShowColdStart(model: ThreadModel, hasPendingSend: boolean, awaitingFirstFrame: boolean): boolean {
-  if (isTerminalStatus(model.status.type)) return false;
+  if (isThreadTerminalStatus(model.status.type)) return false;
 
   const turns = realTurns(model.turns);
   if (turns.length === 0) return hasPendingSend || awaitingFirstFrame;
   if (turns.length !== 1) return false;
 
   const [firstTurn] = turns;
-  if (!firstTurn || hasAuthoritativeFrame(firstTurn) || isTerminalStatus(firstTurn.status)) return false;
+  if (!firstTurn || hasAuthoritativeFrame(firstTurn) || isTurnTerminalStatus(firstTurn.status)) return false;
   return hasPendingSend || awaitingFirstFrame;
 }
 

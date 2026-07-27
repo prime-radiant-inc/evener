@@ -43,7 +43,6 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
 let nextId = 0;
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
 const failureCallbacks = new Map<string, (error: unknown) => void>();
-const sendEntryIds = new Set<string>();
 // lastSeenModels is the reconciliation diff baseline: the last ThreadModel
 // this module has actually scanned for each ref. It must advance on EVERY
 // threads-store change (not just when something currently has a pending
@@ -51,10 +50,15 @@ const sendEntryIds = new Set<string>();
 // arrived before it was ever registered - see reconcileAll's own comment.
 const lastSeenModels = new Map<string, ThreadModel>();
 
-const TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
+const THREAD_TERMINAL_STATUSES = new Set(["closed", "systemError"]);
+const TURN_TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
 
-function isTerminalStatus(status: string): boolean {
-  return TERMINAL_STATUSES.has(status.toLowerCase());
+function isThreadTerminalStatus(status: string): boolean {
+  return THREAD_TERMINAL_STATUSES.has(status);
+}
+
+function isTurnTerminalStatus(status: string): boolean {
+  return TURN_TERMINAL_STATUSES.has(status.toLowerCase());
 }
 
 function hasAuthoritativeFrame(model: ThreadModel): boolean {
@@ -67,8 +71,8 @@ function addAwaitingFirstFrame(id: string, ref: string): void {
   const model = threadsStore.getState().threads.get(ref);
   if (
     model &&
-    (isTerminalStatus(model.status.type) ||
-      model.turns.some((turn) => isTerminalStatus(turn.status)) ||
+    (isThreadTerminalStatus(model.status.type) ||
+      model.turns.some((turn) => isTurnTerminalStatus(turn.status)) ||
       hasAuthoritativeFrame(model))
   ) {
     return;
@@ -100,8 +104,8 @@ function reconcileAwaitingFirstFrames(threads: Map<string, ThreadModel>): void {
     const model = threads.get(ref);
     if (
       !model ||
-      isTerminalStatus(model.status.type) ||
-      model.turns.some((turn) => isTerminalStatus(turn.status)) ||
+      isThreadTerminalStatus(model.status.type) ||
+      model.turns.some((turn) => isTurnTerminalStatus(turn.status)) ||
       hasAuthoritativeFrame(model)
     ) {
       next.delete(id);
@@ -138,7 +142,6 @@ function resolveMany(ids: string[]): void {
   if (ids.length === 0) return;
   for (const id of ids) {
     clearBookkeeping(id);
-    sendEntryIds.delete(id);
   }
   pendingTurnsStore.setState((s) => {
     const next = new Map(s.entries);
@@ -148,11 +151,13 @@ function resolveMany(ids: string[]): void {
 }
 
 function failPendingTurn(id: string, error: unknown): void {
-  const isSend = sendEntryIds.has(id);
   const onFailure = failureCallbacks.get(id);
   removeEntry(id);
-  sendEntryIds.delete(id);
-  if (isSend) removeAwaitingFirstFrame(id);
+  // A send may already have had its pending chip reconciled by the user echo
+  // while perform() is still unresolved. Remove its explicit lifecycle by id
+  // on every failure so that late rejection and timeout paths cannot leave a
+  // stale skeleton behind. Non-send entries simply have no matching lifecycle.
+  removeAwaitingFirstFrame(id);
   onFailure?.(error);
 }
 
@@ -251,7 +256,7 @@ export async function submitWithPendingTracking(
     createdAt: Date.now(),
   };
   failureCallbacks.set(id, opts.onFailure);
-  if (opts.method === "send") sendEntryIds.add(id);
+  if (opts.method === "send") addAwaitingFirstFrame(id, opts.ref);
   timeoutHandles.set(
     id,
     setTimeout(() => timeoutPendingTurn(id), PENDING_TIMEOUT_MS),
@@ -264,7 +269,6 @@ export async function submitWithPendingTracking(
 
   try {
     await perform();
-    if (opts.method === "send") addAwaitingFirstFrame(id, opts.ref);
   } catch (err) {
     failPendingTurn(id, err);
     throw err;
@@ -317,7 +321,6 @@ export function resetPendingTurnsStoreForTests(): void {
   for (const timer of timeoutHandles.values()) clearTimeout(timer);
   timeoutHandles.clear();
   failureCallbacks.clear();
-  sendEntryIds.clear();
   lastSeenModels.clear();
   nextId = 0;
   pendingTurnsStore.setState({ entries: new Map(), awaitingFirstFrame: new Map() });
