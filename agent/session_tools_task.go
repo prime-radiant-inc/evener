@@ -65,6 +65,29 @@ func formatTaskUpdates(updates []taskpkg.TaskUpdate) string {
 	return strings.Join(parts, ", ")
 }
 
+// taskToolState is the task-list mutation snapshot carried to human clients.
+// Started is present only for tasks named by the explicit update batch, so the
+// frontend can distinguish a real transition into in_progress from a status
+// reassertion without changing the model-facing tool schema or the persisted
+// Task shape.
+type taskToolState struct {
+	taskpkg.Task
+	Started *bool `json:"started,omitempty"`
+}
+
+func taskToolStateSnapshot(tasks []taskpkg.Task, updated map[int]struct{}, started map[int]bool) []taskToolState {
+	snapshot := make([]taskToolState, len(tasks))
+	for i, task := range tasks {
+		snapshot[i].Task = task
+		if _, ok := updated[task.ID]; !ok {
+			continue
+		}
+		transitioned := started[task.ID]
+		snapshot[i].Started = &transitioned
+	}
+	return snapshot
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -165,19 +188,28 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					updates = append(updates, u)
 				}
+				before := store.View()
 				if err := store.Update(updates); err != nil {
 					return nil, err
 				}
 
 				// Classify the batch so we know whether to auto-advance, fire
 				// a manual-start steering, or emit the "all done" steering.
+				previous := make(map[int]taskpkg.TaskStatus, len(before))
+				for _, task := range before {
+					previous[task.ID] = task.Status
+				}
+				updated := make(map[int]struct{}, len(updates))
+				started := make(map[int]bool)
 				var completedAny bool
 				var manuallyStartedID int
 				for _, u := range updates {
+					updated[u.ID] = struct{}{}
 					if u.Status == taskpkg.TaskDone || u.Status == taskpkg.TaskCancelled {
 						completedAny = true
 					}
-					if u.Status == taskpkg.TaskInProgress {
+					if u.Status == taskpkg.TaskInProgress && previous[u.ID] != taskpkg.TaskInProgress {
+						started[u.ID] = true
 						manuallyStartedID = u.ID
 					}
 				}
@@ -198,7 +230,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return tool.StateResult{Output: "Updated " + formatTaskUpdates(updates) + ".", State: store.View()}, nil
+					total, done := store.Progress()
+					deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
+					return tool.StateResult{
+						Output: "Updated " + formatTaskUpdates(updates) + ".",
+						State:  taskToolStateSnapshot(store.View(), updated, started),
+					}, nil
 				}
 
 				var msg strings.Builder
@@ -231,7 +268,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				total, done := store.Progress()
 				deps.emit(events.EventTaskUpdated, events.TaskUpdatedData{Total: total, Done: done})
 				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", done, total)
-				return tool.StateResult{Output: msg.String(), State: store.View()}, nil
+				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(store.View(), updated, started)}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
