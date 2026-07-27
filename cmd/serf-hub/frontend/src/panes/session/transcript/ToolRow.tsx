@@ -7,6 +7,10 @@
 //
 //     [chevron?] [✗ failure glyph?] [purpose] verb target [· meta] [affordances]
 //
+//   - a COLLAPSED row with both a purpose and a summary composes them onto
+//     ONE line: purpose — summary · duration, the summary demoted, both
+//     ellipsis-clamped (full text on title). An expanded row stacks the
+//     purpose above its revealed body instead.
 //   - the chevron LEADS, appearing only when there is something to expand. It
 //     sits against the content it opens, the way a tree twisty does, rather
 //     than in a right-hand rail: at the far edge of a 76rem reading measure it
@@ -32,6 +36,7 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
+  separator: requireClass(styles.separator, "toolcallitem.module.css", "separator"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   duration: requireClass(styles.duration, "toolcallitem.module.css", "duration"),
@@ -91,6 +96,7 @@ export function ToolRow({
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
+  const oneLine = hasPurpose && hasSummary && !expanded;
   const content = (
     <>
       {expandable && (
@@ -116,14 +122,20 @@ export function ToolRow({
         </span>
       )}
       {hasPurpose && (
-        <span className={CLASS.purpose} data-testid="tool-row-purpose">
+        <span className={CLASS.purpose} data-testid="tool-row-purpose" title={oneLine ? statedPurpose : undefined}>
           {statedPurpose}
+        </span>
+      )}
+      {oneLine && (
+        <span className={CLASS.separator} aria-hidden="true">
+          {" — "}
         </span>
       )}
       {hasSummary && (
         <span
           className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary}
           data-testid="tool-row-summary"
+          title={oneLine ? summary : undefined}
         >
           {summary}
           {/* Nested rather than appended to `summary` itself: a stable hook to
@@ -144,7 +156,13 @@ export function ToolRow({
 
   if (!expandable) {
     return (
-      <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
+      <div
+        className={CLASS.row}
+        data-testid="tool-row"
+        data-oneline={oneLine ? "true" : undefined}
+        data-purpose={hasPurpose ? "true" : undefined}
+        title={title}
+      >
         {content}
       </div>
     );
@@ -165,6 +183,7 @@ export function ToolRow({
     <summary
       className={CLASS.row}
       data-testid="tool-row"
+      data-oneline={oneLine ? "true" : undefined}
       data-purpose={hasPurpose ? "true" : undefined}
       title={title}
       aria-expanded={expanded}
