@@ -122,6 +122,16 @@ test("settled collapses to a closed details with duration and the final nonblank
   expect(summary?.textContent).toBe("Thought · more reasoning");
 });
 
+test("opening the disclosure drops the preview from the summary", () => {
+  const think = item({ id: "think_open_preview", reasoningSummaries: [["First line of reasoning\n\nsecond paragraph"]] });
+  render(<ThinkBlock item={think} turn={turn} live={false} />);
+  const summary = screen.getByText(/Thought/);
+  const preview = summary.textContent?.split("·")[1]?.trim() ?? "";
+  expect(preview).toBeTruthy();
+  fireEvent.click(summary);
+  expect(summary.textContent).not.toContain(preview);
+});
+
 test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
   const { container } = render(
     <ThinkBlock
