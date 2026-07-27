@@ -3,12 +3,14 @@ package main
 import (
 	"encoding/json"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -187,6 +189,9 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if live.Serf.Profile == "" {
 		live.Serf.Profile = past.Serf.Profile
 	}
+	if live.Serf.Tasks == nil {
+		live.Serf.Tasks = past.Serf.Tasks
+	}
 	if params.IncludeTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
@@ -253,6 +258,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			ParentRef: parentRef,
 			Kind:      kind,
 			Profile:   entry.Meta.ProfileID,
+			Tasks:     persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
 			// A past/exited thread advertises exactly the actions the hub can
 			// carry out for it once qp94's auto-resume runs: the resume-and-retry
 			// session mutations (compact, clear, change model, shutdown) plus the
@@ -287,6 +293,30 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	}
 	annotateThreadProjects([]appwire.Thread{thread})
 	return thread, nil
+}
+
+// persistedTaskAggregate returns a task count only when the session has a
+// persisted task file. TaskStore.Load treats a missing file as an empty store,
+// which is correct for serf/tasks/list but would turn an unsupported or old
+// session into a false authoritative zero in a thread snapshot. Check presence
+// first, then reuse TaskStore.Load and View for the actual data semantics.
+func persistedTaskAggregate(stateDir, sessionID string) *appwire.TaskAggregate {
+	path := filepath.Join(stateDir, "tasks", sessionID+".json")
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	tasks := taskpkg.NewTaskStore(stateDir, sessionID)
+	if err := tasks.Load(); err != nil {
+		return nil
+	}
+	items := tasks.View()
+	done := 0
+	for _, task := range items {
+		if task.Status == taskpkg.TaskDone {
+			done++
+		}
+	}
+	return &appwire.TaskAggregate{Total: len(items), Done: done}
 }
 
 // windowedReadResponse bounds a thread's turns to the latest TurnLimit for a

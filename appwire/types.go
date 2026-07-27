@@ -232,6 +232,14 @@ type ThreadStatus struct {
 	ActiveFlags []string `json:"activeFlags,omitempty"`
 }
 
+// TaskAggregate carries the authoritative task-list progress for a thread
+// snapshot. A nil *TaskAggregate on SerfThread means the source cannot know
+// the session's task state; a present zero is an authoritative empty list.
+type TaskAggregate struct {
+	Total int `json:"total"`
+	Done  int `json:"done"`
+}
+
 type SerfThread struct {
 	Ref              string             `json:"ref"`
 	ParentRef        string             `json:"parentRef,omitempty"`
@@ -250,6 +258,10 @@ type SerfThread struct {
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
 	Queue QueueState `json:"queue"`
+	// Tasks carries the task-list progress for a session snapshot. It is nil
+	// when the source cannot authoritatively read task state, including an old
+	// daemon or a missing persisted task file; a present zero is real zero.
+	Tasks *TaskAggregate `json:"tasks,omitempty"`
 	// Goal carries the session's /goal state when a goal is set, else nil.
 	// It powers `/goal status` and a future status-bar indicator without a
 	// bespoke transport — like Queue, it is structured per-session state read

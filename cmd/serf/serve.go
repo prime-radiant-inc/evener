@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
@@ -90,6 +91,7 @@ type serveServer interface {
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
 	SetDetailedStatusFunc(func() server.DetailedStatus)
 	SetTasksFunc(func() any)
+	SetTaskAggregateFunc(func() *appwire.TaskAggregate)
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -596,6 +598,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return agentToServerDetailedStatus(getSession().DetailedStatus())
 	})
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate {
+		tasks := getSession().Tasks()
+		done := 0
+		for _, task := range tasks {
+			if task.Status == taskpkg.TaskDone {
+				done++
+			}
+		}
+		return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+	})
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
 		currentMu.RLock()
