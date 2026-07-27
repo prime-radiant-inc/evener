@@ -379,14 +379,14 @@ rewrite carried an already-diverged decision forward faithfully.
 **19 · Diff / patch** — chose A (collapsed `+N −N` expanding to a desaturated
 unified diff). Shipped `ec0e04f43`.
 
-Verdict **CHANGED — a documented disagreement worth re-ratifying.** The
-collapse-and-expand shape is live. But the mockup states, in its own capitals, a
-**"CRITICAL CONSTRAINT"** that diff add/remove "must NOT use the semantic
-colors" — and `widgets/diffblock:.add/.del` use exactly `--alive-bg` and
-`--danger-bg`, with an allowlist entry sanctioning it. Two generations of the
-same design system disagree: the mockup wanted diffs to own a fifth,
-non-semantic pair; the rewrite holds that chroma is scarce and the four hues are
-reused everywhere. Neither is obviously wrong. Nobody has decided between them.
+Verdict **CHANGED — Jesse re-ratified the palette in kata 9jew (2026-07-26).**
+The collapse-and-expand shape is live. The mockup's own capitals remain the
+authoritative visual intent: diff add/remove uses a dedicated, quiet,
+non-semantic pair because those colors are syntax/domain notation, not status.
+`widgets/diffblock:.add/.del` now use `--diff-add-bg`/`--diff-del-bg`, with
+`+`/`−` markers as the independent meaning channel; the old semantic-token
+allowlist entry is removed. The implementation ruling is recorded in
+`docs/web-ui/design-system.md` §4 so mockup 19 cannot reopen the contradiction.
 
 **20 · Multi-image** — chose B (contact-sheet grid + set-navigating lightbox).
 D (provenance-grouped) was dropped for want of a backend signal. Shipped
