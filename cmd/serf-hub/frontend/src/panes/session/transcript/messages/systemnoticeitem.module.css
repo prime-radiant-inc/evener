@@ -86,15 +86,8 @@
   margin-top: var(--space-2);
 }
 
-/* Round-timings disclosure (SystemNoticeItem.tsx's RoundTimingsLine): same
- * hairline-bordered-box grammar as .scaffold, but its own classes - this box
- * holds a per-phase duration breakdown, not a scaffolding text block, and the
- * two concepts stay named for what they are. */
 .timings {
   margin: var(--space-1) 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
 }
 
 .timingsSummary {
@@ -105,9 +98,8 @@
 }
 
 .timingsBody {
-  margin-top: var(--space-2);
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--edge);
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
 }
 
 .timingsPhase {
