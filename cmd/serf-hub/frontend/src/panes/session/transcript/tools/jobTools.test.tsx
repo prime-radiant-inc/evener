@@ -83,6 +83,38 @@ test("job_list: body shows the tool's own formatted listing text", () => {
   expect(screen.getByText(/1 job\(s\)\./)).toBeTruthy();
 });
 
+test("job_list: body renders stable direct raw state when the producer supplies it", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <Body
+      item={item({
+        toolName: "job_list",
+        output: "formatted listing text",
+        raw: {
+          jobs: [
+            {
+              job_id: "job_raw",
+              type: "shell",
+              status: "running",
+              phase: "compiling",
+              description: "build the frontend",
+            },
+          ],
+          count: 1,
+          total: 1,
+        },
+      })}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("job-list-structured")).toBeTruthy();
+  expect(screen.getByText(/job_raw/)).toBeTruthy();
+  expect(screen.getByText(/compiling/)).toBeTruthy();
+  expect(screen.getByText(/build the frontend/)).toBeTruthy();
+  expect(screen.queryByText("formatted listing text")).toBeNull();
+});
+
 // --- job_stop -----------------------------------------------------------
 
 test("job_stop: summary shows the target job and the tool's own outcome footer", () => {

@@ -1,11 +1,11 @@
 // Shared formatting/parsing helpers for the per-tool descriptors in this
 // directory. Ground-truth note: the model carries the tool call's own output
-// TEXT (item.output), its input arguments (item.argumentsJSON), its error/
-// denial message (item.error), and a shell call's exit code (item.exitCode) —
-// all mapped by protocol/reducer.ts's wireItemToModel. ThreadItem.raw (the
-// tool_state snapshot) is among the wire fields dropped there, so every
-// helper here works from plain text/JSON-args, never from a structured
-// tool_state snapshot the legacy renderer-tools.js relied on.
+// TEXT (item.output), input arguments (item.argumentsJSON), error/denial
+// message (item.error), typed shell exit code (item.exitCode), and optional
+// direct producer state (item.raw), all mapped by protocol/reducer.ts's
+// wireItemToModel. These helpers work from text and JSON arguments because
+// their current callers do not share a stable structured state shape; a body
+// that has a useful producer state parses item.raw at its own domain boundary.
 
 // clip is a head-truncation: text at or under `max` passes through
 // unchanged; over budget, keeps the first `max` chars and appends a single
@@ -83,11 +83,13 @@ export function parseArgs(argumentsJSON: string | undefined): Record<string, unk
   }
 }
 
-// parseJSONObject is parseArgs' sibling for parsing a tool's OWN qualifying
-// output text as JSON (only the `delegate` tool's output is actually
-// JSON - see this module's own file header) - returns undefined (not {})
-// on any failure, so a caller can distinguish "no JSON here, fall back to
-// plain text" from "valid JSON, happens to be empty".
+// parseJSONObject is parseArgs' sibling for parsing a tool's own output text
+// when that producer's output contract is whole-object JSON (for example
+// job_status and delegate). It does not parse item.raw: raw is already the
+// producer's direct structured state, and callers that need it validate that
+// domain shape explicitly. Returns undefined (not {}) on any failure, so a
+// caller can distinguish "no JSON here, fall back to plain text" from
+// "valid JSON, happens to be empty".
 export function parseJSONObject(text: string | undefined): Record<string, unknown> | undefined {
   if (text === undefined) return undefined;
   try {
