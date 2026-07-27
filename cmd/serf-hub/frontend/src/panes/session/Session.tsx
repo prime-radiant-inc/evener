@@ -22,6 +22,7 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
+import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -168,6 +169,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
   const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+  const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
@@ -210,7 +212,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       }
     >
       <SandboxEscalationRail sessionRef={ref} />
-      {isDormantTranscript(model.turns) ? (
+      {showColdStartSkeleton ? (
+        <ColdStartSkeleton />
+      ) : isDormantTranscript(model.turns) ? (
         <EmptyTranscript active={model.status.type === "active"} />
       ) : (
         <div className={styles.transcript}>

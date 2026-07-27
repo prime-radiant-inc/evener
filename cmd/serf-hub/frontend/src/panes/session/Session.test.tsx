@@ -220,10 +220,7 @@ test("a session that has never run invites the first message", async () => {
 });
 
 async function seedPendingSend(ref = "ref_a"): Promise<void> {
-  await submitWithPendingTracking(
-    { ref, method: "send", text: "hello", onFailure: () => {} },
-    () => Promise.resolve(),
-  );
+  await submitWithPendingTracking({ ref, method: "send", text: "hello", onFailure: () => {} }, () => Promise.resolve());
 }
 
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
@@ -241,7 +238,9 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   expect(screen.getByTestId("pending-chips")).toBeTruthy();
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
-  expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(true);
+  expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
+    true,
+  );
 
   act(() => {
     fake.emitNotification({
@@ -297,7 +296,10 @@ test("cold-start skeleton clears when the first turn terminates without an autho
     } as AnyNotification);
     fake.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } } },
+      params: {
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
+      },
     } as AnyNotification);
   });
 
