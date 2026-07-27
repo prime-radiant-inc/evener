@@ -16,7 +16,7 @@ import { ImageGallery } from "./flow/ImageGallery";
 import { ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
-import { toolRendererFor } from "./toolRenderers";
+import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
@@ -64,17 +64,6 @@ function delegateStatusForItem(
   return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromItem(item);
 }
 
-// A tool call failed or was denied when its ItemModel carries error text. That
-// PRESENCE is the primary signal (the reducer maps ThreadItem.error straight
-// through, so it survives an old-daemon reload whose settled status is still
-// "completed"); the honest status "failed" the wire now stamps
-// (apptranscript.SettledToolStatus, appwire_projection.go:438) is corroboration
-// for the same-daemon live/reload paths. A whitespace-empty error is not a
-// failure — the projector only stamps failed when data.Error != "".
-function toolFailed(item: ItemRenderProps["item"]): boolean {
-  return (item.error !== undefined && item.error !== "") || item.status === "failed";
-}
-
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below - the descriptor's Body only ever gets `item`/`live` too, see
@@ -115,7 +104,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // Two independent failure signals, OR'd: the generic wire one (error text /
   // honest status) and the descriptor's own (a shell command that ran and
   // exited nonzero is a clean tool RESULT the reader still needs marked).
-  const failed = toolFailed(item) || (descriptor.failed?.(item) ?? false);
+  const failed = toolCallFailed(item);
   const hasErrorText = item.error !== undefined && item.error !== "";
   // Rendered in TWO places, deliberately: the collapsed row's hover title (a
   // glance) and the expanded body as real text (the keyboard-reachable copy).

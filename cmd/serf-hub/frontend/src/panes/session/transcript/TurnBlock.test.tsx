@@ -6,6 +6,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
+import "./tools";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global, so
@@ -124,6 +125,47 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   // output confirms the descriptor's body ran rather than an empty shell.
   fireEvent.click(screen.getByTestId("tool-row"));
   expect(screen.getByText("tool output")).toBeTruthy();
+});
+
+test("groups a settled non-final tool run behind its highest-consequence summary and keeps one row per call", () => {
+  const items = [
+    item({
+      id: "read-a",
+      type: "commandExecution",
+      toolName: "read_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({
+      id: "write",
+      type: "commandExecution",
+      toolName: "write_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({
+      id: "read-b",
+      type: "commandExecution",
+      toolName: "read_file",
+      argumentsJSON: JSON.stringify({ file_path: "src/cache.go" }),
+      status: "completed",
+    }),
+    item({ id: "reply", type: "agentMessage", text: "tests green" }),
+  ];
+  render(<TurnBlock turn={turn(items)} />);
+
+  const cluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
+  expect(cluster.open).toBe(false);
+  expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(1);
+  expect(cluster.textContent).toContain("3 steps");
+  expect(cluster.textContent).toContain("Wrote src/cache.go");
+  expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+
+  fireEvent.click(cluster.querySelector("summary")!);
+  expect(cluster.open).toBe(true);
+  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 });
 
 test("computes live per item from its own status, passed through to the renderer", () => {
