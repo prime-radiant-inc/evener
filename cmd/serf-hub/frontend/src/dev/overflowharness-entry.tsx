@@ -55,7 +55,7 @@ const SYSTEM_PROMPT =
   "## Identity\n\nYou are a careful assistant working inside a transcript UI.\n\n" +
   "## Working agreement\n\n" +
   "Use the available context precisely, explain decisions plainly, and keep useful output readable at narrow widths.\n\n".repeat(
-    320,
+    195,
   );
 
 const snapshot: ThreadReadResponse = {
@@ -119,6 +119,17 @@ const snapshot: ThreadReadResponse = {
             text: SYSTEM_PROMPT,
             eventKind: "system_prompt",
           },
+          {
+            type: "steering",
+            id: "i7",
+            turnId: "turn_1",
+            steeringKind: "notification",
+            text: `<job-notification job_id="job_overflow" event="completed" job_type="delegate" status="completed" output_bytes="4" transcript_ref="local:child">
+Job job_overflow completed.
+excerpt:
+The child report is ready.
+</job-notification>`,
+          },
         ],
       },
     ],
@@ -160,6 +171,19 @@ interface Scroller {
   escapees: Escapee[];
 }
 
+interface DisclosureContract {
+  kind: string;
+  summaryDisplay: string;
+  markerDisplay: string;
+  summaryWidth: number;
+  bodyWidth: number;
+  summaryLeft: number;
+  bodyLeft: number;
+  bodyTop: number;
+  summaryBottom: number;
+  expectedWidth: number;
+}
+
 // A scroll container is horizontally overflowing when its content is wider
 // than its own content box. Reporting the container alone is not actionable,
 // so each one also names the deepest descendants whose right edge is past its
@@ -180,11 +204,48 @@ interface Scroller {
 // The second: the standard visually-hidden recipe (`width: 1px; overflow:
 // hidden`) is a 1px box on every page that has one, and is not a pane anyone
 // can see or scroll.
-function measure(): { width: number; scrollers: Scroller[]; ignored: string[] } {
+function disclosureContract(kind: string, details: HTMLDetailsElement): DisclosureContract | null {
+  const summary = details.firstElementChild;
+  const body = details.children[1];
+  if (!(summary instanceof HTMLElement) || !(body instanceof HTMLElement) || summary.tagName !== "SUMMARY") return null;
+
+  const wasOpen = details.open;
+  details.open = true;
+  const summaryBox = summary.getBoundingClientRect();
+  const bodyBox = body.getBoundingClientRect();
+  const detailsStyle = getComputedStyle(details);
+  const expectedWidth =
+    details.clientWidth - Number.parseFloat(detailsStyle.paddingLeft) - Number.parseFloat(detailsStyle.paddingRight);
+  const result = {
+    kind,
+    summaryDisplay: getComputedStyle(summary).display,
+    markerDisplay: getComputedStyle(summary, "::marker").display,
+    summaryWidth: summaryBox.width,
+    bodyWidth: bodyBox.width,
+    summaryLeft: summaryBox.left,
+    bodyLeft: bodyBox.left,
+    bodyTop: bodyBox.top,
+    summaryBottom: summaryBox.bottom,
+    expectedWidth,
+  };
+  details.open = wasOpen;
+  return result;
+}
+
+function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; disclosures: DisclosureContract[] } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
   const ignored: string[] = [];
+  const disclosureSelectors: Array<[string, string]> = [
+    ["system-prompt", "[data-testid=system-notice-scaffold]"],
+    ["raw-notification", "[data-testid=notification-raw-disclosure]"],
+  ];
+  const disclosures = disclosureSelectors.flatMap(([kind, selector]) => {
+    const details = pane.querySelector<HTMLDetailsElement>(selector);
+    const measured = details ? disclosureContract(kind, details) : null;
+    return measured ? [measured] : [];
+  });
 
   for (const el of Array.from(pane.querySelectorAll<HTMLElement>("*"))) {
     const overflowPx = el.scrollWidth - el.clientWidth;
@@ -228,7 +289,7 @@ function measure(): { width: number; scrollers: Scroller[]; ignored: string[] } 
       escapees: escapees.slice(0, 12),
     });
   }
-  return { width, scrollers, ignored };
+  return { width, scrollers, ignored, disclosures };
 }
 
 // Direct-children geometry for one selector: which flex line each item landed

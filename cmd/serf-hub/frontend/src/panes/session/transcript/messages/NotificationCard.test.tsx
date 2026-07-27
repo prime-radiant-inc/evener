@@ -1,9 +1,16 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
+
+beforeAll(async () => {
+  await import("../../");
+});
 
 afterEach(() => {
   cleanup();
@@ -83,6 +90,34 @@ test("a valid local child ref opens the shared transcript action beside the focu
   expect(opened?.slot).toBe("secondary");
 });
 
+test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
+  workspaceStore.setState({
+    panes: [
+      { id: "unrelated", type: "session", params: { ref: "local:unrelated" }, slot: "main" },
+      { id: "owner", type: "session", params: { ref: "local:owner" }, slot: "secondary" },
+    ],
+    focusedPaneId: "unrelated",
+  });
+  const user = userEvent.setup();
+  render(<NotificationCard notification={notif({ transcriptRef: "local:child" })} sessionRef="local:owner" />);
+
+  await user.click(screen.getByRole("button", { name: "Open subagent" }));
+
+  const state = workspaceStore.getState();
+  const owner = state.panes.find(
+    (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === "local:owner",
+  );
+  const child = state.panes.find(
+    (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:child",
+  );
+  expect(state.panes.some((pane) => (pane.params as { ref?: string }).ref === "local:unrelated")).toBe(false);
+  expect(owner?.slot).toBe("main");
+  expect(child?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+  expect(child?.slot).toBe("secondary");
+  expect(state.mainPane()?.id).toBe(owner?.id);
+  expect(state.focusedPaneId).toBe(child?.id);
+});
+
 test("a qualified remote child ref keeps its identity when opened", async () => {
   workspaceStore.setState({
     panes: [{ id: "main", type: "session", params: { ref: "local:parent" }, slot: "main" }],
@@ -136,6 +171,22 @@ test("keeps raw notification as the one direct full-width disclosure row", () =>
   expect(raw.parentElement).toBe(root);
   expect(raw.querySelector("summary")?.textContent).toBe("Raw notification");
   expect(raw.querySelector("pre")?.textContent).toContain("<job-notification");
+});
+
+test("keeps the raw disclosure native and preserves its visible marker row", () => {
+  render(<NotificationCard notification={notif()} />);
+  const raw = screen.getByTestId("notification-raw-disclosure") as HTMLDetailsElement;
+  const summary = raw.querySelector("summary");
+  expect(summary?.tagName).toBe("SUMMARY");
+  expect(summary?.getAttribute("role")).toBeNull();
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "notificationcard.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const summaryRule = css.match(/\.summary\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(summaryRule).toContain("display: list-item");
+  expect(summaryRule).toContain("width: 100%");
+  expect(summaryRule).toContain("max-width: 100%");
+  expect(summaryRule).toContain("min-width: 0");
 });
 
 test("a communicate message renders through markdown", () => {

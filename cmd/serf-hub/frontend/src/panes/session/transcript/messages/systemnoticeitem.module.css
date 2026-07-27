@@ -66,9 +66,10 @@
  * affordance. A full-width block lets a future longer label wrap without
  * stealing width from the expanded body. */
 .scaffoldSummary {
-  display: block;
+  display: list-item;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;

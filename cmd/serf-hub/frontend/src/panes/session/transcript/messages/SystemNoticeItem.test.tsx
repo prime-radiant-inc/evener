@@ -195,7 +195,7 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
 
 test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
   showSystemPrompt();
-  const text = `## Identity\n\n${"You are a careful assistant. ".repeat(40)}`;
+  const text = `## Identity\n\n${"You are a careful assistant. ".repeat(1000)}`;
   render(<TurnBlock turn={turnWith([item("prompt", { text, eventKind: "system_prompt" })])} />);
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   const summary = scaffold.querySelector("summary");
@@ -206,6 +206,8 @@ test("an expanded system prompt keeps its summary and Markdown body in full-widt
   expect(scaffold.children).toHaveLength(2);
   expect(scaffold.children[0]).toBe(summary);
   expect(scaffold.children[1]).toBe(body);
+  expect(summary?.tagName).toBe("SUMMARY");
+  expect(summary?.getAttribute("role")).toBeNull();
 
   fireEvent.click(summary!);
   expect(scaffold.open).toBe(true);
@@ -222,7 +224,8 @@ test("the system prompt scaffold CSS makes the summary and body block rows", () 
   };
   expect(rule("scaffold")).toContain("display: block");
   expect(rule("scaffold")).not.toContain("display: flex");
-  expect(rule("scaffoldSummary")).toContain("display: block");
+  expect(rule("scaffoldSummary")).toContain("display: list-item");
+  expect(rule("scaffoldSummary")).toContain("min-width: 0");
   expect(rule("scaffoldSummary")).toContain("max-width: 100%");
   expect(rule("scaffoldBody")).toContain("width: 100%");
 });

@@ -212,6 +212,33 @@ async function main() {
 
     for (const width of sweep) {
       const result = await measureAt(cdpPort, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
+      let widthFailed = false;
+      if (result.disclosures.length !== 2) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`);
+      }
+      for (const disclosure of result.disclosures) {
+        const fullWidth =
+          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
+        if (
+          disclosure.summaryDisplay !== "list-item" ||
+          disclosure.markerDisplay === "none" ||
+          !fullWidth ||
+          !stacked ||
+          !aligned
+        ) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
+          );
+        }
+      }
       // Never silent about what was excluded: a 1px-wide box is a
       // visually-hidden clip container (the standard screen-reader recipe),
       // not a pane anyone can scroll - but it is reported, not dropped.
@@ -219,19 +246,20 @@ async function main() {
         console.log(`${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`);
       }
       if (result.scrollers.length === 0) {
-        console.log(`${width}px ... PASS - nothing inside the pane scrolls horizontally`);
-        continue;
-      }
-      failed++;
-      console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
-      for (const s of result.scrollers) {
-        console.log(`    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`);
-        // Deepest first: the innermost escapee is the element actually too
-        // wide; its ancestors are only carrying that width upward.
-        for (const e of s.escapees) {
-          console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+        if (!widthFailed) console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+      } else {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+        for (const s of result.scrollers) {
+          console.log(`    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`);
+          // Deepest first: the innermost escapee is the element actually too
+          // wide; its ancestors are only carrying that width upward.
+          for (const e of s.escapees) {
+            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+          }
         }
       }
+      if (widthFailed) failed++;
     }
   } finally {
     cleanup();
