@@ -64,6 +64,14 @@ test("preserves actual elapsed milliseconds from two real ISO timestamps", () =>
   expect(thoughtDurationMs("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:04.600Z")).toBe(4_600);
 });
 
+test("rejects impossible calendar timestamps while accepting leap days and offsets", () => {
+  expect(thoughtDurationMs("2026-02-30T00:00:00.000Z", "2026-03-03T00:00:00.000Z")).toBeUndefined();
+  expect(thoughtDurationMs("2026-13-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z")).toBeUndefined();
+  expect(thoughtDurationMs("2024-02-29T00:00:00.000Z", "2024-03-01T00:00:00.000Z")).toBe(86_400_000);
+  expect(thoughtDurationMs("2026-01-01T00:00:00.000-05:00", "2026-01-01T01:00:00.000-05:00")).toBe(3_600_000);
+  expect(thoughtDurationMs("2026-01-01T00:00:00.12Z", "2026-01-01T00:00:01.123456Z")).toBe(1_003);
+});
+
 test("a sub-second elapsed span stays sub-second", () => {
   expect(thoughtDurationMs("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.200Z")).toBe(200);
 });
@@ -111,6 +119,26 @@ test("lastMeaningfulThoughtLine clips only when the final line exceeds the bound
   expect(lastMeaningfulThoughtLine(["first", "short"], 11)).toBe("short");
 });
 
+test("lastMeaningfulThoughtLine clips without splitting Unicode code points", () => {
+  expect(lastMeaningfulThoughtLine([`a${"🙂".repeat(10)}`], 5)).toBe("a🙂🙂🙂🙂…");
+});
+
 test("lastMeaningfulThoughtLine removes only common Markdown decoration from the plain preview", () => {
   expect(lastMeaningfulThoughtLine(["## plan", "- **ship** `it`"], 80)).toBe("ship it");
+});
+
+test("lastMeaningfulThoughtLine extracts readable Markdown without damaging identifiers", () => {
+  expect(lastMeaningfulThoughtLine(["__bold__ _em_"], 80)).toBe("bold em");
+  expect(lastMeaningfulThoughtLine(["![diagram](https://x/image_(1).png)"], 80)).toBe("diagram");
+  expect(lastMeaningfulThoughtLine(["[docs](https://x/path_(1)/docs)"], 80)).toBe("docs");
+  expect(lastMeaningfulThoughtLine(["> > - [ ] **task**"], 80)).toBe("task");
+  expect(lastMeaningfulThoughtLine(["> ## heading"], 80)).toBe("heading");
+  expect(lastMeaningfulThoughtLine(["## heading `code` ordinary_path_name"], 80)).toBe(
+    "heading code ordinary_path_name",
+  );
+});
+
+test("formatThoughtDuration chooses the seconds tier before rounding", () => {
+  expect(formatThoughtDuration(9_999)).toBe("10.0s");
+  expect(formatThoughtDuration(10_000)).toBe("10s");
 });
