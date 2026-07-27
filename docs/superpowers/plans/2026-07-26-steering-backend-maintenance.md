@@ -4,7 +4,7 @@
 
 **Goal:** Resolve kata yyzz, 9tzm, hb55, x8vk, ppf1, and mjf5 with minimal, deterministic changes to steering coverage, transcript persistence, locking conventions, and stale documentation.
 
-**Architecture:** Keep the existing steering production path unchanged except for removing the uncalled generic durable helper. Make the producer coverage test parse non-test Go files and count identifier references, extend the existing on-disk apptranscript reload harness, and update only comments/spec claims proven stale by current code.
+**Architecture:** Keep the existing steering production path unchanged except for removing the uncalled generic durable helper. Make the producer coverage test parse non-test Go files and count `events.SteeringKind*` selector references, extend the existing on-disk apptranscript reload harness, and update only comments/spec claims proven stale by current code.
 
 **Tech Stack:** Go, `go/ast`, Go `testing`, JSONL transcripts, `gofmt`, kata CLI.
 
@@ -24,13 +24,13 @@
 
 **Interfaces:**
 - Consumes: parsed non-test `agent/*.go` files and `events.AllSteeringKinds`.
-- Produces: a counted AST identifier-reference helper used by `TestEverySteeringKindHasAProducer`.
+- Produces: a counted AST selector-reference helper used by `TestEverySteeringKindHasAProducer`.
 
 - [ ] **Step 1: Write the failing AST behavior test.** Add a focused test fixture containing a matching `events.SteeringKindTasksDone` selector plus a comment, string literal, bare/local identifier, and unrelated-package selector with the same spelling; assert the helper counts exactly one producer reference.
 - [ ] **Step 2: Run the focused test and verify the expected red result.** Run `go test ./agent -run 'TestSteeringKindProducerReferencesRequireEventsSelector' -count=1`; it must fail because the existing helper counts non-`events` identifiers.
 - [ ] **Step 3: Implement the smallest AST helper.** Parse each non-test source file with the already imported `go/parser`, walk `*ast.SelectorExpr` nodes whose package expression is the `events` identifier, count matching selector names, and replace the raw `strings.Contains` body scan with the aggregate count.
 - [ ] **Step 4: Run the focused AST test and producer coverage test.** Run `go test ./agent -run 'Test(SteeringKindProducerReferencesRequireEventsSelector|EverySteeringKindHasAProducer|NoProducerPassesEmptySourceAndEmptyKindToTrySteerEnqueue)$' -count=1` and require PASS.
-- [ ] **Step 5: Commit.** Stage only `agent/steering_kind_coverage_test.go` and commit with a message explaining that comments and string literals no longer count as producers.
+- [ ] **Step 5: Commit.** Stage only `agent/steering_kind_coverage_test.go` and commit with a message explaining that only `events.SteeringKind*` selectors count as producers.
 
 ### Task 2: Remove the dead durable helper and repair its comments
 
@@ -41,6 +41,8 @@
 - Modify: `agent/session_go_tail_coverage_fuzz_test.go`
 - Modify: `agent/session_lifecycle.go`
 - Modify: `agent/session_jobtree_drain.go`
+- Modify: `agent/session_jobtree_drain_test.go`
+- Modify: `agent/job_delegate_send_test.go`
 - Modify: `agent/session_resume_turn_seed_test.go`
 
 **Interfaces:**
@@ -66,7 +68,7 @@
 - Produces: mutex-protected reads/writes for the six existing test accesses, with no new concurrency or helper behavior.
 
 - [ ] **Step 1: Run the focused tests and race checks against the baseline.** Run the affected test names with `go test ./agent -run 'Test(MaybeInjectTaskReminderReturnsItsKind|AcceptNotificationInput_PersistsNotificationKind|ApplyNoToolCallsDecision_PersistsNoToolCallsKind|InjectPostToolSteering_PersistsTaskReminderKind|DeliverSessionStartHookResultForUserTurn_PersistsHookContextKind)$' -count=1`, then repeat with `-race -count=3`.
-- [ ] **Step 2: Add the existing lock/unlock pattern around each direct access.** Protect the one `totalRounds` write and five `history` reads exactly as surrounding tests do; copy a last turn under the lock before asserting outside it.
+- [ ] **Step 2: Add the existing lock/unlock pattern around each direct access.** Protect the two `totalRounds` setup writes and four `history` reads exactly as surrounding tests do; copy a last turn under the lock before asserting outside it.
 - [ ] **Step 3: Run the focused tests and race checks again, then commit.** Require both commands to pass and commit only the four test files with a message describing convention alignment rather than introducing fake concurrency.
 
 ### Task 4: Prove steering-kind JSON persistence through reload
