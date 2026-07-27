@@ -117,7 +117,9 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 });
 
 test("exchange-opening agent message shows a visible eyebrow with the model label", () => {
-  render(<AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />);
+  render(
+    <AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />,
+  );
   const root = screen.getByTestId("agent-message-item");
   expect(root.dataset.opensExchange).toBe("true");
   expect(root.firstElementChild!.textContent).toBe("Agent · k3");

@@ -25,8 +25,15 @@ const CLASS = {
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below), so a fresh turn object on every streaming delta targeting a
 // DIFFERENT item must not re-render an already-settled agent message.
-export const AgentMessageItem = memo(function AgentMessageItem({ item, live, opensExchange, agentLabel }: ItemRenderProps) {
-  const eyebrow = opensExchange ? <div className={CLASS.eyebrow}>{agentLabel ? `Agent · ${agentLabel}` : "Agent"}</div> : null;
+export const AgentMessageItem = memo(function AgentMessageItem({
+  item,
+  live,
+  opensExchange,
+  agentLabel,
+}: ItemRenderProps) {
+  const eyebrow = opensExchange ? (
+    <div className={CLASS.eyebrow}>{agentLabel ? `Agent · ${agentLabel}` : "Agent"}</div>
+  ) : null;
 
   if (live) {
     const chunks = item.pendingText;

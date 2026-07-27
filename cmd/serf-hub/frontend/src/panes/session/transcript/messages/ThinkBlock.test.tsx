@@ -123,7 +123,10 @@ test("settled collapses to a closed details with duration and the final nonblank
 });
 
 test("opening the disclosure drops the preview from the summary", () => {
-  const think = item({ id: "think_open_preview", reasoningSummaries: [["First line of reasoning\n\nsecond paragraph"]] });
+  const think = item({
+    id: "think_open_preview",
+    reasoningSummaries: [["First line of reasoning\n\nsecond paragraph"]],
+  });
   render(<ThinkBlock item={think} turn={turn} live={false} />);
   const summary = screen.getByText(/Thought/);
   const preview = summary.textContent?.split("·")[1]?.trim() ?? "";

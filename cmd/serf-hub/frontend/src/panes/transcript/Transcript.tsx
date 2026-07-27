@@ -25,8 +25,8 @@ import { threadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { BackToParentAction } from "../backToParentAction";
-import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { exchangeOpenersFor } from "../session/transcript/exchangeOpeners";
+import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
 import { useTranscript } from "../session/transcript/useTranscript";
 // Side-effect barrels: register every message item renderer and every tool

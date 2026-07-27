@@ -21,14 +21,14 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
-import { modelLabel } from "./chrome/statusFormat";
 import { SessionChrome } from "./chrome/SessionChrome";
+import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
-import { TurnBlock } from "./transcript/TurnBlock";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
+import { TurnBlock } from "./transcript/TurnBlock";
 import { SYSTEM_PRELUDE_TURN_ID } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and

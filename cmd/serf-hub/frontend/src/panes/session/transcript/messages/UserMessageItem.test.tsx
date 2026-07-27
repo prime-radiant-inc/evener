@@ -61,8 +61,6 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
   expect((UserMessageItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
-
-
 test("renders a stacked eyebrow, not an inline gutter tag", () => {
   render(<UserMessageView item={item({ text: "hello world" })} />);
   const root = screen.getByTestId("user-message-item");
@@ -110,7 +108,9 @@ test("the You row layout is token-backed and has no prose card treatment", () =>
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;/);
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
-  expect(css).toMatch(/\.eyebrow\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-low\);/);
+  expect(css).toMatch(
+    /\.eyebrow\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-low\);/,
+  );
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
