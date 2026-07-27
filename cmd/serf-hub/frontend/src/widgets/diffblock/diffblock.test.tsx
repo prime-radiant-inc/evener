@@ -12,6 +12,7 @@ afterEach(cleanup);
 const styles = {
   add: requireClass(rawStyles.add, "diffblock.module.css", "add"),
   del: requireClass(rawStyles.del, "diffblock.module.css", "del"),
+  marker: requireClass(rawStyles.marker, "diffblock.module.css", "marker"),
   header: requireClass(rawStyles.header, "diffblock.module.css", "header"),
   context: requireClass(rawStyles.context, "diffblock.module.css", "context"),
   meta: requireClass(rawStyles.meta, "diffblock.module.css", "meta"),
@@ -96,6 +97,12 @@ test("preserves a tab character in the stripped content", () => {
   const { container } = render(<DiffBlock unified={SIMPLE_DIFF} />);
   const lines = lineElements(container);
   expect(contentTextOf(lines[8]!)).toBe('\treturn "hi"');
+});
+
+test("keeps add/remove markers as an explicit meaning channel", () => {
+  const { container } = render(<DiffBlock unified={"-old\n+new"} />);
+  const markers = lineElements(container).map((line) => line.querySelector(`.${styles.marker}`)?.textContent);
+  expect(markers).toEqual(["-", "+"]);
 });
 
 // The classic unified-diff ambiguity: once inside a hunk (past the first
