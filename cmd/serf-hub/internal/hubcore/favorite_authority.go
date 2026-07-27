@@ -204,9 +204,9 @@ func indexFavoriteNodes(authorities []FavoriteNodeAuthority, sessions favoriteSe
 		}
 		node := authorities[0]
 		if node.Kind == FavoriteNodeCluster {
-			if len(sessions.byID[id]) != 0 {
+			if len(sessions.byID[id]) != 0 || len(sessions.byAlias[id]) != 0 {
 				// A real canonical session and a synthetic node share an
-				// identity. Neither interpretation is safe to present.
+				// identity or alias. Neither interpretation is safe to present.
 				index.ambiguousIDs[id] = true
 				continue
 			}
@@ -255,6 +255,9 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
 	authority := authorities[0]
+	if nodes.ambiguousIDs[authority.ID] {
+		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
+	}
 	canonicalKey := ArchiveKey{Kind: "session", ID: authority.ID}
 	if authority.Lineage != FavoriteAuthorityComplete || authority.Source != FavoriteAuthorityComplete {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: canonicalKey}

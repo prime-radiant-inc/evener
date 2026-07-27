@@ -151,6 +151,34 @@ func TestClassifyFavoriteDecisions_ClusterInvalidityUsesCurrentNodeKind(t *testi
 	assertFavoriteClassification(t, got, legitimateKey, FavoriteDecisionValid)
 }
 
+func TestClassifyFavoriteDecisions_ClusterAliasCollisionsAreDormant(t *testing.T) {
+	clusterID := "cluster:alias-collision"
+	realID := hubtest.SessionID(t)
+	clusterKey := ArchiveKey{Kind: "session", ID: clusterID}
+	authority := FavoriteAuthority{
+		Sessions: []FavoriteSessionAuthority{{
+			ID: realID, Aliases: []string{clusterID}, TopLevel: true,
+			Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
+		}},
+		Nodes: []FavoriteNodeAuthority{{ID: clusterID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
+	}
+
+	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{clusterKey: true}, authority)
+	assertFavoriteClassification(t, got, clusterKey, FavoriteDecisionDormant)
+
+	canonicalCollisionID := "cluster:canonical-collision"
+	aliasKey := ArchiveKey{Kind: "session", ID: "local:" + canonicalCollisionID}
+	authority = FavoriteAuthority{
+		Sessions: []FavoriteSessionAuthority{{
+			ID: canonicalCollisionID, Aliases: []string{aliasKey.ID}, TopLevel: true,
+			Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete,
+		}},
+		Nodes: []FavoriteNodeAuthority{{ID: canonicalCollisionID, Kind: FavoriteNodeCluster, Quality: FavoriteAuthorityComplete}},
+	}
+	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{aliasKey: true}, authority)
+	assertFavoriteClassification(t, got, aliasKey, FavoriteDecisionDormant)
+}
+
 func TestClassifyFavoriteDecisions_LocalRefAliasMustResolveOneToOne(t *testing.T) {
 	canonicalID := hubtest.SessionID(t)
 	aliasKey := ArchiveKey{Kind: "session", ID: "local:" + canonicalID}
@@ -222,6 +250,7 @@ func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeFlag, beforeDecidedAt := favoriteStoreRow(t, store, falseKey)
 	_ = ClassifyFavoriteDecisions(storedBefore, authority)
 	storedAfter, err := store.Favorites()
 	if err != nil {
@@ -230,6 +259,25 @@ func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t
 	if !reflect.DeepEqual(storedBefore, storedAfter) {
 		t.Fatalf("classifier changed FavoriteStore contents: before %#v, after %#v", storedBefore, storedAfter)
 	}
+	afterFlag, afterDecidedAt := favoriteStoreRow(t, store, falseKey)
+	if beforeFlag != afterFlag || beforeDecidedAt != afterDecidedAt {
+		t.Fatalf("classifier changed false FavoriteStore row: before=(%d,%d), after=(%d,%d)", beforeFlag, beforeDecidedAt, afterFlag, afterDecidedAt)
+	}
+}
+
+func favoriteStoreRow(t *testing.T, store *FavoriteStore, key ArchiveKey) (int, int64) {
+	t.Helper()
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var flag int
+	var decidedAt int64
+	if err := db.QueryRow(`SELECT favorited, decided_at FROM favorite WHERE kind = ? AND id = ?`, key.Kind, key.ID).Scan(&flag, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	return flag, decidedAt
 }
 
 func favoriteSessionAuthoritiesFromMetas(t *testing.T, metas []schema.SessionMeta, complete bool) []FavoriteSessionAuthority {
