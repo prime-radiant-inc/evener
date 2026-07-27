@@ -98,9 +98,10 @@ func TestTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
 	if err := w.Append(schema.Turn{
-		Kind:      schema.TurnUserInput,
-		Message:   llm.User("hello decoded once"),
-		Timestamp: ts,
+		Kind:         schema.TurnSteering,
+		Message:      llm.User("steering decoded once"),
+		Timestamp:    ts,
+		SteeringKind: events.SteeringKindInterrupted,
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -122,14 +123,20 @@ func TestTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("projector called %d times, want 1", calls)
 	}
-	if gotTurn.Kind != schema.TurnUserInput || !gotTurn.Timestamp.Equal(ts) {
+	if gotTurn.Kind != schema.TurnSteering || !gotTurn.Timestamp.Equal(ts) {
 		t.Fatalf("projector's turn = %+v, want the written entry's own Kind/Timestamp", gotTurn)
+	}
+	if gotTurn.SteeringKind != events.SteeringKindInterrupted {
+		t.Fatalf("projector's SteeringKind = %q, want %q", gotTurn.SteeringKind, events.SteeringKindInterrupted)
 	}
 	if len(gotTurn.Message.Content) == 0 {
 		t.Fatalf("projector's turn carries no message content: %+v", gotTurn)
 	}
 	if len(turns) != 1 || turns[0].StartedAt == nil || *turns[0].StartedAt != ts.UnixMilli() {
 		t.Fatalf("turns=%+v, want 1 turn stamped with the same timestamp the projector saw", turns)
+	}
+	if len(turns[0].Items) != 1 || turns[0].Items[0].SteeringKind != events.SteeringKindInterrupted {
+		t.Fatalf("projected steering items=%+v, want interrupted kind", turns[0].Items)
 	}
 }
 

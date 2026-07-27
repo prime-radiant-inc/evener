@@ -392,7 +392,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 // stranded pending is left behind. Like armPendingTerminalNotifications it does
 // NOT skip an already-injected record: an owned pending whose <job-notification>
 // block is already in history but was never marked Delivered (e.g. a crash
-// between appendTurnDurably and markJobNotificationsDelivered, or an interrupted
+// between appendSteeringTurnDurably and markJobNotificationsDelivered, or an interrupted
 // deferred restore) still counts as outstanding, and re-enqueuing it settles it —
 // the delivery path routes an already-injected record to injectedJobNotifs, which
 // marks it Delivered WITHOUT re-appending to history. Unlike arm it appends no

@@ -1075,18 +1075,6 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	}
 }
 
-func (s *Session) appendTurnDurably(kind schema.TurnKind, m llm.Message) error {
-	t := schema.NewTurn(kind, m)
-	if err := s.writeTranscriptDurable(t); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
-	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
-}
-
 // sclock returns the session's injected clock. Production always sets s.clock
 // via NewSession/loadSession (defaulting to clock.Real()); a few tests build a
 // *Session struct literal directly without one, so this falls back to a real

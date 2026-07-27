@@ -708,8 +708,9 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 // the one direct-append site that must fsync before continuing: job
 // notifications, where the durable write is what lets a crash mid-delivery
 // re-token the notification instead of dropping it (spec §4.3). Returns the
-// write error, mirroring appendTurnDurably, so the caller can requeue rather
-// than emit SteeringInjectedData for a turn that never made it to disk.
+// write error, so the caller can requeue rather than emit SteeringInjectedData
+// for a turn that never made it to disk. The durable write happens before the
+// in-memory history append, preserving the crash-window ordering.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind

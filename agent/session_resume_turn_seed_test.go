@@ -23,7 +23,7 @@ import (
 // s.modelResponses (the SessionStartData.Turns field) is deliberately NOT
 // this count: it tracks LLM round-trips only, and undercounts whenever a
 // non-model-response entry (e.g. a durable steering reminder,
-// session_lifecycle.go's appendTurnDurably) was appended to the transcript.
+// session_lifecycle.go's appendSteeringTurnDurably) was appended to the transcript.
 // This test's transcript has exactly 2 entries, both ordinary turns, so a
 // regression that quietly swapped the field back to s.modelResponses would
 // still pass here — TestRestoreSessionStartTranscriptEntryCountExceedsTurns
@@ -78,7 +78,7 @@ func TestRestoreSessionStartCarriesTranscriptEntryCount(t *testing.T) {
 // but the persisted meta claims only 1 model round-trip (TurnCount: 1) — the
 // gap a real session leaves whenever it durably appends a non-model-response
 // entry, e.g. session_lifecycle.go's reconnect steering reminder
-// (appendTurnDurably(schema.TurnSteering, ...)). If a future edit collapsed
+// (appendSteeringTurnDurably(...)). If a future edit collapsed
 // TranscriptEntries back to reading s.modelResponses, this test would still
 // see 1, not the 2 the reload path's entry-index numbering would actually
 // reach for this same file.
@@ -100,7 +100,7 @@ func TestRestoreSessionStartTranscriptEntryCountExceedsTurns(t *testing.T) {
 	}
 	// A durable non-model-response entry (schema.TurnSteering), mirroring what
 	// session_lifecycle.go's reconnect steering reminder persists via
-	// appendTurnDurably — a second transcript entry that never increments
+	// appendSteeringTurnDurably — a second transcript entry that never increments
 	// s.modelResponses.
 	if err := tw.Append(schema.NewTurn(schema.TurnSteering, llm.User("reminder: ..."))); err != nil {
 		t.Fatalf("append steering turn: %v", err)

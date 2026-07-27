@@ -226,9 +226,9 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 				t.Fatalf("NewWriterWithFS: %v", err)
 			}
 			fs.fail = true
-			s := &Session{transcript: w, events: make(chan events.SessionEvent, 8), clock: newTailCoverageClock()}
+			s := &Session{transcript: w, transcriptReady: true, events: make(chan events.SessionEvent, 8), clock: newTailCoverageClock()}
 			s.appendTurn(schema.TurnUserInput, llm.User("append"))
-			if err := s.appendTurnDurably(schema.TurnUserInput, llm.User("durable")); err == nil {
+			if err := s.appendSteeringTurnDurably("durable", ""); err == nil {
 				t.Fatal("durable append unexpectedly succeeded")
 			}
 			s.appendAssistantTurn(llm.Response{Message: llm.Assistant("assistant")}, ModelAttemptMetadata{})

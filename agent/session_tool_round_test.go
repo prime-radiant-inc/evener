@@ -29,7 +29,9 @@ func TestApplyNoToolCallsDecision_PersistsNoToolCallsKind(t *testing.T) {
 	if !retry || err != nil {
 		t.Fatalf("applyNoToolCallsDecision = retry %v err %v, want retry=true err=nil", retry, err)
 	}
+	s.mu.Lock()
 	last := s.history[len(s.history)-1]
+	s.mu.Unlock()
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}
@@ -47,14 +49,18 @@ func TestApplyNoToolCallsDecision_PersistsNoToolCallsKind(t *testing.T) {
 func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+	s.mu.Lock()
 	s.totalRounds = 10 // trigger 3: never used task_list, 10+ rounds in.
+	s.mu.Unlock()
 
 	var toolSigs []string
 	if _, err := s.injectPostToolSteering(context.Background(), nil, &toolSigs); err != nil {
 		t.Fatalf("injectPostToolSteering: %v", err)
 	}
 
+	s.mu.Lock()
 	last := s.history[len(s.history)-1]
+	s.mu.Unlock()
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}

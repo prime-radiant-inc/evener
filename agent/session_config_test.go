@@ -685,7 +685,9 @@ func TestDeliverSessionStartHookResultForUserTurn_PersistsHookContextKind(t *tes
 	s := newTestSession(t)
 	s.deliverSessionStartHookResultForUserTurn(hooks.RunResult{ModelContext: []string{"context from hook"}})
 
+	s.mu.Lock()
 	last := s.history[len(s.history)-1]
+	s.mu.Unlock()
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}

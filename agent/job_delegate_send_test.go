@@ -3054,7 +3054,7 @@ func TestWatchCallerDeliverySuppressedDuringProcessingDeliversAtAcceptBoundary(t
 // to the steering queue. Caller sends are now notification tokens: a
 // non-persistent session still has a jobManager + enqueue, so the drain surfaces
 // the caller frame as a wake token on the notification queue (it never renders a
-// turn here — appendTurnDurably needs a transcript — but the token carries the
+// turn here — the durable steering append needs a transcript — but the token carries the
 // durable pending's identity, which is how the frame reaches the owner). The
 // preserved intent: a non-persistent session still surfaces the caller frame.
 func TestWatchCallerDeliverySurfacesAsTokenForNonPersistentSession(t *testing.T) {

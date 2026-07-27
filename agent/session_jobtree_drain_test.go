@@ -293,7 +293,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 // TestDrainSettlesAlreadyInjectedDurablePending is the adversarial-review
 // regression for kata h8mq: an owned NotifyPending delegate whose
 // <job-notification> block is ALREADY in history (a crash between
-// appendTurnDurably and markJobNotificationsDelivered left it injected but
+// appendSteeringTurnDurably and markJobNotificationsDelivered left it injected but
 // unmarked) with an empty in-memory queue is still counted outstanding, so the
 // drain must re-materialize it. The already-injected record settles through the
 // injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to

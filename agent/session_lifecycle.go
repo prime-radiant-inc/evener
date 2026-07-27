@@ -1348,7 +1348,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		s.resetJobNotificationRetry()
 	}
 	// Settle caller-targeted watch sends only after the durable reminder turn
-	// persisted (above): the durable pending survives an appendTurnDurably
+	// persisted (above): the durable pending survives an appendSteeringTurnDurably
 	// failure for re-token (at-least-once contract, spec §4.3).
 	for _, d := range jobNotifs {
 		if d.watchJM == nil {

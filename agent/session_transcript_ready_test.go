@@ -92,8 +92,8 @@ func TestDurableTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testin
 	sess.transcriptReady = false
 	sess.mu.Unlock()
 
-	if err := sess.appendTurnDurably(schema.TurnSteering, llm.User("held")); err != nil {
-		t.Fatalf("appendTurnDurably before the writer exists: %v, want nil", err)
+	if err := sess.appendSteeringTurnDurably("held", ""); err != nil {
+		t.Fatalf("appendSteeringTurnDurably before the writer exists: %v, want nil", err)
 	}
 	sess.attachTranscript(w)
 	sess.Close()

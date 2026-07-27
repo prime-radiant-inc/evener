@@ -201,7 +201,9 @@ func TestAcceptNotificationInput_PersistsNotificationKind(t *testing.T) {
 		t.Fatal("notification input should proceed")
 	}
 
+	s.mu.Lock()
 	last := s.history[len(s.history)-1]
+	s.mu.Unlock()
 	if last.Kind != schema.TurnSteering {
 		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
 	}

@@ -23,9 +23,9 @@ The label is also a guess. `steeringClassify.ts` pattern-matches prose to infer 
 kind, and `SteeringInjectedData` (`agent/events/payloads.go:199`) carries no kind
 for it to read. Two consequences, both live today:
 
-- The classifier knows 8 patterns. There are 18 steering injection sites — and
-  three of those are invisible to a `grep '\.Steer('`, reaching the queue through
-  the `toolDeps.steer` indirection instead. Everything the classifier misses
+- The classifier knows 8 patterns. Some steering injection sites are invisible
+  to a `grep '\.Steer('`, reaching the queue through the `toolDeps.steer`
+  indirection instead. Everything the classifier misses
   collapses into `kind: "unknown"`, labelled "steering injected".
 - Its `read-only` rule matches `/reading without writing|reading for \d+ turns/`.
   **That string does not exist in the Go source.** It is inherited from the
@@ -93,7 +93,7 @@ on one row type.
 Kind string `json:"kind,omitempty"`
 ```
 
-Two insertion points cover all 18 sites:
+The two insertion points cover the steering append paths:
 
 - `steeringMessage.Kind`, carried through the single drain emitter at
   `session_queue.go:674` (`consumeSteeringMessage`). Covers the 8 `s.Steer()`
