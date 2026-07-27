@@ -1,6 +1,6 @@
 # Serf Web Hub — UX Plan & Implementation Status
 
-Status: **in progress** (2026-06-16). Companion to [design-system.md](design-system.md).
+Status: **historical** (2026-06-16). Companion to the [current design-system.md](../design-system.md).
 Implementation lives on branch `agent-liveness-and-thinking`.
 
 ---
@@ -150,10 +150,10 @@ extraction fails loudly as a `SyntaxError`, so `node --check` catches it before 
 
 ---
 
-## 7. Edge cases the design must still define
+## 7. Historical edge-case inventory
 
-See [design-system.md §7](design-system.md#7-what-still-needs-rules-deferred-from-the-review-panels).
-Each needs a written rule + an exemplar in the golden set before the style guide is "done."
+This section records the pre-wave-2 planning inventory. The current design system's documented
+gaps are tracked in [§8](../design-system.md#8-known-gaps-documented-not-fixed-wave-close-adjudication).
 
 ---
 
