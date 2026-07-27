@@ -51,6 +51,13 @@ const TASK =
   "Please test delegation by inspecting the current working directory. " +
   "Report the directory and three notable entries. Do not change any files.";
 
+const SYSTEM_PROMPT =
+  "## Identity\n\nYou are a careful assistant working inside a transcript UI.\n\n" +
+  "## Working agreement\n\n" +
+  "Use the available context precisely, explain decisions plainly, and keep useful output readable at narrow widths.\n\n".repeat(
+    320,
+  );
+
 const snapshot: ThreadReadResponse = {
   thread: {
     id: "thr_overflow",
@@ -104,6 +111,13 @@ const snapshot: ThreadReadResponse = {
             turnId: "turn_1",
             text: "Directory: /Users/jesse/prime-radiant/toil-suite/serf Three notable entries: README.md, go.mod, agent/",
             eventKind: "compaction",
+          },
+          {
+            type: "systemMessage",
+            id: "i6",
+            turnId: "turn_1",
+            text: SYSTEM_PROMPT,
+            eventKind: "system_prompt",
           },
         ],
       },

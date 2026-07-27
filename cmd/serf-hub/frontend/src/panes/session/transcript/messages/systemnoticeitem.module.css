@@ -48,56 +48,27 @@
   border-left: 2px solid var(--edge);
 }
 
-/* Scaffolding disclosure (the system prompt, or any system notice long
- * enough to read as a wall - SystemNoticeItem.tsx's isScaffoldItem): a
- * hairline-bordered box marks it as SCAFFOLDING, distinct from both the
- * plain .line notices above and the conversation's own message rows (which
- * have no border at all) - still on the same low-contrast ink as every
- * other notice here, so it recedes rather than competing for attention.
- *
- * Boxed, but the label inside it still sits in the transcript's shared left
- * gutter (kata 8v4n): "System prompt" is a genuine short eyebrow (design-
- * system.md §Type's 2026-07-24 clarification), so it stays beside the
- * body's first line rather than on its own line above a divider. Deliberately
- * NOT flex-wrap - see thinkblock.module.css's identical .details comment for
- * why a wide .scaffoldBody would always wrap to its own line regardless of
- * label length under wrap; nowrap plus the two rules below is what actually
- * keeps them beside each other. */
+/* Scaffolding disclosure (the system prompt or a compaction summary) gets a
+ * hairline-bordered box, with its summary and expanded Markdown body stacked
+ * as full-width rows. This layout is scoped here because this disclosure has
+ * a different semantic contract from the raw job-notification payload. */
 .scaffold {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  display: block;
+  width: 100%;
+  min-width: 0;
   margin: var(--space-1) 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
 }
 
-/* Same ellipsis shape as thinkblock.module.css's .summary (qrv1), capped at
- * 60% of the row rather than 100%: unlike qrv1's own short, fixed
- * "Thought"/"Thought for Ns" vocabulary, the non-system_prompt fallback
- * label (scaffoldLabel, a firstLine() preview up to 60 chars) has no bound
- * short enough to trust with the WHOLE row. A 100% cap did exactly that -
- * paired with flex: none it let a long label claim the entire row and
- * never give space back, pushing .scaffoldBody to zero width and past the
- * pane's edge; switching to flex-shrink instead (tried next) turned out to
- * split the deficit by each item's OWN size, which - empirically, measured
- * in a browser, not derived on paper - clips even the common short "System
- * prompt" label for no reason, since a wrappable auto-basis item's flex
- * base size is resolved against the row's available space to begin with,
- * not its unconstrained max-content width (kata 8v4n; both false starts
- * cost real time here, so the reasoning is recorded in full). A cap well
- * under 100%, combined with .scaffoldBody's flex-basis: 0 below, sidesteps
- * both failure modes: the label can occupy at most 60% no matter how long
- * its text is (comfortably more than the ~48% the common case measures at,
- * so it never clips there), and .scaffoldBody is GUARANTEED the other 40%
- * minus the gap regardless of either item's content length, not merely
- * "whatever's left after a content-driven fight over it". */
+/* The collapsed character count stays visible as the summary's compact
+ * affordance. A full-width block lets a future longer label wrap without
+ * stealing width from the expanded body. */
 .scaffoldSummary {
-  display: inline-flex;
-  flex: none;
-  align-items: baseline;
-  max-width: 60%;
+  display: block;
+  width: 100%;
+  max-width: 100%;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -107,18 +78,11 @@
   color: var(--ink-low);
 }
 
-/* flex-basis: 0, not auto (toolcallitem.module.css's .purpose/.summary use
- * the identical idiom, for the identical reason - see that file's own
- * comment): a wrapping flex container decides each item's share of the row
- * from its HYPOTHETICAL size, so an auto-basis .scaffoldBody would still be
- * competing with .scaffoldSummary over how much of the row its own content
- * "deserves". Basis 0 removes it from that contest entirely - grow: 1 just
- * claims 100% of whatever .scaffoldSummary's (capped) width and the gap
- * didn't use, which given the 60% cap above is always a real, positive,
- * guaranteed remainder. */
 .scaffoldBody {
-  flex: 1 1 0;
+  display: block;
+  width: 100%;
   min-width: 0;
+  margin-top: var(--space-2);
 }
 
 /* Round-timings disclosure (SystemNoticeItem.tsx's RoundTimingsLine): same
