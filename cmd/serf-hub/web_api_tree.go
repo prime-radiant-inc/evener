@@ -141,7 +141,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		// null) and SessionCount carries the row count; the sidebar
 		// lazy-loads the full project from /api/tree/project?key= on expand.
 		stub := s.apiTreeProject("project", favs, p)
-		stub.SessionCount = len(stub.Sessions)
+		stub.SessionCount = p.TotalSessionCount()
 		stub.Sessions = nil
 		resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
 	}

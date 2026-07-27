@@ -94,6 +94,16 @@ type TreeProject struct {
 	Worktrees int
 }
 
+// TotalSessionCount returns the authoritative number of top-level rows in a
+// project. It uses the uncapped tier slices retained for pagination rather
+// than adding the capped-away counts, which are pagination metadata.
+func (p TreeProject) TotalSessionCount() int {
+	if p.allCurrent != nil || p.allRecent != nil || p.allArchived != nil {
+		return len(p.allCurrent) + len(p.allRecent) + len(p.allArchived)
+	}
+	return len(p.Current) + len(p.Recent) + len(p.Archived)
+}
+
 const (
 	currentWindow = 24 * time.Hour
 	archiveWindow = 14 * 24 * time.Hour

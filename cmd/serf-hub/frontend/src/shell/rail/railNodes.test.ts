@@ -317,6 +317,12 @@ describe("archivedCount", () => {
     expect(archivedCount([project({ sessions: [node(), node({ ref: "r2" })] })], [])).toBe(2);
   });
 
+  test("counts capped hydrated rows plus archived overflow without adding stub sentinels", () => {
+    const detail = project({ sessions: Array.from({ length: 50 }, (_, i) => node({ ref: `r${i}` })), more_archived: 10 });
+    expect(archivedCount([detail], [])).toBe(60);
+    expect(archivedCount([project({ session_count: 60, sessions: [], more_archived: 10 })], [])).toBe(60);
+  });
+
   test("adds the archived-tier sessions living inside active projects", () => {
     const active = project({ sessions: [node({ tier: "current" }), node({ ref: "r2", tier: "archived" })] });
     expect(archivedCount([], [active])).toBe(1);

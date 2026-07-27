@@ -322,11 +322,15 @@ export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: Is
 
 /** How many sessions the "Archived sessions" section stands for: every whole
  * archived project's own rows, plus the archived-tier sessions still living
- * inside active projects. An archived project ships as a stub until first
- * expand, so its count comes from session_count; once hydrated, its real
- * sessions are the better answer. */
+ * inside active projects. A stub's session_count is authoritative; a
+ * hydrated detail has capped rows plus pagination overflow to account for. */
+function archivedProjectSessionCount(p: ApiTreeProject): number {
+  if (p.session_count !== undefined) return p.session_count;
+  return p.sessions.length + tierOverflow(p, ["current", "recent", "archived"]);
+}
+
 export function archivedCount(archivedProjects: ApiTreeProject[], otherProjects: ApiTreeProject[]): number {
-  const whole = archivedProjects.reduce((sum, p) => sum + (p.sessions.length || (p.session_count ?? 0)), 0);
+  const whole = archivedProjects.reduce((sum, p) => sum + archivedProjectSessionCount(p), 0);
   return otherProjects.reduce((sum, p) => sum + p.sessions.filter(isArchivedTier).length, whole);
 }
 

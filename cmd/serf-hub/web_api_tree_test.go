@@ -580,6 +580,53 @@ func TestAPITree_ArchivedProjectsAreStubs(t *testing.T) {
 	}
 }
 
+func TestAPITree_ArchivedProjectStubReportsRowsBeyondSidebarCap(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "old")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	if err := store.Set("project", project.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	for i := range 60 {
+		updatedAt := now.Add(-15 * 24 * time.Hour).Add(-time.Duration(i) * time.Minute)
+		metas = append(metas, schema.SessionMeta{
+			ID:        fmt.Sprintf("01OLD%02d", i),
+			CreatedAt: updatedAt,
+			UpdatedAt: updatedAt,
+			Name:      fmt.Sprintf("old session %d", i),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: store})
+	web.injectMetasForTest(metas)
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.ArchivedProjects) != 1 {
+		t.Fatalf("want 1 archived project, got %+v", resp.ArchivedProjects)
+	}
+	stub := resp.ArchivedProjects[0]
+	if stub.SessionCount != 60 {
+		t.Fatalf("archived stub session_count=%d, want authoritative total 60", stub.SessionCount)
+	}
+	if stub.MoreArchived != 10 {
+		t.Fatalf("archived stub more_archived=%d, want sidebar overflow 10", stub.MoreArchived)
+	}
+}
+
 func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 		Entry: rendezvous.Entry{SessionID: "01A", PID: 1}, SessionID: "01A", Status: "awaiting", PendingAsk: true,
