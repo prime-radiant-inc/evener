@@ -54,10 +54,9 @@
   font-size: var(--font-size-ui);
 }
 
-/* Model-valued fields: the ModelCatalog picker is a composite widget, so the
- * row is a plain label + widget + help block (like the spawn form's own Model
- * field) rather than a FormRow around one labelable control. */
-.modelBlock {
+/* Composite and collection fields use a plain label + control + help block
+ * rather than a FormRow around one labelable control. */
+.fieldBlock {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -68,13 +67,13 @@
   border-left: 2px solid transparent;
 }
 
-.modelLabel {
+.fieldLabel {
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
 }
 
-.modelHelp {
+.fieldHelp {
   margin: 0;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);

@@ -27,9 +27,9 @@ const BOOLEAN_DEFAULT = "(default)";
 
 const CLASS = {
   root: requireClass(styles.root, "advancedOptions.module.css", "root"),
-  modelBlock: requireClass(styles.modelBlock, "advancedOptions.module.css", "modelBlock"),
-  modelLabel: requireClass(styles.modelLabel, "advancedOptions.module.css", "modelLabel"),
-  modelHelp: requireClass(styles.modelHelp, "advancedOptions.module.css", "modelHelp"),
+  fieldBlock: requireClass(styles.fieldBlock, "advancedOptions.module.css", "fieldBlock"),
+  fieldLabel: requireClass(styles.fieldLabel, "advancedOptions.module.css", "fieldLabel"),
+  fieldHelp: requireClass(styles.fieldHelp, "advancedOptions.module.css", "fieldHelp"),
   pickerAddRow: requireClass(styles.pickerAddRow, "advancedOptions.module.css", "pickerAddRow"),
   pickerAddField: requireClass(styles.pickerAddField, "advancedOptions.module.css", "pickerAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
@@ -262,38 +262,63 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
       // plain span (mirroring the spawn form's own Model field) - the picker's
       // inner combobox carries its own accessible name.
       return (
-        <div className={CLASS.modelBlock}>
-          <span className={CLASS.modelLabel}>{option.label}</span>
+        <div className={CLASS.fieldBlock}>
+          <span className={CLASS.fieldLabel}>{option.label}</span>
           <ModelCatalog value={current} onChange={onScalar} loadCatalog={loadCatalog} />
-          {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
+          {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
         </div>
       );
     case "modelList":
       return (
-        <ModelListControl
-          option={option}
-          items={Array.isArray(value?.value) ? (value.value as string[]) : []}
-          loadCatalog={loadCatalog}
-          onValue={onValue}
-        />
+        <CollectionSection option={option}>
+          <ModelListControl
+            option={option}
+            items={Array.isArray(value?.value) ? (value.value as string[]) : []}
+            loadCatalog={loadCatalog}
+            onValue={onValue}
+          />
+        </CollectionSection>
       );
     case "pathList":
       return (
-        <PathListControl
-          option={option}
-          items={Array.isArray(value?.value) ? (value.value as string[]) : []}
-          complete={complete}
-          validatePath={validatePath}
-          onValue={onValue}
-        />
+        <CollectionSection option={option}>
+          <PathListControl
+            option={option}
+            items={Array.isArray(value?.value) ? (value.value as string[]) : []}
+            complete={complete}
+            validatePath={validatePath}
+            onValue={onValue}
+          />
+        </CollectionSection>
       );
     case "envMap":
-      return <EnvControl option={option} value={isRecord(value?.value) ? value.value : {}} onValue={onValue} />;
+      return (
+        <CollectionSection option={option}>
+          <EnvControl option={option} value={isRecord(value?.value) ? value.value : {}} onValue={onValue} />
+        </CollectionSection>
+      );
     case "mcpServerList":
-      return <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />;
+      return (
+        <CollectionSection option={option}>
+          <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />
+        </CollectionSection>
+      );
     default:
       return textRow();
   }
+}
+
+function CollectionSection({ option, children }: { option: LaunchOption; children: ReactNode }) {
+  const labelId = useId();
+  return (
+    <section className={CLASS.fieldBlock} aria-labelledby={labelId}>
+      <span id={labelId} className={CLASS.fieldLabel}>
+        {option.label}
+      </span>
+      {children}
+      {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
+    </section>
+  );
 }
 
 function isRecord(v: unknown): v is Record<string, string> {

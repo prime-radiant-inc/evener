@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -77,6 +77,17 @@ function renderPanel(
  * name falls back to its own contents (the value plus a "browse" hint). */
 function pathTrigger(name: string | RegExp = /browse/i): HTMLElement {
   return screen.getByRole("button", { name });
+}
+
+/** The frontend test setup does not load jest-dom. The class check is the
+ * sighted-versus-accessibility-only distinction this regression needs: the
+ * hidden CollectionEditor label carries its `visuallyHidden` CSS-module class.
+ */
+function expectSightedText(element: HTMLElement, text: string): void {
+  expect(element.textContent).toBe(text);
+  expect(element.hidden).toBe(false);
+  expect(element.getAttribute("aria-hidden")).not.toBe("true");
+  expect(element.className).not.toContain("visuallyHidden");
 }
 
 /** Opens a PathField's browse panel and types a literal path into it, which
@@ -223,6 +234,26 @@ test("a modelList field adds from the picker instead of a hand-typed provider/mo
   await waitFor(() =>
     expect(onOverridesChange).toHaveBeenCalledWith({ modelFallbacks: ["anthropic/claude-sonnet-4-5"] }),
   );
+});
+
+test.each([
+  ["pathList", "Skill directories", "Directories containing skills."],
+  ["modelList", "Model fallbacks", undefined],
+  ["envMap", "Environment variables", undefined],
+  ["mcpServerList", "MCP servers", undefined],
+])("a %s collection renders its visible schema label and help", async (kind, label, description) => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: kind, kind, label, description })]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const section = screen.getByRole("region", { name: label });
+  const labelId = section.getAttribute("aria-labelledby");
+  if (!labelId) throw new Error("expected the collection section to reference its visible schema label");
+  const visibleLabel = document.getElementById(labelId);
+  if (!visibleLabel) throw new Error("expected the visible schema label to be in the document");
+  expectSightedText(visibleLabel, label);
+  if (description) expectSightedText(within(section).getByText(description), description);
 });
 
 test("a modelList field rejects a model already in the list", async () => {
