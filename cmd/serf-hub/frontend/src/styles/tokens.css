@@ -3,16 +3,19 @@
  * properties declared in this file, or a color-mix() composed from them
  * (see src/styles/token-contract.test.ts, which fails CI on any hex/rgb/
  * hsl/oklch literal outside this file). Dark is the default theme; the
- * light theme lives in the second block below as same-named overrides, so
- * every consumer just writes var(--name) and never branches on theme.
+ * canonical dark block also scopes nested data-theme="dark" wrappers so a
+ * gallery pane can override a light ambient theme without duplicating the
+ * palette. Every consumer just writes var(--name) and never branches on
+ * theme.
  *
  * Source: docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md
  * (search that file for "Direction" — palette hex, type scale, space
  * grid, and motion budget are all specified there and reproduced here).
  */
 
-:root {
-  color-scheme: dark light;
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
 
   /* --- surfaces + ink (dark, default) ---------------------------------- */
   --surface-0: #0E1116; /* app background — deep neutral ink */

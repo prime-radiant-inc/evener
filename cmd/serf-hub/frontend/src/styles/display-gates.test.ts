@@ -66,8 +66,8 @@ test("the type ramp is declared on <body> and multiplies through var(--font-scal
 });
 
 test("the type ramp no longer sits as raw px in :root (single source of truth is the scaled body ramp)", () => {
-  const rootBlock = /:root\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(rootBlock, "tokens.css must have a :root block").not.toBeNull();
+  const rootBlock = /:root(?:\s*,\s*\[data-theme="dark"\])?\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(rootBlock, "tokens.css must have a canonical dark block").not.toBeNull();
   expect(rootBlock![1]).not.toMatch(/--font-size-body:/);
 });
 

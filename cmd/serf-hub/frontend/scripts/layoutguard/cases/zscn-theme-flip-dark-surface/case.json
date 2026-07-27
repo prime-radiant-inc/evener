@@ -1,0 +1,8 @@
+{
+  "name": "zscn-theme-flip-dark-surface",
+  "description": "ThemeFlip's Dark pane must resolve the dark surface tokens inside a light ambient theme (kata zscn)",
+  "cssFiles": [
+    "styles/tokens.css",
+    "dev/theme-flip.module.css"
+  ]
+}

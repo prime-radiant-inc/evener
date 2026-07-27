@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>zscn ThemeFlip dark surface harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  .surface-probe {
+    width: 1px;
+    height: 1px;
+    background: var(--surface-1);
+  }
+</style>
+</head>
+<body data-theme="light">
+<div class="pane" data-theme="dark" id="dark-pane">
+  <p class="label">Dark</p>
+  <div class="surface-probe" id="dark-surface-probe"></div>
+</div>
+<div class="pane" data-theme="light" id="light-pane">
+  <p class="label">Light</p>
+  <div class="surface-probe" id="light-surface-probe"></div>
+</div>
+<script>
+window.measure = () => {
+  const darkPane = getComputedStyle(document.getElementById("dark-pane"));
+  const darkProbe = getComputedStyle(document.getElementById("dark-surface-probe"));
+  const lightPane = getComputedStyle(document.getElementById("light-pane"));
+  return {
+    darkSurface1: darkPane.getPropertyValue("--surface-1").trim(),
+    darkPaneSurface0: darkPane.backgroundColor,
+    darkProbeSurface1: darkProbe.backgroundColor,
+    lightSurface1: lightPane.getPropertyValue("--surface-1").trim(),
+    lightProbeSurface1: getComputedStyle(document.getElementById("light-surface-probe")).backgroundColor,
+  };
+};
+</script>
+</body>
+</html>
