@@ -13,6 +13,7 @@
 // the message (markdown) and concerns carry the signal; the plumbing facts stay
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
+import { useState } from "react";
 import { Card, Chip, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -20,6 +21,7 @@ import styles from "./notificationcard.module.css";
 import { isValidTranscriptRef, type NotificationTone, type ParsedNotification } from "./steeringClassify";
 
 const CLASS = {
+  disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
   root: requireClass(styles.root, "notificationcard.module.css", "root"),
   head: requireClass(styles.head, "notificationcard.module.css", "head"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
@@ -116,39 +118,54 @@ export function NotificationCard({
   notification: ParsedNotification;
   sessionRef?: string;
 }) {
+  const [open, setOpen] = useState(false);
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   return (
-    <Card>
-      <div className={CLASS.root} data-testid="notification-card-root">
-        <div className={CLASS.head} data-testid="notification-card" data-tone={notification.tone}>
-          {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
-          <span className={CLASS.title}>{notification.title}</span>
-          {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
-          {transcriptRef && (
-            <span className={CLASS.action}>
-              <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
-            </span>
-          )}
-        </div>
-        <NotificationMetadata notification={notification} />
-        {notification.message ? (
-          <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-            <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+    <details className={CLASS.disclosure} open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
+      <summary
+        className={CLASS.head}
+        data-testid="notification-card"
+        data-tone={notification.tone}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.preventDefault();
+          setOpen((current) => !current);
+        }}
+      >
+        {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
+        <span className={CLASS.title}>{notification.title}</span>
+        {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
+        {transcriptRef && (
+          <span className={CLASS.action}>
+            <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
+          </span>
+        )}
+      </summary>
+      {open && (
+        <Card>
+          <div className={CLASS.root} data-testid="notification-card-root">
+            <NotificationMetadata notification={notification} />
+            {notification.message ? (
+              <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+                <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+              </div>
+            ) : (
+              <Excerpt text={notification.excerpt} />
+            )}
+            {notification.concerns.length > 0 && (
+              <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
+            )}
+            <details className={CLASS.raw} data-testid="notification-raw-disclosure">
+              <summary className={CLASS.summary}>Raw notification</summary>
+              <pre className={CLASS.rawBody} data-testid="notification-raw">
+                {notification.rawText}
+              </pre>
+            </details>
           </div>
-        ) : (
-          <Excerpt text={notification.excerpt} />
-        )}
-        {notification.concerns.length > 0 && (
-          <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
-        )}
-        <details className={CLASS.raw} data-testid="notification-raw-disclosure">
-          <summary className={CLASS.summary}>Raw notification</summary>
-          <pre className={CLASS.rawBody} data-testid="notification-raw">
-            {notification.rawText}
-          </pre>
-        </details>
-      </div>
-    </Card>
+        </Card>
+      )}
+    </details>
   );
 }
