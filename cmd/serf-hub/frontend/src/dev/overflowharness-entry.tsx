@@ -55,7 +55,7 @@ const SYSTEM_PROMPT =
   "## Identity\n\nYou are a careful assistant working inside a transcript UI.\n\n" +
   "## Working agreement\n\n" +
   "Use the available context precisely, explain decisions plainly, and keep useful output readable at narrow widths.\n\n".repeat(
-    195,
+    233,
   );
 
 const snapshot: ThreadReadResponse = {
