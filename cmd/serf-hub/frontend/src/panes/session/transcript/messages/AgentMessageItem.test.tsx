@@ -167,6 +167,15 @@ test("sets --prose-font-size once, on the .message ancestor the live and settled
   expect(css).toContain("--prose-font-size: var(--font-size-pane-title)");
 });
 
+test("the agent message keeps the approved unlabelled hero surface without a card frame", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.message\s*\{[\s\S]*--prose-font-size:\s*var\(--font-size-pane-title\)/);
+  expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
+  expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
+  expect(css).not.toMatch(/\.tag\s*\{/);
+});
+
 test("Markdown and StreamingText read --prose-font-size with the identical fallback, so live and settled can never disagree on size", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const markdownCss = readFileSync(join(here, "../../../../widgets/markdown/markdown.module.css"), "utf8");

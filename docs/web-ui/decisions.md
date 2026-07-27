@@ -185,24 +185,28 @@ above its body the same pre-fix way — it will need the identical column when
 that work lands.
 
 **04 · Assistant hero & reading hierarchy** — chose A (size + space) + D
-(contrast), explicitly **not** C (first-sentence lede). Shipped `36989fbdc`.
+(contrast), explicitly **not** C (first-sentence lede). Shipped in the React
+rewrite by `cd4663a99` and `bf1c7f318`.
 
 | Part | Verdict | Where it stands |
 | --- | --- | --- |
 | D — agent prose at full contrast, user demoted | LIVE | `widgets/markdown:.root` is `--ink-hi`; `usermessageitem:.text` is `--ink-mid`. |
 | C — first-sentence lede | ABSENT | Correctly rejected. Agent text is one plain `<Markdown>` block. |
-| A — agent prose wins on **size and space** | **ABSENT, unexplained** | `agentmessageitem.module.css` sets no body font-size at all; `markdown:.root` and `usermessageitem:.text` both resolve to `--font-size-body`, and both carry identical padding and gap. Nothing distinguishes the two by size. This is the single decision most responsible for the transcript reading flat. |
-| (all four alternatives agreed) inline code is a quiet underline, never a filled chip | **ABSENT, unexplained** | `markdown.module.css:.inlineCode` is a filled chip: `background: var(--surface-2)`, padding, radius. Every alternative in the mockup shared the opposite rule. |
+| A — agent prose wins on **size and space** | LIVE | `agentmessageitem.module.css:.message` sets `--prose-font-size: var(--font-size-pane-title)` on the shared live/final wrapper and the agent renderer gives the hero one spacing step more than body text. |
+| (all four alternatives agreed) inline code is a quiet underline, never a filled chip | LIVE | `markdown.module.css:.inlineCode` uses relative mono sizing and an `--edge` bottom rule with no background, padding, or radius. |
 
 **05 · Thinking block** — chose A (reserved-slot collapse) + D
-(duration-weighted prominence + gist). Shipped `bd8366c30`.
+(duration-weighted prominence + gist). Originally simplified by `44d04271f`.
 
-Verdict **CHANGED / ABSENT, by design — closed.** Both halves were rejected
-with reasoning in the code. Reserved-slot collapse lost to an always-open live
-state because of `StreamingText`'s append-only contract; the gist was never
-built because `<summary>` holds plain text only and a preview drawn from the
-same text the disclosure reveals "is guaranteed to repeat itself the instant a
-reader opens it." Deliberate simplification, recorded at the site.
+Verdict **SUPERSEDED BY kgp2 — LIVE.** The always-open live state remains the
+correct append-only `StreamingText` path. Once settled, the native one-level
+disclosure says `Thought for <duration>` when a valid item timestamp pair is
+available, preferring wire timestamps and then reducer-observed frame timing;
+it never measures an in-progress item or invents a missing duration. Its
+collapsed line also carries a bounded plain-text rendering of the final
+meaningful nonblank thought line, while expansion renders the complete
+Markdown body. The newer kgp2 record explicitly supersedes the earlier
+no-preview choice; session-keyed disclosure state remains unchanged.
 
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
