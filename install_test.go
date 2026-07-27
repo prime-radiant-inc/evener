@@ -23,6 +23,43 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
+	t.Parallel()
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	fixtureRoot := t.TempDir()
+	frontendDir := filepath.Join(fixtureRoot, "cmd", "serf-hub", "frontend")
+	if err := os.MkdirAll(frontendDir, 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
+
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureRoot, "Makefile"), makefile, 0o644); err != nil {
+		t.Fatalf("write Makefile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write package-lock.json: %v", err)
+	}
+
+	env := installTestEnv(t, t.TempDir(), nil)
+	runCommand(t, fixtureRoot, npmShimEnv(t, env), "make", "web-preflight")
+
+	tscPath := filepath.Join(frontendDir, "node_modules", ".bin", "tsc")
+	tscInfo, err := os.Stat(tscPath)
+	if err != nil {
+		t.Fatalf("preflight did not install local tsc: %v", err)
+	}
+	if tscInfo.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("local tsc is not executable: mode %s", tscInfo.Mode())
+	}
+}
+
 func TestInstallHomeGeneratedHome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("install integration test")
@@ -443,27 +480,31 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 	}
 }
 
-// npmShimEnv prepends a fake-bin directory containing a no-op npm to env's
-// PATH, for the `make install` invocation above only. install now depends
-// on build-web (Makefile-coherence rule: a shipped/installed hub must embed
-// a fresh SPA, never the tracked PLACEHOLDER), which would otherwise run a
-// real npm ci + vite build inside this test — slow, and it would fail
+// npmShimEnv prepends a fake-bin directory containing a network-free npm to
+// env's PATH, for the `make install` invocation above only. install now
+// depends on build-web (Makefile-coherence rule: a shipped/installed hub must
+// embed a fresh SPA, never the tracked PLACEHOLDER), which would otherwise
+// run a real npm ci + vite build inside this test — slow, and it would fail
 // entirely in environments without node. This test's subject is install's
 // layout/symlinks, not web freshness; that is pinned separately by
-// TestMakeRuntimeAliasesBuildThePair in runtime_pair_build_test.go. The
-// shim is a pure no-op (unlike that test's fake npm, it must NOT create
-// node_modules or otherwise touch the checkout): the -nt check in
-// build-web's recipe either skips npm ci (developer has fresh
-// node_modules) or runs this no-op fake ci, the no-op fake "npm run build"
-// leaves dist exactly as-is, and the recipe's trailing PLACEHOLDER restore
-// (git checkout) is a harmless real-git no-op since nothing changed. The
-// real go/git must still resolve from the rest of PATH, so this only
-// prepends.
+// TestMakeRuntimeAliasesBuildThePair in runtime_pair_build_test.go. The shim
+// models only the local compiler contract that web-preflight checks: npm ci
+// creates an executable tsc stub, while npm run build remains a no-op and
+// leaves dist exactly as-is. The real go/git must still resolve from the rest
+// of PATH, so this only prepends.
 func npmShimEnv(t *testing.T, env []string) []string {
 	t.Helper()
 
 	fakeBin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	const npmShim = `#!/bin/sh
+if [ "$1" = "ci" ]; then
+  mkdir -p node_modules/.bin
+  printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
+  chmod +x node_modules/.bin/tsc
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmShim), 0o755); err != nil {
 		t.Fatalf("write fake npm: %v", err)
 	}
 
