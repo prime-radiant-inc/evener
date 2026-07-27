@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { type PaneProps, registerPane } from "../paneRegistry";
+import { openTopLevelSession } from "../sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
@@ -30,11 +31,21 @@ function DocFixture({ params, paneId, focused }: PaneProps<{ ref: string }>) {
   );
 }
 
+function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
+  return <div>settings pane: {params.section ?? "none"}</div>;
+}
+
 beforeAll(async () => {
   registerPane<{ ref: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
+  });
+  registerPane<{ section?: string }>({
+    id: "settings",
+    singleton: true,
+    title: (params) => `Settings${params.section ? `: ${params.section}` : ""}`,
+    component: lazy(() => Promise.resolve({ default: SettingsFixture })),
   });
   // Real production panes: "welcome" is StackHost's own hardcoded fallback
   // target, and "session" is this file's one real, deep-linked pane type
@@ -146,21 +157,18 @@ test("switching the focused pane (workspace.focusPane) swaps which one is render
 // secondary doc in shared state and can render the wrong pane after a route.
 test("renders the replacement session and drops stale secondary panes from the shared workspace", async () => {
   const workspace = workspaceStore.getState();
-  workspace.openPane("session", { ref: "local:session-a" });
+  workspace.replacePrimary("settings", {}, "settings");
+  workspace.openPane("doc", { ref: "secondary" }, { slot: "secondary" });
+  openTopLevelSession("local:session-a");
+  const replacementId = workspaceStore.getState().mainPane()!.id;
+
   render(<StackHost />);
-  await screen.findByText("local:session-a");
-
-  workspace.openPane("doc", { ref: "secondary" });
-  await screen.findByText(/doc pane: secondary/);
-
-  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
 
   expect(workspaceStore.getState().panes).toEqual([
-    { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+    { id: replacementId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
   ]);
-  expect(await screen.findByText("local:session-b")).toBeTruthy();
+  expect(await screen.findByText("local:session-a")).toBeTruthy();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
-  expect(screen.queryByText("local:session-a")).toBeNull();
 });
 
 // --- remount safety: matches DockHost's own "unmount, not hide" contract -

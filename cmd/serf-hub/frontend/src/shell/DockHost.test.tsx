@@ -904,159 +904,60 @@ test("restores a previously-saved layout on boot instead of falling back to welc
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_a", "Doc ref_b", "Doc ref_c"]);
 });
 
-test("a routed pane opened before mount merges into a stale saved layout as its focused member", async () => {
-  // Phase 1: generate a REAL stale saved layout via a real save round-trip
-  // (dockview's own serialization shape is opaque/versioned, so a real
-  // save is the only faithful source - same rationale as the restore test
-  // above). Two of its three panes deliberately reuse the SAME small
-  // id-suffix sequence (pane_doc_1, pane_doc_2, ...) that phase 2's own
-  // freshly-reset nextPaneSeq counter will mint next - the realistic shape
-  // of the id-collision hazard this test also guards against (see
-  // workspace.ts's bumpPastRestoredIds), not a contrived id string.
-  workspaceStore.getState().openPane("doc", { ref: "ref_stale_a" }); // pane_doc_1
-  workspaceStore.getState().openPane("doc", { ref: "ref_stale_b" }); // pane_doc_2
+test("restores a routed primary through replacement before reopening captured secondary routes", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "saved_main" });
+  workspaceStore.getState().openPane("doc", { ref: "saved_secondary" });
   const { unmount } = render(<DockHost />);
-  await screen.findByText(/doc pane: ref_stale_b/);
+  await screen.findByText(/doc pane: saved_secondary/);
 
-  vi.useFakeTimers();
-  act(() => {
-    workspaceStore.getState().openPane("doc", { ref: "ref_stale_c" }); // pane_doc_3
-  });
-  await Promise.resolve();
-  advance(500);
+  // DockHost's cleanup flushes the real saved layout before this simulated
+  // reload resets the in-memory workspace.
+  unmount();
+  resetWorkspaceStoreForTests();
+
+  workspaceStore.getState().openPane("settings", { section: "theme" });
+  workspaceStore.getState().openPane("doc", { ref: "routed_secondary" }, { slot: "secondary" });
+  render(<DockHost />);
+
+  expect(await screen.findByText(/doc pane: routed_secondary/)).toBeTruthy();
+  const panes = workspaceStore.getState().panes;
+  expect(panes).toHaveLength(2);
+  expect(panes.find((pane) => pane.type === "settings")?.slot).toBe("main");
+  expect(panes.find((pane) => (pane.params as { ref?: string }).ref === "routed_secondary")?.slot).toBe("secondary");
+  expect(panes.some((pane) => (pane.params as { ref?: string }).ref?.startsWith("saved_"))).toBe(false);
+  expect(screen.queryByText(/doc pane: saved_/)).toBeNull();
+});
+
+test("a routed Settings primary replaces a stale saved layout", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "saved_a" });
+  workspaceStore.getState().openPane("doc", { ref: "saved_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: saved_b/);
+
+  unmount();
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
-  vi.useRealTimers();
-  unmount();
-  resetWorkspaceStoreForTests(); // in-memory workspace (incl. nextPaneSeq) resets; localStorage (the stale layout) does not
-
-  // Phase 2: simulates AppShell's routing already having opened a pane (a
-  // deep link) BEFORE DockHost ever mounts and reads localStorage - the
-  // target behavior (per the controller ruling this task implements): the
-  // saved layout restores as the BASE, and the routed pane opens INSIDE
-  // it, focused - not wholesale replaced by it (the old, provisional
-  // suppress-on-routed fix) and not itself suppressing the restore.
-  // resetWorkspaceStoreForTests() just above means this mint ALSO starts
-  // from pane_doc_1 - deliberately colliding, in id-suffix terms, with
-  // phase 1's own first two ids.
-  workspaceStore.getState().openPane("doc", { ref: "ref_routed" }); // pane_doc_1 again, pre-restore
-  render(<DockHost />);
-
-  expect(await screen.findByText(/doc pane: ref_routed \(focused=true\)/)).toBeTruthy();
-  const tabs2 = document.querySelectorAll(".dv-tab");
-  // All three restored tabs are present, in their saved order, PLUS the
-  // routed one appended last - a real merge, not a replacement either
-  // direction. Critically, "Doc ref_stale_b" is still its own distinct tab
-  // with its own content: under the id-collision bug this also regression-
-  // tests, the routed pane's freshly-minted id silently collided with
-  // stale_b's restored one, and DockHost's reconciliation clobbered
-  // stale_b's real dockview panel with the routed pane's params instead of
-  // creating a fourth, separate one - collapsing this to 3 tabs, not 4.
-  expect(Array.from(tabs2).map((t) => t.textContent)).toEqual([
-    "Doc ref_stale_a",
-    "Doc ref_stale_b",
-    "Doc ref_stale_c",
-    "Doc ref_routed",
-  ]);
-  expect(tabIsActive("Doc ref_routed")).toBe(true);
-  expect(workspaceStore.getState().panes).toHaveLength(4);
-
-  // Clicking back to "Doc ref_stale_b" proves its CONTENT survived intact,
-  // not just its tab title - under the id-collision bug, this tab's real
-  // dockview panel got its params silently overwritten to ref_routed's
-  // (see the comment above), so its content would read "ref_routed" here
-  // too despite the tab still being labeled "Doc ref_stale_b" at the point
-  // that bug's clobbering write happens to land.
-  const user = userEvent.setup();
-  await user.click(screen.getByText("Doc ref_stale_b"));
-  expect(await screen.findByText(/doc pane: ref_stale_b \(focused=true\)/)).toBeTruthy();
-});
-
-// Reload keeps the focused tab (round-3 C1). Live diagnosis: dockview DOES
-// persist the active tab (each grid leaf's own `activeView`, verified in a real
-// browser), and restoreLayout DOES honour it - but handleReady then re-opens
-// every URL-routed pane through openPane(), which focuses whatever it resolves
-// to. On a reload the routed pane is almost always ALREADY in the restored
-// layout, so that re-open is a pure focus steal: the address bar still names
-// the pane the user first deep-linked to, and reload snaps focus back to it no
-// matter which tab was active when the page unloaded. The fix is
-// keepExistingFocus on the merge re-open - an already-open pane keeps the
-// restored focus, a genuinely new one (a deep link that ISN'T in the saved
-// layout) still focuses, which is the whole point of a deep link.
-test("a reload keeps the focused tab even when the URL routes to a different, already-restored pane", async () => {
-  // Phase 1: three panes, saved with the SECOND one active - i.e. neither the
-  // routed pane (the first) nor the most-recently-opened one, so neither a
-  // "routed wins" nor a "last opened wins" bug could pass this by accident.
-  const routedParams = { ref: "ref_routed" };
-  workspaceStore.getState().openPane("doc", routedParams);
-  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
-  workspaceStore.getState().openPane("doc", { ref: "ref_c" });
-  const { unmount } = render(<DockHost />);
-  await screen.findByText(/doc pane: ref_c/);
-
-  workspaceStore.getState().focusPane(second);
-  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
-
-  // No timer wait at all: unmount FLUSHES the pending debounced save (see
-  // DockHost's cleanup), so the write this phase exists to produce has
-  // already landed by the time unmount() returns and can be asserted
-  // synchronously. This used to poll for 400ms of real clock, which is the
-  // whole reason it was the slowest test in the file. Asserting the
-  // specific activeView (not just a non-null key) is what makes this the
-  // focus change's save rather than the mount's - see savedActiveViews.
-  unmount();
-  expect(savedActiveViews()).toContain(second);
   resetWorkspaceStoreForTests();
 
-  // Phase 2: the reload. AppShell's routing glue re-opens the pane the address
-  // bar still names (ref_routed) before DockHost mounts, exactly as it does on
-  // a real page load.
-  workspaceStore.getState().openPane("doc", routedParams);
+  workspaceStore.getState().openPane("settings", { section: "theme" });
   render(<DockHost />);
 
-  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
-  expect(tabIsActive("Doc ref_b")).toBe(true);
-  expect(workspaceStore.getState().focusedPaneId).toBe(
-    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === "ref_b")?.id,
-  );
-  // No duplicate: the routed pane merged into the restored one by params.
-  expect(document.querySelectorAll(".dv-tab")).toHaveLength(3);
+  expect(await screen.findByText(/settings pane: theme/)).toBeTruthy();
+  const panes = workspaceStore.getState().panes;
+  expect(panes).toHaveLength(1);
+  expect(panes[0]).toMatchObject({ type: "settings", params: { section: "theme" }, slot: "main" });
+  expect(screen.queryByText(/doc pane: saved_/)).toBeNull();
 });
 
-test("a deep link to a pane the saved layout does NOT contain still wins focus", async () => {
-  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
-  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
-  const { unmount } = render(<DockHost />);
-  await screen.findByText(/doc pane: ref_b/);
-  workspaceStore.getState().focusPane(second);
-  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
-
-  // unmount flushes the focus change's own save - see the previous test.
-  unmount();
-  expect(savedActiveViews()).toContain(second);
-  resetWorkspaceStoreForTests();
-
-  workspaceStore.getState().openPane("doc", { ref: "ref_fresh" }); // not in the saved layout
-  render(<DockHost />);
-
-  expect(await screen.findByText(/doc pane: ref_fresh \(focused=true\)/)).toBeTruthy();
-  expect(tabIsActive("Doc ref_fresh")).toBe(true);
-});
-
-test("a corrupt saved layout never suppresses a routed pane - the deep link wins alone (failure-mode floor)", async () => {
+test("a corrupt saved layout never suppresses a routed Settings primary", async () => {
   localStorage.setItem(LAYOUT_KEY, JSON.stringify({ nonsense: true }));
-  workspaceStore.getState().openPane("doc", { ref: "ref_routed" });
+  workspaceStore.getState().openPane("settings", { section: "theme" });
 
   render(<DockHost />);
 
-  // restoreLayout()'s own structural-validation failure clears whatever
-  // fromJSON left behind and empties the store (see workspace.ts) - the
-  // routed pane, captured before the attempt, is then the only thing
-  // re-opened afterward: the same outright "wins alone" guarantee the
-  // pre-merge implementation always provided, preserved here as the
-  // failure-mode floor rather than the general case.
-  expect(await screen.findByText(/doc pane: ref_routed \(focused=true\)/)).toBeTruthy();
-  const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_routed"]);
+  expect(await screen.findByText(/settings pane: theme/)).toBeTruthy();
+  expect(workspaceStore.getState().panes).toEqual([
+    expect.objectContaining({ type: "settings", params: { section: "theme" }, slot: "main" }),
+  ]);
 });
 
 // "no saved layout -> welcome fallback unchanged" (the third scenario this
@@ -1066,10 +967,8 @@ test("a corrupt saved layout never suppresses a routed pane - the deep link wins
 // so that test's behavior is identical before and after this task's change
 // by construction, not merely by coincidence.
 
-// kata eve5: a plain reload at the hub's root URL routes to "welcome" - the
-// SAME "genuinely new deep link" path the "does NOT contain still wins
-// focus" test above deliberately exercises with a "doc" pane - but welcome
-// is never itself part of a saved layout (openPane's own placement rule
+// kata eve5: a plain reload at the hub's root URL routes to "welcome" - but
+// welcome is never itself part of a saved layout (openPane's own placement rule
 // displaces it from the main slot the instant a real pane opens, and
 // nothing else ever puts one back), so on an ordinary reload of "/" the
 // routed re-open ALWAYS resolves to "genuinely new", forcing a fresh welcome

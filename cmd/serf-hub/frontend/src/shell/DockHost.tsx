@@ -20,6 +20,8 @@ import {
   type OpenPaneRecord,
   type PanePanelParams,
   registerDockviewApi,
+  SETTINGS_PRIMARY_ID,
+  SPAWN_PRIMARY_ID,
   useWorkspaceStore,
   workspaceStore,
 } from "./workspace";
@@ -379,32 +381,19 @@ export function DockHost() {
   function handleReady(event: DockviewReadyEvent): void {
     registerDockviewApi(event.api);
 
-    // MERGE, not suppress: whatever AppShell's routing glue already opened
-    // during render (a deep link, or welcome for "/" - see its own comment
-    // on why it opens the initial route's pane during render, before this
-    // handler ever runs) is captured by TYPE+PARAMS - not id - before
-    // attempting a restore, then re-opened via the normal openPane() path
-    // AFTER it, on top of whatever the saved layout restored, focused.
-    // Capturing type+params rather than id is deliberate on two counts:
-    // (1) restoreLayout() replaces `panes` wholesale (dockview's fromJSON
-    // has no concept of "merge with what's already there"), so the routed
-    // pane's pre-restore id is gone from the store the instant restore
-    // runs regardless; (2) re-deriving it via openPane() afterward reuses
-    // that function's own same-params dedup for free - if the restored
-    // layout already contains the identical session, this focuses THAT
-    // panel instead of ever opening a second tab for it.
+    // Capture the route intent by slot before restoreLayout replaces the
+    // store's pane list. The routed main is reapplied through the primary
+    // policy after restore; captured secondaries are the only panes reopened
+    // additively, so a route can never land beside a stale saved primary.
     //
-    // Both the restore attempt and the routed re-open are unconditional
-    // (not gated on "panes is currently empty" the way the previous,
-    // provisional fix was) - restoreLayout() and openPane() are each
-    // already idempotent/no-op-safe on their own terms (nothing stored ->
-    // skipped outright below; nothing routed -> an empty loop), so there is
-    // no "already non-empty" case left to specially suppress.
+    // Both the restore attempt and the routed re-apply are unconditional:
+    // restoreLayout() and the store operations are already safe when either
+    // the saved layout or the routed intent is absent.
     //
     // Failure-mode floor, preserved exactly: restoreLayout()'s own
     // structural-validation failure (corrupt localStorage, or a restored
     // panel referencing an unregistered pane type) clears the store back to
-    // empty (see workspace.ts) BEFORE the routed re-open loop runs - so a
+    // empty (see workspace.ts) BEFORE the routed re-apply runs - so a
     // corrupt saved layout still leaves the routed pane as the ONLY thing
     // that ends up open, the same "deep link wins alone" guarantee the
     // pre-merge implementation always provided.
@@ -436,28 +425,27 @@ export function DockHost() {
     // fires when the main slot is genuinely empty (nothing routed AND
     // nothing restored, or a saved-but-empty layout), which is the one case
     // this exclusion must still cover.
-    const routed = workspaceStore
-      .getState()
-      .panes.filter((p) => p.type !== "welcome")
-      .map((p) => ({ type: p.type, params: p.params }));
+    const routed = workspaceStore.getState().panes.filter((p) => p.type !== "welcome");
+    const routedPrimary = routed.find((p) => p.slot === "main");
+    const routedSecondary = routed.filter((p) => p.slot === "secondary");
 
     const stored = readStoredLayout();
     if (stored !== undefined) {
       workspaceStore.getState().restoreLayout(stored);
     }
-    // keepExistingFocus: the restored layout's own active tab wins over the
-    // address bar for a pane the layout ALREADY contains. On an ordinary
-    // reload the URL still names whichever pane the user first deep-linked
-    // to, which is usually not the tab they were last on - re-opening it
-    // focused made every reload snap focus back to that first pane, silently
-    // discarding the active tab dockview had faithfully persisted (verified
-    // live: the saved leaf's `activeView` was correct both before and after
-    // the reload; only the in-page focus was wrong). A deep link to a pane
-    // the saved layout does NOT contain still creates a pane, and openPane
-    // still focuses that - a genuinely new deep link is exactly the case
-    // that should win.
-    for (const pane of routed) {
-      workspaceStore.getState().openPane(pane.type, pane.params, { keepExistingFocus: true });
+
+    if (routedPrimary?.type === "settings") {
+      workspaceStore.getState().replacePrimary("settings", routedPrimary.params, SETTINGS_PRIMARY_ID);
+    } else if (routedPrimary?.type === "spawn") {
+      workspaceStore.getState().replacePrimary("spawn", routedPrimary.params, SPAWN_PRIMARY_ID);
+    } else if (routedPrimary?.type === "session") {
+      const ref = (routedPrimary.params as { ref?: unknown }).ref;
+      if (typeof ref === "string") {
+        workspaceStore.getState().replacePrimary("session", routedPrimary.params, ref);
+      }
+    }
+    for (const pane of routedSecondary) {
+      workspaceStore.getState().openPane(pane.type, pane.params, { slot: "secondary" });
     }
 
     // Backstop: a blank main slot with no chrome of its own to open a new pane

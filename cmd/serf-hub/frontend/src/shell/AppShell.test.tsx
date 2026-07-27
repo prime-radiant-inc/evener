@@ -492,6 +492,41 @@ test("navigating from one session deep link to another, post-mount, opens the ne
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_second"]);
 });
 
+test("browser Back and Forward route notifications replace the primary through AppShell", async () => {
+  window.history.pushState({}, "", "/s/local:history_session");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findAllByText("local:history_session");
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:history_session",
+      path: "README.md",
+      kind: "text",
+    });
+    window.history.pushState({}, "", "/settings");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:history_session");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findAllByText("local:history_session");
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:history_session" });
+
+  act(() => {
+    window.history.pushState({}, "", "/settings");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  expect(workspaceStore.getState().panes).toHaveLength(1);
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+});
+
 // Rail activation must update the canonical URL as well as the workspace. A
 // direct store-only activation leaves the shell on /settings, so the next
 // Settings click is the same-path navigation the app no longer handles.
