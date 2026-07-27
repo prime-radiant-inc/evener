@@ -1,66 +1,138 @@
-# Task 2 implementation report
+# Task 2 correction report
 
 ## Scope
 
-Implemented only Task 2 of kata r0yf on `wip/kata/favorite-cleanup-policy`:
-read-only favorite revalidation now uses the same raw navigation/source
-generation as `/api/tree`, before presentation caps, with no favorite-store
-mutation.
+Corrected the Task 2 implementation rejected at baseline `b3050ce19` on
+`wip/kata-favorite-cleanup-policy`. Task 3 was not started.
 
-## Files changed
+The tree request now carries one immutable raw navigation snapshot through
+tree construction and favorite classification. The snapshot contains rows,
+carried projects, source ownership/completeness, malformed/conflicting row
+identities, and generation. No read, tree, startup, cache, or revalidation
+path mutates `FavoriteStore`.
+
+## Files changed in this correction
 
 - `cmd/serf-hub/web_api_tree.go`
 - `cmd/serf-hub/web_api_tree_favorite_revalidation_test.go`
 - `cmd/serf-hub/web.go`
 - `cmd/serf-hub/main_background.go`
-- `cmd/serf-hub/internal/hubcore/tree.go`
+- `cmd/serf-hub/cov_exact_lifecycle_tree_fuzz_test.go`
 - `cmd/serf-hub/internal/hubcore/remotecache.go`
 - `cmd/serf-hub/internal/hubcore/remotecache_test.go`
-- `cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`
-- `cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go`
-- `cmd/serf-hub/cov_web_tree_session_fuzz_test.go`
+- `cmd/serf-hub/internal/hubcore/treecache.go`
+- `cmd/serf-hub/internal/hubcore/treecache_test.go`
+- `cmd/serf-hub/internal/hubcore/favorite_authority.go`
+- `cmd/serf-hub/internal/hubcore/tree.go`
+- `cmd/serf-hub/internal/hubcore/favorite_candidates_test.go`
 
-The last two files only update coverage-driver calls for the explicit
-error-returning favorite read helper.
+## Review findings
+
+Validated and fixed: 1, 2, 3, 4's source/ref conflict and malformed
+`Serf.ParentRef` paths, 5, 6, 7, 8, 9, 10, 11, and 12.
+
+Finding 4's `ForkedFromID` subclaim was technically rejected. The existing
+mapping contract treats `ForkedFromID` as a raw thread ID fallback, while
+`Serf.ParentRef` is the ref-valued field. `appThreadTreeParentSessionID` and
+`TestAppThreadTreeEntriesPreserveRemoteLineageAndKind` in
+`cmd/serf-hub/web_api_tree_test.go` explicitly preserve the raw fork fallback
+(`ForkedFromID: "parent"` becomes `remote:parent`). The correction therefore
+marks malformed/conflicting source/ref identities and malformed parent refs
+incomplete, but does not add a new incompatible rejection rule for valid raw
+fork IDs.
 
 ## Exact RED evidence
 
-Command:
+The review regression suite was run before the correction production changes:
 
 ```text
 go test ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_' -count=1 -v
 ```
 
-The test run correctly failed before production changes. The five missing
-behaviors were:
+It failed with these missing behaviors:
 
 ```text
-web_api_tree_favorite_revalidation_test.go:78: capped valid favorite missing from pinned favorites: []
-web_api_tree_favorite_revalidation_test.go:143: last-known-good remote favorite remained visible after source failure
-web_api_tree_favorite_revalidation_test.go:175: ambiguous local/ref authority appeared in pinned favorites
-web_api_tree_favorite_revalidation_test.go:221: synthetic cluster row was presented as favorite
-web_api_tree_favorite_revalidation_test.go:256: favorite read failure status=200 ... want 500
-FAIL .../cmd/serf-hub
+ConcurrentCacheReadUsesOneSnapshot: first request paired its rows with the later incomplete authority
+HealthySourceSurvivesUnrelatedFailure: healthy source favorite was hidden by unrelated failure
+EmptyRemoteCacheDoesNotDowngradeLocalClusterAuthority: ... classification to "dormant"
+PaginatedSnapshotIncludesCappedAwayFavorite: favorite from terminal page was not presented
+LaterPageFailureDormantsLastGoodRows: later-page failure kept a last-good favorite visible
+RepeatedPageCursorIsIncomplete: repeated cursor was treated as complete authority
+SourceRefConflictAndMalformedRowDoNotHideHealthyIdentity: valid unrelated remote identity was hidden by malformed rows
+EndedRemoteCarriedProjectCanBeFavorited: ended remote carried project was absent from tree
+ProjectClaimsWithSameIDAreAmbiguous: conflicting project claims were collapsed into a valid favorite
 ```
 
-The ended/offline, confirmed-invalid preservation, archive, and one-source-
-generation cases passed in the RED run because those contracts were already
-partly satisfied by the baseline.
+The source-field conflict regression was then run against the unfixed path:
+
+```text
+go test ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_SourceFieldConflictWithoutRefIsDormant -count=1 -v
+```
+
+```text
+source field conflict without ref was treated as valid
+FAIL
+```
+
+The malformed-parent regression was run with its new incomplete-row check
+temporarily removed:
+
+```text
+go test ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_MalformedParentRefIsDormant -count=1 -v
+```
+
+```text
+malformed parent ref was treated as complete lineage
+FAIL
+```
+
+The corrected memo regression was run with the rejected scalar
+`inputs*2+remoteGeneration` key temporarily restored:
+
+```text
+go test ./cmd/serf-hub -run TestAPITreeFavoriteRevalidation_MemoKeyDoesNotCollideAcrossInputsAndRemoteGeneration -count=1 -v
+```
+
+```text
+memo key reused a different input/generation pair: first=true second=false
+FAIL
+```
+
+The temporary production reversions were restored before commit.
+
+## Design choices
+
+- `RemoteThreadCache` publishes rows, per-source authority, completeness,
+  invalid identities, and generation atomically, with defensive copies.
+- Remote list reads consume every `NextCursor`, stop on repeated cursors, and
+  retain the prior complete source snapshot on later-page failure.
+- Completeness is evaluated for the owning remote source and identity. An
+  unrelated source failure does not hide healthy remote or local favorites.
+- Ended and live remote rows retain validated carried `ProjectID` and
+  `ProjectPath`. Project authority keeps separate canonical path/source claim
+  keys so collisions remain ambiguous.
+- The tree memo uses `hubcore.TreeCacheKey`, an explicit composite key.
+- `FavoriteCandidates` applies explicit archive decisions even when a live row
+  has no past metadata; age classification remains limited to metadata-backed
+  sessions.
+- Stored false, malformed, dormant, confirmed-invalid, and `decided_at` rows
+  are read-only during revalidation. Favorite-store read failures still fail
+  `/api/tree` rather than becoming an empty decision set.
 
 ## Exact GREEN evidence
 
 ```text
 go test ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_' -count=5
-ok   primeradiant.com/serf/cmd/serf-hub 0.530s
+ok   primeradiant.com/serf/cmd/serf-hub
 
 go test ./cmd/serf-hub -run 'Test(FavoriteEndpoint|APITree|Web_APITree|ListThreadsWithFallback)' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub 0.707s
+ok   primeradiant.com/serf/cmd/serf-hub
 
 go test ./cmd/serf-hub/internal/hubcore -count=1
-ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore 0.466s
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore
 
 go test ./cmd/serf-hub -count=1
-ok   primeradiant.com/serf/cmd/serf-hub 26.265s
+ok   primeradiant.com/serf/cmd/serf-hub
 
 go vet ./cmd/serf-hub/...
 exit 0, no output
@@ -72,56 +144,14 @@ git diff --check
 exit 0, no output
 ```
 
-The remote-cache authority-generation test is registered in the hubcore
-scenario driver and passes with the full hubcore suite.
+The focused cache/failure/concurrency regressions were also run with
+`-count=5` and passed. The source-authority cache test verifies generation,
+source metadata, and defensive copies.
 
-## Design choices
-
-- Navigation input collection records remote source completeness and a
-  monotonically changing source generation beside the cached rows.
-- Tree construction and favorite authority classification consume one raw
-  snapshot; cache keys include the source generation so a last-known-good tree
-  cannot be paired with a different authority generation.
-- Stored decisions are classified through the accepted Task 1 pure authority
-  seam. Only valid decisions reach presentation; dormant and confirmed-invalid
-  rows remain untouched.
-- Pinned candidates come from uncapped `Current`/`Recent` data retained by the
-  tree builder, including sessions folded inside a presentation cluster.
-  Archived projects and effectively archived live rows remain excluded.
-- Current synthetic cluster kinds are supplied by the tree's uncapped node
-  facts. Real session identity, including a legitimate `cluster:`-shaped ID,
-  is not classified by string spelling.
-- Favorite-store read errors propagate as tree endpoint errors; no empty map is
-  substituted on the HTTP path.
-- No read, tree, startup, cache, or revalidation path calls
-  `FavoriteStore.Set` or `FavoriteStore.Delete`.
-
-## Known limitations
-
-- Remote source failure is conservatively applied to the remote IDs present in
-  that last-known-good snapshot; those rows remain renderable but are dormant
-  until a complete source snapshot succeeds.
-- The existing `summary=1` response remains attention-only and does not read or
-  project favorite decisions.
-- No frontend surface or persistence schema was added, as required by the
-  approved design.
-
-## Commit
-
-Production and test implementation commit:
+## Correction commit
 
 ```text
-cb949ba63
+ecc380080
 ```
 
-## Clean-status evidence before report commit
-
-Immediately before creating this ignored report, `git status --short --branch`
-reported only:
-
-```text
-## wip/kata-favorite-cleanup-policy
-```
-
-The report itself is intentionally ignored under `.superpowers/` and will be
-force-added as the separate report commit.
+The report is committed separately because `.superpowers/` is ignored.
