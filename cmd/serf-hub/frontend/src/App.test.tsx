@@ -54,11 +54,14 @@ const EMPTY_TREE_RESPONSE = {
 };
 
 function stubTreeFetch(): void {
-  vi.stubGlobal("fetch", () =>
-    Promise.resolve(
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    if (input !== "/api/tree" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
+      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
+    }
+    return Promise.resolve(
       new Response(JSON.stringify(EMPTY_TREE_RESPONSE), { headers: { "Content-Type": "application/json" } }),
-    ),
-  );
+    );
+  });
 }
 
 // Renders a route to completion so both halves of its lazy-loading cost are
