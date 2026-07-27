@@ -1026,6 +1026,213 @@ func TestAPITreeFavoriteRevalidation_ProjectClaimsWithSameIDAreAmbiguous(t *test
 	}
 }
 
+func TestFavoriteProjectAuthorities_LocalColonIdentitySharesLocalClaim(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "project-local-colon")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	colonID := "cluster:" + hubtest.SessionID(t)
+	normalID := hubtest.SessionID(t)
+	key := hubcore.ArchiveKey{Kind: "project", ID: project.ID}
+	var wantStates map[string]hubcore.FavoriteDecisionState
+	for _, test := range []struct {
+		name  string
+		metas []schema.SessionMeta
+	}{
+		{name: "colon then normal", metas: []schema.SessionMeta{{ID: colonID}, {ID: normalID}}},
+		{name: "normal then colon", metas: []schema.SessionMeta{{ID: normalID}, {ID: colonID}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for i := range test.metas {
+				test.metas[i].EnvInfo.WorkingDir = projectPath
+			}
+			authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(navigationSnapshot{
+				metas:    test.metas,
+				projects: map[string]identifier.Project{projectPath: project},
+			})}
+			if len(authority.Projects) != 1 {
+				t.Fatalf("project claims = %+v, want one complete local claim", authority.Projects)
+			}
+			claim := authority.Projects[0]
+			if claim.Quality != hubcore.FavoriteAuthorityComplete || claim.ClaimKey != project.CanonicalPath+"\x00local" {
+				t.Fatalf("project claim = %+v, want complete local claim", claim)
+			}
+			got := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{key: true}, authority)
+			assertFavoriteDecisionClassification(t, got, key, hubcore.FavoriteDecisionValid)
+			state := got.Classifications[key].State
+			if wantStates == nil {
+				wantStates = map[string]hubcore.FavoriteDecisionState{"state": state}
+			} else if wantStates["state"] != state {
+				t.Fatalf("row-order state = %q, want %q", state, wantStates["state"])
+			}
+		})
+	}
+}
+
+func TestFavoriteProjectAuthorities_ConflictingCarriedProjectsAreDormantRegardlessOfRowOrder(t *testing.T) {
+	projectAPath := filepath.Join(t.TempDir(), "project-carried-a")
+	projectBPath := filepath.Join(t.TempDir(), "project-carried-b")
+	for _, path := range []string{projectAPath, projectBPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projectA, err := identifier.ResolveProject(projectAPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := identifier.ResolveProject(projectBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDir := filepath.Join(t.TempDir(), "shared-worktree")
+	idA := hubtest.SessionID(t)
+	idB := hubtest.SessionID(t)
+	threads := []appwire.Thread{
+		{
+			ID: idA, Source: "remote", CWD: workingDir,
+			ProjectID: projectA.ID, ProjectPath: projectA.CanonicalPath,
+			CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		},
+		{
+			ID: idB, Source: "remote", CWD: workingDir,
+			ProjectID: projectB.ID, ProjectPath: projectB.CanonicalPath,
+			CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		},
+	}
+	decisions := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: projectA.ID}: true,
+		{Kind: "project", ID: projectB.ID}: true,
+	}
+	var wantStates map[hubcore.ArchiveKey]hubcore.FavoriteDecisionState
+	wantPresentationProjectID := ""
+	for _, test := range []struct {
+		name    string
+		threads []appwire.Thread
+	}{
+		{name: "a then b", threads: threads},
+		{name: "b then a", threads: []appwire.Thread{threads[1], threads[0]}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cache := &hubcore.RemoteThreadCache{}
+			cache.Store(test.threads)
+			web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+			snapshot := web.navigationSnapshotInputs(t.Context())
+			presentationProject, ok := snapshot.projects[workingDir]
+			if !ok {
+				t.Fatalf("shared working directory lost its deterministic presentation project: %+v", snapshot.projects)
+			}
+			if wantPresentationProjectID == "" {
+				wantPresentationProjectID = presentationProject.ID
+			} else if wantPresentationProjectID != presentationProject.ID {
+				t.Fatalf("row-order presentation project = %q, want %q", presentationProject.ID, wantPresentationProjectID)
+			}
+			authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(snapshot)}
+			if len(authority.Projects) != 2 {
+				t.Fatalf("conflicting carried project claims = %+v, want both identities retained", authority.Projects)
+			}
+			for _, projectID := range []string{projectA.ID, projectB.ID} {
+				var found bool
+				for _, claim := range authority.Projects {
+					if claim.ID == projectID {
+						found = true
+						if claim.Quality != hubcore.FavoriteAuthorityIncomplete {
+							t.Fatalf("conflicting carried project %q claim = %+v, want incomplete", projectID, claim)
+						}
+					}
+				}
+				if !found {
+					t.Fatalf("conflicting carried project %q was not retained: %+v", projectID, authority.Projects)
+				}
+			}
+			got := hubcore.ClassifyFavoriteDecisions(decisions, authority)
+			states := make(map[hubcore.ArchiveKey]hubcore.FavoriteDecisionState, len(decisions))
+			for key := range decisions {
+				classification, ok := got.Classifications[key]
+				if !ok {
+					t.Fatalf("classification missing for %v", key)
+				}
+				if classification.State == hubcore.FavoriteDecisionValid {
+					t.Fatalf("conflicting carried project %v was authorized: authority=%+v", key, authority.Projects)
+				}
+				states[key] = classification.State
+			}
+			if wantStates == nil {
+				wantStates = states
+			} else if !reflect.DeepEqual(wantStates, states) {
+				t.Fatalf("row-order states = %v, want %v", states, wantStates)
+			}
+		})
+	}
+}
+
+func TestFavoriteProjectAuthorities_CarriedProjectConflictsWithLocalIdentity(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "project-local")
+	remotePath := filepath.Join(t.TempDir(), "project-remote")
+	for _, path := range []string{localPath, remotePath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	localProject, err := identifier.ResolveProject(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteProject, err := identifier.ResolveProject(remotePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteID := hubtest.SessionID(t)
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{{
+		ID: remoteID, Source: "remote", CWD: localProject.CanonicalPath,
+		ProjectID: remoteProject.ID, ProjectPath: remoteProject.CanonicalPath,
+		CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+	}})
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	web.injectMetasForTest([]schema.SessionMeta{{
+		ID: hubtest.SessionID(t), UpdatedAt: favoriteRevalidationTreeTime,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: localProject.CanonicalPath},
+	}})
+	snapshot := web.navigationSnapshotInputs(t.Context())
+	decisions := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: localProject.ID}:  true,
+		{Kind: "project", ID: remoteProject.ID}: true,
+	}
+	authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(snapshot)}
+	for _, projectID := range []string{localProject.ID, remoteProject.ID} {
+		var found bool
+		for _, claim := range authority.Projects {
+			if claim.ID == projectID {
+				found = true
+				if claim.Quality != hubcore.FavoriteAuthorityIncomplete {
+					t.Fatalf("local/carried project %q claim = %+v, want incomplete", projectID, claim)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("local/carried project %q was not retained: %+v", projectID, authority.Projects)
+		}
+	}
+	got := hubcore.ClassifyFavoriteDecisions(decisions, authority)
+	for key := range decisions {
+		classification, ok := got.Classifications[key]
+		if !ok {
+			t.Fatalf("classification missing for %v", key)
+		}
+		if classification.State == hubcore.FavoriteDecisionValid {
+			t.Fatalf("local/carried project conflict %v was authorized", key)
+		}
+	}
+}
+
 func TestFavoriteProjectAuthorities_IncompleteClaimDominatesRegardlessOfRowOrder(t *testing.T) {
 	projectPath := filepath.Join(t.TempDir(), "project-a")
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {

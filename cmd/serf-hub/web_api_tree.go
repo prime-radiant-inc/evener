@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -37,6 +36,8 @@ type navigationSnapshot struct {
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
 	projects            map[string]identifier.Project
+	projectIdentities   map[string][]identifier.Project
+	projectConflicts    map[string]bool
 	remoteOwnership     map[string]favoriteRemoteOwnership
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
 	remoteIncompleteIDs map[string]struct{}
@@ -388,7 +389,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		metas = s.cfg.Past.AllMetas()
 	}
 	fetch := s.remoteThreadFetch(ctx)
-	carriedProjects := make(map[string]identifier.Project)
+	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
 	for _, thread := range fetch.threads {
 		meta, entry, ok := appThreadTreeEntries(thread)
 		if !ok {
@@ -396,7 +397,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		}
 		metas = append(metas, meta)
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
-			carriedProjects[entry.WorkingDir] = entry.Project
+			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
 		if appThreadTreeLive(thread) {
 			live = append(live, entry)
@@ -405,8 +406,17 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	// Resolve live working directories once at ingestion. BuildTree and the
 	// orphan-live projection reuse this carried identity rather than resolving
 	// in grouping or rendering loops.
-	projects := hubcore.ResolveProjectMap(metas, live)
-	maps.Copy(projects, carriedProjects)
+	resolvedProjects := hubcore.ResolveProjectMap(metas, live)
+	projectCandidates := make(map[string]map[string]identifier.Project, len(resolvedProjects)+len(carriedProjectCandidates))
+	for path, project := range resolvedProjects {
+		addNavigationProjectCandidate(projectCandidates, path, project)
+	}
+	for path, candidates := range carriedProjectCandidates {
+		for _, project := range candidates {
+			addNavigationProjectCandidate(projectCandidates, path, project)
+		}
+	}
+	projects, projectIdentities, projectConflicts := selectNavigationProjects(projectCandidates)
 	for i := range live {
 		if project, ok := projects[live[i].WorkingDir]; ok {
 			live[i].Project = project
@@ -422,11 +432,48 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		metas:               metas,
 		live:                live,
 		projects:            projects,
+		projectIdentities:   projectIdentities,
+		projectConflicts:    projectConflicts,
 		remoteOwnership:     favoriteRemoteOwnerships(fetch.threads),
 		remoteSources:       fetch.sources,
 		remoteIncompleteIDs: incompleteIDs,
 		remoteGeneration:    fetch.generation,
 	}
+}
+
+func addNavigationProjectCandidate(candidates map[string]map[string]identifier.Project, path string, project identifier.Project) {
+	if path == "" || project.ID == "" {
+		return
+	}
+	if candidates[path] == nil {
+		candidates[path] = make(map[string]identifier.Project)
+	}
+	key := project.ID + "\x00" + project.CanonicalPath
+	candidates[path][key] = project
+}
+
+func selectNavigationProjects(candidates map[string]map[string]identifier.Project) (map[string]identifier.Project, map[string][]identifier.Project, map[string]bool) {
+	projects := make(map[string]identifier.Project, len(candidates))
+	identities := make(map[string][]identifier.Project, len(candidates))
+	conflicts := make(map[string]bool)
+	for path, byKey := range candidates {
+		keys := make([]string, 0, len(byKey))
+		for key := range byKey {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			identities[path] = append(identities[path], byKey[key])
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		projects[path] = byKey[keys[0]]
+		if len(keys) > 1 {
+			conflicts[path] = true
+		}
+	}
+	return projects, identities, conflicts
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
@@ -1160,14 +1207,14 @@ func findMetaByID(metas []schema.SessionMeta, id string) (schema.SessionMeta, bo
 
 func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteProjectAuthority {
 	claims := make(map[string]hubcore.FavoriteProjectAuthority)
-	for path, project := range snapshot.projects {
-		if project.ID == "" {
-			continue
+	projectIdentities := snapshot.projectIdentities
+	if projectIdentities == nil {
+		projectIdentities = make(map[string][]identifier.Project, len(snapshot.projects))
+		for path, project := range snapshot.projects {
+			projectIdentities[path] = []identifier.Project{project}
 		}
-		canonicalPath := project.CanonicalPath
-		if canonicalPath == "" {
-			canonicalPath = path
-		}
+	}
+	for path, projects := range projectIdentities {
 		owners := make(map[string]favoriteProjectOwnerEvidence)
 		for _, meta := range snapshot.metas {
 			if hubcore.EffectiveWorkingDir(meta) == path {
@@ -1182,18 +1229,27 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 		if len(owners) == 0 {
 			owners["local"] = favoriteProjectOwnerEvidence{quality: hubcore.FavoriteAuthorityIncomplete}
 		}
-		for source, evidence := range owners {
-			quality := evidence.quality
-			if !evidence.hasIdentity {
-				quality = mergeFavoriteAuthorityQuality(quality, hubcore.FavoriteAuthorityIncomplete)
+		for _, project := range projects {
+			if project.ID == "" {
+				continue
 			}
-			claimKey := canonicalPath + "\x00" + source
-			key := project.ID + "\x00" + claimKey
-			if previous, ok := claims[key]; ok {
-				previous.Quality = mergeFavoriteAuthorityQuality(previous.Quality, quality)
-				claims[key] = previous
-			} else {
-				claims[key] = hubcore.FavoriteProjectAuthority{ID: project.ID, Quality: quality, ClaimKey: claimKey}
+			canonicalPath := project.CanonicalPath
+			if canonicalPath == "" {
+				canonicalPath = path
+			}
+			for source, evidence := range owners {
+				quality := evidence.quality
+				if !evidence.hasIdentity || snapshot.projectConflicts[path] {
+					quality = mergeFavoriteAuthorityQuality(quality, hubcore.FavoriteAuthorityIncomplete)
+				}
+				claimKey := canonicalPath + "\x00" + source
+				key := project.ID + "\x00" + claimKey
+				if previous, ok := claims[key]; ok {
+					previous.Quality = mergeFavoriteAuthorityQuality(previous.Quality, quality)
+					claims[key] = previous
+				} else {
+					claims[key] = hubcore.FavoriteProjectAuthority{ID: project.ID, Quality: quality, ClaimKey: claimKey}
+				}
 			}
 		}
 	}
@@ -1211,7 +1267,7 @@ type favoriteProjectOwnerEvidence struct {
 }
 
 func favoriteProjectOwnerEvidenceAdd(owners map[string]favoriteProjectOwnerEvidence, id string, snapshot navigationSnapshot) {
-	source := favoriteProjectSourceClaim(id)
+	source := favoriteProjectSourceClaim(id, snapshot)
 	evidence := owners[source]
 	quality := favoriteSessionSourceQuality(id, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
 	if evidence.hasEvidence {
@@ -1237,10 +1293,12 @@ func mergeFavoriteAuthorityQuality(left, right hubcore.FavoriteAuthorityQuality)
 	return hubcore.FavoriteAuthorityIncomplete
 }
 
-func favoriteProjectSourceClaim(id string) string {
-	ref, err := appwire.ParseRef(id)
-	if err == nil && ref.SourceID != "" {
-		return ref.SourceID
+func favoriteProjectSourceClaim(id string, snapshot navigationSnapshot) string {
+	if ownership, ok := snapshot.remoteOwnership[id]; ok {
+		if ownership.sourceID != "" {
+			return ownership.sourceID
+		}
+		return "remote-incomplete"
 	}
 	return "local"
 }
