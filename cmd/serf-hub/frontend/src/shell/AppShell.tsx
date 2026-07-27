@@ -210,6 +210,21 @@ function openRouteAsPane(
   workspaceStore.getState().openPane("welcome", {});
 }
 
+function reconcileWelcomeRouteWithTree(tree: TreeResponse | null): void {
+  if (tree === null) return;
+
+  const main = workspaceStore.getState().mainPane();
+  if (main?.type !== "session") return;
+
+  const childRef = sessionRefFromRouteParams(main.params);
+  if (childRef === null) return;
+
+  const ownerRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], childRef);
+  if (ownerRef === null || ownerRef === childRef) return;
+
+  openNestedSessionWithOwner(childRef, ownerRef);
+}
+
 export function AppShell({ client: injectedClient }: AppShellProps) {
   const [{ client, owned }] = useState(() => createClientSlot(injectedClient));
 
@@ -335,6 +350,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
       }
       return;
     }
+    if (route?.type === "welcome") reconcileWelcomeRouteWithTree(tree);
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
