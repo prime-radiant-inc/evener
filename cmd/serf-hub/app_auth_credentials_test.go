@@ -140,6 +140,21 @@ func TestAuthTestCredentialsReportsMissingWhenClientConstructionSkipsInstance(t 
 	}
 }
 
+func TestAuthTestCredentialsReportsLoaderFailureAsEndpointFailure(t *testing.T) {
+	c := newHubAuthControllerWithStore(t.TempDir(), nil)
+	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
+		return nil, providercfg.Config{}, errors.New("providers config is unreadable")
+	}
+
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusEndpointFailure {
+		t.Fatalf("status=%q, want endpoint_failure", resp.Status)
+	}
+}
+
 func TestAuthTestCredentialsSuppressesDuplicateSameInstance(t *testing.T) {
 	client := &credentialProbeFakeClient{started: make(chan struct{}), release: make(chan struct{})}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "custom", Type: "openai-compatible", BaseURL: "http://provider.test/v1", APIKey: "configured"}}}

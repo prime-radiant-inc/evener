@@ -88,6 +88,9 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 	client, cfg, err := loader(c.providersConfigPath)
 	inst, ok := configuredInstance(cfg, name)
 	if !ok {
+		if err != nil {
+			return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage)
+		}
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
 	if credentialRequired(inst) && !c.instanceHasEffectiveCredential(name, inst) {
