@@ -38,10 +38,10 @@ test("canonicalizes a child opened without a parent when its owning session is l
   expect(workspaceStore.getState().focusedPaneId).toBe(child[0]?.id);
 });
 
-test("replaces a child pane with a different parent context without closing unrelated transcript panes", () => {
+test("replaces a child pane with a different parent context and clears prior secondary panes", () => {
   openTranscript("local:child", "local:owner-a");
   openTranscript("local:other", "local:other-owner");
-  const unrelated = transcriptPanes("local:other")[0];
+  expect(transcriptPanes("local:other")).toHaveLength(1);
 
   openTranscript("local:child", "local:owner-b");
 
@@ -50,7 +50,7 @@ test("replaces a child pane with a different parent context without closing unre
     ref: "local:child",
     parentRef: "local:owner-b",
   });
-  expect(transcriptPanes("local:other")[0]?.id).toBe(unrelated?.id);
+  expect(transcriptPanes("local:other")).toHaveLength(0);
   expect(sessionPane("local:owner-b")?.slot).toBe("main");
   expect(workspaceStore.getState().focusedPaneId).toBe(transcriptPanes("local:child")[0]?.id);
 });
