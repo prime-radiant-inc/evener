@@ -349,6 +349,57 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
   });
 
+  test("restarts a pending initial hydrate on a client swap and waits for the new client's model", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+
+    const b = new FakeClient("connecting");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    b.emitReady();
+    await flushUntil(() => bRead.resolve !== null);
+
+    let settled = false;
+    void ensuring.then(() => {
+      settled = true;
+    });
+    aRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => settled);
+
+    expect(settled).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    b.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   test("throws when no client has been connected yet", async () => {
     await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow(/no client connected/i);
   });
@@ -1957,6 +2008,64 @@ describe("useThreadsStore.watchThread", () => {
     await watching;
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("restarts a pending initial watched hydrate on a client swap and waits for the new client's model", async () => {
+    const a = connectFakeClient();
+    const aRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (aRead.resolve = resolve)));
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => aRead.resolve !== null);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    let settled = false;
+    void watching.then(() => {
+      settled = true;
+    });
+    aRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => settled);
+
+    expect(settled).toBe(false);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await watching;
+
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(b.calls[0]?.params).toEqual({
+      ref: "ref_a",
+      includeTurns: false,
+      itemsView: "full",
+      subscribe: true,
+      replaceSubscription: false,
+      turnLimit: 40,
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    b.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
+    });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
   test("hydrates via thread/read with includeTurns:false and routes a subsequent matching notification", async () => {
