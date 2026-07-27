@@ -208,10 +208,41 @@ export interface ThreadsStoreState {
 // its notification/ready handlers onto (plus that wiring's own unsubscribe
 // functions - see rewireClient below).
 const refCounts = new Map<string, number>();
-const inflightHydrates = new Map<string, Promise<ThreadModel>>();
+// A generation changes whenever the last real pane releases and a new pane
+// claims the ref. An ensure that fails after its pane lifecycle was retired
+// must not roll back a replacement lifecycle's claim.
+const ensureGenerations = new Map<string, number>();
+const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
+const inflightHydrateClients = new Map<string, AppwireClientLike>();
+const inflightHydrateEpochs = new Map<string, number>();
+// The published model is intentionally stale while a thread/read is pending.
+// Keep only the routing facts that can evolve from accepted notifications, so
+// a later ref-less or threadId-only frame is judged against the pending stream
+// rather than that stale snapshot.
+type PendingHydrationRouting = {
+  ref: string;
+  threadId?: string;
+  activeTurnId?: string;
+};
+type PendingThreadHydration = {
+  client: AppwireClientLike;
+  epoch: number;
+  notifications: AnyNotification[];
+  notificationKeys: Set<string>;
+  routing: PendingHydrationRouting;
+};
+// A thread/read subscribes before it returns its snapshot. Notifications can
+// therefore arrive in the gap between the source subscription and snapshot
+// response. Keep the newest hydration's notifications out of the old model,
+// then fold them onto the returned snapshot before publishing it.
+const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 let wiredClient: AppwireClientLike | null = null;
+let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+let resolveClientReadyOrRewired: (() => void) | null = null;
+let clientReadyOrRewired: Promise<void> = Promise.resolve();
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
 // is a single slot, not a Map): modelsCache holds the last successful
@@ -228,7 +259,9 @@ let inflightModelsList: Promise<ModelListResponse> | null = null;
 // refCounts/inflightHydrates above, so a watch and a real pane on the
 // same ref never share (or fight over) one counter.
 const watchRefCounts = new Map<string, number>();
-const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
+const inflightWatchHydrates = new Map<string, Promise<ThreadModel | null>>();
+const inflightWatchHydrateClients = new Map<string, AppwireClientLike>();
+const inflightWatchHydrateEpochs = new Map<string, number>();
 const inflightWatchIncludeTurns = new Map<string, boolean>();
 // A generation changes whenever the last watcher releases. Late responses
 // from that retired lifetime must not populate a new one.
@@ -370,6 +403,183 @@ function targetsNotification(n: AnyNotification, model: ThreadModel): boolean {
   return notificationTargetsThread(n, model);
 }
 
+function notificationRef(n: AnyNotification): string | undefined {
+  const params = n.params as { ref?: unknown };
+  return typeof params.ref === "string" ? params.ref : undefined;
+}
+
+function notificationThreadId(n: AnyNotification): string | undefined {
+  const params = n.params as { threadId?: unknown };
+  return typeof params.threadId === "string" ? params.threadId : undefined;
+}
+
+function notificationTurnId(n: AnyNotification): string | undefined {
+  if (n.method === "turn/completed") return n.params.turnId || n.params.turn.id;
+  if (n.method === "turn/started") return n.params.turn.id;
+  if (n.method === "item/started" || n.method === "item/completed") {
+    return n.params.turnId || n.params.item.turnId;
+  }
+  return undefined;
+}
+
+function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydration): boolean {
+  const routing = pending.routing;
+  const ref = notificationRef(n);
+  const threadId = notificationThreadId(n);
+  if (ref !== undefined) {
+    if (ref !== routing.ref) return false;
+    // A ref-targeted frame is authoritative for the requested subscription,
+    // but once that subscription has also taught us its thread id, a
+    // contradictory id is a different thread and must not enter this buffer.
+    if (threadId !== undefined && routing.threadId !== undefined && threadId !== routing.threadId) return false;
+    if (n.method === "turn/completed") return routing.activeTurnId === notificationTurnId(n);
+    return true;
+  }
+  if (n.method === "turn/completed") return routing.activeTurnId === notificationTurnId(n);
+  return threadId !== undefined && threadId === routing.threadId;
+}
+
+function advancePendingHydrationRouting(n: AnyNotification, pending: PendingThreadHydration): void {
+  const threadId = notificationThreadId(n);
+  if (pending.routing.threadId === undefined && threadId !== undefined) pending.routing.threadId = threadId;
+
+  if (n.method === "turn/started") {
+    pending.routing.activeTurnId = n.params.turn.id;
+  } else if (n.method === "turn/completed" && pending.routing.activeTurnId === notificationTurnId(n)) {
+    pending.routing.activeTurnId = undefined;
+  } else if (
+    (n.method === "item/started" || n.method === "item/completed") &&
+    pending.routing.activeTurnId === undefined
+  ) {
+    // Initial hydration can begin with an item frame whose turn/started frame
+    // was already durable in the snapshot. Learn that active turn from the
+    // item so the following bare turn/completed frame remains in order.
+    pending.routing.activeTurnId = notificationTurnId(n);
+  }
+}
+
+function pendingHydrationRouting(ref: string, model: ThreadModel | undefined): PendingHydrationRouting {
+  return { ref, threadId: model?.threadId, activeTurnId: model?.activeTurnId };
+}
+
+function beginThreadHydration(
+  ref: string,
+  client: AppwireClientLike,
+  model: ThreadModel | undefined,
+  epoch: number,
+): PendingThreadHydration {
+  const pending = {
+    client,
+    epoch,
+    notifications: [],
+    notificationKeys: new Set<string>(),
+    routing: pendingHydrationRouting(ref, model),
+  };
+  pendingThreadHydrations.set(ref, pending);
+  return pending;
+}
+
+function beginWatchedHydration(
+  ref: string,
+  client: AppwireClientLike,
+  model: ThreadModel | undefined,
+  epoch: number,
+): PendingThreadHydration {
+  const pending = {
+    client,
+    epoch,
+    notifications: [],
+    notificationKeys: new Set<string>(),
+    routing: pendingHydrationRouting(ref, model),
+  };
+  pendingWatchedHydrations.set(ref, pending);
+  return pending;
+}
+
+function notificationKey(notification: AnyNotification): string {
+  return JSON.stringify(notification) ?? "";
+}
+
+function transferPendingHydration(previous: PendingThreadHydration | undefined, next: PendingThreadHydration): void {
+  if (!previous) return;
+
+  next.notifications = [...previous.notifications];
+  next.notificationKeys = new Set(previous.notifications.map(notificationKey));
+  next.routing = { ...previous.routing };
+}
+
+function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): boolean {
+  const key = notificationKey(notification);
+  if (pending.notificationKeys.has(key)) return false;
+  pending.notificationKeys.add(key);
+  pending.notifications.push(notification);
+  advancePendingHydrationRouting(notification, pending);
+  return true;
+}
+
+function replayHydrationNotifications(
+  model: ThreadModel,
+  notifications: AnyNotification[],
+): { model: ThreadModel; appliedAt: number[] } {
+  let hydrated = model;
+  const appliedAt: number[] = [];
+  for (const notification of notifications) {
+    const now = Date.now();
+    const updated = applyNotification(hydrated, notification, now);
+    if (updated === hydrated) continue;
+    hydrated = updated;
+    appliedAt.push(now);
+  }
+  return { model: hydrated, appliedAt };
+}
+
+function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
+  if (pendingThreadHydrations.get(ref) !== pending) return null;
+  if (wiredClient !== pending.client) return null;
+  if (readyEpoch !== pending.epoch) return null;
+  if ((refCounts.get(ref) ?? 0) <= 0) {
+    pendingThreadHydrations.delete(ref);
+    return null;
+  }
+
+  const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
+
+  pendingThreadHydrations.delete(ref);
+  threadsStore.setState((s) => {
+    if ((refCounts.get(ref) ?? 0) <= 0) return s;
+    const nextThreads = new Map(s.threads);
+    nextThreads.set(ref, hydrated);
+    if (appliedAt.length === 0) return { threads: nextThreads };
+    const nextFrameTimes = new Map(s.frameTimes);
+    let times = nextFrameTimes.get(ref) ?? [];
+    for (const now of appliedAt) times = appendFrameTime(times, now);
+    nextFrameTimes.set(ref, times);
+    return { threads: nextThreads, frameTimes: nextFrameTimes };
+  });
+  return hydrated;
+}
+
+function publishWatchedHydration(
+  ref: string,
+  pending: PendingThreadHydration,
+  model: ThreadModel,
+  includeTurns: boolean,
+  generation: number,
+): ThreadModel | null {
+  if (pendingWatchedHydrations.get(ref) !== pending) return null;
+  if (wiredClient !== pending.client) return null;
+  if (readyEpoch !== pending.epoch) return null;
+  if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) {
+    pendingWatchedHydrations.delete(ref);
+    return null;
+  }
+
+  const replayed = replayHydrationNotifications(model, pending.notifications);
+  pendingWatchedHydrations.delete(ref);
+  storeWatchedModel(ref, replayed.model, includeTurns, generation, replayed.appliedAt);
+  return replayed.model;
+}
+
 // handleNotification routes one live notification to whichever tracked
 // model(s) it targets, folding it through the reducer. A notification for a
 // ref this store isn't tracking (or that targets no tracked model) finds no
@@ -388,10 +598,12 @@ function applyToMap(
   map: Map<string, ThreadModel>,
   n: AnyNotification,
   now: number,
+  skippedRefs?: ReadonlySet<string>,
 ): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
   for (const [ref, model] of map) {
+    if (skippedRefs?.has(ref)) continue;
     if (!targetsNotification(n, model)) continue;
     const updated = applyNotification(model, n, now);
     if (updated === model) continue;
@@ -427,8 +639,34 @@ function handleNotification(n: AnyNotification): void {
   applySubagentJobSignal(n);
   const now = Date.now();
   const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
-  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now);
-  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(watchedThreads, n, now);
+  const pendingRefs = new Set<string>();
+  for (const [ref, pending] of pendingThreadHydrations) {
+    if (targetsPendingHydration(n, pending)) {
+      bufferPendingNotification(pending, n);
+      pendingRefs.add(ref);
+    } else if (notificationRef(n) === ref) {
+      // Do not let a contradictory ref-targeted frame mutate the stale model
+      // through applyToMap. It belongs to this subscription's identity space,
+      // but its thread identity is unsafe to replay here, so drop it.
+      pendingRefs.add(ref);
+    }
+  }
+  const pendingWatchedRefs = new Set<string>();
+  for (const [ref, pending] of pendingWatchedHydrations) {
+    if (targetsPendingHydration(n, pending)) {
+      bufferPendingNotification(pending, n);
+      pendingWatchedRefs.add(ref);
+    } else if (notificationRef(n) === ref) {
+      pendingWatchedRefs.add(ref);
+    }
+  }
+  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now, pendingRefs);
+  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(
+    watchedThreads,
+    n,
+    now,
+    pendingWatchedRefs,
+  );
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -448,7 +686,13 @@ function handleNotification(n: AnyNotification): void {
   threadsStore.setState(patch);
 }
 
-function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolean, generation: number): void {
+function storeWatchedModel(
+  ref: string,
+  model: ThreadModel,
+  includeTurns: boolean,
+  generation: number,
+  appliedAt: number[] = [],
+): void {
   if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
   if ((watchGenerations.get(ref) ?? 0) !== generation) return;
 
@@ -460,7 +704,12 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   threadsStore.setState((s) => {
     const next = new Map(s.watchedThreads);
     next.set(ref, model);
-    return { watchedThreads: next };
+    if (appliedAt.length === 0) return { watchedThreads: next };
+    const nextFrameTimes = new Map(s.watchedFrameTimes);
+    let times = nextFrameTimes.get(ref) ?? [];
+    for (const now of appliedAt) times = appendFrameTime(times, now);
+    nextFrameTimes.set(ref, times);
+    return { watchedThreads: next, watchedFrameTimes: nextFrameTimes };
   });
 }
 
@@ -475,35 +724,80 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
 // fires on a FUTURE transition, never retroactively for a client that
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
-async function handleReady(client: AppwireClientLike): Promise<void> {
-  const refs = Array.from(threadsStore.getState().threads.keys());
-  const watchRefs = Array.from(threadsStore.getState().watchedThreads.keys());
+async function handleReady(client: AppwireClientLike, epoch: number): Promise<void> {
+  const refs = new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
+  const watchRefs = new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
-    ...refs.map(async (ref) => {
+    ...Array.from(refs, async (ref) => {
+      if ((refCounts.get(ref) ?? 0) <= 0) return;
+      const previous = pendingThreadHydrations.get(ref);
+      if (previous?.client === client && previous.epoch === epoch) return;
+      const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
+      transferPendingHydration(previous, pending);
+      const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((model) => {
+        if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
+        return publishThreadHydration(ref, pending, model);
+      });
+      const trackAsInitialHydration = previous !== undefined && !threadsStore.getState().threads.has(ref);
+      if (trackAsInitialHydration) {
+        inflightHydrates.set(ref, hydration);
+        inflightHydrateClients.set(ref, client);
+        inflightHydrateEpochs.set(ref, epoch);
+        void hydration
+          .finally(() => {
+            if (inflightHydrates.get(ref) === hydration) {
+              inflightHydrates.delete(ref);
+              inflightHydrateClients.delete(ref);
+              inflightHydrateEpochs.delete(ref);
+            }
+          })
+          .catch(() => {});
+      }
       try {
-        const model = await hydrateAndSubscribe(client, ref, Date.now());
-        // A concurrent releaseThread() may have dropped this ref while the
-        // re-subscribe was in flight; don't resurrect it.
-        if (!threadsStore.getState().threads.has(ref)) return;
-        threadsStore.setState((s) => {
-          const next = new Map(s.threads);
-          next.set(ref, model);
-          return { threads: next };
-        });
+        await hydration;
       } catch {
         // Best-effort: a failed re-subscribe leaves the stale model in place
         // rather than losing it; the next onReady (another reconnect) or a
         // fresh ensureThread() from a remounting pane will retry.
+      } finally {
+        if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
       }
     }),
-    ...watchRefs.map(async (ref) => {
+    ...Array.from(watchRefs, async (ref) => {
+      if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
       const generation = watchGenerations.get(ref) ?? 0;
+      const previous = pendingWatchedHydrations.get(ref);
+      if (previous?.client === client && previous.epoch === epoch) return;
+      const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
+      transferPendingHydration(previous, pending);
+      const includeTurns = watchIncludeTurns.get(ref) ?? false;
+      const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns).then((model) => {
+        if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
+        return publishWatchedHydration(ref, pending, model, includeTurns, generation);
+      });
+      const trackAsInitialHydration = previous !== undefined && !threadsStore.getState().watchedThreads.has(ref);
+      if (trackAsInitialHydration) {
+        inflightWatchHydrates.set(ref, hydration);
+        inflightWatchHydrateClients.set(ref, client);
+        inflightWatchHydrateEpochs.set(ref, epoch);
+        inflightWatchIncludeTurns.set(ref, includeTurns);
+        void hydration
+          .finally(() => {
+            if (inflightWatchHydrates.get(ref) === hydration) {
+              inflightWatchHydrates.delete(ref);
+              inflightWatchHydrateClients.delete(ref);
+              inflightWatchHydrateEpochs.delete(ref);
+              inflightWatchIncludeTurns.delete(ref);
+            }
+          })
+          .catch(() => {});
+      }
       try {
-        const includeTurns = watchIncludeTurns.get(ref) ?? false;
-        const model = await hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns);
-        storeWatchedModel(ref, model, includeTurns, generation);
+        await hydration;
       } catch {
         // Best-effort, same rationale as the real-pane path above.
+      } finally {
+        if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
       }
     }),
   ]);
@@ -526,12 +820,25 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
 //     effect.
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
+  readyEpoch += 1;
+  resolveClientReadyOrRewired?.();
+  resolveClientReadyOrRewired = null;
   unwireNotification?.();
   unwireReady?.();
   wiredClient = client;
+  if (client.state === "ready") {
+    clientReadyOrRewired = Promise.resolve();
+  } else {
+    clientReadyOrRewired = new Promise<void>((resolve) => {
+      resolveClientReadyOrRewired = resolve;
+    });
+  }
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
-    void handleReady(client);
+    readyEpoch += 1;
+    resolveClientReadyOrRewired?.();
+    resolveClientReadyOrRewired = null;
+    void handleReady(client, readyEpoch);
   });
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
@@ -541,7 +848,7 @@ function rewireClient(client: AppwireClientLike): void {
   // connect() before ever handing it to connectionStore.connect()), so
   // without this, swapping to an already-ready client would never
   // re-subscribe/re-hydrate this store's tracked refs at all.
-  if (client.state === "ready") void handleReady(client);
+  if (client.state === "ready") void handleReady(client, readyEpoch);
 }
 
 // The single reactive trigger for rewireClient: every connectionStore
@@ -575,27 +882,78 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   scrollPositions: new Map(),
 
   async ensureThread(ref) {
-    const client = requireClient();
-    refCounts.set(ref, (refCounts.get(ref) ?? 0) + 1);
+    let client = requireClient();
+    const count = refCounts.get(ref) ?? 0;
+    if (count === 0) {
+      ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
+    }
+    const generation = ensureGenerations.get(ref) ?? 0;
+    refCounts.set(ref, count + 1);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
-    let inflight = inflightHydrates.get(ref);
-    if (!inflight) {
-      inflight = hydrateAndSubscribe(client, ref, Date.now());
-      inflightHydrates.set(ref, inflight);
+    const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
+      const hydrationEpoch = readyEpoch;
+      const pending = beginThreadHydration(
+        ref,
+        hydrationClient,
+        threadsStore.getState().threads.get(ref),
+        hydrationEpoch,
+      );
+      const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now())
+        .then((model) => publishThreadHydration(ref, pending, model))
+        .finally(() => {
+          if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
+        });
+      inflightHydrates.set(ref, hydration);
+      inflightHydrateClients.set(ref, hydrationClient);
+      inflightHydrateEpochs.set(ref, hydrationEpoch);
       // .finally() re-throws inflight's own rejection on ITS OWN returned
       // promise — a separate object from `inflight` — so without a catch
       // here a failed hydrate becomes an unhandled rejection on top of the
       // one every caller already observes via `await inflight` below.
-      void inflight
+      void hydration
         .finally(() => {
-          if (inflightHydrates.get(ref) === inflight) inflightHydrates.delete(ref);
+          if (inflightHydrates.get(ref) === hydration) {
+            inflightHydrates.delete(ref);
+            inflightHydrateClients.delete(ref);
+            inflightHydrateEpochs.delete(ref);
+          }
         })
         .catch(() => {});
-    }
-    let model: ThreadModel;
+      return hydration;
+    };
+
+    let inflight = inflightHydrates.get(ref);
+    if (!inflight) inflight = startHydration(client);
     try {
-      model = await inflight;
+      for (;;) {
+        const inflightClient = inflightHydrateClients.get(ref) ?? client;
+        const inflightEpoch = inflightHydrateEpochs.get(ref) ?? readyEpoch;
+        try {
+          const model = await inflight;
+          if (model) return;
+        } catch (err) {
+          if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
+            if (threadsStore.getState().threads.has(ref)) return;
+            client = requireClient();
+            if (client.state !== "ready") await clientReadyOrRewired;
+            inflight = inflightHydrates.get(ref) ?? startHydration(client);
+            continue;
+          }
+          throw err;
+        }
+
+        if ((refCounts.get(ref) ?? 0) <= 0) return;
+        if (threadsStore.getState().threads.has(ref)) return;
+
+        client = requireClient();
+        if (client.state !== "ready") {
+          await clientReadyOrRewired;
+          client = requireClient();
+        }
+        inflight = inflightHydrates.get(ref);
+        if (!inflight) inflight = startHydration(client);
+      }
     } catch (err) {
       // This call's own claim (the increment above) never landed: undo it
       // via the same releaseThread() a caller would otherwise use, so a
@@ -607,17 +965,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // releaseThread() rather than hand-rolling the decrement also means
       // its own <=0 guard already makes this safe if a concurrent
       // releaseThread() consumed this exact claim first.
-      threadsStore.getState().releaseThread(ref);
+      if (ensureGenerations.get(ref) === generation && (refCounts.get(ref) ?? 0) > 0) {
+        threadsStore.getState().releaseThread(ref);
+      }
       throw err;
     }
-    // A concurrent releaseThread() may have dropped this ref to zero panes
-    // while the hydrate was in flight; don't resurrect it.
-    if ((refCounts.get(ref) ?? 0) <= 0) return;
-    threadsStore.setState((s) => {
-      const next = new Map(s.threads);
-      next.set(ref, model);
-      return { threads: next };
-    });
   },
 
   releaseThread(ref) {
@@ -628,6 +980,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    // A pending read belongs to this released pane lifecycle. Retire it
+    // before a new ensureThread(ref) can claim the same ref; the old promise's
+    // identity-guarded finally blocks must not remove a newer hydration.
+    inflightHydrates.delete(ref);
+    inflightHydrateClients.delete(ref);
+    inflightHydrateEpochs.delete(ref);
+    pendingThreadHydrations.delete(ref);
     // No wire call exists for "stop pushing me updates for this ref" (no
     // thread/read subscribe:false, no unsubscribe method) — the daemon keeps
     // sending; removing it from `threads` just stops handleNotification's
@@ -654,7 +1013,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   // comment for why the two must stay fully independent. Otherwise a
   // structural mirror of ensureThread above.
   async watchThread(ref, opts) {
-    const client = requireClient();
+    let client = requireClient();
     const wantTurns = opts?.includeTurns ?? false;
     if ((watchRefCounts.get(ref) ?? 0) === 0) {
       watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
@@ -675,27 +1034,79 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const upgrading = tracked && wantTurns && !hadTurns;
     if (tracked && !upgrading) return; // already hydrated at the level we need
 
+    const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
+      const hydrationEpoch = readyEpoch;
+      const pending = beginWatchedHydration(
+        ref,
+        hydrationClient,
+        threadsStore.getState().watchedThreads.get(ref),
+        hydrationEpoch,
+      );
+      const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), needTurns)
+        .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
+        .finally(() => {
+          if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
+        });
+      inflightWatchHydrates.set(ref, hydration);
+      inflightWatchHydrateClients.set(ref, hydrationClient);
+      inflightWatchHydrateEpochs.set(ref, hydrationEpoch);
+      inflightWatchIncludeTurns.set(ref, needTurns);
+      void hydration
+        .finally(() => {
+          if (inflightWatchHydrates.get(ref) === hydration) {
+            inflightWatchHydrates.delete(ref);
+            inflightWatchHydrateClients.delete(ref);
+            inflightWatchHydrateEpochs.delete(ref);
+            inflightWatchIncludeTurns.delete(ref);
+          }
+        })
+        .catch(() => {});
+      return hydration;
+    };
+
     let inflight = inflightWatchHydrates.get(ref);
     const inflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
     // A rich caller cannot share a lean request already in flight: the
     // response would be structurally missing the turns it requested. A
     // lean caller may share a rich request because the richer snapshot is
     // sufficient for both callers.
-    if (!inflight || (needTurns && !inflightHasTurns)) {
-      inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
-      inflightWatchHydrates.set(ref, inflight);
-      inflightWatchIncludeTurns.set(ref, needTurns);
-      void inflight
-        .finally(() => {
-          if (inflightWatchHydrates.get(ref) === inflight) {
-            inflightWatchHydrates.delete(ref);
-            inflightWatchIncludeTurns.delete(ref);
+    if (!inflight || (needTurns && !inflightHasTurns)) inflight = startHydration(client);
+
+    for (;;) {
+      const inflightClient = inflightWatchHydrateClients.get(ref) ?? client;
+      const inflightEpoch = inflightWatchHydrateEpochs.get(ref) ?? readyEpoch;
+      try {
+        const model = await inflight;
+        if (model) return;
+      } catch (err) {
+        if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
+          if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
+          const hydrated = threadsStore.getState().watchedThreads.get(ref);
+          if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+          client = requireClient();
+          if (client.state !== "ready") {
+            await clientReadyOrRewired;
+            client = requireClient();
           }
-        })
-        .catch(() => {});
+          inflight = inflightWatchHydrates.get(ref) ?? startHydration(client);
+          continue;
+        }
+        throw err;
+      }
+
+      if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
+      const hydrated = threadsStore.getState().watchedThreads.get(ref);
+      if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
+
+      client = requireClient();
+      if (client.state !== "ready") {
+        await clientReadyOrRewired;
+        client = requireClient();
+      }
+      inflight = inflightWatchHydrates.get(ref);
+      const currentInflightHasTurns = inflightWatchIncludeTurns.get(ref) ?? false;
+      if (!inflight || (needTurns && !currentInflightHasTurns)) inflight = startHydration(client);
     }
-    const model = await inflight;
-    storeWatchedModel(ref, model, needTurns, generation);
   },
 
   releaseWatchedThread(ref) {
@@ -711,7 +1122,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // The old promise may still settle, but its generation check prevents it
     // from publishing into the new lifecycle.
     inflightWatchHydrates.delete(ref);
+    inflightWatchHydrateClients.delete(ref);
+    inflightWatchHydrateEpochs.delete(ref);
     inflightWatchIncludeTurns.delete(ref);
+    pendingWatchedHydrations.delete(ref);
     // Drop the monotonic turns flag with the last watcher so a future watch of
     // the same ref starts lean again (yd16 §4.2).
     watchIncludeTurns.delete(ref);
@@ -998,10 +1412,17 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   refCounts.clear();
+  ensureGenerations.clear();
   inflightHydrates.clear();
+  inflightHydrateClients.clear();
+  inflightHydrateEpochs.clear();
+  pendingThreadHydrations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
+  inflightWatchHydrateClients.clear();
+  inflightWatchHydrateEpochs.clear();
   inflightWatchIncludeTurns.clear();
+  pendingWatchedHydrations.clear();
   watchGenerations.clear();
   watchIncludeTurns.clear();
   watchHydratedIncludeTurns.clear();
@@ -1011,7 +1432,11 @@ export function resetThreadsStoreForTests(): void {
   unwireReady?.();
   unwireNotification = null;
   unwireReady = null;
+  resolveClientReadyOrRewired?.();
+  resolveClientReadyOrRewired = null;
+  clientReadyOrRewired = Promise.resolve();
   wiredClient = null;
+  readyEpoch = 0;
   threadsStore.setState({
     threads: new Map(),
     frameTimes: new Map(),
