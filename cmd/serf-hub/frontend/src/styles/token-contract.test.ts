@@ -585,9 +585,10 @@ test("dedicated diff backgrounds preserve quiet contrast and grayscale separatio
     const marker = declaredToken(theme.block, "--ink-low");
     const add = declaredToken(theme.block, "--diff-add-bg");
     const del = declaredToken(theme.block, "--diff-del-bg");
-    expect([surface, content, marker, add, del], `${theme.name} theme declares all DiffBlock contrast tokens`).not.toContain(
-      undefined,
-    );
+    expect(
+      [surface, content, marker, add, del],
+      `${theme.name} theme declares all DiffBlock contrast tokens`,
+    ).not.toContain(undefined);
     if (!surface || !content || !marker || !add || !del) continue;
 
     const surfaceRgb = parseHexColor(surface);
