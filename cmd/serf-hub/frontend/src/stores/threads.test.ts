@@ -600,6 +600,39 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  test("same-lifecycle ensure failures each roll back one shared claim", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    const box: { rejectRead: ((error: Error) => void) | null } = { rejectRead: null };
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return new Promise<ThreadReadResponse>((_, reject) => {
+          box.rejectRead = reject;
+        });
+      }
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_retry", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => box.rejectRead !== null);
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    expect(readCount).toBe(1);
+
+    box.rejectRead?.(new Error("shared read failure"));
+    const results = await Promise.allSettled([firstEnsure, secondEnsure]);
+    expect(results[0]?.status).toBe("rejected");
+    expect(results[1]?.status).toBe("rejected");
+
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(readCount).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_retry");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   test("a ref released before its in-flight hydrate resolves is not resurrected", async () => {
     const fake = connectFakeClient();
     // A plain `let` reassigned only inside the executor closure below gets
@@ -652,6 +685,50 @@ describe("useThreadsStore.ensureThread", () => {
 
     reads[1]!(readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }));
     await Promise.all([firstEnsure, secondEnsure]);
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("a retired ensure rejection does not consume a replacement lifecycle claim", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 2);
+
+    let firstRejected = false;
+    void firstEnsure.then(
+      () => undefined,
+      () => {
+        firstRejected = true;
+      },
+    );
+    reads[0]!.reject(new Error("retired read A"));
+    await flushUntil(() => firstRejected);
+
+    reads[1]!.resolve(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await secondEnsure;
 
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");

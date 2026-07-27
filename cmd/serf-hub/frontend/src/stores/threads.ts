@@ -208,6 +208,10 @@ export interface ThreadsStoreState {
 // its notification/ready handlers onto (plus that wiring's own unsubscribe
 // functions - see rewireClient below).
 const refCounts = new Map<string, number>();
+// A generation changes whenever the last real pane releases and a new pane
+// claims the ref. An ensure that fails after its pane lifecycle was retired
+// must not roll back a replacement lifecycle's claim.
+const ensureGenerations = new Map<string, number>();
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
@@ -879,7 +883,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async ensureThread(ref) {
     let client = requireClient();
-    refCounts.set(ref, (refCounts.get(ref) ?? 0) + 1);
+    const count = refCounts.get(ref) ?? 0;
+    if (count === 0) {
+      ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
+    }
+    const generation = ensureGenerations.get(ref) ?? 0;
+    refCounts.set(ref, count + 1);
     if (threadsStore.getState().threads.has(ref)) return; // already hydrated: no re-read
 
     const startHydration = (hydrationClient: AppwireClientLike): Promise<ThreadModel | null> => {
@@ -956,7 +965,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // releaseThread() rather than hand-rolling the decrement also means
       // its own <=0 guard already makes this safe if a concurrent
       // releaseThread() consumed this exact claim first.
-      threadsStore.getState().releaseThread(ref);
+      if (ensureGenerations.get(ref) === generation && (refCounts.get(ref) ?? 0) > 0) {
+        threadsStore.getState().releaseThread(ref);
+      }
       throw err;
     }
   },
@@ -1401,6 +1412,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   refCounts.clear();
+  ensureGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
