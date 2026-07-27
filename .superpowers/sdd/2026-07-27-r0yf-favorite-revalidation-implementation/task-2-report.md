@@ -223,3 +223,93 @@ must report only the branch header:
 ```text
 ## wip/kata-favorite-cleanup-policy
 ```
+
+## Fresh whole-branch review correction
+
+The fresh whole-branch review rejected tip `7349c9ea3` with two Important
+findings. The review was technically valid; both findings were reproduced with
+deterministic tests before production changes.
+
+### Finding 1: tree/cache generation split across mutation interleavings
+
+Root cause A was that `memoTreeWithAuthority` read the navigation/archive
+inputs and only then loaded `InputsVersion`. A mutation could rebuild and bump
+between those operations, causing an old snapshot to be cached under the new
+key. Root cause B was that the tree cache stored only Tree and AttentionSummary,
+while live entries and FavoriteAuthority were returned from the current request
+snapshot. Past/Roster publish their new data before their onChange callback
+bumps InputsVersion, so an old cache hit could return an old tree with new
+live/authority data. A version retry alone would not close that publish-before-
+bump gap.
+
+The RED command was:
+
+```text
+go test ./cmd/serf-hub -run 'Test(APITreeFavoriteRevalidation_MemoCapturesInputsVersionBeforeSnapshot|APITreeFavoriteRevalidation_MemoReturnsOneGenerationDuringPastRebuildGap|FavoriteProjectAuthorities_)' -count=1 -v
+```
+
+It failed on the intended contracts: the following request retained the old
+tree (`old true new false`), the rebuild-gap authority contained the new row
+alongside the cached old generation, the reversed malformed-row order was
+classified valid, and empty-ID-only plus empty-ID-plus-valid-local projects
+were classified valid instead of dormant.
+
+The correction captures InputsVersion before navigation/archive reads and makes
+TreeCache store/return one read-only TreeCacheValue containing Tree,
+AttentionSummary, live entries, and FavoriteAuthority computed from one
+navigationSnapshot. TreeCache still keys on InputsVersion, RemoteGeneration,
+and the 30-second time bucket. Slice/map ownership was audited: each composite
+value owns per-snapshot data and callers only read it.
+
+### Finding 2: project/source claim aggregation was order-dependent
+
+Root cause was last-row-wins aggregation in `favoriteProjectAuthorities`: a
+complete row could overwrite incomplete or malformed evidence for the same
+canonical project/source claim. Empty IDs were mapped to the local claim and
+could therefore validate a project. The correction aggregates each claim
+monotonically: at least one non-empty governed identity is required, every
+contributing row must be complete, and incomplete or ambiguous evidence
+dominates regardless of row order. Valid colon-bearing identities and
+independent source claims remain supported; conflicting canonical paths remain
+ambiguous. The implementation also initializes the first evidence row directly
+before conservative merging, avoiding a zero-value quality downgrade.
+
+### GREEN evidence and correction
+
+Code and tests were corrected in commit `6958ff887`:
+
+```text
+go test -race ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_Memo(CapturesInputsVersionBeforeSnapshot|ReturnsOneGenerationDuringPastRebuildGap)' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub  1.573s
+
+go test ./cmd/serf-hub -run 'TestFavoriteProjectAuthorities_' -count=20
+ok   primeradiant.com/serf/cmd/serf-hub  0.688s
+
+go test -race ./cmd/serf-hub -run 'TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot' -count=10
+ok   primeradiant.com/serf/cmd/serf-hub  1.896s
+
+go test ./cmd/serf-hub -run 'TreeFavorite' -count=5
+ok   primeradiant.com/serf/cmd/serf-hub  0.644s
+
+go test ./cmd/serf-hub/internal/hubcore -run '(Favorite|TreeCache|Remote)' -count=5
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.263s
+
+go test ./cmd/serf-hub/internal/hubcore -count=1
+ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.476s
+
+go test ./cmd/serf-hub -count=1
+ok   primeradiant.com/serf/cmd/serf-hub  26.538s
+
+go vet ./cmd/serf-hub/...
+exit 0, no output
+
+golangci-lint run ./cmd/serf-hub/...
+0 issues.
+
+git diff --check
+exit 0, no output
+```
+
+The blocking tests use bounded waits, `sync.Once` release functions, cleanup
+restoration for the global snapshot hook, and cleanup joins for both the memo
+goroutine and the blocked Past.Rebuild goroutine.
