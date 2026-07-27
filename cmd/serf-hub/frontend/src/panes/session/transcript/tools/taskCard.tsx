@@ -71,6 +71,23 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
   return value.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v));
 }
 
+// The daemon applies duplicate IDs sequentially but returns the authoritative
+// final state. Render one status touch per ID from the matching final argument;
+// ordering by final occurrence keeps distinct IDs in the order the batch ends.
+function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {
+  const latestByID = new Map<number, { index: number; update: Record<string, unknown> }>();
+  const unmarked: { index: number; update: Record<string, unknown> }[] = [];
+  for (const [index, update] of updates.entries()) {
+    const id = typeof update.id === "number" ? update.id : undefined;
+    if (id === undefined) {
+      unmarked.push({ index, update });
+      continue;
+    }
+    latestByID.set(id, { index, update });
+  }
+  return [...latestByID.values(), ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
+}
+
 // A valid mutation is exactly what the legacy validAppend/validUpdate gates
 // accepted (renderer.js:4786-4788): append with a non-empty tasks array, or
 // update with a non-empty updates array. Anything else (view, or a malformed
@@ -88,7 +105,7 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
     }));
   }
   if (action === "update") {
-    const updates = asObjectArray(args.updates);
+    const updates = finalUpdates(asObjectArray(args.updates));
     if (updates.length === 0) return undefined;
     // Only a real status change earns a row - matching the legacy card, which
     // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and

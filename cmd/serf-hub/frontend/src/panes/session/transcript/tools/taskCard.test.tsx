@@ -127,6 +127,80 @@ test("a real in_progress transition renders a started row from its authoritative
   expect(screen.getByTestId("task-card-row").getAttribute("data-touch")).toBe("started");
 });
 
+test("a duplicate in_progress then done update renders only the final done touch", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "in_progress" },
+          { id: 1, status: "done" },
+        ],
+      },
+      "Updated 1→in_progress, 1→done. Progress: 1/1 tasks complete.",
+      { raw: [{ id: 1, type: "implement", description: "finish", prompt: "finish", status: "done" }] },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-touch"))).toEqual(["done"]);
+  expect(rows[0]!.textContent).toContain("finish");
+});
+
+test("a duplicate final touch and a distinct explicit start keep one row per ID in final-occurrence order", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "in_progress" },
+          { id: 1, status: "done" },
+          { id: 2, status: "in_progress" },
+        ],
+      },
+      "Updated 1→in_progress, 1→done, 2→in_progress. Progress: 1/2 tasks complete.",
+      {
+        raw: [
+          { id: 1, type: "implement", description: "finish", prompt: "finish", status: "done" },
+          { id: 2, type: "implement", description: "continue", prompt: "continue", status: "in_progress" },
+        ],
+      },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => [row.getAttribute("data-touch"), row.textContent])).toEqual([
+    ["done", expect.stringContaining("finish")],
+    ["started", expect.stringContaining("continue")],
+  ]);
+});
+
+test("distinct final occurrences retain their own order when an earlier duplicate moves later", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "in_progress" },
+          { id: 2, status: "done" },
+          { id: 1, status: "done" },
+        ],
+      },
+      "Updated 1→in_progress, 2→done, 1→done. Progress: 2/2 tasks complete.",
+      {
+        raw: [
+          { id: 1, type: "implement", description: "first", prompt: "first", status: "done" },
+          { id: 2, type: "implement", description: "second", prompt: "second", status: "done" },
+        ],
+      },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.textContent)).toEqual([
+    expect.stringContaining("second"),
+    expect.stringContaining("first"),
+  ]);
+  expect(rows.every((row) => row.getAttribute("data-touch") === "done")).toBe(true);
+});
+
 test("a failed task_list mutation renders NO card (its error is surfaced by the generic tool-error path instead)", () => {
   renderItem(taskItem({ action: "update", updates: [{ id: 9, status: "done" }] }, "", { error: "task 9 not found" }));
   // The row still exists (the generic error path owns it), but no task card.
