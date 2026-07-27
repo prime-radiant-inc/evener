@@ -41,6 +41,18 @@ test("live shows a Thinking label and streams the reasoning text open (not colla
   expect(document.querySelector("details")).toBeNull();
 });
 
+// jsdom does not evaluate CSS cascade, so the live quiet-ink contract is
+// checked at the two stylesheet boundary points: StreamingText's fallback
+// and ThinkBlock's ancestor override must use the same custom property.
+test("ThinkBlock quiets live StreamingText through the shared prose ink hook", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const streamingCss = readFileSync(join(here, "../streamingtext.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const thinkCss = readFileSync(join(here, "thinkblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  expect(streamingCss).toContain("color: var(--prose-ink, var(--ink-hi));");
+  expect(thinkCss).toContain("--prose-ink: var(--ink-mid);");
+});
+
 test("live with zero chunks so far still shows the open Thinking label (a reasoning item exists the instant it starts)", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: undefined })} turn={turn} live={true} />);
   expect(screen.getByText("Thinking…")).toBeTruthy();

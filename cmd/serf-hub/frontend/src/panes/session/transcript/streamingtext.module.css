@@ -11,10 +11,11 @@
    * the element itself, which shadows plain inheritance. AgentMessageItem
    * sets this once, on the ancestor this live path and Markdown's settled
    * one already share, so a message can never visibly resize the instant
-   * it settles. */
+   * it settles. --prose-ink follows the same pattern for callers that need
+   * a quieter live stream; ordinary callers retain the --ink-hi default. */
   font-size: var(--prose-font-size, var(--font-size-body));
   line-height: var(--line-height-body);
-  color: var(--ink-hi);
+  color: var(--prose-ink, var(--ink-hi));
 }
 
 /* The streaming caret - the design system's one reserved "live" motion
