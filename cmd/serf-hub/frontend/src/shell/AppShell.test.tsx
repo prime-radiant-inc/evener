@@ -7,6 +7,7 @@ import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.
 import { connectionStore } from "../stores/connection";
 import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
+import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -276,6 +277,19 @@ async function saveRealSessionLayout(): Promise<void> {
     });
   });
   await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+}
+
+async function saveLegacyNestedMainLayout(): Promise<void> {
+  workspaceStore.getState().openPane("session", { ref: "local:child" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/loading transcript/i);
+  expect(workspaceStore.getState().panes).toEqual([
+    expect.objectContaining({ type: "session", params: { ref: "local:child" }, slot: "main" }),
+  ]);
 
   unmount();
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
@@ -674,6 +688,31 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
       expect.objectContaining({ type: "spawn", params: {}, slot: "main" }),
     ]);
   });
+});
+
+test("repairs a nested session restored as main when the root route's tree arrives", async () => {
+  await saveLegacyNestedMainLayout();
+
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    return jsonResponse({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.pushState({}, "", "/");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => expect(treeStore.getState().tree?.projects[0]?.sessions[0]?.ref).toBe("local:owner"));
+  await waitFor(() => {
+    expect(paneFor("local:owner")?.slot).toBe("main");
+    expect(paneFor("local:child")?.slot).toBe("secondary");
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+  });
+
+  expect(workspaceStore.getState().panes).not.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "session", params: { ref: "local:child" }, slot: "main" }),
+    ]),
+  );
 });
 
 test("a nested child route replaces unrelated panes, keeps its owner main, and focuses the child", async () => {
