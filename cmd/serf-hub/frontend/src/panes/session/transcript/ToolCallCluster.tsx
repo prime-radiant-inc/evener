@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { ToolRow } from "./ToolRow";
-import { consequenceRank } from "./tools/consequenceRank";
-import { toolRendererFor } from "./toolRenderers";
 import { ToolCallItem } from "./ToolCallItem";
+import { ToolRow } from "./ToolRow";
+import { toolRendererFor } from "./toolRenderers";
+import { consequenceRank } from "./tools/consequenceRank";
 import styles from "./turnblock.module.css";
 
 interface ToolCallClusterProps {
@@ -19,9 +19,7 @@ const CLASS = {
 };
 
 function leadItem(items: ItemModel[]): ItemModel {
-  return items.reduce((best, item) =>
-    consequenceRank(item) > consequenceRank(best) ? item : best,
-  );
+  return items.reduce((best, item) => (consequenceRank(item) > consequenceRank(best) ? item : best));
 }
 
 function clusterSummary(items: ItemModel[]): string {

@@ -82,7 +82,8 @@ function jobListState(raw: unknown): JobListState | undefined {
     jobs.push(job);
   }
 
-  const total = typeof state.total === "number" ? state.total : typeof state.count === "number" ? state.count : jobs.length;
+  const total =
+    typeof state.total === "number" ? state.total : typeof state.count === "number" ? state.count : jobs.length;
   return { jobs, total };
 }
 
@@ -101,13 +102,11 @@ function JobListBody({ item, live }: ToolRenderProps) {
         <div>No jobs.</div>
       ) : (
         state.jobs.map((job) => {
-          const identity = textField(job, "job_id")!;
-          const fields = [
-            identity,
-            textField(job, "type"),
-            textField(job, "status"),
-            textField(job, "phase"),
-          ].filter((field): field is string => field !== undefined);
+          const identity = textField(job, "job_id");
+          if (identity === undefined) return null;
+          const fields = [identity, textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
+            (field): field is string => field !== undefined,
+          );
           const description = textField(job, "description");
           return (
             <div key={identity} data-testid="job-list-row">

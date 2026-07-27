@@ -63,7 +63,13 @@ test("a running call prevents its run from collapsing", () => {
 });
 
 test("a generic failure stays standalone and breaks adjacent eligible calls", () => {
-  const items = [item("a"), item("b", { status: "failed" }), item("c"), item("d"), item("reply", { type: "userMessage" })];
+  const items = [
+    item("a"),
+    item("b", { status: "failed" }),
+    item("c"),
+    item("d"),
+    item("reply", { type: "userMessage" }),
+  ];
   expect(toolRunFor(items, "b")?.items.map((i) => i.id)).toEqual(["b"]);
   expect(shouldGroup(toolRunFor(items, "b")!)).toBe(false);
   expect(toolRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a"]);

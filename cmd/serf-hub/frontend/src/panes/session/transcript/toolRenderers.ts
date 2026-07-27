@@ -74,9 +74,7 @@ export interface ToolRendererDescriptor {
 export function toolCallFailed(item: ItemModel): boolean {
   const descriptor = toolRendererFor(item.toolName ?? "");
   return (
-    (item.error !== undefined && item.error !== "") ||
-    item.status === "failed" ||
-    (descriptor.failed?.(item) ?? false)
+    (item.error !== undefined && item.error !== "") || item.status === "failed" || (descriptor.failed?.(item) ?? false)
   );
 }
 

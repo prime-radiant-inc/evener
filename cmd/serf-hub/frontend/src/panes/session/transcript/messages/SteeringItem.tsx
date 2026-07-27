@@ -24,12 +24,12 @@ import type { SteeringKind } from "../../../../protocol/types.gen";
 import { SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { NotificationCard } from "./NotificationCard";
 import { parseSteeringNotifications } from "./steeringClassify";
 import styles from "./steeringitem.module.css";
 import { UserMessageView } from "./UserMessageItem";
-import { itemScopeKey } from "../tools/subagentModuleStore";
 
 const CLASS = {
   details: requireClass(styles.details, "steeringitem.module.css", "details"),
