@@ -389,7 +389,7 @@ func TopLevelSessionIDs(metas []schema.SessionMeta) map[string]struct{} {
 	nested, _ := nestedSessionIDs(metas)
 	ids := make(map[string]struct{}, len(metas))
 	for _, m := range metas {
-		if m.ID == "" || m.IsSubagent || m.ForkLabel != "" {
+		if m.ID == "" || m.IsSubagent {
 			continue
 		}
 		if _, ok := nested[m.ID]; ok {

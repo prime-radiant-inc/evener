@@ -59,29 +59,24 @@ func (s *WebServer) topLevelFavoriteSessionID(ctx context.Context, requested str
 	if strings.HasPrefix(requested, "cluster:") {
 		return "", false
 	}
-	var ids []string
-	if s.cfg.Past != nil {
-		for id := range hubcore.TopLevelSessionIDs(s.cfg.Past.AllMetas()) {
-			ids = append(ids, id)
+	metas, live, _ := s.navigationTreeInputs(ctx)
+	ids := hubcore.TopLevelSessionIDs(metas)
+	metaIDs := make(map[string]struct{}, len(metas))
+	for _, meta := range metas {
+		metaIDs[meta.ID] = struct{}{}
+	}
+	// A live session can be visible in the tree before its metadata reaches
+	// PastIndex. Such a session is a top-level root by construction; sessions
+	// with metadata are classified by the same helper as tree construction.
+	for _, entry := range live {
+		if entry.SessionID == "" {
+			continue
+		}
+		if _, known := metaIDs[entry.SessionID]; !known {
+			ids[entry.SessionID] = struct{}{}
 		}
 	}
-	tree, _ := s.memoTree(ctx)
-	for _, node := range tree.Live {
-		if node.Kind == "session" {
-			ids = append(ids, node.ID)
-		}
-	}
-	projects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
-	for _, project := range projects {
-		for _, tier := range [][]hubcore.TreeNode{project.Current, project.Recent, project.Archived} {
-			for _, node := range tier {
-				if node.Kind == "session" {
-					ids = append(ids, node.ID)
-				}
-			}
-		}
-	}
-	for _, id := range ids {
+	for id := range ids {
 		if favoriteSessionIDMatches(requested, id) {
 			return id, true
 		}

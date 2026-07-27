@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,12 +47,14 @@ func TestFavoriteEndpointRejectsNonTopLevelSession(t *testing.T) {
 	past.SeedForTest([]schema.SessionMeta{
 		{ID: "top", UpdatedAt: timeNowForTest()},
 		{ID: "sub", ParentSessionID: "top", IsSubagent: true, UpdatedAt: timeNowForTest()},
-		{ID: "fork", ForkLabel: "before edit", UpdatedAt: timeNowForTest()},
+		{ID: "orphan-fork", ForkLabel: "before edit", UpdatedAt: timeNowForTest()},
+		{ID: "nested-fork", ForkLabel: "before another edit", UpdatedAt: timeNowForTest()},
+		{ID: "branch", ParentSessionID: "nested-fork", UpdatedAt: timeNowForTest()},
 	})
 	fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
 	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: past})
 
-	for _, id := range []string{"local:sub", "local:fork", "cluster:deadbeef"} {
+	for _, id := range []string{"local:sub", "local:nested-fork", "cluster:deadbeef"} {
 		req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(
 			`{"kind":"session","id":"`+id+`","favorited":true}`,
 		))
@@ -68,6 +71,56 @@ func TestFavoriteEndpointRejectsNonTopLevelSession(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("rejected ids wrote favorite decisions: %v", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(
+		`{"kind":"session","id":"local:orphan-fork","favorited":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("orphan fork status=%d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	got, err = fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[hubcore.ArchiveKey{Kind: "session", ID: "orphan-fork"}] {
+		t.Fatalf("orphan fork favorite not persisted: %v", got)
+	}
+}
+
+func TestFavoriteEndpointAcceptsCappedAwayRemoteTopLevelSession(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	now := time.Unix(1_700_000_000, 0)
+	threads := make([]appwire.Thread, 0, 60)
+	for i := range 60 {
+		threads = append(threads, appwire.Thread{
+			ID: fmt.Sprintf("remote-%02d", i), Source: "remote",
+			CreatedAt: now.Add(time.Duration(i) * time.Minute).Unix(),
+			UpdatedAt: now.Add(time.Duration(i) * time.Minute).Unix(),
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+		})
+	}
+	cache.Store(threads)
+	fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	req := httptest.NewRequest(http.MethodPost, "/api/favorite", strings.NewReader(
+		`{"kind":"session","id":"remote:remote-00","favorited":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capped-away remote status=%d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	got, err := fav.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[hubcore.ArchiveKey{Kind: "session", ID: "remote:remote-00"}] {
+		t.Fatalf("capped-away remote favorite not persisted: %v", got)
 	}
 }
 
