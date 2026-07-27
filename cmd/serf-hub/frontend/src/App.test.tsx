@@ -7,10 +7,9 @@ let App: typeof import("./App").App;
 
 const escapedFetches = vi.hoisted(() => {
   const calls: unknown[] = [];
-  const ambientFetch = globalThis.fetch;
   vi.stubGlobal("fetch", (...args: Parameters<typeof fetch>) => {
     calls.push(args[0]);
-    return ambientFetch(...args);
+    throw new Error(`escaped fetch before App.test fake: ${String(args[0])}`);
   });
   return calls;
 });
