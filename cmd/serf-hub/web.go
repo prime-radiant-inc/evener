@@ -39,8 +39,9 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
-	// treeCache memoizes the /api/tree BuildTree+attention-summary computation
-	// by inputs-version + 30s time bucket (see hubcore.TreeCache).
+	// treeCache memoizes the complete /api/tree navigation generation — tree,
+	// attention, live entries, and favorite authority — by inputs-version,
+	// remote generation, and 30s time bucket (see hubcore.TreeCache).
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 }

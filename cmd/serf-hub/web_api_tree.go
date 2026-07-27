@@ -258,18 +258,24 @@ func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, appwire.Attenti
 }
 
 func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary, []hubcore.LiveEntry, hubcore.FavoriteAuthority) {
+	inputsVersion := uint64(0)
+	if s.cfg.Inputs != nil {
+		inputsVersion = s.cfg.Inputs.Load()
+	}
 	snapshot := s.navigationSnapshot(ctx)
 	decisions := s.archiveDecisions()
-	key := hubcore.TreeCacheKey{RemoteGeneration: snapshot.remoteGeneration}
-	if s.cfg.Inputs != nil {
-		key.InputsVersion = s.cfg.Inputs.Load()
-	}
-	tree, summary := s.treeCache.Get(key, time.Now(), func() (hubcore.Tree, appwire.AttentionSummary) {
+	key := hubcore.TreeCacheKey{InputsVersion: inputsVersion, RemoteGeneration: snapshot.remoteGeneration}
+	value := s.treeCache.Get(key, time.Now(), func() hubcore.TreeCacheValue {
 		t := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
 		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-		return t, sum
+		return hubcore.TreeCacheValue{
+			Tree:              t,
+			AttentionSummary:  sum,
+			Live:              snapshot.live,
+			FavoriteAuthority: favoriteAuthorityForNavigation(snapshot, t),
+		}
 	})
-	return tree, summary, snapshot.live, favoriteAuthorityForNavigation(snapshot, tree)
+	return value.Tree, value.AttentionSummary, value.Live, value.FavoriteAuthority
 }
 
 // handleAPITreeProject serves a single project's node by indexing the
@@ -986,6 +992,9 @@ func favoriteSessionAliases(id string) []string {
 }
 
 func favoriteSessionSourceQuality(id string, remoteOwnership map[string]favoriteRemoteOwnership, remoteSources map[string]hubcore.RemoteSourceSnapshot, incompleteIDs map[string]struct{}) hubcore.FavoriteAuthorityQuality {
+	if strings.TrimSpace(id) == "" {
+		return hubcore.FavoriteAuthorityIncomplete
+	}
 	if _, incomplete := incompleteIDs[id]; incomplete {
 		return hubcore.FavoriteAuthorityIncomplete
 	}
@@ -1159,24 +1168,31 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 		if canonicalPath == "" {
 			canonicalPath = path
 		}
-		owners := make(map[string]hubcore.FavoriteAuthorityQuality)
+		owners := make(map[string]favoriteProjectOwnerEvidence)
 		for _, meta := range snapshot.metas {
 			if hubcore.EffectiveWorkingDir(meta) == path {
-				owners[favoriteProjectSourceClaim(meta.ID)] = favoriteSessionSourceQuality(meta.ID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
+				favoriteProjectOwnerEvidenceAdd(owners, meta.ID, snapshot)
 			}
 		}
 		for _, entry := range snapshot.live {
 			if entry.WorkingDir == path {
-				owners[favoriteProjectSourceClaim(entry.SessionID)] = favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
+				favoriteProjectOwnerEvidenceAdd(owners, entry.SessionID, snapshot)
 			}
 		}
 		if len(owners) == 0 {
-			owners["local"] = hubcore.FavoriteAuthorityIncomplete
+			owners["local"] = favoriteProjectOwnerEvidence{quality: hubcore.FavoriteAuthorityIncomplete}
 		}
-		for source, quality := range owners {
+		for source, evidence := range owners {
+			quality := evidence.quality
+			if !evidence.hasIdentity {
+				quality = mergeFavoriteAuthorityQuality(quality, hubcore.FavoriteAuthorityIncomplete)
+			}
 			claimKey := canonicalPath + "\x00" + source
 			key := project.ID + "\x00" + claimKey
-			if previous, ok := claims[key]; !ok || previous.Quality == hubcore.FavoriteAuthorityIncomplete && quality == hubcore.FavoriteAuthorityComplete {
+			if previous, ok := claims[key]; ok {
+				previous.Quality = mergeFavoriteAuthorityQuality(previous.Quality, quality)
+				claims[key] = previous
+			} else {
 				claims[key] = hubcore.FavoriteProjectAuthority{ID: project.ID, Quality: quality, ClaimKey: claimKey}
 			}
 		}
@@ -1186,6 +1202,39 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 		projects = append(projects, claim)
 	}
 	return projects
+}
+
+type favoriteProjectOwnerEvidence struct {
+	quality     hubcore.FavoriteAuthorityQuality
+	hasEvidence bool
+	hasIdentity bool
+}
+
+func favoriteProjectOwnerEvidenceAdd(owners map[string]favoriteProjectOwnerEvidence, id string, snapshot navigationSnapshot) {
+	source := favoriteProjectSourceClaim(id)
+	evidence := owners[source]
+	quality := favoriteSessionSourceQuality(id, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs)
+	if evidence.hasEvidence {
+		evidence.quality = mergeFavoriteAuthorityQuality(evidence.quality, quality)
+	} else {
+		evidence.quality = quality
+		evidence.hasEvidence = true
+	}
+	evidence.hasIdentity = evidence.hasIdentity || strings.TrimSpace(id) != ""
+	owners[source] = evidence
+}
+
+func mergeFavoriteAuthorityQuality(left, right hubcore.FavoriteAuthorityQuality) hubcore.FavoriteAuthorityQuality {
+	if left == hubcore.FavoriteAuthorityAmbiguous || right == hubcore.FavoriteAuthorityAmbiguous {
+		return hubcore.FavoriteAuthorityAmbiguous
+	}
+	if left == hubcore.FavoriteAuthorityIncomplete || right == hubcore.FavoriteAuthorityIncomplete {
+		return hubcore.FavoriteAuthorityIncomplete
+	}
+	if left == hubcore.FavoriteAuthorityComplete && right == hubcore.FavoriteAuthorityComplete {
+		return hubcore.FavoriteAuthorityComplete
+	}
+	return hubcore.FavoriteAuthorityIncomplete
 }
 
 func favoriteProjectSourceClaim(id string) string {

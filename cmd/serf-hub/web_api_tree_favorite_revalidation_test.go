@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/rendezvous"
 )
 
 var favoriteRevalidationTreeTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
@@ -400,6 +402,196 @@ func TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot(t *testi
 	}
 	if !treeResponseHasFavorite(first.body, remoteID) {
 		t.Fatalf("first request paired its rows with the later incomplete authority: %+v", first.body.Favorites)
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_MemoCapturesInputsVersionBeforeSnapshot(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	stateRoot := t.TempDir()
+	projectDir := filepath.Join(stateRoot, "project-a-0123456789")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldID := hubtest.SessionID(t)
+	newID := hubtest.SessionID(t)
+	oldMeta := schema.SessionMeta{ID: oldID, OriginalPrompt: "old", UpdatedAt: favoriteRevalidationTreeTime}
+	newMeta := schema.SessionMeta{ID: newID, OriginalPrompt: "new", UpdatedAt: favoriteRevalidationTreeTime}
+	if err := schema.SaveSessionMeta(projectDir, oldMeta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	inputs := &hubcore.InputsVersion{}
+	past.SetOnChange(inputs.Bump)
+	web := NewWebServer(hubcore.WebConfig{Inputs: inputs, Past: past, RemoteThreadCache: &hubcore.RemoteThreadCache{}})
+	oldTree, _, _, oldAuthority := web.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(oldTree, oldID) || !favoriteAuthorityHasSession(oldAuthority, oldID) {
+		t.Fatalf("old memo generation = tree %t authority %t, want old session", treeContainsID(oldTree, oldID), favoriteAuthorityHasSession(oldAuthority, oldID))
+	}
+
+	previousInputs := hubNavigationInputs
+	snapshotEntered := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	var releaseSnapshotOnce sync.Once
+	releaseSnapshotNow := func() { releaseSnapshotOnce.Do(func() { close(releaseSnapshot) }) }
+	var snapshotCalls atomic.Int32
+	hubNavigationInputs = func(server *WebServer, ctx context.Context) navigationSnapshot {
+		snapshot := previousInputs(server, ctx)
+		if snapshotCalls.Add(1) == 1 {
+			close(snapshotEntered)
+			<-releaseSnapshot
+		}
+		return snapshot
+	}
+	t.Cleanup(func() {
+		hubNavigationInputs = previousInputs
+	})
+	type memoResult struct {
+		tree      hubcore.Tree
+		authority hubcore.FavoriteAuthority
+	}
+	firstDone := make(chan memoResult, 1)
+	firstFinished := make(chan struct{})
+	go func() {
+		defer close(firstFinished)
+		tree, _, _, authority := web.memoTreeWithAuthority(context.Background())
+		firstDone <- memoResult{tree: tree, authority: authority}
+	}()
+	t.Cleanup(func() {
+		releaseSnapshotNow()
+		select {
+		case <-firstFinished:
+		case <-time.After(time.Second):
+			t.Errorf("first memo goroutine did not join during cleanup")
+		}
+	})
+	select {
+	case <-snapshotEntered:
+	case <-time.After(time.Second):
+		t.Fatal("memo request did not reach the snapshot interleave")
+	}
+
+	if err := os.Remove(filepath.Join(projectDir, "sessions", oldID+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(projectDir, newMeta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if inputs.Load() == 0 {
+		t.Fatal("Past.Rebuild did not bump inputs during the snapshot interleave")
+	}
+	releaseSnapshotNow()
+	var first memoResult
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("memo request did not complete after the snapshot interleave")
+	}
+
+	nextTree, _, _, nextAuthority := web.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(nextTree, newID) || treeContainsID(nextTree, oldID) {
+		t.Fatalf("following memo generation = old %t new %t, want only new session", treeContainsID(nextTree, oldID), treeContainsID(nextTree, newID))
+	}
+	if !favoriteAuthorityHasSession(nextAuthority, newID) || favoriteAuthorityHasSession(nextAuthority, oldID) {
+		t.Fatalf("following authority = old %t new %t, want only new session", favoriteAuthorityHasSession(nextAuthority, oldID), favoriteAuthorityHasSession(nextAuthority, newID))
+	}
+	if !treeContainsID(first.tree, oldID) || treeContainsID(first.tree, newID) {
+		t.Fatalf("interleaved memo generation = old %t new %t, want the old snapshot", treeContainsID(first.tree, oldID), treeContainsID(first.tree, newID))
+	}
+}
+
+func TestAPITreeFavoriteRevalidation_MemoReturnsOneGenerationDuringPastRebuildGap(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	stateRoot := t.TempDir()
+	projectDir := filepath.Join(stateRoot, "project-b-0123456789")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldID := hubtest.SessionID(t)
+	newID := hubtest.SessionID(t)
+	if err := schema.SaveSessionMeta(projectDir, schema.SessionMeta{ID: oldID, OriginalPrompt: "old", UpdatedAt: favoriteRevalidationTreeTime}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	inputs := &hubcore.InputsVersion{}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{PID: 1},
+		SessionID: oldID,
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{Inputs: inputs, Past: past, Roster: roster, RemoteThreadCache: &hubcore.RemoteThreadCache{}})
+	oldTree, _, oldLive, oldAuthority := web.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(oldTree, oldID) || !liveEntriesHaveSession(oldLive, oldID) || !favoriteAuthorityHasSession(oldAuthority, oldID) {
+		t.Fatalf("old memo generation did not contain old tree/live/authority")
+	}
+
+	if err := os.Remove(filepath.Join(projectDir, "sessions", oldID+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(projectDir, schema.SessionMeta{ID: newID, OriginalPrompt: "new", UpdatedAt: favoriteRevalidationTreeTime}); err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan struct{})
+	releaseBump := make(chan struct{})
+	past.SetOnChange(func() {
+		close(published)
+		<-releaseBump
+		inputs.Bump()
+	})
+	rebuildDone := make(chan struct{})
+	var releaseBumpOnce sync.Once
+	releaseBumpNow := func() { releaseBumpOnce.Do(func() { close(releaseBump) }) }
+	go func() {
+		if _, err := past.Rebuild(); err != nil {
+			t.Errorf("Past.Rebuild: %v", err)
+		}
+		close(rebuildDone)
+	}()
+	t.Cleanup(func() {
+		releaseBumpNow()
+		select {
+		case <-rebuildDone:
+		case <-time.After(time.Second):
+			t.Errorf("Past.Rebuild goroutine did not join during cleanup")
+		}
+	})
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("Past.Rebuild did not publish data before onChange")
+	}
+
+	gapTree, _, gapLive, gapAuthority := web.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(gapTree, oldID) || treeContainsID(gapTree, newID) {
+		t.Fatalf("gap tree = old %t new %t, want cached old generation", treeContainsID(gapTree, oldID), treeContainsID(gapTree, newID))
+	}
+	if !liveEntriesHaveSession(gapLive, oldID) || liveEntriesHaveSession(gapLive, newID) {
+		t.Fatalf("gap live = old %t new %t, want cached old generation", liveEntriesHaveSession(gapLive, oldID), liveEntriesHaveSession(gapLive, newID))
+	}
+	if !favoriteAuthorityHasSession(gapAuthority, oldID) || favoriteAuthorityHasSession(gapAuthority, newID) {
+		t.Fatalf("gap authority = old %t new %t, want cached old generation", favoriteAuthorityHasSession(gapAuthority, oldID), favoriteAuthorityHasSession(gapAuthority, newID))
+	}
+
+	releaseBumpNow()
+	select {
+	case <-rebuildDone:
+	case <-time.After(time.Second):
+		t.Fatal("Past.Rebuild did not complete after releasing onChange")
+	}
+	nextTree, _, nextLive, nextAuthority := web.memoTreeWithAuthority(context.Background())
+	if !treeContainsID(nextTree, newID) || !favoriteAuthorityHasSession(nextAuthority, newID) {
+		t.Fatalf("post-bump memo did not expose current Past generation: tree new=%t authority new=%t", treeContainsID(nextTree, newID), favoriteAuthorityHasSession(nextAuthority, newID))
+	}
+	if !liveEntriesHaveSession(nextLive, oldID) {
+		t.Fatalf("post-bump memo lost the current live roster entry")
 	}
 }
 
@@ -834,6 +1026,82 @@ func TestAPITreeFavoriteRevalidation_ProjectClaimsWithSameIDAreAmbiguous(t *test
 	}
 }
 
+func TestFavoriteProjectAuthorities_IncompleteClaimDominatesRegardlessOfRowOrder(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "project-a")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeID := hubtest.SessionID(t)
+	malformedID := "remote:"
+	key := hubcore.ArchiveKey{Kind: "project", ID: project.ID}
+	for _, test := range []struct {
+		name  string
+		metas []schema.SessionMeta
+	}{
+		{name: "complete then malformed", metas: []schema.SessionMeta{{ID: completeID}, {ID: malformedID}}},
+		{name: "malformed then complete", metas: []schema.SessionMeta{{ID: malformedID}, {ID: completeID}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for i := range test.metas {
+				test.metas[i].EnvInfo.WorkingDir = projectPath
+			}
+			authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(navigationSnapshot{
+				metas:               test.metas,
+				projects:            map[string]identifier.Project{projectPath: project},
+				remoteIncompleteIDs: map[string]struct{}{malformedID: {}},
+			})}
+			got := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{key: true}, authority)
+			assertFavoriteDecisionClassification(t, got, key, hubcore.FavoriteDecisionDormant)
+		})
+	}
+}
+
+func TestFavoriteProjectAuthorities_EmptyIDOnlyIsDormant(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "project-b")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := hubcore.ArchiveKey{Kind: "project", ID: project.ID}
+	authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(navigationSnapshot{
+		metas:    []schema.SessionMeta{{EnvInfo: schema.EnvironmentInfo{WorkingDir: projectPath}}},
+		projects: map[string]identifier.Project{projectPath: project},
+	})}
+	got := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{key: true}, authority)
+	assertFavoriteDecisionClassification(t, got, key, hubcore.FavoriteDecisionDormant)
+}
+
+func TestFavoriteProjectAuthorities_EmptyIDPlusValidLocalIsDormant(t *testing.T) {
+	projectPath := filepath.Join(t.TempDir(), "project-c")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validID := hubtest.SessionID(t)
+	key := hubcore.ArchiveKey{Kind: "project", ID: project.ID}
+	for _, metas := range [][]schema.SessionMeta{
+		{{EnvInfo: schema.EnvironmentInfo{WorkingDir: projectPath}}, {ID: validID, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectPath}}},
+		{{ID: validID, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectPath}}, {EnvInfo: schema.EnvironmentInfo{WorkingDir: projectPath}}},
+	} {
+		authority := hubcore.FavoriteAuthority{Projects: favoriteProjectAuthorities(navigationSnapshot{
+			metas:    metas,
+			projects: map[string]identifier.Project{projectPath: project},
+		})}
+		got := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{key: true}, authority)
+		assertFavoriteDecisionClassification(t, got, key, hubcore.FavoriteDecisionDormant)
+	}
+}
+
 func TestAPITreeFavoriteRevalidation_MemoKeyDoesNotCollideAcrossInputsAndRemoteGeneration(t *testing.T) {
 	useFavoriteRevalidationTreeClock(t)
 	firstID := hubtest.SessionID(t)
@@ -977,6 +1245,35 @@ func treeContainsID(tree hubcore.Tree, id string) bool {
 		}
 	}
 	return false
+}
+
+func liveEntriesHaveSession(entries []hubcore.LiveEntry, id string) bool {
+	for _, entry := range entries {
+		if entry.SessionID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func favoriteAuthorityHasSession(authority hubcore.FavoriteAuthority, id string) bool {
+	for _, session := range authority.Sessions {
+		if session.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func assertFavoriteDecisionClassification(t *testing.T, got hubcore.FavoriteRevalidation, key hubcore.ArchiveKey, want hubcore.FavoriteDecisionState) {
+	t.Helper()
+	classification, ok := got.Classifications[key]
+	if !ok {
+		t.Fatalf("classification missing for %v: %#v", key, got.Classifications)
+	}
+	if classification.State != want {
+		t.Fatalf("classification for %v = %q, want %q", key, classification.State, want)
+	}
 }
 
 func treeResponseNode(response hubapi.TreeResponse, ref string) (hubapi.TreeNode, bool) {

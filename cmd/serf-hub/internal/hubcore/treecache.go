@@ -30,27 +30,37 @@ type TreeCacheKey struct {
 	RemoteGeneration uint64
 }
 
-// TreeCache memoizes one (Tree, AttentionSummary) per (inputs-version, 30s time
-// bucket). Response shaping and volatile derivations happen post-memo.
-type TreeCache struct {
-	mu      sync.Mutex
-	valid   bool
-	key     TreeCacheKey
-	bucket  int64
-	tree    Tree
-	summary appwire.AttentionSummary
+// TreeCacheValue is the read-only result of one navigation snapshot. Callers
+// must treat its slices and nested values as immutable; the cache owns the
+// stored generation and all consumers only read it during response shaping.
+type TreeCacheValue struct {
+	Tree              Tree
+	AttentionSummary  appwire.AttentionSummary
+	Live              []LiveEntry
+	FavoriteAuthority FavoriteAuthority
 }
 
-// Get returns the memoized value, recomputing via compute only when the inputs
-// version or the 30s time bucket has changed.
-func (c *TreeCache) Get(key TreeCacheKey, now time.Time, compute func() (Tree, appwire.AttentionSummary)) (Tree, appwire.AttentionSummary) {
+// TreeCache memoizes one complete navigation value per (inputs-version, remote
+// generation, 30s time bucket). The cached value owns the tree, attention,
+// live-entry, and favorite-authority generation; only response formatting and
+// other presentation-only shaping happen post-memo.
+type TreeCache struct {
+	mu     sync.Mutex
+	valid  bool
+	key    TreeCacheKey
+	bucket int64
+	value  TreeCacheValue
+}
+
+// Get returns the memoized navigation value, recomputing via compute only when
+// the inputs version, remote generation, or 30s time bucket has changed.
+func (c *TreeCache) Get(key TreeCacheKey, now time.Time, compute func() TreeCacheValue) TreeCacheValue {
 	bucket := now.Unix() / treeBucketSeconds
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.valid && c.key == key && c.bucket == bucket {
-		return c.tree, c.summary
+		return c.value
 	}
-	tree, sum := compute()
-	c.tree, c.summary, c.key, c.bucket, c.valid = tree, sum, key, bucket, true
-	return tree, sum
+	c.value, c.key, c.bucket, c.valid = compute(), key, bucket, true
+	return c.value
 }
