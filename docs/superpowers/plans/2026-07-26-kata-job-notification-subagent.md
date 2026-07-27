@@ -4,7 +4,7 @@
 
 **Goal:** Make completed job-notification cards link valid child transcript references through the existing open-beside action, while presenting parsed notification data as readable full-width transcript content. Also fix ftex so system-prompt disclosures keep their summary and expanded Markdown in full-width rows at desktop and 390px widths, while retaining the collapsed character count and virtualization-safe disclosure identity.
 
-**Architecture:** Preserve the existing structured notification parser and card boundary. Extend the parser with validated semantic fields from the XML-like attributes, including `transcript_ref`; centralize the existing transcript-pane opener and quiet open-beside button so delegate rows and notification cards use one action path; pass no new navigation state through rail or steering routing. The card will render one compact header, semantic metadata, normal-text output/excerpt, and exactly one full-width raw-payload disclosure. The system-prompt disclosure has a different semantic and visual contract, so fix its scoped styles independently rather than introducing a generic primitive solely because both bugs came from a flex-row layout.
+**Architecture:** Preserve the existing structured notification parser and card boundary. Extend the parser with validated semantic fields from the XML-like attributes, including `transcript_ref`; centralize the existing transcript-pane opener and quiet open-beside button so delegate rows and notification cards use one action path; pass the owning `sessionRef` from `SteeringItem` into the card, and have that shared opener use the existing top-level-session placement helper before `openBeside` when a parent is known. The card will render one compact header, semantic metadata, normal-text output/excerpt, and exactly one full-width raw-payload disclosure. The system-prompt disclosure has a different semantic and visual contract, so fix its scoped styles independently rather than introducing a generic primitive solely because both bugs came from a flex-row layout.
 
 **Tech Stack:** React 19, TypeScript, Vitest, Testing Library, CSS Modules, Zustand workspace store, existing `Button`, `OpenBesideIcon`, `paneActions.openBeside`, and transcript pane registration.
 
@@ -26,7 +26,9 @@
 - Create `cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.tsx`: own the shared transcript-pane opener and the exact quiet open action used by delegate rows and notification cards.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx`: replace its private opener/button markup with the shared action without changing delegate behavior.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/tools/subagentModule.test.tsx`: retain a real behavior assertion that the shared action opens the transcript pane with the expected child identity.
-- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`: render semantic fields, conditionally expose the shared open-subagent action, and keep one raw disclosure.
+- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`: thread its existing `sessionRef` through to notification cards without changing steering classification/routing.
+- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.test.tsx`: prove an unrelated focused main session is replaced by the owning session before the child transcript opens beside it.
+- Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx`: render semantic fields, conditionally expose the shared open-subagent action with the owning session as `parentRef`, and keep one raw disclosure.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/notificationcard.module.css`: make raw content a block/full-width row and style compact metadata/action content with existing tokens.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx`: cover real action/navigation identity, fallback behavior, semantic rendering, raw-row structure, and accessibility/disclosure contracts.
 - Modify `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.tsx` and `systemnoticeitem.module.css`: preserve the existing system-prompt disclosure behavior while stacking its summary and Markdown body as full-width rows.
@@ -145,7 +147,7 @@
 
 - [ ] **Step 3: Implement the minimal card and CSS changes.**
 
-  Add one compact metadata row using normal text, show the parsed status in the header/metadata without a large transcript link, and render the excerpt/message as text/markdown. Use the shared button for valid refs. Remove the long-excerpt disclosure so the card owns exactly one disclosure, and make the raw `details` a normal block whose `<pre>` is a block with wrapping and `min-width: 0` rather than a flex sibling of its summary.
+  Add one compact metadata row using normal text, show the parsed status in the header/metadata without a large transcript link, and render the excerpt/message as text/markdown. Thread `sessionRef` into the card and pass it as `parentRef` to the shared button. Remove the long-excerpt disclosure so the card owns exactly one disclosure, and make the raw `details` a normal block whose `<pre>` is a block with wrapping and `min-width: 0` rather than a flex sibling of its summary. The shared opener restores a known owner with the existing top-level-session placement helper, then calls the existing open-beside action for the child.
 
 - [ ] **Step 4: Run focused component/parser/action tests and verify green.**
 
@@ -155,7 +157,7 @@
   cd cmd/serf-hub/frontend && npm exec vitest -- run src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/steeringClassify.test.ts src/panes/session/transcript/tools/subagentModule.test.tsx
   ```
 
-  Confirm all assertions pass and no existing notification/delegate behavior regresses.
+  Confirm all assertions pass, including the unrelated-focused-session parent restoration behavior, and no existing notification/delegate behavior regresses.
 
 - [ ] **Step 5: Commit the card slice.**
 
