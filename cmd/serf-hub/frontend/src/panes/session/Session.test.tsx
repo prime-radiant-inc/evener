@@ -405,7 +405,11 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   act(() => {
     fake.emitReady();
   });
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1));
+  // The connection-store ready notification lets Session claim the ref just
+  // before the client's onReady callback advances the hydration epoch. The
+  // epoch-current replacement read is intentional; only a matching client
+  // and epoch may share the pending hydration.
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2));
 });
 
 test("unmounting before the client ever becomes ready calls neither ensureThread nor releaseThread", async () => {
