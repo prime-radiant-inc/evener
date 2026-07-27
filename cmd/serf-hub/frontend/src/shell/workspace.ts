@@ -50,11 +50,10 @@ export interface WorkspaceStoreState {
   // keepExistingFocus asks otherwise.
   //
   // keepExistingFocus: focus a pane this call had to CREATE, but leave focus
-  // alone when it resolved to one already open. DockHost's boot merge is the
-  // one caller: on a reload the URL-routed pane is normally already in the
-  // restored layout, so focusing it would overwrite the active tab the saved
-  // layout just restored - while a deep link to a pane the layout does NOT
-  // contain is genuinely new and must still take focus.
+  // alone when it resolved to one already open. A restore caller can use this
+  // for a captured secondary or other non-primary pane: preserve the current
+  // layout focus when that pane is already present, while still focusing it
+  // when the restore genuinely has to create it.
   //
   // Placement is this function's own decision, not a caller's: the FIRST pane
   // takes the main slot, every later one goes secondary. Putting the policy

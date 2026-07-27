@@ -753,7 +753,7 @@ test("navigating from a 404 straight to a session deep link opens only that pane
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_from_404"]);
 });
 
-test("a saved layout from a previous session merges with a fresh deep link, which lands focused", async () => {
+test("a saved welcome layout is replaced by a fresh routed primary, which lands focused", async () => {
   // Phase 1: generate a REAL saved layout at the default route (the
   // welcome pane). The welcome pane's own addPanel() schedules the debounced
   // save (addPanel fires onDidLayoutChange - see DockHost.test.tsx's own
@@ -766,9 +766,9 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   await screen.findByText("No session open");
   unmount();
   // Asserting the saved layout actually CONTAINS the welcome pane, not
-  // merely that the key exists: phase 2's whole subject is a stale layout
-  // merging with a deep link, so an empty or degenerate layout here would
-  // leave that assertion passing for the wrong reason.
+  // merely that the key exists: phase 2's whole subject is a saved welcome
+  // layout being replaced by a routed primary, so an empty or degenerate
+  // layout here would leave that assertion passing for the wrong reason.
   const savedPanels = (
     JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null") as {
       panels?: Record<string, { params?: { paneType?: string } }>;
@@ -780,19 +780,17 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   // Phase 2: fresh mount at a NEW deep link. Deliberately NOT calling
   // localStorage.clear() here, unlike every other test in this file (see
   // beforeEach above, which blinds the rest of the suite to this path) -
-  // the whole point is proving a stale saved layout from phase 1 merges
-  // WITH this freshly-routed pane (DockHost.tsx's own merge-restore boot
-  // sequence) rather than suppressing it, or being suppressed by it.
+  // the whole point is proving the stale saved welcome layout from phase 1
+  // is replaced by this freshly-routed primary rather than leaving the
+  // welcome pane beside it.
   window.history.pushState({}, "", "/s/local:ref_new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
-  // Still a MERGE, not a replacement - the saved layout restores as the base and
-  // the deep link opens into it, focused. What changed in round 3 is where it
-  // lands: phase 1's saved layout is a lone WELCOME pane in the main slot, and
-  // welcome is that slot's empty state, so the routed session DISPLACES it
-  // rather than opening beside it. A restored layout with any real pane in it
-  // would still merge additively (DockHost.test.tsx covers that shape).
+  // This is a replacement: the saved layout is a lone WELCOME pane in the
+  // main slot, and welcome is that slot's empty state, so the routed session
+  // DISPLACES it rather than opening beside it. The routed primary remains
+  // focused after the replacement.
   expect(workspaceStore.getState().panes.map((p) => p.type)).toEqual(["session"]);
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:ref_new_session" });
   expect(screen.queryByText("No session open")).toBeNull();
