@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -35,6 +35,16 @@ const WORK = instance({
 });
 const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
 const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 async function advanceTime(milliseconds: number): Promise<void> {
   await act(() => vi.advanceTimersByTimeAsync(milliseconds));
@@ -104,6 +114,118 @@ describe("initial load", () => {
 
     await screen.findByText("work");
     expect(calls).toBe(1);
+  });
+});
+
+describe("credential verification", () => {
+  test("sends the exact custom instance name and shows local pending state until the deferred response arrives", async () => {
+    const fake = connectFakeClient();
+    const customName = "OpenAI / team-east:prod";
+    const custom = instance({ name: customName, type: "openai", authModes: ["apiKey"] });
+    const response = deferred<AuthTestResponse>();
+    fake.on("serf/instance/list", () => ({ instances: [custom], availableTypes: ["openai"] }));
+    fake.on("serf/auth/test", (params) => {
+      expect(params).toEqual({ provider: customName });
+      return response.promise;
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(customName);
+
+    const row = screen.getByText(customName).closest("li");
+    expect(row).not.toBeNull();
+    const testButton = within(row!).getByRole("button", { name: "Test credentials" });
+    await userEvent.setup().click(testButton);
+
+    expect(within(row!).getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
+    expect(within(row!).getByRole("button", { name: "Edit" })).not.toBeDisabled();
+    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
+
+    response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
+    await screen.findByText("Credentials verified.");
+    expect(within(row!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+  });
+
+  test("suppresses duplicate clicks for one pending instance while another instance stays enabled", async () => {
+    const fake = connectFakeClient();
+    const workResponse = deferred<AuthTestResponse>();
+    const personalResponse = deferred<AuthTestResponse>();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/auth/test", (params) => {
+      if (params.provider === WORK.name) return workResponse.promise;
+      if (params.provider === PERSONAL.name) return personalResponse.promise;
+      throw new Error(`unexpected provider ${params.provider}`);
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(WORK.name);
+    const user = userEvent.setup();
+    const workRow = screen.getByText(WORK.name).closest("li");
+    const personalRow = screen.getByText(PERSONAL.name).closest("li");
+    expect(workRow).not.toBeNull();
+    expect(personalRow).not.toBeNull();
+
+    const workButton = within(workRow!).getByRole("button", { name: "Test credentials" });
+    await user.click(workButton);
+    await user.click(workButton);
+    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
+    expect(within(workRow!).getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
+    expect(within(personalRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+
+    await user.click(within(personalRow!).getByRole("button", { name: "Test credentials" }));
+    expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(2);
+
+    workResponse.resolve({ provider: WORK.name, status: "success", message: "Credentials verified." });
+    personalResponse.resolve({ provider: PERSONAL.name, status: "success", message: "Credentials verified." });
+    await waitFor(() => {
+      expect(within(workRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+      expect(within(personalRow!).getByRole("button", { name: "Test credentials" })).not.toBeDisabled();
+    });
+  });
+
+  test.each([
+    ["success", "Credentials verified."],
+    ["missing", "No credentials are configured for this instance. Add a key or sign in first."],
+    ["auth_rejected", "The provider rejected these credentials. Replace the key or sign in again."],
+    ["endpoint_failure", "The provider endpoint could not be reached. Check the endpoint and network connection."],
+    ["unsupported", "This provider does not support harmless credential verification."],
+  ] as const)("renders the safe %s status and message", async (status, message) => {
+    const fake = connectFakeClient();
+    const response = deferred<AuthTestResponse>();
+    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("serf/auth/test", () => response.promise);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(WORK.name);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
+    response.resolve({ provider: WORK.name, status, message });
+
+    expect(await screen.findByRole("status")).toHaveTextContent(`${status}: ${message}`);
+  });
+
+  test("does not render a supplied secret from a response message", async () => {
+    const fake = connectFakeClient();
+    const secret = "sk-live-do-not-render";
+    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("serf/auth/test", async () => ({ provider: WORK.name, status: "auth_rejected", message: secret }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(WORK.name);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
+
+    expect(await screen.findByText("The provider rejected these credentials. Replace the key or sign in again.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(secret);
+  });
+
+  test("does not render a raw RPC error string", async () => {
+    const fake = connectFakeClient();
+    const secret = "raw provider response containing sk-live-do-not-render";
+    fake.on("serf/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("serf/auth/test", async () => {
+      throw new Error(secret);
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(WORK.name);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
+
+    expect(await screen.findByText("The provider endpoint could not be reached. Check the endpoint and network connection.")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(secret);
   });
 });
 

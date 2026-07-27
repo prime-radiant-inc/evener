@@ -2,7 +2,7 @@ import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
+import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
 
@@ -146,6 +146,21 @@ describe("mutations returning the updated instance list", () => {
 });
 
 describe("auth RPCs: thin proxies, no local state mutation", () => {
+  test("testCredentials() sends the exact configured instance name and returns the typed safe response", async () => {
+    const fake = connectFakeClient();
+    const response: AuthTestResponse = {
+      provider: "custom / team-east",
+      status: "success",
+      message: "Credentials verified.",
+    };
+    fake.on("serf/auth/test", (params) => {
+      expect(params).toEqual({ provider: "custom / team-east" });
+      return response;
+    });
+
+    await expect(credentialsStore.getState().testCredentials("custom / team-east")).resolves.toEqual(response);
+  });
+
   test("setApiKey() calls serf/auth/apiKey/set and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("serf/auth/apiKey/set", (params) => {

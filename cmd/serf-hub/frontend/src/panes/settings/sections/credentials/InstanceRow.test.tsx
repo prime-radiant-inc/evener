@@ -19,6 +19,7 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 function noopHandlers() {
   return {
+    onTestCredentials: vi.fn(),
     onSetApiKey: vi.fn(),
     onOAuthStart: vi.fn(),
     onEdit: vi.fn(),
@@ -206,5 +207,24 @@ describe("action callbacks fire", () => {
     expect(handlers.onRemove).toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /make default/i }));
     expect(handlers.onSetDefault).toHaveBeenCalled();
+  });
+
+  test("clicking Test credentials calls its handler", async () => {
+    const handlers = noopHandlers();
+    const user = userEvent.setup();
+    render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} />);
+
+    await user.click(screen.getByRole("button", { name: "Test credentials" }));
+
+    expect(handlers.onTestCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  test("pending verification disables only the Test credentials action", () => {
+    const handlers = noopHandlers();
+    render(<InstanceRow instance={instance({ name: "a", type: "x" })} {...handlers} testCredentialsPending />);
+
+    expect(screen.getByRole("button", { name: "Testing credentials…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove" })).not.toBeDisabled();
   });
 });
