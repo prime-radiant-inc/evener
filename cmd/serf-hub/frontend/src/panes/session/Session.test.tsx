@@ -267,6 +267,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.textContent).toContain("hello");
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.queryByTestId("pending-chips")).toBeNull();
 
   act(() => {
     fake.emitNotification({
@@ -311,7 +312,7 @@ test("cold-start skeleton clears when the first turn terminates without an autho
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
 });
 
-test("a rejected first send clears the skeleton even when active turn state is stale", async () => {
+test("a rejected first send clears the skeleton after its retained user echo even when active state is stale", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -337,8 +338,22 @@ test("a rejected first send clears the skeleton even when active turn state is s
       method: "turn/started",
       params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
     } as AnyNotification);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+      },
+    } as AnyNotification);
   });
-  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+  expect(screen.getByTestId("user-message-item").textContent).toContain("hello");
+  expect(screen.queryByTestId("pending-chips")).toBeNull();
 
   await act(async () => {
     rejectSend?.(new Error("daemon rejected the send"));

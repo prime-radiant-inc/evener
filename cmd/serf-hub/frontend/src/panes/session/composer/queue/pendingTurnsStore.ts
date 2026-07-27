@@ -25,9 +25,16 @@ export const PENDING_TIMEOUT_MS = 10_000;
 
 interface PendingTurnsStoreState {
   entries: Map<string, PendingTurnEntry>;
+  // A successful send remains here after its user echo reconciles the
+  // pending entry, until the first authoritative assistant/tool frame or a
+  // terminal turn state arrives.
+  awaitingFirstFrame: Map<string, string>;
 }
 
-const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({ entries: new Map() }));
+const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
+  entries: new Map(),
+  awaitingFirstFrame: new Map(),
+}));
 
 // Module-private bookkeeping, deliberately not part of the store's own
 // reactive state - mirrors stores/threads.ts's own refCounts/inflightHydrates
@@ -36,12 +43,72 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({ entries: 
 let nextId = 0;
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
 const failureCallbacks = new Map<string, (error: unknown) => void>();
+const sendEntryIds = new Set<string>();
 // lastSeenModels is the reconciliation diff baseline: the last ThreadModel
 // this module has actually scanned for each ref. It must advance on EVERY
 // threads-store change (not just when something currently has a pending
 // entry), or a later-registered entry could wrongly match an item that
 // arrived before it was ever registered - see reconcileAll's own comment.
 const lastSeenModels = new Map<string, ThreadModel>();
+
+const TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
+
+function isTerminalStatus(status: string): boolean {
+  return TERMINAL_STATUSES.has(status.toLowerCase());
+}
+
+function hasAuthoritativeFrame(model: ThreadModel): boolean {
+  return model.turns.some((turn) =>
+    turn.items.some((item) => item.type !== "userMessage" && item.type !== "systemMessage"),
+  );
+}
+
+function addAwaitingFirstFrame(id: string, ref: string): void {
+  const model = threadsStore.getState().threads.get(ref);
+  if (
+    model &&
+    (isTerminalStatus(model.status.type) ||
+      model.turns.some((turn) => isTerminalStatus(turn.status)) ||
+      hasAuthoritativeFrame(model))
+  ) {
+    return;
+  }
+
+  pendingTurnsStore.setState((s) => {
+    if (s.awaitingFirstFrame.has(id)) return s;
+    const next = new Map(s.awaitingFirstFrame);
+    next.set(id, ref);
+    return { awaitingFirstFrame: next };
+  });
+}
+
+function removeAwaitingFirstFrame(id: string): void {
+  pendingTurnsStore.setState((s) => {
+    if (!s.awaitingFirstFrame.has(id)) return s;
+    const next = new Map(s.awaitingFirstFrame);
+    next.delete(id);
+    return { awaitingFirstFrame: next };
+  });
+}
+
+function reconcileAwaitingFirstFrames(threads: Map<string, ThreadModel>): void {
+  const awaiting = pendingTurnsStore.getState().awaitingFirstFrame;
+  if (awaiting.size === 0) return;
+
+  const next = new Map(awaiting);
+  for (const [id, ref] of awaiting) {
+    const model = threads.get(ref);
+    if (
+      !model ||
+      isTerminalStatus(model.status.type) ||
+      model.turns.some((turn) => isTerminalStatus(turn.status)) ||
+      hasAuthoritativeFrame(model)
+    ) {
+      next.delete(id);
+    }
+  }
+  if (next.size !== awaiting.size) pendingTurnsStore.setState({ awaitingFirstFrame: next });
+}
 
 // removeEntry drops one entry (its timer, its failure callback, and the
 // store record) - used by both the single-entry failure path and (via
@@ -69,7 +136,10 @@ function removeEntry(id: string): void {
 // re-render, not one per entry.
 function resolveMany(ids: string[]): void {
   if (ids.length === 0) return;
-  for (const id of ids) clearBookkeeping(id);
+  for (const id of ids) {
+    clearBookkeeping(id);
+    sendEntryIds.delete(id);
+  }
   pendingTurnsStore.setState((s) => {
     const next = new Map(s.entries);
     for (const id of ids) next.delete(id);
@@ -78,8 +148,11 @@ function resolveMany(ids: string[]): void {
 }
 
 function failPendingTurn(id: string, error: unknown): void {
+  const isSend = sendEntryIds.has(id);
   const onFailure = failureCallbacks.get(id);
   removeEntry(id);
+  sendEntryIds.delete(id);
+  if (isSend) removeAwaitingFirstFrame(id);
   onFailure?.(error);
 }
 
@@ -118,6 +191,7 @@ function reconcileAll(threads: Map<string, ThreadModel>): void {
     if (!threads.has(ref)) lastSeenModels.delete(ref);
   }
 
+  reconcileAwaitingFirstFrames(threads);
   resolveMany(toResolve);
 }
 
@@ -177,6 +251,7 @@ export async function submitWithPendingTracking(
     createdAt: Date.now(),
   };
   failureCallbacks.set(id, opts.onFailure);
+  if (opts.method === "send") sendEntryIds.add(id);
   timeoutHandles.set(
     id,
     setTimeout(() => timeoutPendingTurn(id), PENDING_TIMEOUT_MS),
@@ -189,6 +264,7 @@ export async function submitWithPendingTracking(
 
   try {
     await perform();
+    if (opts.method === "send") addAwaitingFirstFrame(id, opts.ref);
   } catch (err) {
     failPendingTurn(id, err);
     throw err;
@@ -218,6 +294,16 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   }, [entries, ref, method]);
 }
 
+export function useAwaitingFirstFrameSend(ref: string): boolean {
+  const awaiting = useStore(pendingTurnsStore, (s) => s.awaitingFirstFrame);
+  return useMemo(() => {
+    for (const awaitingRef of awaiting.values()) {
+      if (awaitingRef === ref) return true;
+    }
+    return false;
+  }, [awaiting, ref]);
+}
+
 // resetPendingTurnsStoreForTests resets every module-private/store field to
 // its initial state, mirroring stores/threads.ts's own
 // resetThreadsStoreForTests - this module is a singleton (one Map, one id
@@ -231,7 +317,8 @@ export function resetPendingTurnsStoreForTests(): void {
   for (const timer of timeoutHandles.values()) clearTimeout(timer);
   timeoutHandles.clear();
   failureCallbacks.clear();
+  sendEntryIds.clear();
   lastSeenModels.clear();
   nextId = 0;
-  pendingTurnsStore.setState({ entries: new Map() });
+  pendingTurnsStore.setState({ entries: new Map(), awaitingFirstFrame: new Map() });
 }
