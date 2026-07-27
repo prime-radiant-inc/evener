@@ -52,3 +52,13 @@ After implementation:
 
 ## Concerns
 - None observed during verification.
+
+## Task 7 Fix Follow-up
+Implemented the review fixes in `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx` and `cmd/serf-hub/frontend/src/panes/session/transcript/toolcallitem.module.css`:
+- added one integration assertion through the real `ToolCallItem` consumer for a settled purpose-bearing `commandExecution` row, asserting `tool-row` carries `data-oneline="true"`
+- clarified the CSS comments so the stacked/default `.summary` rule's `overflow-wrap: anywhere` is explicitly separate from the collapsed-row nowrap/ellipsis override
+- changed the separator comment wording to use an em dash instead of a hyphen in the explanatory sentence
+
+Verification:
+- `npx vitest run src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/toolRowGrammar.test.tsx`
+  - 92 tests passed

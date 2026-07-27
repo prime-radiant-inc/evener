@@ -72,6 +72,22 @@ test("renders the resolved descriptor's summary", () => {
   expect(screen.getByText("did a thing")).toBeTruthy();
 });
 
+test("settled purpose-bearing commandExecution rows compose one line", () => {
+  registerToolRenderer({ match: "tci_one_line", summary: () => "Ran npm test -- src/foo" });
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "tci_one_line",
+        description: "Running the foo tests",
+        output: "done",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row").dataset.oneline).toBe("true");
+});
+
 // The expanded content mounts only while the row is open (the same shape
 // widgets/disclosure uses), so a body assertion has to open the row first.
 function expandRow(): void {
