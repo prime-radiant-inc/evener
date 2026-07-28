@@ -293,6 +293,91 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
   });
 
+  test("a thread resync supersedes an initial same-epoch open hydration", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<(response: ThreadReadResponse) => void> = [];
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => reads.push(resolve)));
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    reads[1]?.(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
+    reads[0]?.(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
+  test("a second thread resync supersedes the first targeted refresh in the same epoch", async () => {
+    const fake = connectFakeClient();
+    const replacementReads: Array<(response: ThreadReadResponse) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return readResponse("ref_a");
+      return new Promise<ThreadReadResponse>((resolve) => replacementReads.push(resolve));
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => replacementReads.length === 1);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        status: { type: "active", activeFlags: ["streaming"] },
+      },
+    });
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => replacementReads.length === 2);
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+    replacementReads[1]?.(
+      readResponse("ref_a", {
+        status: { type: "active" },
+        turns: [{ id: "turn_newest", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_newest");
+    replacementReads[0]?.(
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [{ id: "turn_superseded", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_superseded");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_newest");
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+  });
+
   test("a thread resync for an untracked ref does not read it", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_untracked"));
@@ -2759,6 +2844,60 @@ describe("useThreadsStore.watchThread", () => {
     expect(model?.turns[0]?.id).toBe("turn_after");
     expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
     expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toHaveLength(1);
+  });
+
+  test("repeated thread resyncs keep rich watched hydration newest-wins in one epoch", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      (params) =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          reads.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve });
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    expect(reads.map((read) => read.includeTurns)).toEqual([true, true, true]);
+    reads[2]?.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_newest", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_newest");
+    reads[1]?.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_superseded", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+      }),
+    );
+    reads[0]?.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_initial", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+      }),
+    );
+    await watching;
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_newest");
+    expect(model?.capabilities.queue).toBe(true);
   });
 
   test("a watch released before its in-flight hydrate resolves is not resurrected", async () => {

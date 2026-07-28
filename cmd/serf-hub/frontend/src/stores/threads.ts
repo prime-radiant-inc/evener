@@ -730,6 +730,7 @@ function storeWatchedModel(
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
 async function handleReady(client: AppwireClientLike, epoch: number, targetRef?: string): Promise<void> {
+  const targetedResync = targetRef !== undefined;
   const refs = targetRef
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
@@ -740,7 +741,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     ...Array.from(refs, async (ref) => {
       if ((refCounts.get(ref) ?? 0) <= 0) return;
       const previous = pendingThreadHydrations.get(ref);
-      if (previous?.client === client && previous.epoch === epoch) return;
+      if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
       const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
       transferPendingHydration(previous, pending);
       const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((model) => {
@@ -776,7 +777,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
       if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
       const generation = watchGenerations.get(ref) ?? 0;
       const previous = pendingWatchedHydrations.get(ref);
-      if (previous?.client === client && previous.epoch === epoch) return;
+      if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
       const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
       transferPendingHydration(previous, pending);
       const includeTurns = watchIncludeTurns.get(ref) ?? false;
