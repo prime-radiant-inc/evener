@@ -738,6 +738,88 @@ describe("awaiting first frame lifecycle cleanup", () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
+  test("model release retires failure feedback retained after an unresolved queue echo", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "queue", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thr_ref_a", ref: "ref_a", queue: { depth: 1, texts: ["hello"] } },
+      });
+    });
+    expect(result.current).toHaveLength(0);
+
+    act(() => threadsStore.getState().releaseThread("ref_a"));
+    const failure = new Error("late queue rejection after release");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(pending).rejects.toBe(failure);
+    });
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  test("model release retires failure feedback after an unresolved send echo and first frame", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const pendingHook = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+    const awaitingHook = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        },
+      });
+    });
+    expect(pendingHook.result.current).toHaveLength(0);
+    expect(awaitingHook.result.current).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        },
+      });
+    });
+    expect(awaitingHook.result.current).toBe(false);
+
+    act(() => threadsStore.getState().releaseThread("ref_a"));
+    const failure = new Error("late send rejection after release");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(pending).rejects.toBe(failure);
+    });
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   test("release and remount cannot reconcile or fail a retired same-text entry", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();

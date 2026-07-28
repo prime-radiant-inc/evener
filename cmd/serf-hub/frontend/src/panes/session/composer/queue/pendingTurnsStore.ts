@@ -55,6 +55,10 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
 let nextId = 0;
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
 const failureCallbacks = new Map<string, (error: unknown) => void>();
+// An echo can remove the ref-bearing store entry before perform() settles.
+// Retain the ref alongside the remaining failure callback so model release
+// can still retire that callback-only lifecycle.
+const unsettledPerformRefs = new Map<string, string>();
 const settledPerformIds = new Set<string>();
 // lastSeenModels is the reconciliation diff baseline: the last ThreadModel
 // this module has actually scanned for each ref. It must advance on EVERY
@@ -138,6 +142,7 @@ function clearBookkeeping(id: string): void {
   if (timer !== undefined) clearTimeout(timer);
   timeoutHandles.delete(id);
   failureCallbacks.delete(id);
+  unsettledPerformRefs.delete(id);
   settledPerformIds.delete(id);
 }
 
@@ -210,6 +215,9 @@ function retireReleasedPendingTurns(threads: Map<string, ThreadModel>): void {
     if (!threads.has(entry.ref)) retiredIds.add(id);
   }
   for (const [id, ref] of state.awaitingFirstFrame) {
+    if (!threads.has(ref)) retiredIds.add(id);
+  }
+  for (const [id, ref] of unsettledPerformRefs) {
     if (!threads.has(ref)) retiredIds.add(id);
   }
   if (retiredIds.size === 0) return;
@@ -317,6 +325,7 @@ export async function submitWithPendingTracking(
     createdAt: Date.now(),
   };
   failureCallbacks.set(id, opts.onFailure);
+  unsettledPerformRefs.set(id, opts.ref);
   if (opts.method === "send") addAwaitingFirstFrame(id, opts.ref);
   pendingTurnsStore.setState((s) => {
     const next = new Map(s.entries);
@@ -326,6 +335,7 @@ export async function submitWithPendingTracking(
 
   try {
     await perform();
+    unsettledPerformRefs.delete(id);
     settledPerformIds.add(id);
     if (pendingTurnsStore.getState().entries.has(id)) {
       timeoutHandles.set(
@@ -388,6 +398,7 @@ export function resetPendingTurnsStoreForTests(): void {
   for (const timer of timeoutHandles.values()) clearTimeout(timer);
   timeoutHandles.clear();
   failureCallbacks.clear();
+  unsettledPerformRefs.clear();
   settledPerformIds.clear();
   lastSeenModels.clear();
   pendingTurnsStore.setState({ entries: new Map(), awaitingFirstFrame: new Map() });
