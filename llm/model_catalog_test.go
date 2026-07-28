@@ -240,9 +240,9 @@ func TestEmbeddedModelCatalog_ClaudeSonnet5AndFable5(t *testing.T) {
 		}
 	}
 	sonnet := cat.GetModelInfo("claude-sonnet-5")
-	if sonnet.InputCostPerMillion == nil || *sonnet.InputCostPerMillion != 3.0 ||
-		sonnet.OutputCostPerMillion == nil || *sonnet.OutputCostPerMillion != 15.0 {
-		t.Errorf("claude-sonnet-5 pricing = %v/%v, want 3/15", sonnet.InputCostPerMillion, sonnet.OutputCostPerMillion)
+	if sonnet.InputCostPerMillion == nil || *sonnet.InputCostPerMillion != 2.0 ||
+		sonnet.OutputCostPerMillion == nil || *sonnet.OutputCostPerMillion != 10.0 {
+		t.Errorf("claude-sonnet-5 pricing = %v/%v, want current introductory pricing 2/10", sonnet.InputCostPerMillion, sonnet.OutputCostPerMillion)
 	}
 	if sonnet.ThinkingAlwaysOn {
 		t.Error("claude-sonnet-5 ThinkingAlwaysOn = true, want false (thinking can be disabled)")
@@ -276,8 +276,8 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 		if !strings.EqualFold(mi.Provider, "openai") {
 			t.Errorf("%s Provider = %q, want openai", id, mi.Provider)
 		}
-		if mi.ContextWindow != 372_000 {
-			t.Errorf("%s ContextWindow = %d, want 372000", id, mi.ContextWindow)
+		if mi.ContextWindow != 272_000 {
+			t.Errorf("%s ContextWindow = %d, want 272000 effective Codex/OAuth limit", id, mi.ContextWindow)
 		}
 		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 128_000 {
 			t.Errorf("%s MaxOutputTokens = %v, want 128000", id, mi.MaxOutputTokens)
@@ -292,14 +292,15 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 			mi.OutputCostPerMillion == nil || *mi.OutputCostPerMillion != p[1] {
 			t.Errorf("%s pricing = %v/%v, want %v/%v", id, mi.InputCostPerMillion, mi.OutputCostPerMillion, p[0], p[1])
 		}
-		if mi.CacheReadInputCostPerMillion == nil || *mi.CacheReadInputCostPerMillion != p[2] {
+		if !floatPtrApproxEqual(mi.CacheReadInputCostPerMillion, f64(p[2])) {
 			t.Errorf("%s cache-read pricing = %v, want %v", id, mi.CacheReadInputCostPerMillion, p[2])
 		}
 	}
-	// The bare gpt-5.6 alias resolves to sol via both lookup paths.
+	// LiteLLM now carries a canonical gpt-5.6 entry. It must win over the
+	// historical Sol alias so callers asking for the actual model keep it.
 	for _, ref := range []string{"gpt-5.6", "openai/gpt-5.6"} {
-		if mi := cat.LookupModelInfo(ref); mi == nil || mi.ID != "gpt-5.6-sol" {
-			t.Errorf("LookupModelInfo(%q) = %+v, want gpt-5.6-sol", ref, mi)
+		if mi := cat.LookupModelInfo(ref); mi == nil || mi.ID != "gpt-5.6" {
+			t.Errorf("LookupModelInfo(%q) = %+v, want canonical gpt-5.6", ref, mi)
 		}
 	}
 }

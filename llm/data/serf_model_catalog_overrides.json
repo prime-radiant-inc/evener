@@ -116,67 +116,37 @@
     "thinking_always_on": true
   },
   "gpt-5.6-sol": {
-    "_note": "OpenAI GPT-5.6 Sol (developers.openai.com, released 2026-07-09). Not in the LiteLLM catalog — materialized. Context 372,000 per codex's models.json (first-party API docs claim 1,050,000 — Jesse chose the conservative codex value 2026-07-11). \"ultra\" is a codex-client-only effort concept and is deliberately absent.",
-    "provider": "openai",
-    "display_name": "GPT-5.6 Sol",
-    "context_window": 372000,
-    "max_output_tokens": 128000,
-    "supports_tools": true,
-    "supports_vision": true,
-    "supports_reasoning": true,
+    "_note": "LiteLLM now supplies the public OpenAI API metadata. Serf overrides only the effective Codex/OAuth context window (272,000 in codex-cli 0.145.0 models_cache.json; public API is 1,050,000) per Jesse's 2026-07-28 decision, plus the existing max effort tier.",
+    "context_window": 272000,
     "reasoning_effort_levels": [
       "low",
       "medium",
       "high",
       "xhigh",
       "max"
-    ],
-    "input_cost_per_million": 5.0,
-    "output_cost_per_million": 30.0,
-    "cache_read_input_cost_per_million": 0.5,
-    "aliases": [
-      "gpt-5.6"
     ]
   },
   "gpt-5.6-terra": {
-    "_note": "OpenAI GPT-5.6 Terra (developers.openai.com, released 2026-07-09). Materialized; see gpt-5.6-sol note.",
-    "provider": "openai",
-    "display_name": "GPT-5.6 Terra",
-    "context_window": 372000,
-    "max_output_tokens": 128000,
-    "supports_tools": true,
-    "supports_vision": true,
-    "supports_reasoning": true,
+    "_note": "LiteLLM supplies the public API metadata; see gpt-5.6-sol for Serf's intentional Codex/OAuth context override.",
+    "context_window": 272000,
     "reasoning_effort_levels": [
       "low",
       "medium",
       "high",
       "xhigh",
       "max"
-    ],
-    "input_cost_per_million": 2.5,
-    "output_cost_per_million": 15.0,
-    "cache_read_input_cost_per_million": 0.25
+    ]
   },
   "gpt-5.6-luna": {
-    "_note": "OpenAI GPT-5.6 Luna (developers.openai.com, released 2026-07-09). Materialized; see gpt-5.6-sol note.",
-    "provider": "openai",
-    "display_name": "GPT-5.6 Luna",
-    "context_window": 372000,
-    "max_output_tokens": 128000,
-    "supports_tools": true,
-    "supports_vision": true,
-    "supports_reasoning": true,
+    "_note": "LiteLLM supplies the public API metadata; see gpt-5.6-sol for Serf's intentional Codex/OAuth context override.",
+    "context_window": 272000,
     "reasoning_effort_levels": [
       "low",
       "medium",
       "high",
       "xhigh",
       "max"
-    ],
-    "input_cost_per_million": 1.0,
-    "output_cost_per_million": 6.0,
-    "cache_read_input_cost_per_million": 0.1
+    ]
   },
   "claude-opus-4-6": {
     "reasoning_effort_levels": [
