@@ -383,6 +383,36 @@ describe("AppwireClient retryNow", () => {
     expect(client.state).toBe("ready");
   });
 
+  test("a failed reentrant manual retry waits for doubled backoff and leaves close terminal", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    client.onStateChange((state) => {
+      if (state === "reconnecting") client.retryNow();
+    });
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(sockets).toHaveLength(2);
+
+    socketAt(sockets, 1).closeFromServer(1006);
+    await flushUntil(() => socketAt(sockets, 1).closeRequests.length === 1);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    expect(sockets).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    expect(sockets).toHaveLength(3);
+
+    client.close();
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(sockets).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test("a failed retryNow attempt falls back to the ordinary backoff sequence, continuing from where it left off", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });

@@ -319,19 +319,16 @@ export class AppwireClient {
   // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
   private scheduleReconnect(): void {
     if (this.isClosed()) return;
-    this.setState("reconnecting");
-    // setState("reconnecting") just dispatched synchronously to
-    // onStateChange subscribers; one of them may have called close()
-    // reentrantly and already reached "closed" by now. Re-check before
-    // arming — otherwise this would leak a reconnect timer close() can never
-    // clear, on a client that has already torn everything else down.
-    if (this.isClosed()) return;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.attemptReconnect();
     }, delay);
+    // Publish only after reconnectTimer owns this attempt. State listeners
+    // run synchronously and may call retryNow() or close(); both must be able
+    // to disarm this timer before starting or ending connection work.
+    this.setState("reconnecting");
   }
 
   // attemptReconnect re-dials and re-handshakes exactly like the initial
