@@ -255,3 +255,22 @@ test("Copy always copies the full, unfolded text - even while visually folded", 
   await user.click(screen.getByRole("button", { name: "Copy" }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith(LONG_TEXT);
 });
+
+test("ANSI style inherited from a folded earlier line remains on the visible tail", () => {
+  const lines = Array.from({ length: 15 }, (_, index) => `${index === 0 ? "\u001b[32m" : ""}line ${index + 1}`);
+  const { container } = render(<CodeBlock text={`${lines.join("\n")}\u001b[39m`} ansi />);
+
+  expect(screen.queryByText(LINE_1_ONLY)).toBeNull();
+  expect(screen.getByText("line 15").closest('[data-ansi-fg="green"]')).toBeTruthy();
+  expect(container.querySelector("code")?.textContent).not.toContain("\u001b");
+});
+
+test("Copy preserves the original ANSI-bearing text exactly", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const source = "\u001b[32mgreen\u001b[0m";
+  render(<CodeBlock text={source} ansi />);
+
+  await user.click(screen.getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(source);
+});
