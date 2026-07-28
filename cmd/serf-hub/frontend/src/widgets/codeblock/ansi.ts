@@ -121,10 +121,17 @@ function normalizedSgr(sequence: string, state: SgrState): string {
   for (let index = 0; index < parameters.length; index += 1) {
     const code = parameters[index] ?? 0;
     if ((code === 38 || code === 48) && (parameters[index + 1] === 2 || parameters[index + 1] === 5)) {
-      const colorLength = parameters[index + 1] === 2 ? 5 : 3;
+      const truecolor = parameters[index + 1] === 2;
+      const colorLength = truecolor ? 5 : 3;
       const color = parameters.slice(index, index + colorLength);
-      if (code === 38) state.foreground = color;
-      else state.background = color;
+      const channels = truecolor ? color.slice(2) : color.slice(2, 3);
+      const validColor =
+        color.length === colorLength &&
+        channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+      if (validColor) {
+        if (code === 38) state.foreground = color;
+        else state.background = color;
+      }
       normalized.push(...color);
       index += colorLength - 1;
       continue;
@@ -153,6 +160,11 @@ function normalizedSgr(sequence: string, state: SgrState): string {
     }
     if (code === 49) {
       state.background = undefined;
+      normalized.push(code);
+      continue;
+    }
+    if (code === 21) {
+      state.decorations.delete(1);
       normalized.push(code);
       continue;
     }

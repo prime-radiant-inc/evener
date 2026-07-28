@@ -221,6 +221,34 @@ test("a retained tail preserves inverse semantics for later color changes", () =
   expect(screen.getByText("AFTER").closest('[data-ansi-bg="red"]')).toBeTruthy();
 });
 
+test("rolling ANSI state is isolated when an item ID repeats in another session", () => {
+  const Body = toolRendererFor("shell").body!;
+  const view = render(<Body item={withCommand("first", { output: "ONE1" })} live sessionRef="local:session-one" />);
+
+  view.rerender(<Body item={withCommand("second", { output: "TWO2" })} live sessionRef="local:session-two" />);
+  expect(view.container.querySelector("code")?.textContent).toBe("TWO2");
+});
+
+test("SGR 21 resets inherited bold without suppressing a later re-enable", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `\u001b[1m${"x".repeat(8_100)}\u001b[21mplain\u001b[1mAFTER`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(
+    Array.from(container.querySelectorAll("[data-ansi-bold]")).some((node) => node.textContent?.endsWith("AFTER")),
+  ).toBe(true);
+});
+
+test("a malformed extended color does not replace inherited valid color state", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `\u001b[31m\u001b[38;2;999;0;0m${"x".repeat(8_100)}AFTER`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(
+    Array.from(container.querySelectorAll('[data-ansi-fg="red"]')).some((node) => node.textContent?.endsWith("AFTER")),
+  ).toBe(true);
+});
+
 test("display and copy share the same raw boundary across a large OSC payload", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");

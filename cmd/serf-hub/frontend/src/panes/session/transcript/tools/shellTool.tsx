@@ -71,11 +71,11 @@ function shellExitCode(item: ItemModel): number | undefined {
 // descriptor hands over the whole string and never clips for the row
 // (Jesse's review call closed the "not readable in full anywhere" gap this
 // comment used to carry).
-function ShellBody({ item, live }: ToolRenderProps) {
+function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
   const output = item.output ?? "";
-  const buffer = useRef<{ itemId: string; tail: AnsiTailBuffer } | undefined>(undefined);
-  if (buffer.current?.itemId !== item.id) {
-    buffer.current = { itemId: item.id, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
+  const buffer = useRef<{ itemId: string; sessionRef?: string; tail: AnsiTailBuffer } | undefined>(undefined);
+  if (buffer.current?.itemId !== item.id || buffer.current.sessionRef !== sessionRef) {
+    buffer.current = { itemId: item.id, sessionRef, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
   }
   const tail = buffer.current.tail.update(output);
   if (output === "") return null;
