@@ -8,6 +8,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { SYSTEM_PRELUDE_TURN_ID } from "../../transcript/transcriptVisibility";
 import {
   PENDING_TIMEOUT_MS,
+  PendingConfirmationTimeoutError,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
   useAwaitingFirstFrameSend,
@@ -479,6 +480,60 @@ describe("10s timeout reaper", () => {
     vi.useFakeTimers();
   });
 
+  test("an unresolved perform remains optimistic beyond the confirmation window and later reports its exact rejection", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "queue", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+    });
+    expect(result.current).toHaveLength(1);
+    expect(onFailure).not.toHaveBeenCalled();
+
+    const failure = new Error("resume failed exactly");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(pending).rejects.toBe(failure);
+    });
+    expect(result.current).toHaveLength(0);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledWith(failure);
+  });
+
+  test("a successful perform receives a fresh full confirmation window", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let resolvePerform: (() => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "queue", text: "hello", onFailure },
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePerform = resolve;
+        }),
+    );
+
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+    resolvePerform?.();
+    await pending;
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS - 1);
+    expect(onFailure).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0]?.[0]).toBeInstanceOf(PendingConfirmationTimeoutError);
+  });
+
   test("an entry not reconciled within PENDING_TIMEOUT_MS auto-fails via onFailure and is removed", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
@@ -500,8 +555,7 @@ describe("10s timeout reaper", () => {
     expect(result.current).toHaveLength(0);
     expect(onFailure).toHaveBeenCalledTimes(1);
     const [failure] = onFailure.mock.calls[0] as [unknown];
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toMatch(/didn't confirm/i);
+    expect(failure).toBeInstanceOf(PendingConfirmationTimeoutError);
   });
 
   test("reconciling before the timeout cancels the timer - no spurious onFailure after PENDING_TIMEOUT_MS", async () => {
@@ -568,7 +622,7 @@ describe("10s timeout reaper", () => {
     expect(onFailure).toHaveBeenCalledWith(failure);
   });
 
-  test("an unresolved send still times out after its user echo and removes awaiting state", async () => {
+  test("an echo followed by successful send settlement leaves first-frame state frame-owned", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     let resolvePerform: (() => void) | undefined;
@@ -598,26 +652,34 @@ describe("10s timeout reaper", () => {
     expect(awaitingResult.current).toBe(true);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
-    });
-
-    expect(onFailure).toHaveBeenCalledTimes(1);
-    expect(awaitingResult.current).toBe(false);
-
-    await act(async () => {
       resolvePerform?.();
       await send;
+      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS * 2);
     });
-    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(awaitingResult.current).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "item/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_1",
+          item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        },
+      });
+    });
     expect(awaitingResult.current).toBe(false);
   });
 
-  test("a late successful perform after timeout cannot resurrect awaiting state", async () => {
+  test("a successful perform after an extended RPC wait starts a fresh send confirmation timeout", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     let resolvePerform: (() => void) | undefined;
+    const onFailure = vi.fn();
     const send = submitWithPendingTracking(
-      { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
+      { ref: "ref_a", method: "send", text: "hello", onFailure },
       () =>
         new Promise<void>((resolve) => {
           resolvePerform = resolve;
@@ -630,18 +692,96 @@ describe("10s timeout reaper", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
     });
-    expect(pendingResult.current).toHaveLength(0);
-    expect(awaitingResult.current).toBe(false);
+    expect(pendingResult.current).toHaveLength(1);
+    expect(awaitingResult.current).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
 
     await act(async () => {
       resolvePerform?.();
       await send;
+      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
     });
+    expect(pendingResult.current).toHaveLength(0);
     expect(awaitingResult.current).toBe(false);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0]?.[0]).toBeInstanceOf(PendingConfirmationTimeoutError);
   });
 });
 
 describe("awaiting first frame lifecycle cleanup", () => {
+  test("model release retires an unresolved pending entry without failure or resurrection", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const pendingHook = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+    const awaitingHook = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
+
+    act(() => threadsStore.getState().releaseThread("ref_a"));
+    expect(pendingHook.result.current).toHaveLength(0);
+    expect(awaitingHook.result.current).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS * 2);
+    const failure = new Error("late rejection after release");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(pending).rejects.toBe(failure);
+    });
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  test("release and remount cannot reconcile or fail a retired same-text entry", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    const historicalTurn: Thread["turns"][number] = {
+      id: "turn_1",
+      status: "inProgress",
+      itemsView: "full",
+      items: [
+        {
+          id: "historical_user",
+          turnId: "turn_1",
+          type: "userMessage",
+          text: "hello",
+          status: "completed",
+        },
+      ],
+    };
+    await hydrate(fake, "ref_a", { turns: [historicalTurn] });
+    let rejectPerform: ((error: unknown) => void) | undefined;
+    const onFailure = vi.fn();
+    const pending = submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "hello", onFailure },
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPerform = reject;
+        }),
+    );
+    const pendingHook = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+    act(() => threadsStore.getState().releaseThread("ref_a"));
+    expect(pendingHook.result.current).toHaveLength(0);
+
+    await hydrate(fake, "ref_a", { turns: [historicalTurn] });
+    expect(pendingHook.result.current).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS * 2);
+
+    const failure = new Error("late rejection after remount");
+    await act(async () => {
+      rejectPerform?.(failure);
+      await expect(pending).rejects.toBe(failure);
+    });
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   test("a late successful perform after model release cannot resurrect awaiting state", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");

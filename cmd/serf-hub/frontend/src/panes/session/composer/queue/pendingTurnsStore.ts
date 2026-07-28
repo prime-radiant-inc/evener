@@ -24,6 +24,17 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export const PENDING_TIMEOUT_MS = 10_000;
 
+export class PendingConfirmationTimeoutError extends Error {
+  constructor() {
+    super("The server accepted this message, but the view didn't update.");
+    this.name = "PendingConfirmationTimeoutError";
+  }
+}
+
+export function isPendingConfirmationTimeoutError(error: unknown): error is PendingConfirmationTimeoutError {
+  return error instanceof PendingConfirmationTimeoutError;
+}
+
 interface PendingTurnsStoreState {
   entries: Map<string, PendingTurnEntry>;
   // A successful send remains here after its user echo reconciles the
@@ -189,7 +200,30 @@ function failPendingTurn(id: string, error: unknown): void {
 function timeoutPendingTurn(id: string): void {
   const state = pendingTurnsStore.getState();
   if (!state.entries.has(id) && !state.awaitingFirstFrame.has(id)) return; // already resolved or failed
-  failPendingTurn(id, new Error("The server didn't confirm this message in time."));
+  failPendingTurn(id, new PendingConfirmationTimeoutError());
+}
+
+function retireReleasedPendingTurns(threads: Map<string, ThreadModel>): void {
+  const state = pendingTurnsStore.getState();
+  const retiredIds = new Set<string>();
+  for (const [id, entry] of state.entries) {
+    if (!threads.has(entry.ref)) retiredIds.add(id);
+  }
+  for (const [id, ref] of state.awaitingFirstFrame) {
+    if (!threads.has(ref)) retiredIds.add(id);
+  }
+  if (retiredIds.size === 0) return;
+
+  for (const id of retiredIds) clearBookkeeping(id);
+  pendingTurnsStore.setState((s) => {
+    const entries = new Map(s.entries);
+    const awaitingFirstFrame = new Map(s.awaitingFirstFrame);
+    for (const id of retiredIds) {
+      entries.delete(id);
+      awaitingFirstFrame.delete(id);
+    }
+    return { entries, awaitingFirstFrame };
+  });
 }
 
 // reconcileAll runs on every threads-store change, diffing each ref's
@@ -216,14 +250,15 @@ function reconcileAll(threads: Map<string, ThreadModel>): void {
     toResolve.push(...computeReconciledIds(refEntries, model, priorItemIds));
   }
 
+  resolveMany(toResolve);
+  retireReleasedPendingTurns(threads);
+  reconcileAwaitingFirstFrames(threads);
+
   // Forget any ref the threads store no longer tracks at all (pane closed) -
   // a snapshot of the keys since delete() mutates lastSeenModels mid-loop.
   for (const ref of Array.from(lastSeenModels.keys())) {
     if (!threads.has(ref)) lastSeenModels.delete(ref);
   }
-
-  reconcileAwaitingFirstFrames(threads);
-  resolveMany(toResolve);
 }
 
 threadsStore.subscribe((state) => {
@@ -283,10 +318,6 @@ export async function submitWithPendingTracking(
   };
   failureCallbacks.set(id, opts.onFailure);
   if (opts.method === "send") addAwaitingFirstFrame(id, opts.ref);
-  timeoutHandles.set(
-    id,
-    setTimeout(() => timeoutPendingTurn(id), PENDING_TIMEOUT_MS),
-  );
   pendingTurnsStore.setState((s) => {
     const next = new Map(s.entries);
     next.set(id, entry);
@@ -296,8 +327,12 @@ export async function submitWithPendingTracking(
   try {
     await perform();
     settledPerformIds.add(id);
-    if (!pendingTurnsStore.getState().entries.has(id)) {
-      clearTimeoutHandle(id);
+    if (pendingTurnsStore.getState().entries.has(id)) {
+      timeoutHandles.set(
+        id,
+        setTimeout(() => timeoutPendingTurn(id), PENDING_TIMEOUT_MS),
+      );
+    } else {
       settledPerformIds.delete(id);
       failureCallbacks.delete(id);
     }
