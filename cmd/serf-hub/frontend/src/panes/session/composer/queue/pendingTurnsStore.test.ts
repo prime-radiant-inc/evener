@@ -741,7 +741,7 @@ describe("awaiting first frame lifecycle cleanup", () => {
   test("release and remount cannot reconcile or fail a retired same-text entry", async () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
-    const historicalTurn: Thread["turns"][number] = {
+    const historicalTurn: NonNullable<Thread["turns"]>[number] = {
       id: "turn_1",
       status: "inProgress",
       itemsView: "full",
