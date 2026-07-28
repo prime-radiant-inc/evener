@@ -6,7 +6,6 @@
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../protocol/model";
-import { usePrefsStore } from "../../../stores/prefs";
 import { useThreadsStore } from "../../../stores/threads";
 import { type CadenceState, StatusDot } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
@@ -15,7 +14,6 @@ import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
-import { toolCallDuration } from "./toolMeta";
 import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { parseArgs, parseJSONObject, str } from "./tools/helpers";
@@ -126,15 +124,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // glance) and the expanded body as real text (the keyboard-reachable copy).
   const detail = descriptor.detail?.(item);
 
-  // Per-tool-call duration (P1, ux-plan-2026-07.md's most-repeated finding):
-  // the wire has carried this since issue #37 (StartedAt/CompletedAt on the
-  // settled commandExecution item), it was just never rendered. Gated on the
-  // SAME "Round timings" preference TurnSeparator already reads for the
-  // turn-level figure - one setting, one meaning ("show me real timing"),
-  // not a second toggle for what is the same question at a finer grain.
-  const showTimings = usePrefsStore((s) => s.transcript.roundTimings);
-  const duration = showTimings ? toolCallDuration(item) : undefined;
-
   // summarySuffix (kata h70z) reads the FULL thread model, not just this
   // item - ask_user's "— answered: ..." recap lives in a separate, LATER
   // userMessage item. Subscribed reactively (not a one-off snapshot) so a
@@ -230,7 +219,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           expanded={false}
           trailing={openBesideButton}
           title={detail}
-          duration={duration}
         />
       </div>
     );
@@ -262,7 +250,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
         trailing={openBesideButton}
         title={detail}
-        duration={duration}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.

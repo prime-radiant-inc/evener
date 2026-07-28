@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
@@ -8,39 +8,8 @@ import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its 
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
-import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
-
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global - same stand-in TurnSeparator.test.tsx
-// uses, needed here too now that the duration-gating tests below touch the
-// prefs store (which persists to localStorage).
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
-beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
-});
-
-beforeEach(() => {
-  localStorage.clear();
-  resetPrefsStoreForTests();
-});
 
 // The expand/collapse state now lives in the shared disclosureStore keyed by
 // item.id (yt2q), so it MUST be reset between tests - every test's default
@@ -730,49 +699,6 @@ test("summarySuffix is omitted (bare summary) when the descriptor doesn't define
   registerToolRenderer({ match: "tci_no_suffix", summary: () => "plain summary" });
   render(<ToolCallItem item={item({ toolName: "tci_no_suffix" })} turn={turn} live={false} sessionRef="ref_a" />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("plain summary");
-});
-
-// --- per-tool-call duration (P1, ux-plan-2026-07.md): opt-in via the same
-// "Round timings" preference TurnSeparator already reads for the turn-level
-// figure - not a separate toggle. That preference now ships ON by default
-// (prefs.ts, ux-plan-2026-07.md); the gating tests below set it explicitly
-// in each direction so they keep proving the gate works rather than riding
-// on whichever way the default happens to point. --------
-
-const timedItem = (overrides: Partial<ItemModel> = {}) =>
-  item({
-    toolName: "tci_timed",
-    startedAt: "2026-01-01T00:00:00.000Z",
-    completedAt: "2026-01-01T00:00:00.038Z",
-    ...overrides,
-  });
-
-test("Round timings off: no duration renders even though the item carries real start/end", () => {
-  prefsStore.getState().setTranscriptStatus("roundTimings", false);
-  registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
-  render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
-  expect(screen.queryByTestId("tool-row-duration")).toBe(null);
-});
-
-test("Round timings on (the default): a settled call with startedAt/completedAt shows its duration", () => {
-  prefsStore.getState().setTranscriptStatus("roundTimings", true);
-  registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
-  render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row-duration").textContent).toBe(" · 38ms");
-});
-
-test("Round timings on but no startedAt/completedAt (e.g. a call still in flight): no duration, no crash", () => {
-  prefsStore.getState().setTranscriptStatus("roundTimings", true);
-  registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
-  render(<ToolCallItem item={timedItem({ startedAt: undefined, completedAt: undefined })} turn={turn} live={false} />);
-  expect(screen.queryByTestId("tool-row-duration")).toBe(null);
-});
-
-test("the duration segment does not disturb the summary text an unrelated test asserted byte-for-byte", () => {
-  prefsStore.getState().setTranscriptStatus("roundTimings", false);
-  registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
-  render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
 
 test("delegate tool rows keep the human description as purpose and suppress the technical delegate summary", () => {

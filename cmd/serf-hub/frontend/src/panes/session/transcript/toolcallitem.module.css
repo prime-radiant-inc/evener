@@ -1,20 +1,29 @@
-/* One tool call. A call with no inline body is a single line of text: the
- * padding below is the row's only vertical cost. */
+/* One tool call. The vertical rhythm is the associativity cue (Jesse's
+ * review call): a call's own lines sit TIGHT (the row's row-gap below) and
+ * separate calls sit LOOSE (this padding, 2x8px between calls) - before
+ * this, both gaps measured the same 8px and a run of calls read as one
+ * undifferentiated list. */
 .call {
   display: flex;
   flex-direction: column;
-  padding: var(--space-1) 0;
+  padding: var(--space-2) 0;
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
  * implements. A purpose-bearing row wraps onto two lines (italic purpose
  * above, quiet verb/target below) via the demoted line's flex-basis rule
- * further down; without a purpose it stays on one. */
+ * further down; without a purpose it stays on one.
+ *
+ * row-gap vs column-gap, split deliberately: the column gap separates the
+ * glyph/status/text on one line; the row gap is the rationale-to-call
+ * coupling and must read TIGHTER than the .call padding that separates
+ * separate calls (see there). */
 .row {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-2);
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
   list-style: none; /* the <summary> variant: no native disclosure triangle */
   cursor: default;
 }
@@ -107,12 +116,6 @@ summary.row:focus-visible {
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow-wrap: normal;
-}
-
-/* The call's duration (Round timings, opt-in): --ink-mid, same as .demoted -
- * no override needed now that .demoted itself clears AA. */
-.duration {
-  color: var(--ink-mid);
 }
 
 /* The disclosure affordance, riding INLINE at the end of the headline text

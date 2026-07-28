@@ -6,7 +6,7 @@
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
 //     line 1: [✗ failure glyph?] [status?] purpose [affordances] [chevron?]
-//     line 2: verb target [· meta] [· duration]
+//     line 2: verb target [· meta]
 //
 //   - a COLLAPSED row with both a purpose and a summary STACKS them: the
 //     purpose (the agent's stated rationale, italic) on the first line, the
@@ -42,7 +42,6 @@ const CLASS = {
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
-  duration: requireClass(styles.duration, "toolcallitem.module.css", "duration"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
 
@@ -64,13 +63,6 @@ export interface ToolRowProps {
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
   title?: string;
-  /** The call's wall-clock duration (toolMeta.ts's toolCallDuration, already
-   * formatted, e.g. "38ms"/"1.2s") — opt-in via Settings -> Transcript's
-   * "Round timings" (ToolCallItem gates it), the same preference
-   * TurnSeparator reads for the turn-level figure. Absent whenever the pref
-   * is off, the call hasn't settled yet, or the wire never stamped a
-   * start/end pair. */
-  duration?: string;
 }
 
 /** The one rule for reading a tool call's stated purpose (ItemModel.description):
@@ -93,7 +85,6 @@ export function ToolRow({
   onToggle,
   trailing,
   title,
-  duration,
   status,
 }: ToolRowProps) {
   const statedPurpose = statedPurposeOf({ description: purpose });
@@ -140,16 +131,6 @@ export function ToolRow({
           title={hasPurpose ? summary : undefined}
         >
           {summary}
-          {/* Nested rather than appended to `summary` itself: a stable hook to
-            query the duration apart from the demoted summary text (both
-            .demoted and .duration render --ink-mid; kata rdry moved .demoted
-            off the sub-AA --ink-low it used to inherit). */}
-          {duration && (
-            <span className={CLASS.duration} data-testid="tool-row-duration">
-              {" · "}
-              {duration}
-            </span>
-          )}
           {!hasPurpose && chevron}
         </span>
       )}

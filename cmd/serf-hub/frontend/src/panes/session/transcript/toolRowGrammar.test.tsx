@@ -346,6 +346,19 @@ test("the demoted summary is ordered last so affordances do not wrap onto a thir
   expect(rowCss()).toMatch(/\.demoted\s*\{[^}]*order:\s*1/);
 });
 
+// Associativity rhythm (Jesse's review call): the gap between a rationale
+// and the call it executes must read TIGHTER than the gap between separate
+// calls - 4px inside (row-gap), 16px outside (.call padding). Before this
+// split both gaps measured the same 8px and a run of calls read as one
+// undifferentiated list.
+test("the rationale-to-call gap is tighter than the gap between separate calls", () => {
+  const css = rowCss();
+  expect(css).toMatch(/\.row\s*\{[^}]*row-gap:\s*var\(--space-1\)/);
+  const call = /\.call\s*\{([^}]*)\}/.exec(css);
+  expect(call).not.toBeNull();
+  expect(call![1]).toContain("padding: var(--space-2) 0");
+});
+
 // The purpose is the agent's stated rationale for the call - commentary on
 // the machine text, set off in italics rather than a colour or size of its
 // own (Jesse's review call on the tiered-density follow-up).
