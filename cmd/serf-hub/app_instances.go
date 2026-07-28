@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"primeradiant.com/serf/appwire"
@@ -57,7 +59,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			Name:           inst.Name,
 			Type:           string(inst.Type),
 			APIStyle:       string(inst.APIStyle),
-			BaseURL:        inst.BaseURL,
+			BaseURL:        sanitizeEndpointURL(inst.BaseURL),
 			IsDefault:      inst.Name == cfg.Default,
 			AuthModes:      status.AuthModes,
 			ActiveSource:   status.ActiveSource,
@@ -80,6 +82,27 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		Instances:      entries,
 		AvailableTypes: providercfg.KnownTypeNames(),
 	}
+}
+
+// sanitizeEndpointURL keeps only the non-secret endpoint identity exposed to
+// clients. Runtime requests continue to use the authored BaseURL; this copy is
+// only for instance-list UI metadata and must not carry userinfo, query tokens,
+// or fragments across the appwire boundary.
+func sanitizeEndpointURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 // Create adds a new provider instance to the config. It reloads the config

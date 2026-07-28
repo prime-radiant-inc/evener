@@ -147,7 +147,7 @@ func (m hubModel) handleCredentialsAction(msg launchconfig.CredentialsActionMsg)
 		return m, nil
 	case "test":
 		if m.client != nil {
-			return m, launchconfig.CmdAuthTest(m.client, msg.Instance)
+			return m, launchconfig.CmdAuthTest(m.client, msg.Instance, msg.Generation)
 		}
 		return m, nil
 	}

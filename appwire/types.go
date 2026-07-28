@@ -1138,11 +1138,12 @@ type AuthStatusParams struct {
 }
 
 const (
-	AuthTestStatusSuccess         = "success"
-	AuthTestStatusMissing         = "missing"
-	AuthTestStatusAuthRejected    = "auth_rejected"
-	AuthTestStatusEndpointFailure = "endpoint_failure"
-	AuthTestStatusUnsupported     = "unsupported"
+	AuthTestStatusSuccess              = "success"
+	AuthTestStatusMissing              = "missing"
+	AuthTestStatusAuthRejected         = "auth_rejected"
+	AuthTestStatusEndpointFailure      = "endpoint_failure"
+	AuthTestStatusConfigurationFailure = "configuration_failure"
+	AuthTestStatusUnsupported          = "unsupported"
 )
 
 type AuthTestParams struct {

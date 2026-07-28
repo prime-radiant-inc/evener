@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
 import { CredentialsSection } from "./CredentialsSection";
 
@@ -136,7 +136,9 @@ describe("credential verification", () => {
     const testButton = within(row!).getByRole("button", { name: "Test credentials" });
     await userEvent.setup().click(testButton);
 
-    expect((within(row!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(row!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
     expect((within(row!).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
 
@@ -167,8 +169,12 @@ describe("credential verification", () => {
     await user.click(workButton);
     await user.click(workButton);
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(1);
-    expect((within(workRow!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(workRow!).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
 
     await user.click(within(personalRow!).getByRole("button", { name: "Test credentials" }));
     expect(fake.calls.filter((call) => call.method === "serf/auth/test")).toHaveLength(2);
@@ -176,8 +182,12 @@ describe("credential verification", () => {
     workResponse.resolve({ provider: WORK.name, status: "success", message: "Credentials verified." });
     personalResponse.resolve({ provider: PERSONAL.name, status: "success", message: "Credentials verified." });
     await waitFor(() => {
-      expect((within(workRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
-      expect((within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
+      expect((within(workRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+      expect(
+        (within(personalRow!).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
     });
   });
 
@@ -186,6 +196,7 @@ describe("credential verification", () => {
     ["missing", "No credentials are configured for this instance. Add a key or sign in first."],
     ["auth_rejected", "The provider rejected these credentials. Replace the key or sign in again."],
     ["endpoint_failure", "The provider endpoint could not be reached. Check the endpoint and network connection."],
+    ["configuration_failure", "Provider configuration could not be loaded. Check the instance settings."],
     ["unsupported", "This provider does not support harmless credential verification."],
   ] as const)("renders the safe %s status and message", async (status, message) => {
     const fake = connectFakeClient();
@@ -227,8 +238,41 @@ describe("credential verification", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
 
     const status = await screen.findByRole("status");
-    expect(status.textContent).toContain("The provider endpoint could not be reached. Check the endpoint and network connection.");
+    expect(status.textContent).toContain(
+      "The provider endpoint could not be reached. Check the endpoint and network connection.",
+    );
     expect(document.body.textContent).not.toContain(secret);
+  });
+
+  test("resets pending state and ignores a late result after same-name instance refresh", async () => {
+    const fake = connectFakeClient();
+    const oldInstance = instance({ name: "work", type: "anthropic", baseUrl: "https://old.example/v1" });
+    const refreshedInstance = instance({ name: "work", type: "anthropic", baseUrl: "https://new.example/v1" });
+    const response = deferred<AuthTestResponse>();
+    let listCalls = 0;
+    fake.on("serf/instance/list", () => {
+      listCalls += 1;
+      return listCalls === 1
+        ? { instances: [oldInstance], availableTypes: [oldInstance.type] }
+        : { instances: [refreshedInstance], availableTypes: [refreshedInstance.type] };
+    });
+    fake.on("serf/auth/test", () => response.promise);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("base https://old.example/v1");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Test credentials" }));
+    expect(screen.getByRole("button", { name: "Testing credentials…" })).toBeTruthy();
+
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await screen.findByText("base https://new.example/v1");
+    const refreshedButton = screen.getByRole("button", { name: /Test(?:ing credentials…)?/ });
+    expect((refreshedButton as HTMLButtonElement).disabled).toBe(false);
+    response.resolve({ provider: "work", status: "success", message: "Credentials verified." });
+    await act(async () => {
+      await response.promise;
+    });
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
 

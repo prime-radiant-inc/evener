@@ -368,8 +368,9 @@ func TestCredentialsPanel_TestCredentialsActionIsPerInstanceAndRedacted(t *testi
 
 	secret := "provider-secret"
 	resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
-		Provider: "custom / team-east",
-		Response: appwire.AuthTestResponse{Provider: "custom / team-east", Status: appwire.AuthTestStatusAuthRejected, Message: secret},
+		Provider:   "custom / team-east",
+		Generation: pendingModel.(CredentialsPanel).testGeneration,
+		Response:   appwire.AuthTestResponse{Provider: "custom / team-east", Status: appwire.AuthTestStatusAuthRejected, Message: secret},
 	})
 	view := resultModel.(CredentialsPanel).View()
 	collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
@@ -391,6 +392,7 @@ func TestCredentialsPanel_RendersSafeCredentialTestStatuses(t *testing.T) {
 		{name: "missing", status: appwire.AuthTestStatusMissing, want: "No credentials are configured for this instance."},
 		{name: "rejected", status: appwire.AuthTestStatusAuthRejected, want: "The provider rejected these credentials."},
 		{name: "endpoint", status: appwire.AuthTestStatusEndpointFailure, want: "The provider endpoint could not be reached."},
+		{name: "configuration", status: appwire.AuthTestStatusConfigurationFailure, want: "Provider configuration could not be loaded."},
 		{name: "unsupported", status: appwire.AuthTestStatusUnsupported, want: "This provider does not support harmless credential verification."},
 	}
 
@@ -403,8 +405,9 @@ func TestCredentialsPanel_RendersSafeCredentialTestStatuses(t *testing.T) {
 			pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 			secret := "provider-secret-" + tt.name
 			resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
-				Provider: "openai",
-				Response: appwire.AuthTestResponse{Provider: "openai", Status: tt.status, Message: secret},
+				Provider:   "openai",
+				Generation: pendingModel.(CredentialsPanel).testGeneration,
+				Response:   appwire.AuthTestResponse{Provider: "openai", Status: tt.status, Message: secret},
 			})
 			view := resultModel.(CredentialsPanel).View()
 			collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
@@ -426,8 +429,9 @@ func TestCredentialsPanel_RedactsCredentialTestRPCError(t *testing.T) {
 	pendingModel, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	secret := "provider-secret-from-rpc-error"
 	resultModel, _ := pendingModel.(CredentialsPanel).Update(AuthTestResultMsg{
-		Provider: "openai",
-		Err:      errors.New(secret),
+		Provider:   "openai",
+		Generation: pendingModel.(CredentialsPanel).testGeneration,
+		Err:        errors.New(secret),
 	})
 	view := resultModel.(CredentialsPanel).View()
 	collapsed := strings.Join(strings.Fields(strings.ReplaceAll(ansiPattern.ReplaceAllString(view, ""), "│", " ")), " ")
@@ -436,5 +440,34 @@ func TestCredentialsPanel_RedactsCredentialTestRPCError(t *testing.T) {
 	}
 	if strings.Contains(view, secret) {
 		t.Fatalf("RPC error leaked secret:\n%s", view)
+	}
+}
+
+func TestCredentialsPanel_RefreshResetsAndRejectsLateCredentialResult(t *testing.T) {
+	m := NewCredentialsPanel()
+	loaded, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "custom", Type: "openai", BaseURL: "https://old.example/v1"},
+	}}})
+	pending, actionCmd := loaded.(CredentialsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	if actionCmd == nil {
+		t.Fatal("t should produce a credential test action")
+	}
+
+	refreshed, _ := pending.(CredentialsPanel).Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "custom", Type: "openai", BaseURL: "https://new.example/v1"},
+	}}})
+	view := refreshed.(CredentialsPanel).View()
+	if strings.Contains(view, "Testing credentials") || strings.Contains(view, "Credentials verified") {
+		t.Fatalf("refresh should clear old verification state:\n%s", view)
+	}
+
+	late := refreshed.(CredentialsPanel)
+	lateModel, _ := late.Update(AuthTestResultMsg{
+		Provider:   "custom",
+		Generation: pending.(CredentialsPanel).testGeneration,
+		Response:   appwire.AuthTestResponse{Provider: "custom", Status: appwire.AuthTestStatusSuccess, Message: "Credentials verified."},
+	})
+	if strings.Contains(lateModel.(CredentialsPanel).View(), "Credentials verified") {
+		t.Fatal("late result attached to refreshed same-name instance")
 	}
 }

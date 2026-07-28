@@ -6,7 +6,7 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
@@ -39,7 +39,7 @@ type OpenEditor =
   | null;
 
 type PendingConfirm = { kind: "clear" | "remove"; name: string } | null;
-type CredentialTestState = { pending: boolean; result?: AuthTestResponse };
+type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
 export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -53,7 +53,17 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
+  const previousInstances = useRef(instances);
+  const instanceVersion = useRef(0);
+  if (previousInstances.current !== instances) {
+    previousInstances.current = instances;
+    instanceVersion.current += 1;
+  }
   const toast = useToasts();
+
+  useEffect(() => {
+    setCredentialTests({});
+  }, [instances]);
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
   // /credentials can mount this section before AppShell's own connect()
@@ -98,21 +108,29 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   }
 
   async function handleTestCredentials(name: string): Promise<void> {
-    if (credentialTests[name]?.pending) return;
-    setCredentialTests((current) => ({ ...current, [name]: { pending: true } }));
+    const version = instanceVersion.current;
+    if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
+    setCredentialTests((current) => ({ ...current, [name]: { version, pending: true } }));
     try {
       const response = await credentialsStore.getState().testCredentials(name);
       setCredentialTests((current) => ({
         ...current,
-        [name]: { pending: false, result: safeCredentialTestResult(name, response) },
+        ...(current[name]?.version === version && current[name]?.pending
+          ? { [name]: { version, pending: false, result: safeCredentialTestResult(name, response) } }
+          : {}),
       }));
     } catch {
       setCredentialTests((current) => ({
         ...current,
-        [name]: {
-          pending: false,
-          result: safeCredentialTestResult(name, { provider: name, status: "endpoint_failure", message: "" }),
-        },
+        ...(current[name]?.version === version && current[name]?.pending
+          ? {
+              [name]: {
+                version,
+                pending: false,
+                result: safeCredentialTestResult(name, { provider: name, status: "endpoint_failure", message: "" }),
+              },
+            }
+          : {}),
       }));
     }
   }
@@ -185,8 +203,15 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
                       onRemove={() => setPendingConfirm({ kind: "remove", name: instance.name })}
                       onSetDefault={() => void handleSetDefault(instance.name)}
                       onTestCredentials={() => void handleTestCredentials(instance.name)}
-                      testCredentialsPending={credentialTests[instance.name]?.pending ?? false}
-                      testCredentialsResult={credentialTests[instance.name]?.result}
+                      testCredentialsPending={
+                        credentialTests[instance.name]?.version === instanceVersion.current &&
+                        (credentialTests[instance.name]?.pending ?? false)
+                      }
+                      testCredentialsResult={
+                        credentialTests[instance.name]?.version === instanceVersion.current
+                          ? credentialTests[instance.name]?.result
+                          : undefined
+                      }
                     />
                   ))}
                 </ul>

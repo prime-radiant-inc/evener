@@ -17,7 +17,7 @@ func TestCmdAuthTestUsesSharedMethodAndInstanceName(t *testing.T) {
 	client.Start(ctx)
 
 	result := make(chan any, 1)
-	go func() { result <- CmdAuthTest(client, "custom / team-east")() }()
+	go func() { result <- CmdAuthTest(client, "custom / team-east", 7)() }()
 
 	request := <-transport.Sent()
 	if request.Request.Method != appwire.MethodSerfAuthTest {
@@ -38,7 +38,7 @@ func TestCmdAuthTestUsesSharedMethodAndInstanceName(t *testing.T) {
 
 	message := <-result
 	msg, ok := message.(AuthTestResultMsg)
-	if !ok || msg.Err != nil || msg.Response.Status != appwire.AuthTestStatusSuccess {
+	if !ok || msg.Err != nil || msg.Generation != 7 || msg.Response.Status != appwire.AuthTestStatusSuccess {
 		t.Fatalf("result=%T %+v", message, msg)
 	}
 }

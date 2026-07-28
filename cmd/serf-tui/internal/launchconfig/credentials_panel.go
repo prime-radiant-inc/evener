@@ -13,8 +13,9 @@ import (
 // CredentialsActionMsg carries a credential operation for a specific instance.
 // Instance holds the instance name (not the provider type).
 type CredentialsActionMsg struct {
-	Action   string // "set" | "logout" | "oauth" | "test"
-	Instance string
+	Action     string // "set" | "logout" | "oauth" | "test"
+	Instance   string
+	Generation uint64
 }
 
 // panelRow is a flat list entry used internally for rendering and cursor
@@ -45,8 +46,9 @@ type CredentialsPanel struct {
 	formAPIStyle string
 	formBaseURL  string
 
-	testPending map[string]bool
-	testResults map[string]appwire.AuthTestResponse
+	testPending    map[string]bool
+	testResults    map[string]appwire.AuthTestResponse
+	testGeneration uint64
 }
 
 func NewCredentialsPanel() CredentialsPanel {
@@ -118,6 +120,9 @@ func firstSelectableRow(rows []panelRow) int {
 func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case InstanceListResultMsg:
+		p.testGeneration++
+		p.testPending = nil
+		p.testResults = nil
 		p.loading = false
 		p.err = m.Err
 		if m.Err == nil {
@@ -131,6 +136,9 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case AuthTestResultMsg:
+		if m.Generation != p.testGeneration {
+			return p, nil
+		}
 		name := strings.TrimSpace(m.Provider)
 		if name == "" {
 			name = strings.TrimSpace(m.Response.Provider)
@@ -201,7 +209,9 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.testPending[name] = true
 			p.testResults = cloneCredentialTestResults(p.testResults)
 			delete(p.testResults, name)
-			return p, func() tea.Msg { return CredentialsActionMsg{Action: "test", Instance: name} }
+			return p, func() tea.Msg {
+				return CredentialsActionMsg{Action: "test", Instance: name, Generation: p.testGeneration}
+			}
 		case "c":
 			cur := p.selectedInstance()
 			if cur == nil {
@@ -486,11 +496,12 @@ func cloneCredentialTestResults(current map[string]appwire.AuthTestResponse) map
 
 func safeCredentialTestResult(provider string, response appwire.AuthTestResponse) appwire.AuthTestResponse {
 	messages := map[string]string{
-		appwire.AuthTestStatusSuccess:         "Credentials verified.",
-		appwire.AuthTestStatusMissing:         "No credentials are configured for this instance. Add a key or sign in first.",
-		appwire.AuthTestStatusAuthRejected:    "The provider rejected these credentials. Replace the key or sign in again.",
-		appwire.AuthTestStatusEndpointFailure: "The provider endpoint could not be reached. Check the endpoint and network connection.",
-		appwire.AuthTestStatusUnsupported:     "This provider does not support harmless credential verification.",
+		appwire.AuthTestStatusSuccess:              "Credentials verified.",
+		appwire.AuthTestStatusMissing:              "No credentials are configured for this instance. Add a key or sign in first.",
+		appwire.AuthTestStatusAuthRejected:         "The provider rejected these credentials. Replace the key or sign in again.",
+		appwire.AuthTestStatusEndpointFailure:      "The provider endpoint could not be reached. Check the endpoint and network connection.",
+		appwire.AuthTestStatusConfigurationFailure: "Provider configuration could not be loaded. Check the instance settings.",
+		appwire.AuthTestStatusUnsupported:          "This provider does not support harmless credential verification.",
 	}
 	status := response.Status
 	message, ok := messages[status]

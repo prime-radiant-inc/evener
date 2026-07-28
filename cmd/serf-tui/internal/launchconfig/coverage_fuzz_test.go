@@ -161,7 +161,7 @@ func exerciseClientCommands(t *testing.T) {
 		CmdSetLayer(client, "/tmp", "global", appwire.LaunchConfigLayer{}),
 		CmdTrustRepo(client, "/tmp", "hash"), CmdLaunchSchema(client),
 		CmdAuthApiKeySet(client, "openai", "secret"), CmdAuthLogout(client, "openai"),
-		CmdAuthTest(client, "openai"),
+		CmdAuthTest(client, "openai", 1),
 		CmdAuthLoginStart(client, "openai"), CmdAuthLoginComplete(client, "openai", "flow", "http://local"),
 		CmdInstanceList(client), CmdInstanceCreate(client, appwire.InstanceCreateParams{}),
 		CmdInstanceEdit(client, appwire.InstanceEditParams{}), CmdInstanceRemove(client, "x"),

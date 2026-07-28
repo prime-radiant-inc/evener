@@ -16,11 +16,12 @@ import (
 const credentialTestTimeout = 10 * time.Second
 
 const (
-	credentialTestSuccessMessage     = "Credentials verified."
-	credentialTestMissingMessage     = "No credentials are configured for this instance. Add a key or sign in first."
-	credentialTestAuthMessage        = "The provider rejected these credentials. Replace the key or sign in again."
-	credentialTestEndpointMessage    = "The provider endpoint could not be reached. Check the endpoint and network connection."
-	credentialTestUnsupportedMessage = "This provider does not support harmless credential verification."
+	credentialTestSuccessMessage       = "Credentials verified."
+	credentialTestMissingMessage       = "No credentials are configured for this instance. Add a key or sign in first."
+	credentialTestAuthMessage          = "The provider rejected these credentials. Replace the key or sign in again."
+	credentialTestEndpointMessage      = "The provider endpoint could not be reached. Check the endpoint and network connection."
+	credentialTestConfigurationMessage = "Provider configuration could not be loaded. Check the instance settings."
+	credentialTestUnsupportedMessage   = "This provider does not support harmless credential verification."
 )
 
 type credentialProbeClient interface {
@@ -89,7 +90,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 	inst, ok := configuredInstance(cfg, name)
 	if !ok {
 		if err != nil {
-			return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage)
+			return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
 		}
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
@@ -97,7 +98,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, 
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
 	}
 	if err != nil || client == nil {
-		return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage)
+		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
 	}
 	defer func() { _ = client.Close() }()
 
@@ -131,7 +132,13 @@ func credentialRequired(inst providercfg.InstanceConfig) bool {
 }
 
 func (c *hubAuthController) instanceHasEffectiveCredential(name string, inst providercfg.InstanceConfig) bool {
-	if strings.TrimSpace(inst.APIKey) != "" || nonEmptyHeader(inst.Headers) || nonEmptyHeader(inst.CredentialHeaders) {
+	if apiKey, err := providercfg.ResolveAPIKey(inst.APIKey); err == nil && strings.TrimSpace(apiKey) != "" {
+		return true
+	}
+	if hasResolvedCredentialHeader(inst.CredentialHeaders) {
+		return true
+	}
+	if providercfg.CompatFamily(inst.Type, inst.APIStyle) && hasResolvedAuthorizationHeader(inst.Headers) {
 		return true
 	}
 	if string(inst.Type) == "openai" {
@@ -141,11 +148,23 @@ func (c *hubAuthController) instanceHasEffectiveCredential(name string, inst pro
 	return false
 }
 
-func nonEmptyHeader(headers map[string]string) bool {
-	for _, value := range headers {
-		if strings.TrimSpace(value) != "" {
+func hasResolvedCredentialHeader(headers map[string]string) bool {
+	for name, raw := range headers {
+		value, err := providercfg.ResolveHeaderValue(name, raw)
+		if err == nil && strings.TrimSpace(value) != "" {
 			return true
 		}
+	}
+	return false
+}
+
+func hasResolvedAuthorizationHeader(headers map[string]string) bool {
+	for name, raw := range headers {
+		if !strings.EqualFold(name, "Authorization") {
+			continue
+		}
+		value, err := providercfg.ResolveHeaderValue(name, raw)
+		return err == nil && strings.TrimSpace(value) != ""
 	}
 	return false
 }
@@ -154,6 +173,9 @@ func classifyCredentialTestError(err error) (string, string) {
 	var configErr *llm.ConfigurationError
 	if errors.As(err, &configErr) && strings.Contains(strings.ToLower(configErr.Message), "does not support listing models") {
 		return appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage
+	}
+	if errors.As(err, &configErr) {
+		return appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage
 	}
 
 	statusCode := 0

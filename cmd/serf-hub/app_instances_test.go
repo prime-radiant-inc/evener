@@ -8,6 +8,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -562,6 +563,38 @@ type = "anthropic"
 		got := resp.Instances[i]
 		if got.Type != want.typ || got.Name != want.name {
 			t.Errorf("Instances[%d] = %q/%q, want %q/%q", i, got.Type, got.Name, want.typ, want.name)
+		}
+	}
+}
+
+func TestInstances_ListSanitizesEndpointURLBeforeWireExposure(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	content := `schema = 1
+default = "gateway"
+
+[instances.gateway]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://user:password@example.test/v1?access_token=query-secret&x=1#fragment-secret"
+`
+	if err := os.WriteFile(tomlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
+	resp := ctl.List()
+	if len(resp.Instances) != 1 {
+		t.Fatalf("len(Instances)=%d, want 1", len(resp.Instances))
+	}
+	if got := resp.Instances[0].BaseURL; got != "https://example.test/v1" {
+		t.Fatalf("BaseURL=%q, want sanitized endpoint", got)
+	}
+	for _, secret := range []string{"user", "password", "query-secret", "fragment-secret"} {
+		if strings.Contains(resp.Instances[0].BaseURL, secret) {
+			t.Fatalf("BaseURL leaked %q: %q", secret, resp.Instances[0].BaseURL)
 		}
 	}
 }

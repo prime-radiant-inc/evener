@@ -84,6 +84,7 @@ const CREDENTIAL_TEST_MESSAGES: Record<string, string> = {
   missing: "No credentials are configured for this instance. Add a key or sign in first.",
   auth_rejected: "The provider rejected these credentials. Replace the key or sign in again.",
   endpoint_failure: "The provider endpoint could not be reached. Check the endpoint and network connection.",
+  configuration_failure: "Provider configuration could not be loaded. Check the instance settings.",
   unsupported: "This provider does not support harmless credential verification.",
 };
 const ENDPOINT_FAILURE_MESSAGE = "The provider endpoint could not be reached. Check the endpoint and network connection.";

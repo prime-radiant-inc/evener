@@ -78,6 +78,7 @@ func TestAuthTestCredentialsClassifiesProviderOutcomesWithoutSecrets(t *testing.
 		{name: "auth", err: llm.ErrorFromHTTPStatus("custom", 401, secret, nil, nil), status: appwire.AuthTestStatusAuthRejected},
 		{name: "forbidden", err: llm.ErrorFromHTTPStatus("custom", 403, secret, nil, nil), status: appwire.AuthTestStatusAuthRejected},
 		{name: "endpoint", err: errors.New("dial tcp 192.0.2.1:443: connection refused"), status: appwire.AuthTestStatusEndpointFailure},
+		{name: "configuration", err: &llm.ConfigurationError{Message: "invalid provider configuration"}, status: appwire.AuthTestStatusConfigurationFailure},
 		{name: "unsupported", err: &llm.ConfigurationError{Message: "provider custom does not support listing models"}, status: appwire.AuthTestStatusUnsupported},
 	}
 	for _, tc := range cases {
@@ -140,7 +141,7 @@ func TestAuthTestCredentialsReportsMissingWhenClientConstructionSkipsInstance(t 
 	}
 }
 
-func TestAuthTestCredentialsReportsLoaderFailureAsEndpointFailure(t *testing.T) {
+func TestAuthTestCredentialsReportsLoaderFailureAsConfigurationFailure(t *testing.T) {
 	c := newHubAuthControllerWithStore(t.TempDir(), nil)
 	c.credentialTestLoader = func(string) (credentialProbeClient, providercfg.Config, error) {
 		return nil, providercfg.Config{}, errors.New("providers config is unreadable")
@@ -150,8 +151,54 @@ func TestAuthTestCredentialsReportsLoaderFailureAsEndpointFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("TestCredentials: %v", err)
 	}
-	if resp.Status != appwire.AuthTestStatusEndpointFailure {
-		t.Fatalf("status=%q, want endpoint_failure", resp.Status)
+	if resp.Status != "configuration_failure" {
+		t.Fatalf("status=%q, want configuration_failure", resp.Status)
+	}
+	if resp.Message != "Provider configuration could not be loaded. Check the instance settings." {
+		t.Fatalf("message=%q, want fixed configuration message", resp.Message)
+	}
+}
+
+func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(t *testing.T) {
+	client := &credentialProbeFakeClient{}
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:    "anthropic-work",
+		Type:    "anthropic",
+		Headers: map[string]string{"X-Trace": "request-id"},
+	}}}
+	c := newCredentialProbeController(t, client, cfg)
+
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusMissing {
+		t.Fatalf("status=%q, want missing", resp.Status)
+	}
+	if got := client.callCount(); got != 0 {
+		t.Fatalf("probe calls=%d, want 0 for ordinary-header-only instance", got)
+	}
+}
+
+func TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing(t *testing.T) {
+	t.Setenv("SERF_ZR5R_MISSING_API_KEY", "")
+	client := &credentialProbeFakeClient{}
+	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name:   "anthropic-work",
+		Type:   "anthropic",
+		APIKey: "$SERF_ZR5R_MISSING_API_KEY",
+	}}}
+	c := newCredentialProbeController(t, client, cfg)
+
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "anthropic-work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusMissing {
+		t.Fatalf("status=%q, want missing", resp.Status)
+	}
+	if got := client.callCount(); got != 0 {
+		t.Fatalf("probe calls=%d, want 0 for unresolved API key", got)
 	}
 }
 
