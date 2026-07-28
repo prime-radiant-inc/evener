@@ -342,6 +342,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Text:                 turn.Message.Text(),
 			Images:               images,
 			Status:               appwire.TurnStatusCompleted,
+			ClientMutationID:     turn.ClientMutationID,
 		}}
 	case schema.TurnSteering:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
@@ -360,8 +361,9 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			// SteeringSource persists who sent the steering (issue #24):
 			// "user" reaches the web UI so reload renders human-sent
 			// steering as a user message, matching the live path.
-			Source:       turn.SteeringSource,
-			SteeringKind: turn.SteeringKind,
+			Source:           turn.SteeringSource,
+			SteeringKind:     turn.SteeringKind,
+			ClientMutationID: turn.ClientMutationID,
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
@@ -647,7 +649,6 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 	_, err = scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
 		emitPrelude()
 		entryIndex++
-		turnID := fmt.Sprintf("turn_%d", entryIndex)
 		// A malformed entry decodes to neither a projection nor a stamp: skip it
 		// (matching the pre-fix behavior, where a projector's own internal decode
 		// of the same malformed bytes would likewise fail and yield no items)
@@ -655,6 +656,10 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 		entry, decodeErr := transcript.DecodeEntry(raw)
 		if decodeErr != nil {
 			return nil //nolint:nilerr // skip a malformed entry rather than aborting the whole read over one bad line
+		}
+		turnID := fmt.Sprintf("turn_%d", entryIndex)
+		if entry.Turn.StableTurnID != "" {
+			turnID = entry.Turn.StableTurnID
 		}
 		var items []appwire.ThreadItem
 		if project != nil {

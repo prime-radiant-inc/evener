@@ -169,7 +169,7 @@ func newToolDeps(s *Session) *toolDeps {
 		registerTool:    s.cfg.testOnly.registerTool,
 		emit:            s.emit,
 		steer:           s.SteerKind,
-		drainSteering:   s.drainSteeringForTurn,
+		drainSteering:   s.drainSteeringForCommunicate,
 		prependSteering: s.prependSteering,
 		abort:           s.abortIfClosing,
 		resultToolName:  s.resultToolName,

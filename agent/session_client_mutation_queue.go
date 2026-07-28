@@ -479,6 +479,7 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 			RemovedImages: len(queued.Images),
 			Receipt:       mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied),
 		}
+		response.Receipt.ProjectionState = appwire.MutationProjectionRemoved
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -486,7 +487,11 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "canceled")
-		applyClientMutationRecord(record, result)
+		record.OperationState = clientMutationOperationTerminal
+		record.ExecutionState = "canceled"
+		record.ProjectionState = appwire.MutationProjectionRemoved
+		record.Payload = nil
+		record.Result = append(json.RawMessage(nil), result...)
 		return nil
 	})
 	if err != nil {
@@ -676,10 +681,10 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			record := snapshot.Journal[id]
 			if stableTurnID, ok := incorporated[id]; ok && stableTurnID == pending.TurnID {
 				record.ExecutionState = "incorporated"
-				record.ProjectionState = appwire.MutationProjectionRemoved
+				record.ProjectionState = appwire.MutationProjectionReflected
 				if pending.Method == clientMutationMethodQueue {
 					pending.ExecutionState = "incorporated"
-					pending.ProjectionState = appwire.MutationProjectionRemoved
+					pending.ProjectionState = appwire.MutationProjectionReflected
 					snapshot.PendingExecutions[id] = pending
 					snapshot.Journal[id] = record
 				} else {
@@ -747,9 +752,9 @@ func (s *Session) markClaimedQueueTranscriptIncorporated(clientMutationID string
 			return fmt.Errorf("claimed client mutation %q has no journal record", clientMutationID)
 		}
 		record.ExecutionState = "incorporated"
-		record.ProjectionState = appwire.MutationProjectionRemoved
+		record.ProjectionState = appwire.MutationProjectionReflected
 		pending.ExecutionState = "incorporated"
-		pending.ProjectionState = appwire.MutationProjectionRemoved
+		pending.ProjectionState = appwire.MutationProjectionReflected
 		snapshot.Journal[clientMutationID] = record
 		snapshot.PendingExecutions[clientMutationID] = pending
 		return nil
@@ -771,7 +776,7 @@ func (s *Session) finalizeIncorporatedSteering(clientMutationID string) error {
 		record := snapshot.Journal[clientMutationID]
 		record.OperationState = clientMutationOperationTerminal
 		record.ExecutionState = "incorporated"
-		record.ProjectionState = appwire.MutationProjectionRemoved
+		record.ProjectionState = appwire.MutationProjectionReflected
 		record.Payload = nil
 		snapshot.Journal[clientMutationID] = record
 		delete(snapshot.PendingExecutions, clientMutationID)
@@ -795,7 +800,7 @@ func (s *Session) completeClientMutationTurn(clientMutationID string) error {
 		record := snapshot.Journal[clientMutationID]
 		record.OperationState = clientMutationOperationTerminal
 		record.ExecutionState = "terminal"
-		record.ProjectionState = appwire.MutationProjectionRemoved
+		record.ProjectionState = appwire.MutationProjectionReflected
 		record.Payload = nil
 		snapshot.Journal[clientMutationID] = record
 		delete(snapshot.PendingExecutions, clientMutationID)

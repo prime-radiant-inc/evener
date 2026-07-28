@@ -92,6 +92,28 @@ func (s *Session) drainSteeringForTurn() []steeringMessage {
 	return msgs
 }
 
+// drainSteeringForCommunicate returns the steering text delivered in a
+// terminal communicate inbox. Client-authored steering crosses the same
+// durable claim, transcript, and incorporation boundary as every other
+// steering consumer before it becomes visible in that inbox. Daemon steering
+// remains a plain queue drain so communicate can preserve its existing image
+// deferral behavior.
+func (s *Session) drainSteeringForCommunicate() []steeringMessage {
+	pending := s.peekSteeringForTurn()
+	drained := make([]steeringMessage, 0, len(pending))
+	for range pending {
+		msg, ok := s.popSteeringHead()
+		if !ok {
+			break
+		}
+		if msg.ClientMutationID != "" && !s.consumeSteeringMessage(msg) {
+			continue
+		}
+		drained = append(drained, msg)
+	}
+	return drained
+}
+
 // peekSteeringForTurn snapshots the pending steering batch WITHOUT removing it
 // from the queue, folding every message's provenance into the active set
 // UPFRONT — before any message is consumed — exactly as drainSteeringForTurn

@@ -501,7 +501,7 @@ func (s *Session) popQueueHead() queuedInput {
 			reserveClientMutationTurnID(snapshot, &record)
 		}
 		record.ExecutionState = "claimed"
-		record.ProjectionState = appwire.MutationProjectionRemoved
+		record.ProjectionState = appwire.MutationProjectionReflected
 		snapshot.Journal[entry.ClientMutationID] = record
 		snapshot.PendingExecutions[entry.ClientMutationID] = appwire.PendingMutation{
 			ClientMutationID: entry.ClientMutationID,
@@ -510,7 +510,7 @@ func (s *Session) popQueueHead() queuedInput {
 			ExecutionState:   "claimed",
 			TurnID:           record.StableTurnID,
 			QueueEntryIDs:    []string{entry.ID},
-			ProjectionState:  appwire.MutationProjectionRemoved,
+			ProjectionState:  appwire.MutationProjectionReflected,
 		}
 		snapshot.InputQueue = snapshot.InputQueue[1:]
 		snapshot.QueueRevision++
@@ -750,7 +750,7 @@ func (s *Session) injectDrainedSteering() {
 // drive the exact per-message consumption step the production loop uses,
 // rather than reimplementing it, when pinning the crash-window behavior
 // documented above.
-func (s *Session) consumeSteeringMessage(msg steeringMessage) {
+func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source
 	t.SteeringKind = msg.Kind
@@ -761,17 +761,17 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 			_ = s.returnClaimedSteering(msg.ClientMutationID)
 			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			return
+			return false
 		}
 		s.mu.Lock()
 		s.history = append(s.history, t)
 		s.mu.Unlock()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
-			return
+			return true
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-		return
+		return true
 	}
 	s.mu.Lock()
 	s.history = append(s.history, t)
@@ -780,6 +780,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	return true
 }
 
 func (s *Session) returnClaimedSteering(clientMutationID string) error {

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -807,6 +809,72 @@ func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdent
 	assertUserInputEventIdentity(t, sess, params.ClientMutationID, queued.StableTurnID)
 }
 
+func TestClientMutation_QueueReplayStaysReflectedWhileClaimed(t *testing.T) {
+	sess := newTestSession(t)
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "queue-claimed-reflection",
+		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
+	}
+	if _, err := sess.clientMutationQueue(params); err != nil {
+		t.Fatalf("clientMutationQueue: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("claimed mutation ID = %q, want %q", claimed.ClientMutationID, params.ClientMutationID)
+	}
+
+	replayed, err := sess.clientMutationQueue(params)
+	if err != nil {
+		t.Fatalf("replay claimed queue mutation: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionReflected {
+		t.Fatalf("claimed replay receipt = %#v, want replayed/reflected", replayed.Receipt)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
+		t.Fatalf("claimed pending projection = %q, want reflected", got)
+	}
+}
+
+func TestClientMutation_CompletedQueueReplayStaysReflectedByTranscript(t *testing.T) {
+	sess := newTestSession(t)
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "queue-terminal-reflection",
+		Input:            []appwire.InputItem{{Type: "text", Text: "complete me"}},
+	}
+	if _, err := sess.clientMutationQueue(params); err != nil {
+		t.Fatalf("clientMutationQueue: %v", err)
+	}
+	queued := sess.popQueueHead()
+	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), queued), queued.Text, nil, nil, false); err != nil {
+		t.Fatalf("acceptUserInput: %v", err)
+	}
+	if err := sess.completeClientMutationTurn(params.ClientMutationID); err != nil {
+		t.Fatalf("completeClientMutationTurn: %v", err)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	record := snapshot.Journal[params.ClientMutationID]
+	if record.OperationState != clientMutationOperationTerminal ||
+		record.ExecutionState != "terminal" ||
+		record.ProjectionState != appwire.MutationProjectionReflected ||
+		len(record.Payload) != 0 {
+		t.Fatalf("completed queue record = %#v, want compact terminal reflected tombstone", record)
+	}
+	if _, ok := snapshot.PendingExecutions[params.ClientMutationID]; ok {
+		t.Fatal("completed queue mutation remained pending")
+	}
+	replayed, err := sess.clientMutationQueue(params)
+	if err != nil {
+		t.Fatalf("replay completed queue mutation: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionReflected {
+		t.Fatalf("completed queue replay = %#v, want replayed/reflected", replayed.Receipt)
+	}
+}
+
 func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing.T) {
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
@@ -906,6 +974,181 @@ func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing
 	steering := sess.SteeringQueueSnapshot()
 	if len(steering) != 1 || steering[0].Text != "retry steer" {
 		t.Fatalf("runtime steering after append failure = %#v", steering)
+	}
+}
+
+func TestClientMutation_CommunicateEndTurnDurablyConsumesClientSteering(t *testing.T) {
+	sess := newTestSession(t)
+	clientImage := appwire.InputItem{
+		Type:      "image",
+		MediaType: "image/png",
+		Data:      []byte("client-image"),
+		Name:      "client.png",
+	}
+	params := appwire.TurnSteerParams{
+		ClientMutationID: "communicate-steer",
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "client update"},
+			clientImage,
+		},
+	}
+	response, err := sess.clientMutationSteer(params)
+	if err != nil {
+		t.Fatalf("clientMutationSteer: %v", err)
+	}
+	daemonImage := ImageAttachment{MediaType: "image/png", Data: []byte("daemon-image"), Name: "daemon.png"}
+	if !sess.trySteerWithImages("daemon reminder", []ImageAttachment{daemonImage}) {
+		t.Fatal("queue daemon steering")
+	}
+
+	communicate := sess.reg.Get(sess.resultToolName())
+	if communicate == nil {
+		t.Fatal("production communicate tool is not registered")
+	}
+	raw, err := communicate.Exec(context.Background(), nil, map[string]any{
+		"message":  "done",
+		"end_turn": true,
+	})
+	if err != nil {
+		t.Fatalf("communicate(end_turn): %v", err)
+	}
+	var result struct {
+		Inbox []string `json:"inbox"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &result); err != nil {
+		t.Fatalf("decode communicate result: %v", err)
+	}
+	if got, want := result.Inbox, []string{"client update", "daemon reminder"}; !slices.Equal(got, want) {
+		t.Fatalf("communicate inbox = %#v, want %#v", got, want)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	record := snapshot.Journal[params.ClientMutationID]
+	if record.OperationState != clientMutationOperationTerminal ||
+		record.ExecutionState != "incorporated" {
+		t.Fatalf("consumed steering record = (%q,%q), want terminal/incorporated",
+			record.OperationState, record.ExecutionState)
+	}
+	if _, ok := snapshot.PendingExecutions[params.ClientMutationID]; ok {
+		t.Fatal("communicate-consumed steering remained pending")
+	}
+
+	var incorporated int
+	for _, turn := range sess.history {
+		if turn.ClientMutationID != params.ClientMutationID {
+			continue
+		}
+		incorporated++
+		if turn.StableTurnID != response.Receipt.TurnID {
+			t.Fatalf("incorporated stable turn = %q, want %q", turn.StableTurnID, response.Receipt.TurnID)
+		}
+		var images int
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentImage {
+				images++
+			}
+		}
+		if images != 1 {
+			t.Fatalf("incorporated client image count = %d, want 1", images)
+		}
+	}
+	if incorporated != 1 {
+		t.Fatalf("incorporated client steering count = %d, want 1", incorporated)
+	}
+
+	sess.reflectDurableClientSteering()
+	steering := sess.SteeringQueueSnapshot()
+	if len(steering) != 1 ||
+		steering[0].Text != "daemon reminder" ||
+		len(steering[0].Images) != 1 {
+		t.Fatalf("post-reflection steering = %#v, want only deferred daemon image steering", steering)
+	}
+}
+
+func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncorporation(t *testing.T) {
+	for _, operation := range []string{"steer", "drain", "promote"} {
+		t.Run(operation, func(t *testing.T) {
+			sess := newTestSession(t)
+			mutationID := operation + "-incorporated-reflection"
+			var replay func() (appwire.MutationReceipt, error)
+
+			switch operation {
+			case "steer":
+				params := appwire.TurnSteerParams{
+					ClientMutationID: mutationID,
+					Input:            []appwire.InputItem{{Type: "text", Text: "steer text"}},
+				}
+				if _, err := sess.clientMutationSteer(params); err != nil {
+					t.Fatalf("clientMutationSteer: %v", err)
+				}
+				replay = func() (appwire.MutationReceipt, error) {
+					response, err := sess.clientMutationSteer(params)
+					return response.Receipt, err
+				}
+			case "drain":
+				if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+					ClientMutationID: "drain-source",
+					Input:            []appwire.InputItem{{Type: "text", Text: "drain text"}},
+				}); err != nil {
+					t.Fatalf("queue drain source: %v", err)
+				}
+				params := appwire.TurnDrainAsSteerParams{
+					ClientMutationID:      mutationID,
+					ExpectedQueueRevision: sess.clientMutations.snapshot().QueueRevision,
+				}
+				if _, err := sess.clientMutationDrain(params); err != nil {
+					t.Fatalf("clientMutationDrain: %v", err)
+				}
+				replay = func() (appwire.MutationReceipt, error) {
+					response, err := sess.clientMutationDrain(params)
+					return response.Receipt, err
+				}
+			case "promote":
+				queued, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+					ClientMutationID: "promote-source",
+					Input:            []appwire.InputItem{{Type: "text", Text: "promote text"}},
+				})
+				if err != nil {
+					t.Fatalf("queue promote source: %v", err)
+				}
+				params := appwire.TurnPromoteQueuedAsSteerParams{
+					Index:            0,
+					ClientMutationID: mutationID,
+					ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
+				}
+				if _, err := sess.clientMutationPromote(params); err != nil {
+					t.Fatalf("clientMutationPromote: %v", err)
+				}
+				replay = func() (appwire.MutationReceipt, error) {
+					response, err := sess.clientMutationPromote(params)
+					return response.Receipt, err
+				}
+			}
+
+			msg, ok := sess.popSteeringHead()
+			if !ok || msg.ClientMutationID != mutationID {
+				t.Fatalf("claimed steering = %#v, ok=%v", msg, ok)
+			}
+			if !sess.consumeSteeringMessage(msg) {
+				t.Fatal("consumeSteeringMessage did not durably incorporate steering")
+			}
+
+			receipt, err := replay()
+			if err != nil {
+				t.Fatalf("replay incorporated %s mutation: %v", operation, err)
+			}
+			if receipt.Disposition != appwire.MutationDispositionReplayed ||
+				receipt.ProjectionState != appwire.MutationProjectionReflected {
+				t.Fatalf("incorporated %s replay receipt = %#v, want replayed/reflected", operation, receipt)
+			}
+			record := sess.clientMutations.snapshot().Journal[mutationID]
+			if record.OperationState != clientMutationOperationTerminal ||
+				record.ExecutionState != "incorporated" ||
+				record.ProjectionState != appwire.MutationProjectionReflected ||
+				len(record.Payload) != 0 {
+				t.Fatalf("incorporated %s record = %#v, want compact terminal reflected tombstone", operation, record)
+			}
+		})
 	}
 }
 
@@ -1018,6 +1261,62 @@ func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.
 	}
 }
 
+func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
+	sess := newTestSession(t)
+	queued, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: "cancel-operation-source",
+		Input: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Data:      []byte("image-to-cancel"),
+			Name:      "cancel.png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("clientMutationQueue: %v", err)
+	}
+	params := appwire.TurnCancelQueuedParams{
+		Index:            0,
+		ClientMutationID: "cancel-operation",
+		ExpectedEntryID:  queued.Receipt.QueueEntryIDs[0],
+	}
+	initial, err := sess.clientMutationCancel(params)
+	if err != nil {
+		t.Fatalf("clientMutationCancel: %v", err)
+	}
+	if initial.Receipt.Disposition != appwire.MutationDispositionApplied ||
+		initial.Receipt.ProjectionState != appwire.MutationProjectionRemoved ||
+		initial.RemovedImages != 1 {
+		t.Fatalf("initial cancel response = %#v, want applied/removed with one image", initial)
+	}
+
+	record := sess.clientMutations.snapshot().Journal[params.ClientMutationID]
+	if record.OperationState != clientMutationOperationTerminal ||
+		record.ExecutionState != "canceled" ||
+		record.ProjectionState != appwire.MutationProjectionRemoved ||
+		len(record.Payload) != 0 ||
+		record.PayloadHash == "" ||
+		len(record.Result) == 0 {
+		t.Fatalf("cancel operation record = %#v, want compact terminal removed tombstone", record)
+	}
+
+	replayed, err := sess.clientMutationCancel(params)
+	if err != nil {
+		t.Fatalf("replay cancel operation: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionRemoved ||
+		replayed.RemovedImages != 1 {
+		t.Fatalf("replayed cancel response = %#v, want replayed/removed original result", replayed)
+	}
+
+	mismatch := params
+	mismatch.ExpectedEntryID = "different-entry"
+	if _, err := sess.clientMutationCancel(mismatch); !errors.Is(err, errClientMutationMismatch) {
+		t.Fatalf("mismatched compacted cancel error = %v, want %v", err, errClientMutationMismatch)
+	}
+}
+
 func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -1034,6 +1333,10 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 		t.Fatalf("acceptUserInput: %v", err)
 	}
 	stableTurnID := queued.StableTurnID
+	beforeRestart := sess.clientMutations.snapshot()
+	if got := beforeRestart.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
+		t.Fatalf("incorporated projection before restart = %q, want reflected", got)
+	}
 	sess.Close()
 
 	restored := restoreQueuePersistTestSession(t, dir, id)
@@ -1042,6 +1345,17 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 	pending, ok := snapshot.PendingExecutions[params.ClientMutationID]
 	if !ok || pending.ExecutionState != "incorporated" || pending.TurnID != stableTurnID {
 		t.Fatalf("restored runnable turn = %#v, ok=%v", pending, ok)
+	}
+	if pending.ProjectionState != appwire.MutationProjectionReflected {
+		t.Fatalf("restored incorporated projection = %q, want reflected", pending.ProjectionState)
+	}
+	replayed, err := restored.clientMutationQueue(params)
+	if err != nil {
+		t.Fatalf("replay incorporated queue mutation: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionReflected {
+		t.Fatalf("incorporated replay receipt = %#v, want replayed/reflected", replayed.Receipt)
 	}
 	if len(snapshot.InputQueue) != 0 {
 		t.Fatalf("already-incorporated input was requeued: %#v", snapshot.InputQueue)

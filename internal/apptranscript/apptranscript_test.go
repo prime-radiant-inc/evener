@@ -83,6 +83,85 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 }
 
+func TestTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	for _, turn := range []schema.Turn{
+		{
+			Kind:             schema.TurnUserInput,
+			Message:          llm.User("same text"),
+			ClientMutationID: "user-mutation-a",
+			StableTurnID:     "stable-user-a",
+		},
+		{
+			Kind:             schema.TurnUserInput,
+			Message:          llm.User("same text"),
+			ClientMutationID: "user-mutation-b",
+			StableTurnID:     "stable-user-b",
+		},
+		{
+			Kind:             schema.TurnSteering,
+			Message:          llm.User("same text"),
+			ClientMutationID: "steer-mutation-a",
+			StableTurnID:     "stable-steer-a",
+			SteeringSource:   events.SteeringSourceUser,
+		},
+		{
+			Kind:             schema.TurnSteering,
+			Message:          llm.User("same text"),
+			ClientMutationID: "steer-mutation-b",
+			StableTurnID:     "stable-steer-b",
+			SteeringSource:   events.SteeringSourceUser,
+		},
+	} {
+		if err := w.Append(turn); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	turns, err := TurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+	})
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
+	want := []struct {
+		itemType string
+		mutation string
+		turnID   string
+	}{
+		{itemType: "userMessage", mutation: "user-mutation-a", turnID: "stable-user-a"},
+		{itemType: "userMessage", mutation: "user-mutation-b", turnID: "stable-user-b"},
+		{itemType: "steering", mutation: "steer-mutation-a", turnID: "stable-steer-a"},
+		{itemType: "steering", mutation: "steer-mutation-b", turnID: "stable-steer-b"},
+	}
+	if len(turns) != len(want) {
+		t.Fatalf("turn count = %d, want %d: %#v", len(turns), len(want), turns)
+	}
+	for i, expected := range want {
+		if turns[i].ID != expected.turnID {
+			t.Errorf("turn %d ID = %q, want stable ID %q", i, turns[i].ID, expected.turnID)
+		}
+		if len(turns[i].Items) != 1 {
+			t.Fatalf("turn %d item count = %d, want 1", i, len(turns[i].Items))
+		}
+		item := turns[i].Items[0]
+		if item.Type != expected.itemType ||
+			item.Text != "same text" ||
+			item.ClientMutationID != expected.mutation ||
+			item.TurnID != expected.turnID {
+			t.Errorf("turn %d item = %#v, want type=%q text=same text mutation=%q turnID=%q",
+				i, item, expected.itemType, expected.mutation, expected.turnID)
+		}
+	}
+}
+
 // TestTurnsFromFileProjectorReceivesDecodedTurn holds the fix for kata j13r
 // (apptranscript decoded every transcript line twice per read: once for its
 // own Usage/Timestamp/failure stamping, once again inside the caller's
