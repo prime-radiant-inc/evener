@@ -6632,6 +6632,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleAddress := ln.Addr().String()
 	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
@@ -6650,15 +6651,20 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       109,
+		PID:       -1,
+		Address:   staleAddress,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  staleEndpoint,
 		SourceID:  "local",
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := hubcore.NewRoster(runDir, nil)
+	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+	roster := hubcore.NewRoster(runDir, prober)
 	roster.Refresh()
+	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" {
+		t.Fatalf("stale roster entry = %+v, %v; want retained errored tombstone", stale, ok)
+	}
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
 		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -6668,6 +6674,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 			resumeCalled = true
 			entry := rendezvous.Entry{
 				PID:        110,
+				Address:    daemonHTTP.Listener.Addr().String(),
 				Protocol:   appwire.ProtocolVersion,
 				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
 				SourceID:   "local",
@@ -6675,12 +6682,19 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 				SessionID:  sessionID,
 				WorkingDir: workingDir,
 			}
+			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
 			writeRendezvous(t, runDir, entry)
 			roster.Refresh()
 			return entry, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        past,
+		ResumeLocks: hubcore.NewResumeLocks(),
+	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
