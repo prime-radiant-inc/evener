@@ -134,9 +134,10 @@ function reconcileAwaitingFirstFrames(threads: Map<string, ThreadModel>): void {
   if (next.size !== awaiting.size) pendingTurnsStore.setState({ awaitingFirstFrame: next });
 }
 
-// removeEntry drops one entry (its timer, its failure callback, and the
-// store record) - used by both the single-entry failure path and (via
-// resolveMany) the batched reconciliation path.
+// clearBookkeeping retires every private lifecycle record for one id.
+// removeEntry uses it on failure, and release retirement uses it once model
+// authority ends. Echo reconciliation below clears records conditionally so
+// an unresolved perform retains its callback and ref until settlement.
 function clearBookkeeping(id: string): void {
   const timer = timeoutHandles.get(id);
   if (timer !== undefined) clearTimeout(timer);
@@ -172,10 +173,10 @@ function resolveMany(ids: string[]): void {
     const entry = pendingTurnsStore.getState().entries.get(id);
     const awaitingFirstFrame = pendingTurnsStore.getState().awaitingFirstFrame.has(id);
     const performSettled = settledPerformIds.delete(id);
-    // Keep the timer for an unresolved perform: the wire echo only removed
-    // the optimistic chip, not the send lifecycle. A send whose first
-    // authoritative frame already arrived no longer needs that lifecycle;
-    // queue/steer/drain entries still use the timer for their pending chip.
+    // Only settled performs can own confirmation timers, so this cancels a
+    // real timer when performSettled is true. In every unresolved branch the
+    // method/first-frame conditions may request cleanup, but it is necessarily
+    // a no-op because no timer has been armed yet.
     if (performSettled || entry?.method !== "send" || !awaitingFirstFrame) {
       clearTimeoutHandle(id);
     }
