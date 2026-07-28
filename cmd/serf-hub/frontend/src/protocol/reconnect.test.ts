@@ -222,6 +222,45 @@ describe("AppwireClient reconnect", () => {
     expect(sentFrames(socketAt(sockets, 1)).filter((f) => f.method === "ping")).toHaveLength(1);
   });
 
+  test("a socket whose initialize is rejected cannot notify after its replacement is ready", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    let notifications = 0;
+    client.onNotification(() => {
+      notifications += 1;
+    });
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+
+    const rejectedSocket = socketAt(sockets, 1);
+    rejectedSocket.autoInitialize = false;
+    rejectedSocket.open();
+    await flushUntil(() => sentFrames(rejectedSocket).some((frame) => frame.method === "initialize"));
+    const initialize = sentFrames(rejectedSocket).find((frame) => frame.method === "initialize");
+    if (!initialize) throw new Error("expected initialize request on rejected reconnect socket");
+    rejectedSocket.receive({
+      id: initialize.id,
+      error: { code: 503, message: "initialization rejected" },
+    });
+    await flushUntil(() => rejectedSocket.closeRequests.length === 1);
+    expect(rejectedSocket.closeRequests).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * 2);
+    const replacementSocket = socketAt(sockets, 2);
+    replacementSocket.open();
+    await flushUntil(() => client.state === "ready");
+    expect(client.state).toBe("ready");
+
+    rejectedSocket.receive({ method: "thread/started", params: {} });
+    expect(notifications).toBe(0);
+
+    replacementSocket.receive({ method: "thread/started", params: {} });
+    expect(notifications).toBe(1);
+  });
+
   test("a pending request at disconnect is rejected exactly once and is not replayed after reconnect", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
