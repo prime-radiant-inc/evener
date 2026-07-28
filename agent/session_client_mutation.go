@@ -365,6 +365,7 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, clientMutationRejectionError(lookup.Record)
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
+		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(lookup.Record, appwire.MutationDispositionReplayed)
 	}
 	if lookup.Disposition == clientMutationDispositionJoined {
@@ -383,18 +384,41 @@ func (s *Session) InterruptClientMutation(
 	}
 	defer lookup.Lease.Release()
 
-	if cancelAndWait != nil {
+	if cancelAndWait != nil && !s.clientMutations.interruptCallbackCompleted(params.ClientMutationID) {
 		cancelAndWait()
+		current, terminal, err := s.clientMutations.markInterruptCallbackCompleted(lookup.Lease)
+		if err != nil {
+			return appwire.TurnInterruptResponse{}, err
+		}
+		if terminal {
+			s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
+			return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
+		}
 	}
 	current := s.clientMutations.snapshot().Journal[params.ClientMutationID]
 	if current.OperationState == clientMutationOperationTerminal {
+		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
 	}
-	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, _ *clientMutationRecord) error {
-		return finalizeClientMutationInterrupt(snapshot, s.ID())
+	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if err := finalizeClientMutationInterrupt(snapshot, s.ID()); err != nil {
+			return err
+		}
+		terminal, ok := snapshot.Journal[record.ClientMutationID]
+		if !ok {
+			return fmt.Errorf("interrupt mutation %q has no terminal journal record", record.ClientMutationID)
+		}
+		*record = terminal
+		return nil
 	}); err != nil {
+		current := s.clientMutations.snapshot().Journal[params.ClientMutationID]
+		if current.OperationState == clientMutationOperationTerminal {
+			s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
+			return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
+		}
 		return appwire.TurnInterruptResponse{}, err
 	}
+	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 	return interruptResponseFromRecord(
 		s.clientMutations.snapshot().Journal[params.ClientMutationID],
 		appwire.MutationDispositionApplied,
@@ -423,6 +447,22 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	if !ok {
 		return fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
 	}
+	for id, pending := range snapshot.PendingExecutions {
+		if pending.TurnID != fence.ExpectedTurnID {
+			continue
+		}
+		target, ok := snapshot.Journal[id]
+		if !ok {
+			return fmt.Errorf("interrupt target %q has no journal record", id)
+		}
+		target.OperationState = clientMutationOperationTerminal
+		target.ExecutionState = "interrupted"
+		target.ProjectionState = appwire.MutationProjectionReflected
+		target.Payload = nil
+		snapshot.Journal[id] = target
+		delete(snapshot.PendingExecutions, id)
+		delete(snapshot.BudgetReservations, id)
+	}
 	record.StableTurnID = fence.ExpectedTurnID
 	response := appwire.TurnInterruptResponse{
 		Receipt: mutationReceipt(threadID, record, appwire.MutationDispositionApplied),
@@ -450,19 +490,6 @@ func (s *Session) recoverClientMutationInterrupt() error {
 		return nil
 	}
 	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		fence := snapshot.InterruptFence
-		for id, pending := range snapshot.PendingExecutions {
-			if pending.TurnID != fence.ExpectedTurnID {
-				continue
-			}
-			record := snapshot.Journal[id]
-			record.OperationState = clientMutationOperationTerminal
-			record.ExecutionState = "interrupted"
-			record.ProjectionState = appwire.MutationProjectionReflected
-			record.Payload = nil
-			snapshot.Journal[id] = record
-			delete(snapshot.PendingExecutions, id)
-		}
 		return finalizeClientMutationInterrupt(snapshot, s.ID())
 	})
 }
@@ -552,14 +579,15 @@ type clientMutationOwner struct {
 }
 
 type clientMutationStore struct {
-	mu             sync.Mutex
-	fs             afero.Fs
-	stateDir       string
-	sessionID      string
-	state          clientMutationSnapshot
-	owners         map[string]clientMutationOwner
-	nextOwnerToken uint64
-	faults         clientMutationFaults
+	mu                          sync.Mutex
+	fs                          afero.Fs
+	stateDir                    string
+	sessionID                   string
+	state                       clientMutationSnapshot
+	owners                      map[string]clientMutationOwner
+	interruptCallbacksCompleted map[string]struct{}
+	nextOwnerToken              uint64
+	faults                      clientMutationFaults
 }
 
 type clientMutationLease struct {
@@ -594,12 +622,13 @@ func newClientMutationStoreFS(fs afero.Fs, stateDir, sessionID string, faults cl
 		return nil, err
 	}
 	return &clientMutationStore{
-		fs:        fs,
-		stateDir:  stateDir,
-		sessionID: sessionID,
-		state:     state,
-		owners:    make(map[string]clientMutationOwner),
-		faults:    faults,
+		fs:                          fs,
+		stateDir:                    stateDir,
+		sessionID:                   sessionID,
+		state:                       state,
+		owners:                      make(map[string]clientMutationOwner),
+		interruptCallbacksCompleted: make(map[string]struct{}),
+		faults:                      faults,
 	}, nil
 }
 
@@ -864,6 +893,46 @@ func (s *clientMutationStore) update(lease *clientMutationLease, mutate func(*cl
 		return errors.New("client mutation snapshot was not committed")
 	}
 	return nil
+}
+
+func (s *clientMutationStore) interruptCallbackCompleted(clientMutationID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.interruptCallbacksCompleted[clientMutationID]
+	return ok
+}
+
+func (s *clientMutationStore) markInterruptCallbackCompleted(
+	lease *clientMutationLease,
+) (clientMutationRecord, bool, error) {
+	if lease == nil || lease.store != s {
+		return clientMutationRecord{}, false, errClientMutationOwner
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, ok := s.owners[lease.clientMutationID]
+	if !ok || owner.token != lease.token || owner.attemptGeneration != lease.attemptGeneration {
+		return clientMutationRecord{}, false, errClientMutationOwner
+	}
+	record, ok := s.state.Journal[lease.clientMutationID]
+	if !ok || record.AttemptGeneration != lease.attemptGeneration {
+		return clientMutationRecord{}, false, errClientMutationOwner
+	}
+	if record.OperationState == clientMutationOperationTerminal {
+		return cloneClientMutationRecord(record), true, nil
+	}
+	if record.OperationState != clientMutationOperationInFlight {
+		return clientMutationRecord{}, false, errClientMutationOwner
+	}
+	s.interruptCallbacksCompleted[lease.clientMutationID] = struct{}{}
+	return cloneClientMutationRecord(record), false, nil
+}
+
+func (s *clientMutationStore) clearInterruptCallbackCompleted(clientMutationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.interruptCallbacksCompleted, clientMutationID)
 }
 
 func (s *clientMutationStore) snapshot() clientMutationSnapshot {

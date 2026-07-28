@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -1093,6 +1094,9 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 	if len(snapshot.InputQueue) != 0 {
 		t.Fatalf("incompatible queue mutation crossed interrupt fence: %#v", snapshot.InputQueue)
 	}
+	if sess.clientMutations.interruptCallbackCompleted(interrupt.ClientMutationID) {
+		t.Fatal("runner-terminalized interrupt retained its callback completion marker")
+	}
 	replayed, err := lifecycle.InterruptClientMutation(context.Background(), interrupt, func() {
 		t.Fatal("replayed interrupt signaled cancellation again")
 	})
@@ -1247,6 +1251,226 @@ func TestClientMutation_InterruptReservationFaultSameProcessRetryTakesOverAndCan
 	if record.AttemptGeneration != 2 ||
 		record.OperationState != clientMutationOperationTerminal {
 		t.Fatalf("same-process takeover record = %#v", record)
+	}
+}
+
+func TestClientMutation_InterruptAcceptedStartFallbackTerminalizesTargetAtomically(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	start := appwire.TurnStartParams{
+		ClientMutationID: "start-accepted-before-interrupt",
+		Input:            []appwire.InputItem{{Type: "text", Text: "never run this accepted start"}},
+	}
+	started, err := sess.AcceptClientMutationStart(start)
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	interrupt := appwire.TurnInterruptParams{
+		ClientMutationID: "interrupt-accepted-start",
+		ExpectedTurnID:   started.Turn.ID,
+	}
+	cancelCalls := 0
+	response, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
+		cancelCalls++
+	})
+	if err != nil {
+		t.Fatalf("InterruptClientMutation: %v", err)
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("accepted-start cancellation calls = %d, want 1", cancelCalls)
+	}
+	if response.Receipt.TurnID != started.Turn.ID {
+		t.Fatalf("interrupt receipt turn = %q, want %q", response.Receipt.TurnID, started.Turn.ID)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	target := snapshot.Journal[start.ClientMutationID]
+	receipt := snapshot.Journal[interrupt.ClientMutationID]
+	if target.OperationState != clientMutationOperationTerminal ||
+		target.ExecutionState != "interrupted" ||
+		len(target.Payload) != 0 {
+		t.Fatalf("accepted interrupt target = %#v, want compact interrupted terminal", target)
+	}
+	if receipt.OperationState != clientMutationOperationTerminal ||
+		receipt.ExecutionState != "interrupted" {
+		t.Fatalf("accepted interrupt receipt = %#v", receipt)
+	}
+	if _, pending := snapshot.PendingExecutions[start.ClientMutationID]; pending {
+		t.Fatal("successfully interrupted accepted start remained pending")
+	}
+	if _, reserved := snapshot.BudgetReservations[start.ClientMutationID]; reserved {
+		t.Fatal("successfully interrupted accepted start retained its turn budget")
+	}
+	if snapshot.ActiveTurnID != "" || snapshot.InterruptFence != nil {
+		t.Fatalf("accepted interrupt terminal state: active=%q fence=%#v",
+			snapshot.ActiveTurnID, snapshot.InterruptFence)
+	}
+	if sess.clientMutations.interruptCallbackCompleted(interrupt.ClientMutationID) {
+		t.Fatal("accepted interrupt retained its callback completion marker")
+	}
+	if claimed, ok, err := sess.ClaimClientMutationStart(); err != nil || ok {
+		t.Fatalf("interrupted accepted start remained claimable: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+}
+
+func TestClientMutation_InterruptPostSignalEffectFailureDirectRetryDoesNotCancelTwice(t *testing.T) {
+	sess, start, started := newIncorporatedInterruptTestStart(t, "direct")
+	defer sess.Close()
+	interrupt := appwire.TurnInterruptParams{
+		ClientMutationID: "interrupt-post-signal-direct",
+		ExpectedTurnID:   started.Turn.ID,
+	}
+	injected := errors.New("interrupt terminal effect write failed")
+	faulted := false
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		if !faulted {
+			faulted = true
+			return injected
+		}
+		return nil
+	}
+	cancelCalls := 0
+	if _, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
+		cancelCalls++
+	}); !errors.Is(err, injected) {
+		t.Fatalf("first interrupt error = %v, want %v", err, injected)
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("first interrupt cancellation calls = %d, want 1", cancelCalls)
+	}
+	fenced := sess.clientMutations.snapshot()
+	if fenced.InterruptFence == nil ||
+		fenced.Journal[interrupt.ClientMutationID].OperationState != clientMutationOperationInFlight ||
+		fenced.PendingExecutions[start.ClientMutationID].ExecutionState != "incorporated" {
+		t.Fatalf("post-signal failed effect state = %#v", fenced)
+	}
+	if !sess.clientMutations.interruptCallbackCompleted(interrupt.ClientMutationID) {
+		t.Fatal("post-signal failed effect lost its callback completion marker")
+	}
+
+	response, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
+		cancelCalls++
+	})
+	if err != nil {
+		t.Fatalf("direct post-signal takeover: %v", err)
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("direct post-signal takeover cancellation calls = %d, want 1", cancelCalls)
+	}
+	if response.Receipt.TurnID != started.Turn.ID {
+		t.Fatalf("direct takeover receipt = %#v", response)
+	}
+	assertAtomicInterruptedMutation(t, sess, start.ClientMutationID, interrupt.ClientMutationID)
+}
+
+func TestClientMutation_InterruptPostSignalEffectFailureJoinedRetryDoesNotCancelTwice(t *testing.T) {
+	sess, start, started := newIncorporatedInterruptTestStart(t, "joined")
+	defer sess.Close()
+	interrupt := appwire.TurnInterruptParams{
+		ClientMutationID: "interrupt-post-signal-joined",
+		ExpectedTurnID:   started.Turn.ID,
+	}
+	injected := errors.New("joined interrupt terminal effect write failed")
+	faulted := false
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		if !faulted {
+			faulted = true
+			return injected
+		}
+		return nil
+	}
+	var cancelCalls atomic.Int32
+	cancelReturned := make(chan struct{})
+	releaseOwnerWait := make(chan struct{})
+	ownerErr := make(chan error, 1)
+	go func() {
+		_, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
+			cancelCalls.Add(1)
+			close(cancelReturned)
+			<-releaseOwnerWait
+		})
+		ownerErr <- err
+	}()
+	<-cancelReturned
+
+	retryJoined := make(chan struct{})
+	sess.clientMutationInterruptJoined = func() { close(retryJoined) }
+	retryResponse := make(chan appwire.TurnInterruptResponse, 1)
+	retryErr := make(chan error, 1)
+	go func() {
+		response, err := sess.InterruptClientMutation(context.Background(), interrupt, func() {
+			cancelCalls.Add(1)
+		})
+		retryResponse <- response
+		retryErr <- err
+	}()
+	<-retryJoined
+	close(releaseOwnerWait)
+	if err := <-ownerErr; !errors.Is(err, injected) {
+		t.Fatalf("owner interrupt error = %v, want %v", err, injected)
+	}
+	if err := <-retryErr; err != nil {
+		t.Fatalf("joined post-signal takeover: %v", err)
+	}
+	response := <-retryResponse
+	if response.Receipt.TurnID != started.Turn.ID {
+		t.Fatalf("joined takeover receipt = %#v", response)
+	}
+	if got := cancelCalls.Load(); got != 1 {
+		t.Fatalf("joined post-signal takeover cancellation calls = %d, want 1", got)
+	}
+	assertAtomicInterruptedMutation(t, sess, start.ClientMutationID, interrupt.ClientMutationID)
+}
+
+func newIncorporatedInterruptTestStart(
+	t *testing.T,
+	suffix string,
+) (*Session, appwire.TurnStartParams, appwire.TurnStartResponse) {
+	t.Helper()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	start := appwire.TurnStartParams{
+		ClientMutationID: "start-before-post-signal-" + suffix,
+		Input:            []appwire.InputItem{{Type: "text", Text: "interrupt after signal " + suffix}},
+	}
+	started, err := sess.AcceptClientMutationStart(start)
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	claimed, ok, err := sess.ClaimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if err := sess.acceptUserInput(
+		withQueuedClientMutation(context.Background(), claimed),
+		claimed.Text,
+		claimed.Images,
+		nil,
+		false,
+	); err != nil {
+		t.Fatalf("incorporate start: %v", err)
+	}
+	return sess, start, started
+}
+
+func assertAtomicInterruptedMutation(t *testing.T, sess *Session, targetID, interruptID string) {
+	t.Helper()
+	snapshot := sess.clientMutations.snapshot()
+	target := snapshot.Journal[targetID]
+	receipt := snapshot.Journal[interruptID]
+	if target.OperationState != clientMutationOperationTerminal ||
+		target.ExecutionState != "interrupted" ||
+		receipt.OperationState != clientMutationOperationTerminal ||
+		receipt.ExecutionState != "interrupted" ||
+		snapshot.InterruptFence != nil ||
+		snapshot.ActiveTurnID != "" {
+		t.Fatalf("atomic interrupted snapshot: target=%#v receipt=%#v fence=%#v active=%q",
+			target, receipt, snapshot.InterruptFence, snapshot.ActiveTurnID)
+	}
+	if _, pending := snapshot.PendingExecutions[targetID]; pending {
+		t.Fatal("atomically interrupted target remained pending")
+	}
+	if sess.clientMutations.interruptCallbackCompleted(interruptID) {
+		t.Fatal("terminal interrupt retained its callback completion marker")
 	}
 }
 
