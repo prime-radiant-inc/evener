@@ -82,11 +82,11 @@ test("an expanded row has the same stacked grammar - open vs collapsed differs o
   expect(screen.getByTestId("tool-row").textContent).toBe("Running the foo testsnpm test -- src/foo");
 });
 
-test("a purpose-less row is a single line: summary, then the trailing chevron", () => {
+test("a purpose-less row is a single line: summary text with the chevron inline at its end", () => {
   render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
   expect(row.textContent).toBe("npm test");
-  expect(row.lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(screen.getByTestId("tool-row-summary").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("an expandable row renders as a <summary> so it is natively keyboard-operable", () => {
@@ -189,14 +189,26 @@ test("a clean call with nothing to open leads with its summary - no chevron, no 
   expect(screen.getByTestId("tool-row").firstElementChild).toBe(screen.getByTestId("tool-row-summary"));
 });
 
-// The chevron TRAILS (see ToolRow.tsx's grammar): last in document order,
-// pushed to the end of the first line by the purpose's flex-grow and held
-// off the demoted second line by that line's `order: 1` (asserted below).
-test("the chevron trails the row, at the end of its first line", () => {
+// The chevron rides INLINE at the end of the headline text (see ToolRow.tsx's
+// grammar): inside the purpose when there is one, otherwise inside the
+// summary. It is never a flex item of the row, so nothing can justify it a
+// column of whitespace away from the words it opens.
+test("the chevron rides inline at the end of the purpose text when a purpose exists", () => {
+  registerToolRenderer({ match: "trg_chev_inline", summary: () => "Ran ls", body: () => <div>more</div> });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "trg_chev_inline", description: "List the directory" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-purpose").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+});
+
+test("the chevron rides inline at the end of the summary when there is no purpose", () => {
   registerToolRenderer({ match: "trg_chev_trail", summary: () => "Ran ls", body: () => <div>more</div> });
   render(<ToolCallItem item={item({ toolName: "trg_chev_trail" })} turn={turn} live={false} />);
-  const row = screen.getByTestId("tool-row");
-  expect(row.lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(screen.getByTestId("tool-row-summary").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("the failure glyph has a real accessible name, not a bare character", () => {

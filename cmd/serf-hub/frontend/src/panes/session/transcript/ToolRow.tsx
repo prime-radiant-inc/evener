@@ -15,11 +15,12 @@
 //     was tried (tiered density) and reverted on review: two clamped,
 //     truncated fragments read worse than one full line plus one clamped
 //     one.
-//   - the chevron TRAILS, at the end of the first line: the purpose's
-//     flex-grow pushes it to the right edge, and the demoted second line's
-//     `order: 1` keeps it up on the first. (It led, tree-twisty style, for
-//     a while — see git history for the 76rem-measure argument; Jesse
-//     called the trailing placement back in review.)
+//   - the chevron rides INLINE at the end of the headline text - inside the
+//     purpose when there is one, otherwise inside the summary - wrapping with
+//     the words it opens. It is never a flex item of the row: right-justified
+//     at the end of the line it sat a column of whitespace away from its own
+//     rationale (Jesse's review call), the very defect the trailing placement
+//     was supposed to fix;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the purpose is the agent's own stated reason for the call
@@ -98,6 +99,20 @@ export function ToolRow({
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
+  // The chevron rides INLINE at the end of the headline text (see the grammar
+  // above): inside the purpose when there is one, otherwise inside the
+  // summary - never a flex item of the row, so nothing can justify it away
+  // from the words it opens.
+  const chevron = expandable ? (
+    <span
+      className={CLASS.chevron}
+      aria-hidden="true"
+      data-open={expanded ? "true" : "false"}
+      data-testid="tool-row-chevron"
+    >
+      <Chevron />
+    </span>
+  ) : null;
   const content = (
     <>
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.
@@ -115,6 +130,7 @@ export function ToolRow({
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
           {statedPurpose}
+          {chevron}
         </span>
       )}
       {hasSummary && (
@@ -134,22 +150,11 @@ export function ToolRow({
               {duration}
             </span>
           )}
+          {!hasPurpose && chevron}
         </span>
       )}
+      {!hasPurpose && !hasSummary && chevron}
       {trailing}
-      {/* The chevron TRAILS (see the grammar above): last in document order,
-          pushed to the end of the first line by the purpose's flex-grow, and
-          held off the demoted second line by that line's `order: 1`. */}
-      {expandable && (
-        <span
-          className={CLASS.chevron}
-          aria-hidden="true"
-          data-open={expanded ? "true" : "false"}
-          data-testid="tool-row-chevron"
-        >
-          <Chevron />
-        </span>
-      )}
     </>
   );
 

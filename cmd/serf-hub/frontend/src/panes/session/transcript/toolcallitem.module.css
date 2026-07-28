@@ -115,24 +115,23 @@ summary.row:focus-visible {
   color: var(--ink-mid);
 }
 
-/* The disclosure affordance, TRAILING the row at the end of its first line
- * (see ToolRow.tsx's grammar). Same rotates-90°-when-open idiom as
- * widgets/disclosure, now turning the shared widgets/chevron icon: square,
- * so the rotation cannot widen its painted box. The old `▸` glyph's box was
- * its line box - 6x18 at caption size - and a 6x18 box turned 90° paints
- * 18px wide, overhanging its own layout box by 6px on each side. Against
- * the right edge of the turn's reading measure that overhang escaped the
- * row, and the transcript's scroll containers turned it into a horizontal
- * scrollbar across the whole pane. `npm run overflowguard` measures this;
- * it fails if the glyph comes back.
+/* The disclosure affordance, riding INLINE at the end of the headline text
+ * (see ToolRow.tsx's grammar): the span is an inline-level box in the text
+ * flow, not a flex item of the row, so it follows the last word wherever the
+ * wrap lands and nothing can justify it away from its own line. Same
+ * rotates-90°-when-open idiom as widgets/disclosure, turning the shared
+ * widgets/chevron icon: square, so the rotation cannot widen its painted
+ * box. The old `▸` glyph's box was its line box - 6x18 at caption size -
+ * and a 6x18 box turned 90° paints 18px wide, overhanging its own layout
+ * box by 6px on each side. Against the right edge of the turn's reading
+ * measure that overhang escaped the row, and the transcript's scroll
+ * containers turned it into a horizontal scrollbar across the whole pane.
+ * `npm run overflowguard` measures this; it fails if the glyph comes back.
  *
- * The same trap, one level up: THIS span is 1lh tall (the first-line
- * alignment below) and so NOT square - turning the span paints it 1lh wide,
- * ~3.5px past its 14px layout box on each side. Leading, that overhang was
- * invisible (it painted into the pane's own padding); trailing, it escapes
- * the row's right edge and overflowguard fails. So the open-state rotation
- * turns the SQUARE svg inside (a square rotates within its own bounds) and
- * never the span.
+ * The rotation turns the SQUARE svg, never a wrapper: any wrapper taller
+ * than it is wide (this span used to be 1lh tall for first-line pinning)
+ * would paint past its own layout box when turned - the same escape one
+ * level up.
  *
  * --ink-mid: this is the row's one visible cue that there is more to see, not
  * a placeholder/disabled/timestamp (--ink-low's actual job, tokens.css).
@@ -140,17 +139,14 @@ summary.row:focus-visible {
  * correctness specifically flagged the old text triangle as easy to miss when
  * deciding whether a collapsed edit had more to inspect - hence the icon.
  *
- * Alignment: the icon carries no text, so the row's own `align-items:
- * baseline` would seat its bottom edge on the type's baseline and leave it
- * riding high; centring it against the whole item floats it into the middle of
- * a wrapped three-line block. It belongs on the FIRST line - hence a box
- * exactly one line tall, pinned to the top, with the icon centred inside it. */
+ * vertical-align splits the difference between the icon's 14px box and the
+ * text line's height: `middle` seats it on the x-height centre rather than
+ * the baseline, which reads level beside both the purpose's sans and the
+ * summary's mono. */
 .chevron {
-  flex: none;
   display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  height: 1lh;
+  vertical-align: middle;
+  margin-left: var(--space-2);
   color: var(--ink-mid);
 }
 
