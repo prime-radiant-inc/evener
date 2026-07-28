@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -392,6 +393,274 @@ func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
 	}
 	if !conn.server.subs.IsSubscribed(conn.ID(), "th_new") {
 		t.Fatal("connection was not subscribed to new thread")
+	}
+}
+
+func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-snapshot")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	var projectedMu sync.Mutex
+	projectedText := ""
+	notifier := NewNotifier(10)
+	snapshotCloneEntered := make(chan struct{})
+	releaseSnapshotClone := make(chan struct{})
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				close(snapshotCloneEntered)
+				<-releaseSnapshotClone
+				projectedMu.Lock()
+				defer projectedMu.Unlock()
+				response = snapshotResponse{Text: projectedText}
+				return true
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}),
+		)
+	}()
+	<-snapshotCloneEntered
+
+	eventStarted := make(chan struct{})
+	eventCommitted := make(chan struct{})
+	go func() {
+		close(eventStarted)
+		server.CommitProjection(func() []SequencedNotification {
+			projectedMu.Lock()
+			projectedText += "delta"
+			projectedMu.Unlock()
+			record := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"})
+			return []SequencedNotification{record}
+		})
+		close(eventCommitted)
+	}()
+	<-eventStarted
+	close(releaseSnapshotClone)
+	<-eventCommitted
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+
+	conn.closeSend()
+	var messages []appwire.Message
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	combined := ""
+	for _, msg := range messages {
+		switch {
+		case msg.Response != nil:
+			got, ok := msg.Response.Result.(snapshotResponse)
+			if !ok {
+				t.Fatalf("snapshot result = %T, want snapshotResponse", msg.Response.Result)
+			}
+			combined += got.Text
+		case msg.Notification != nil:
+			var params appwire.AgentMessageDeltaParams
+			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
+				t.Fatalf("decode delta: %v", err)
+			}
+			combined += params.Delta
+		default:
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	}
+	if combined != "delta" {
+		t.Fatalf("snapshot plus released deltas = %q, want one append-only delta", combined)
+	}
+}
+
+func TestAtomicRejoinBeforeSubscriberInsertionIncludesDeltaOnceInSnapshot(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-before-insert")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	var projectedText string
+	notifier := NewNotifier(10)
+	beforeSubscriberInsertion := make(chan struct{})
+	releaseSubscriberInsertion := make(chan struct{})
+	server.beforeSubscriptionRegistration = func() {
+		close(beforeSubscriberInsertion)
+		<-releaseSubscriberInsertion
+	}
+	HandleTyped(server.Router(), "test/before-insert", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				response.Text = projectedText
+				return true
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/before-insert", struct{}{}),
+		)
+	}()
+	<-beforeSubscriberInsertion
+
+	server.CommitProjection(func() []SequencedNotification {
+		projectedText += "delta"
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"}),
+		}
+	})
+	close(releaseSubscriberInsertion)
+
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	conn.closeSend()
+	messages := make([]appwire.Message, 0)
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	if len(messages) != 1 || messages[0].Response == nil {
+		t.Fatalf("delivery = %+v, want snapshot response only", messages)
+	}
+	got, ok := messages[0].Response.Result.(snapshotResponse)
+	if !ok {
+		t.Fatalf("snapshot result = %T, want snapshotResponse", messages[0].Response.Result)
+	}
+	if got.Text != "delta" {
+		t.Fatalf("snapshot text = %q, want append-only delta once", got.Text)
+	}
+}
+
+func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
+	subscriptions := NewSubscriptions()
+	subscriptions.BeginBuffered("conn", "th_1", false, 7)
+	for seq := uint64(1); seq <= 2; seq++ {
+		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	if !subscriptions.SetCut("conn", "th_1", 7, 2) {
+		t.Fatal("set snapshot cut failed")
+	}
+	for seq := uint64(3); seq <= 4; seq++ {
+		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	records, ok := subscriptions.Release("conn", "th_1", 7)
+	if !ok {
+		t.Fatal("release snapshot generation failed")
+	}
+	if len(records) != 2 || records[0].Seq != 3 || records[1].Seq != 4 {
+		t.Fatalf("released sequences = %#v, want [3 4] in producer order", records)
+	}
+}
+
+func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-replace")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_old")
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	notifier := NewNotifier(10)
+	var projectedMu sync.Mutex
+	projectedText := ""
+	snapshotCloneEntered := make(chan struct{})
+	releaseSnapshotClone := make(chan struct{})
+	HandleTyped(server.Router(), "test/replace-snapshot", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			true,
+			func() string { return "th_new" },
+			notifier.CurrentSequence,
+			func() bool {
+				close(snapshotCloneEntered)
+				<-releaseSnapshotClone
+				projectedMu.Lock()
+				defer projectedMu.Unlock()
+				response.Text = projectedText
+				return true
+			},
+		) {
+			t.Fatal("replacement snapshot was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/replace-snapshot", struct{}{}),
+		)
+	}()
+	<-snapshotCloneEntered
+
+	eventStarted := make(chan struct{})
+	eventCommitted := make(chan struct{})
+	go func() {
+		close(eventStarted)
+		server.CommitProjection(func() []SequencedNotification {
+			projectedMu.Lock()
+			projectedText += "new"
+			projectedMu.Unlock()
+			return []SequencedNotification{
+				notifier.Record("th_new", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "new"}),
+			}
+		})
+		close(eventCommitted)
+	}()
+	<-eventStarted
+	close(releaseSnapshotClone)
+	<-eventCommitted
+
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+
+	conn.closeSend()
+	var messages []appwire.Message
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	if len(messages) != 2 || messages[0].Response == nil || messages[1].Notification == nil {
+		t.Fatalf("replacement delivery = %+v, want response then post-cut notification", messages)
+	}
+	if server.subs.IsSubscribed(conn.ID(), "th_old") || !server.subs.IsSubscribed(conn.ID(), "th_new") {
+		t.Fatalf("replacement ownership: old=%v new=%v", server.subs.IsSubscribed(conn.ID(), "th_old"), server.subs.IsSubscribed(conn.ID(), "th_new"))
 	}
 }
 

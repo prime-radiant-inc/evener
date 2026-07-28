@@ -51,6 +51,12 @@ func (n *Notifier) Record(threadID, method string, params any) SequencedNotifica
 	return record
 }
 
+func (n *Notifier) CurrentSequence() uint64 {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.nextSeq
+}
+
 func (n *Notifier) ReplayAfter(cursor uint64, threadID string) []SequencedNotification {
 	n.mu.RLock()
 	defer n.mu.RUnlock()

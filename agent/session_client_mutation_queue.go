@@ -29,6 +29,58 @@ type clientMutationTranscriptItems struct {
 	Failure      bool
 }
 
+// ClientMutationProjection returns the reconstructible retry-safe queue and
+// pending-input view from one durable mutation-store generation.
+func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
+	if s == nil || s.clientMutations == nil {
+		return appwire.QueueState{}, nil
+	}
+	snapshot := s.clientMutations.snapshot()
+	queue := appwire.QueueState{
+		Depth:    len(snapshot.InputQueue),
+		Revision: snapshot.QueueRevision,
+	}
+	if len(snapshot.InputQueue) > 0 {
+		queue.Preview = make([]string, len(snapshot.InputQueue))
+		queue.IDs = make([]string, len(snapshot.InputQueue))
+		queue.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
+		queue.Texts = make([]string, len(snapshot.InputQueue))
+	}
+	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
+	for id, pending := range snapshot.PendingExecutions {
+		pending.Input = cloneClientMutationInput(pending.Input)
+		pending.QueueEntryIDs = append([]string(nil), pending.QueueEntryIDs...)
+		pendingByID[id] = pending
+	}
+	for i, entry := range snapshot.InputQueue {
+		queued := queuedInputFromClientMutation(entry)
+		queue.Preview[i] = queuedEntryPreviewLine(queued)
+		queue.IDs[i] = entry.ID
+		queue.ClientMutationIDs[i] = entry.ClientMutationID
+		queue.Texts[i] = queued.Text
+		if _, exists := pendingByID[entry.ClientMutationID]; exists {
+			continue
+		}
+		record := snapshot.Journal[entry.ClientMutationID]
+		pendingByID[entry.ClientMutationID] = appwire.PendingMutation{
+			ClientMutationID: entry.ClientMutationID,
+			Method:           record.Method,
+			Input:            cloneClientMutationInput(entry.Input),
+			ExecutionState:   record.ExecutionState,
+			QueueEntryIDs:    []string{entry.ID},
+			ProjectionState:  record.ProjectionState,
+		}
+	}
+	pending := make([]appwire.PendingMutation, 0, len(pendingByID))
+	for _, mutation := range pendingByID {
+		pending = append(pending, mutation)
+	}
+	slices.SortFunc(pending, func(a, b appwire.PendingMutation) int {
+		return strings.Compare(a.ClientMutationID, b.ClientMutationID)
+	})
+	return queue, pending
+}
+
 func (s *Session) ensureClientMutationStore() error {
 	s.clientMutationsInitMu.Lock()
 	defer s.clientMutationsInitMu.Unlock()

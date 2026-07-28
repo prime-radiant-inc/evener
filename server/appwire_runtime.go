@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"maps"
 	"os"
 	"path/filepath"
@@ -28,16 +29,19 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 		sourceID = "local"
 	}
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
-	s.mu.Lock()
-	s.appSourceID = sourceID
-	s.appThreadID = threadID
-	s.appIdentityGeneration++
-	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
-	s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
-	s.appActiveTurnID = ""
-	s.appReservedTurnID = ""
-	s.appLastStampedFailedToolCalls = nil
-	s.mu.Unlock()
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		s.appSourceID = sourceID
+		s.appThreadID = threadID
+		s.appIdentityGeneration++
+		s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
+		s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
+		s.appActiveTurnID = ""
+		s.appReservedTurnID = ""
+		s.appLastStampedFailedToolCalls = nil
+		s.mu.Unlock()
+		return nil
+	})
 }
 
 func (s *Server) SetTranscriptPathFunc(fn func() string) {
@@ -51,24 +55,67 @@ func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserv
 }
 
 func (s *Server) RecordAppEvent(event events.SessionEvent) {
-	s.mu.Lock()
-	if !s.acceptsSessionEventLocked(event.SessionID) {
+	s.mu.RLock()
+	beforeCommit := s.beforeAppProjectionCommit
+	s.mu.RUnlock()
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		var committed []appserver.SequencedNotification
+		s.mu.Lock()
+		if !s.acceptsSessionEventLocked(event.SessionID) {
+			s.mu.Unlock()
+			return nil
+		}
+		s.ensureAppProjectorLocked(event.SessionID)
+		projected := s.appProjector.Project(event)
+		snapshot := s.appTurns
+		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+		threadID := s.appThreadID
+		if threadID == "" {
+			threadID = event.SessionID
+		}
+		if threadID == "" {
+			threadID = s.status.SessionID
+		}
+		sourceID := s.appSourceID
+		if sourceID == "" {
+			sourceID = "local"
+		}
+		ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 		s.mu.Unlock()
-		return
-	}
-	s.ensureAppProjectorLocked(event.SessionID)
-	projected := s.appProjector.Project(event)
-	snapshot := s.appTurns
-	s.appActiveTurnID = s.appProjector.ActiveTurnID()
-	s.mu.Unlock()
 
-	for _, item := range projected {
-		params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
-		params = s.stampFailureCountOnItemCompleted(item.Method, params)
-		record := s.appNotifier.Record(item.ThreadID, item.Method, params)
-		snapshot.Apply([]appserver.SequencedNotification{record})
-		s.appServer.Broadcast(item.ThreadID, item.Method, params)
+		for _, item := range projected {
+			params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
+			params = s.stampFailureCountOnItemCompleted(item.Method, params)
+			params = stampAppNotificationTarget(params, threadID, ref)
+			record := s.appNotifier.Record(threadID, item.Method, params)
+			snapshot.Apply([]appserver.SequencedNotification{record})
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+func stampAppNotificationTarget(params any, threadID, ref string) any {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return params
 	}
+	fields := map[string]json.RawMessage{}
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return params
+		}
+	}
+	fields["threadId"], _ = json.Marshal(threadID)
+	fields["ref"], _ = json.Marshal(ref)
+	qualified, err := json.Marshal(fields)
+	if err != nil {
+		return params
+	}
+	return json.RawMessage(qualified)
 }
 
 // stampFailureCountOnStatusChange rides the session's running failure count
@@ -220,10 +267,32 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 }
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	thread := s.appThread()
-	if params.Subscribe {
-		appserver.Subscribe(ctx, thread.ID)
+	if !params.Subscribe {
+		return s.appThreadReadSnapshot(params)
 	}
+	var response appwire.ThreadReadResponse
+	var readErr error
+	captured := appserver.CaptureSubscription(
+		ctx,
+		params.ReplaceSubscription,
+		s.appProjectionThreadID,
+		s.appNotifier.CurrentSequence,
+		func() bool {
+			response, readErr = s.appThreadReadSnapshot(params)
+			return readErr == nil
+		},
+	)
+	if readErr != nil {
+		return appwire.ThreadReadResponse{}, readErr
+	}
+	if !captured {
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+	}
+	return response, nil
+}
+
+func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	thread := s.appThread()
 	var olderCursor string
 	if params.IncludeTurns {
 		var err error
@@ -239,6 +308,15 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		}
 	}
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, nil
+}
+
+func (s *Server) appProjectionThreadID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.appThreadID != "" {
+		return s.appThreadID
+	}
+	return s.status.SessionID
 }
 
 // appAllTurns materializes the full ordered turn list (oldest-first), choosing
@@ -783,6 +861,7 @@ func (s *Server) appThread() appwire.Thread {
 	qdfn := s.queueDepthFn
 	qifn := s.queueIDsFn
 	qtfn := s.queueTextsFn
+	cmpfn := s.clientMutationProjectionFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	ftcfn := s.failedToolCallsFn
@@ -819,27 +898,32 @@ func (s *Server) appThread() appwire.Thread {
 		diagnostics = appDiagnosticsFromDetailedStatus(ds)
 	}
 	queue := appwire.QueueState{}
-	if qpfn != nil {
-		if preview := qpfn(); len(preview) > 0 {
-			queue.Preview = append([]string(nil), preview...)
-			queue.Depth = len(preview)
+	var pendingMutations []appwire.PendingMutation
+	if cmpfn != nil {
+		queue, pendingMutations = cmpfn()
+	} else {
+		if qpfn != nil {
+			if preview := qpfn(); len(preview) > 0 {
+				queue.Preview = append([]string(nil), preview...)
+				queue.Depth = len(preview)
+			}
 		}
-	}
-	if qifn != nil && queue.Depth > 0 {
-		if ids := qifn(); len(ids) == queue.Depth {
-			queue.IDs = append([]string(nil), ids...)
+		if qifn != nil && queue.Depth > 0 {
+			if ids := qifn(); len(ids) == queue.Depth {
+				queue.IDs = append([]string(nil), ids...)
+			}
 		}
-	}
-	if qtfn != nil && queue.Depth > 0 {
-		if texts := qtfn(); len(texts) == queue.Depth {
-			queue.Texts = append([]string(nil), texts...)
+		if qtfn != nil && queue.Depth > 0 {
+			if texts := qtfn(); len(texts) == queue.Depth {
+				queue.Texts = append([]string(nil), texts...)
+			}
 		}
-	}
-	// Fall back to depthFn when preview isn't wired (some tests stub only
-	// the depth callback). Without this we'd silently drop authoritative
-	// depth information.
-	if queue.Depth == 0 && qdfn != nil {
-		queue.Depth = qdfn()
+		// Fall back to depthFn when preview isn't wired (some tests stub only
+		// the depth callback). Without this we'd silently drop authoritative
+		// depth information.
+		if queue.Depth == 0 && qdfn != nil {
+			queue.Depth = qdfn()
+		}
 	}
 	var goalState *appwire.GoalState
 	if gsfn != nil {
@@ -918,6 +1002,7 @@ func (s *Server) appThread() appwire.Thread {
 			Capabilities:          s.appCapabilities(status.State, processing),
 			Diagnostics:           diagnostics,
 			Queue:                 queue,
+			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
 			Usage:                 usage,

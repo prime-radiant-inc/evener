@@ -75,6 +75,7 @@ type serveServer interface {
 	SetQueueDepthFunc(func() int)
 	SetQueuePreviewFunc(func() []string)
 	SetQueueTextsFunc(func() []string)
+	SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation))
 	SetContextPressureFunc(func() float64)
 	SetContextMetricsFunc(func() server.ContextMetrics)
 	SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64))
@@ -613,6 +614,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
 	srv.SetQueueIDsFunc(func() []string { return getSession().QueueIDs() })
 	srv.SetQueueTextsFunc(func() []string { return getSession().QueueTexts() })
+	srv.SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation) {
+		return getSession().ClientMutationProjection()
+	})
 	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
 	srv.SetContextMetricsFunc(func() server.ContextMetrics {
 		metrics := getSession().ContextMetrics()

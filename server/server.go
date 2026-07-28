@@ -176,15 +176,16 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                    sync.RWMutex
-	status                StatusInfo
-	appSourceID           string
-	appThreadID           string
-	appIdentityGeneration uint64
-	appProjector          *appprojector.AppEventProjector
-	appTurns              *appTurnSnapshot
-	appActiveTurnID       string
-	appReservedTurnID     string
+	mu                        sync.RWMutex
+	status                    StatusInfo
+	appSourceID               string
+	appThreadID               string
+	appIdentityGeneration     uint64
+	appProjector              *appprojector.AppEventProjector
+	appTurns                  *appTurnSnapshot
+	appActiveTurnID           string
+	appReservedTurnID         string
+	beforeAppProjectionCommit func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -213,6 +214,7 @@ type Server struct {
 	queueIDsFn                    func() []string
 	queuePreviewFn                func() []string
 	queueTextsFn                  func() []string
+	clientMutationProjectionFn    func() (appwire.QueueState, []appwire.PendingMutation)
 	compactFunc                   func(context.Context) error
 	clearFunc                     func(context.Context) error
 	pressureFn                    func() float64
@@ -524,6 +526,15 @@ func (s *Server) SetQueueIDsFunc(fn func() []string) {
 func (s *Server) SetQueueTextsFunc(fn func() []string) {
 	s.mu.Lock()
 	s.queueTextsFn = fn
+	s.mu.Unlock()
+}
+
+// SetClientMutationProjectionFunc installs the durable retry-safe mutation
+// snapshot used by thread/read. Queue revision and pending mutations must come
+// from one store generation.
+func (s *Server) SetClientMutationProjectionFunc(fn func() (appwire.QueueState, []appwire.PendingMutation)) {
+	s.mu.Lock()
+	s.clientMutationProjectionFn = fn
 	s.mu.Unlock()
 }
 
