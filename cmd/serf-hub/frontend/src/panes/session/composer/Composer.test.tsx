@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -12,9 +12,10 @@ import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
+import { PENDING_TIMEOUT_MS, usePendingTurnEntries } from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -163,6 +164,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function textarea(): HTMLTextAreaElement {
@@ -523,6 +525,62 @@ test("a failed send leaves the textarea text untouched and surfaces a toast", as
 
   await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
   expect(textarea().value).toBe("hello");
+});
+
+test("a cold send still awaiting turn/start after ten seconds remains optimistic and reports only its later exact rejection", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  let rejectStart: ((error: unknown) => void) | undefined;
+  const fake = await mountComposer("ref_a");
+  fake.on(
+    "turn/start",
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectStart = reject;
+      }),
+  );
+  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+  await user.type(textarea(), "hello");
+  await user.click(submitButton());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+  });
+
+  expect(result.current).toHaveLength(1);
+  expect(textarea().value).toBe("hello");
+  expect(getToasts()).toHaveLength(0);
+
+  const failure = new Error("resume rendezvous failed");
+  await act(async () => {
+    rejectStart?.(failure);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(result.current).toHaveLength(0);
+  expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
+    { kind: "error", text: "Send failed: resume rendezvous failed" },
+  ]);
+});
+
+test("a successful send without an echo reports an accepted-but-stale warning after a full confirmation window", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+
+  await user.type(textarea(), "hello");
+  await user.click(submitButton());
+  expect(getToasts()).toHaveLength(0);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+  });
+  expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
+    {
+      kind: "warning",
+      text: "Send was accepted, but this view didn't update. Reload before retrying.",
+    },
+  ]);
 });
 
 test("active session with queue capability: Send routes to turn/queue", async () => {

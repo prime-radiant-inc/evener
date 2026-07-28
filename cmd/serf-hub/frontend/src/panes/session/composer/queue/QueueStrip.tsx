@@ -14,7 +14,11 @@ import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { submitWithPendingTracking, usePendingTurnEntries } from "./pendingTurnsStore";
+import {
+  isPendingConfirmationTimeoutError,
+  submitWithPendingTracking,
+  usePendingTurnEntries,
+} from "./pendingTurnsStore";
 import { queueEntryPreviewText, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
@@ -227,12 +231,13 @@ export function QueueStrip({
           // never a launch failure, and its label records a step that already
           // succeeded - the resume must not take it over and drop "Queued".
           onFailure: (err) => {
-            toasts.push(
-              "error",
-              isQueuedDrainPartial(err)
-                ? `Queued, but drain failed: ${errorText(err)}`
-                : sessionActionError("Drain failed", err),
-            );
+            if (isPendingConfirmationTimeoutError(err)) {
+              toasts.push("warning", "Drain was accepted, but this view didn't update. Reload before retrying.");
+            } else if (isQueuedDrainPartial(err)) {
+              toasts.push("error", `Queued, but drain failed: ${errorText(err)}`);
+            } else {
+              toasts.push("error", sessionActionError("Drain failed", err));
+            }
           },
         },
         () => threadsStore.getState().drainAsSteer(sessionRef, text, attachments),

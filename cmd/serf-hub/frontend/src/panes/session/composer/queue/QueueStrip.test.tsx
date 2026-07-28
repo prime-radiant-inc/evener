@@ -8,8 +8,8 @@ import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../..
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
-import { resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { PENDING_TIMEOUT_MS, resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -116,6 +116,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("visibility", () => {
@@ -669,6 +670,36 @@ describe("drain-as-steer affordance", () => {
     });
 
     await screen.findByText(/drain failed.*network unreachable/i);
+  });
+
+  test("a successful drain without an echo reports an accepted-but-stale warning after a full confirmation window", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    fake.on("turn/drainAsSteer", () => ({}));
+    renderStrip(defaultProps());
+    vi.useFakeTimers();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(getToasts()).toHaveLength(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
+    });
+    expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
+      {
+        kind: "warning",
+        text: "Drain was accepted, but this view didn't update. Reload before retrying.",
+      },
+    ]);
   });
 
   // Mirrors Composer.tsx's own submit-time guard (handleFormSubmit/

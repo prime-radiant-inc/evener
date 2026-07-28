@@ -53,6 +53,7 @@ import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
+import { isPendingConfirmationTimeoutError } from "./queue/pendingTurnsStore";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -472,7 +473,11 @@ export function Composer({ ref }: ComposerProps) {
           text: submittedText,
           attachments: payload,
           onFailure: (err) => {
-            if (kind === "drain" && isQueuedDrainPartial(err)) {
+            if (isPendingConfirmationTimeoutError(err)) {
+              const label =
+                kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
+              toasts.push("warning", `${label} was accepted, but this view didn't update. Reload before retrying.`);
+            } else if (kind === "drain" && isQueuedDrainPartial(err)) {
               // No sessionActionError here: this branch is QueuedDrainPartial
               // by construction, never a launch failure, and the label
               // records a step that already succeeded - the resume must not
