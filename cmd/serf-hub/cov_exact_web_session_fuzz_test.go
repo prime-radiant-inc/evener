@@ -45,24 +45,24 @@ func (s *exactWebSessionSource) ReadThread(ctx context.Context, p appwire.Thread
 	return resp, err
 }
 
-func (s *exactWebSessionSource) SteerTurn(context.Context, appwire.TurnSteerParams) error {
-	return s.err
+func (s *exactWebSessionSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, s.err
 }
-func (s *exactWebSessionSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
-	return s.err
+func (s *exactWebSessionSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, s.err
 }
-func (s *exactWebSessionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
-	return s.err
+func (s *exactWebSessionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, s.err
 }
-func (s *exactWebSessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
-	return s.err
+func (s *exactWebSessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, s.err
 }
 
 func (s *exactWebSessionSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	return appwire.TurnCancelQueuedResponse{}, nil
 }
-func (s *exactWebSessionSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
-	return s.err
+func (s *exactWebSessionSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, s.err
 }
 func (s *exactWebSessionSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
 	return s.err

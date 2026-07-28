@@ -147,7 +147,7 @@ func TestFakeCodexAppServerHelper(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "listen: %v\n", err)
 		os.Exit(2)
 	}
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "fake-codex", SourceID: "codex-managed"})
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "fake-codex", SourceID: "codex-managed", AdapterNativeInitialize: true})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{
 			"id":            "th_fake",

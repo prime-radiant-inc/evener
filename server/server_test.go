@@ -1349,7 +1349,7 @@ func TestServerAppWireThreadList(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
@@ -1384,7 +1384,7 @@ func TestServerAppWireTasksList(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
@@ -1416,7 +1416,7 @@ func TestServerAppWireModelList(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}

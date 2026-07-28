@@ -27,11 +27,11 @@ type promoteRecordingSource struct {
 	err           error
 }
 
-func (s *promoteRecordingSource) PromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) error {
+func (s *promoteRecordingSource) PromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	s.calls++
 	s.gotIndex = params.Index
 	s.gotExpectedID = params.ExpectedEntryID
-	return s.err
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, s.err
 }
 
 func newPromoteWeb(source *promoteRecordingSource) *WebServer {
@@ -83,7 +83,7 @@ func TestHubRPCPromoteQueuedAsSteerRelays(t *testing.T) {
 		return derr
 	}
 
-	if err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{Ref: "remote:thread-1", Index: 2, ExpectedEntryID: "q_9_def"}); err != nil {
+	if err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "remote:thread-1", Index: 2, ExpectedEntryID: "q_9_def"}); err != nil {
 		t.Fatalf("dispatch promote: %v", err)
 	}
 	if source.calls != 1 || source.gotIndex != 2 {
@@ -93,7 +93,7 @@ func TestHubRPCPromoteQueuedAsSteerRelays(t *testing.T) {
 		t.Fatalf("promote relay expectedEntryId=%q, want q_9_def", source.gotExpectedID)
 	}
 
-	err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{Ref: "remote:thread-1", Index: -1})
+	err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", ExpectedTurnID: "test-turn", Ref: "remote:thread-1", Index: -1})
 	if err == nil {
 		t.Fatal("expected error for negative index")
 	}

@@ -118,7 +118,7 @@ func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	defer hubHTTP.Close()
 	client := dialHubRPC(t, hubHTTP)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
 	defer hubHTTP.Close()
 	client := dialHubRPC(t, hubHTTP)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestRenameNotFoundBroadcastsNothing(t *testing.T) {
 	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

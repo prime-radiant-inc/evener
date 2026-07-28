@@ -219,13 +219,25 @@ func (c *Client) failPending(err error) {
 
 func (c *Client) Initialize(ctx context.Context, params InitializeParams) (InitializeResponse, error) {
 	var out InitializeResponse
-	err := c.request(ctx, MethodInitialize, params, &out)
-	if err == nil {
-		c.featuresMu.Lock()
-		c.features = out.Features
-		c.featuresMu.Unlock()
+	if params.ProtocolVersion == "" {
+		params.ProtocolVersion = ProtocolVersion
 	}
-	return out, err
+	if params.ProtocolVersion != ProtocolVersion {
+		return out, fmt.Errorf("appwire initialize: protocol version %q, want %q", params.ProtocolVersion, ProtocolVersion)
+	}
+	if err := c.request(ctx, MethodInitialize, params, &out); err != nil {
+		return out, err
+	}
+	if out.ProtocolVersion != ProtocolVersion {
+		return InitializeResponse{}, fmt.Errorf("appwire initialize: server protocol version %q, want %q", out.ProtocolVersion, ProtocolVersion)
+	}
+	if err := c.Notify(ctx, MethodInitialized, EmptyParams{}); err != nil {
+		return InitializeResponse{}, err
+	}
+	c.featuresMu.Lock()
+	c.features = out.Features
+	c.featuresMu.Unlock()
+	return out, nil
 }
 
 func (c *Client) ThreadList(ctx context.Context, params ThreadListParams) (ThreadListResponse, error) {

@@ -378,7 +378,7 @@ func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 		}}
 	}, httpServer.Client())
 
-	err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
+	_, err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}}})
 	if err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
@@ -637,7 +637,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavaila
 			t.Errorf("initialize message=%+v", msg)
 			return
 		}
-		if err := transport.Send(r.Context(), appwire.ResponseMessage(msg.Request.ID, appwire.InitializeResponse{})); err != nil {
+		if err := transport.Send(r.Context(), appwire.ResponseMessage(msg.Request.ID, appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion})); err != nil {
 			t.Errorf("send initialize response: %v", err)
 			return
 		}
@@ -656,7 +656,7 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavaila
 		}}
 	}, httpServer.Client())
 
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
@@ -729,10 +729,10 @@ func fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *tes
 		return []LocalDaemonEntry{{Entry: entry, SessionID: "01INT"}}
 	}, daemon.Client())
 
-	if err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{Ref: "local:01INT"}); err != nil {
-		t.Fatalf("InterruptTurn: %v", err)
+	if _, err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "local:01INT"}); err == nil {
+		t.Fatal("InterruptTurn without expectedTurnId succeeded")
 	}
-	if !called {
-		t.Fatal("REST /interrupt was not called")
+	if called {
+		t.Fatal("REST /interrupt was called")
 	}
 }

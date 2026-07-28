@@ -260,7 +260,7 @@ func NewServer(cfg ServerConfig) *Server {
 				ThreadTurnsList:   true,
 				TurnStart:         true,
 				TurnSteer:         true,
-				ThreadClear:       true,
+				ThreadClear:       false,
 				ThreadShutdown:    true,
 				ForkFromTurn:      false,
 				Tasks:             true,

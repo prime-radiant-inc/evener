@@ -125,14 +125,16 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 	return out, err
 }
 
-func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) error {
+func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return err
+		return appwire.TurnSteerResponse{}, err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.TurnSteer(ctx, params)
+	var out appwire.TurnSteerResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodTurnSteer, params, &out)
 	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params appwire.SandboxEscalationResolveParams) error {
@@ -145,17 +147,19 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 	})
 }
 
-func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) error {
+func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return err
+		return appwire.TurnInterruptResponse{}, err
 	}
 	if strings.TrimSpace(params.ExpectedTurnID) == "" {
-		return s.restInterrupt(ctx, entry)
+		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.TurnInterrupt(ctx, params)
+	var out appwire.TurnInterruptResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodTurnInterrupt, params, &out)
 	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) restInterrupt(ctx context.Context, entry rendezvous.Entry) error {
@@ -188,34 +192,40 @@ func (s *LocalDaemonSource) restInterrupt(ctx context.Context, entry rendezvous.
 	return nil
 }
 
-func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) error {
+func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return err
+		return appwire.TurnQueueResponse{}, err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.TurnQueue(ctx, params)
+	var out appwire.TurnQueueResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodTurnQueue, params, &out)
 	})
+	return out, err
 }
 
-func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) error {
+func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return err
+		return appwire.TurnDrainAsSteerResponse{}, err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.TurnDrainAsSteer(ctx, params)
+	var out appwire.TurnDrainAsSteerResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodTurnDrainAsSteer, params, &out)
 	})
+	return out, err
 }
 
-func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) error {
+func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return err
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
-	return s.withClient(ctx, entry, func(client *appwire.Client) error {
-		return client.TurnPromoteQueuedAsSteer(ctx, params)
+	var out appwire.TurnPromoteQueuedAsSteerResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
+	return out, err
 }
 
 func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -600,7 +610,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Steer:        true,
 				Interrupt:    true,
 				Compact:      true,
-				Clear:        true,
+				Clear:        false,
 				ForkFromTurn: true,
 				Shutdown:     true,
 				ChangeModel:  true,

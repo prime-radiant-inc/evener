@@ -112,15 +112,15 @@ func exactDispatchFailures(t *testing.T, server *appserver.Server) {
 		{appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "missing:x"}},
 		{appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "missing:x"}},
 		{appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: "missing:x"}},
-		{appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "missing:x", Input: badImage}},
-		{appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "missing:x"}},
-		{appwire.MethodTurnSteer, appwire.TurnSteerParams{Ref: "missing:x"}},
-		{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{Ref: "missing:x"}},
+		{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "missing:x", Input: badImage}},
+		{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
+		{appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "missing:x"}},
+		{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x"}},
 		{appwire.MethodSerfSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{Ref: "missing:x"}},
-		{appwire.MethodTurnQueue, appwire.TurnQueueParams{Ref: "missing:x", Input: badImage}},
-		{appwire.MethodTurnQueue, appwire.TurnQueueParams{Ref: "missing:x"}},
-		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{Ref: "missing:x", Input: badImage}},
-		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{Ref: "missing:x"}},
+		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x", Input: badImage}},
+		{appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "missing:x"}},
+		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "missing:x", Input: badImage}},
+		{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "missing:x"}},
 		{appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "missing:x"}},
 		{appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "missing:x"}},
 		{appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: "missing:x"}},
@@ -159,9 +159,9 @@ func FuzzExactAppRPC(f *testing.F) {
 				m string
 				p any
 			}{
-				{appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "remote:thread"}}, {appwire.MethodTurnSteer, appwire.TurnSteerParams{Ref: "remote:thread"}},
-				{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{Ref: "remote:thread"}}, {appwire.MethodTurnQueue, appwire.TurnQueueParams{Ref: "remote:thread"}},
-				{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{Ref: "remote:thread"}}, {appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "remote:thread"}},
+				{appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}}, {appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}},
+				{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "remote:thread"}}, {appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", Ref: "remote:thread"}},
+				{appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: "remote:thread"}}, {appwire.MethodThreadClear, appwire.ThreadClearParams{Ref: "remote:thread"}},
 				{appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "remote:thread"}}, {appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: "remote:thread"}},
 				{appwire.MethodSerfThreadNameSet, appwire.ThreadNameSetParams{Ref: "remote:thread"}}, {appwire.MethodGoalSet, appwire.GoalSetParams{Ref: "remote:thread"}},
 			} {
@@ -194,7 +194,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			source.readErr = errors.New("read")
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread"})
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfSubagentPreview, appwire.SerfSubagentPreviewParams{Ref: "remote:thread"})
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: "remote:thread"})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "remote:thread"})
 		case 3:
 			// Filesystem-backed source enumeration and command sorting.
 			t.Setenv("HOME", "")
@@ -334,17 +334,17 @@ func FuzzExactAppRPC(f *testing.F) {
 			blankRef.Serf.Ref = ""
 			_ = relay.startRelay(context.Background(), source, appwire.ThreadReadParams{}, blankRef)
 			source.readErr = errors.New("read")
-			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{Ref: "remote:thread"})
+			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "remote:thread"})
 			source.readErr = nil
 			noSend := thread
 			noSend.Serf.Capabilities.Send = false
 			source.thread = noSend
-			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{Ref: "remote:thread"})
+			_, _ = relay.startTurn(context.Background(), source, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "remote:thread"})
 			source.thread = thread
 			errThread := thread
 			errThread.Serf.Ref = "err:thread"
 			errSource := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "err", thread: errThread}, subscribeErr: errors.New("turn relay")}
-			_, _ = relay.startTurn(context.Background(), errSource, appwire.TurnStartParams{Ref: "err:thread"})
+			_, _ = relay.startTurn(context.Background(), errSource, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "err:thread"})
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread"})
 
 			open := make(chan appwire.Notification)
@@ -422,7 +422,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				calls++
 				return nil, errors.New("resolve")
 			}
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
 			calls = 0
 			source.startTurnErr = appwire.SessionUnavailable("resume")
@@ -433,7 +433,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				}
 				return nil, errors.New("resolve after resume")
 			}
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
 			calls = 0
 			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
@@ -441,12 +441,12 @@ func FuzzExactAppRPC(f *testing.F) {
 				return source, nil
 			}
 			source.startTurnErr = nil
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 			source.startTurnErr = errors.New("plain")
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 			source.startTurnErr = nil
 			source.startTurnErrors = []error{appwire.SessionUnavailable("resume"), nil}
-			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{})
+			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
 			authLoginComplete = func(*hubAuthController, context.Context, appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 				return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil

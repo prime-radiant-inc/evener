@@ -67,7 +67,9 @@
           "goal": false,
           "rename": false
         },
-        "queue": {}
+        "queue": {
+          "revision": 0
+        }
       }
     }
   },
@@ -172,7 +174,9 @@
           "goal": false,
           "rename": false
         },
-        "queue": {}
+        "queue": {
+          "revision": 0
+        }
       }
     }
   }

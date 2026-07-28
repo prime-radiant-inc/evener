@@ -1,5 +1,11 @@
 package appwire
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
 // MethodScope records which serf binaries expose a request method.
 type MethodScope string
 
@@ -99,11 +105,11 @@ var Methods = []MethodSpec{
 	{MethodThreadCompactStart, ThreadCompactStartParams{}, EmptyResponse{}, ScopeBoth, "Starts a context-compaction pass on the session."},
 	{MethodThreadShutdown, ThreadShutdownParams{}, EmptyResponse{}, ScopeBoth, "Shuts the session down (the daemon runs it asynchronously)."},
 	{MethodTurnStart, TurnStartParams{}, TurnStartResponse{}, ScopeBoth, "Starts a new user turn and reserves a turn ID."},
-	{MethodTurnSteer, TurnSteerParams{}, EmptyResponse{}, ScopeBoth, "Injects a steering message into the active turn."},
-	{MethodTurnInterrupt, TurnInterruptParams{}, EmptyResponse{}, ScopeBoth, "Cancels the active turn matching expectedTurnId."},
-	{MethodTurnQueue, TurnQueueParams{}, EmptyResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
-	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, EmptyResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
-	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, EmptyResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
+	{MethodTurnSteer, TurnSteerParams{}, TurnSteerResponse{}, ScopeBoth, "Injects a steering message into the active turn."},
+	{MethodTurnInterrupt, TurnInterruptParams{}, TurnInterruptResponse{}, ScopeBoth, "Cancels the active turn matching expectedTurnId."},
+	{MethodTurnQueue, TurnQueueParams{}, TurnQueueResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
+	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, TurnDrainAsSteerResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
+	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
 	{MethodTurnCancelQueued, TurnCancelQueuedParams{}, TurnCancelQueuedResponse{}, ScopeBoth, "Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose)."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
 	{MethodSerfTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
@@ -150,6 +156,41 @@ var Methods = []MethodSpec{
 	{MethodSerfCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display."},
 	{MethodSerfSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data."},
 	{MethodSerfSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
+}
+
+// ValidateMutationParams enforces the flag-day v2 identity and precondition
+// fields before a mutation reaches either Hub or daemon handlers.
+func ValidateMutationParams(method string, raw json.RawMessage) error {
+	required := map[string][]string{
+		MethodTurnStart:                {"clientMutationId"},
+		MethodTurnSteer:                {"clientMutationId", "expectedTurnId"},
+		MethodTurnInterrupt:            {"clientMutationId", "expectedTurnId"},
+		MethodTurnQueue:                {"clientMutationId", "expectedTurnId"},
+		MethodTurnDrainAsSteer:         {"clientMutationId", "expectedTurnId", "expectedQueueRevision"},
+		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedTurnId", "expectedEntryId"},
+		MethodTurnCancelQueued:         {"clientMutationId", "expectedEntryId"},
+	}[method]
+	if len(required) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, name := range required {
+		value, ok := fields[name]
+		if !ok {
+			return fmt.Errorf("%s is required", name)
+		}
+		if name == "expectedQueueRevision" {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+	return nil
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil

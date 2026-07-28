@@ -187,7 +187,10 @@ func fuzzScenarioCodexRPCFailureAndValidationBranches(t *testing.T) {
 		func() error { _, err := s.StartThread(ctx, appwire.ThreadStartParams{}); return err },
 		func() error { _, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{Ref: ref}); return err },
 		func() error { _, err := s.ForkThread(ctx, appwire.ThreadForkParams{Ref: ref}); return err },
-		func() error { _, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: ref}); return err },
+		func() error {
+			_, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref})
+			return err
+		},
 		func() error { _, err := s.ListModels(ctx, appwire.ModelListParams{}); return err },
 		func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
 	}
@@ -198,13 +201,13 @@ func fuzzScenarioCodexRPCFailureAndValidationBranches(t *testing.T) {
 	}
 
 	badInput := []appwire.InputItem{{Type: "unsupported"}}
-	if _, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Input: badInput}); err == nil {
+	if _, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
 		t.Fatal("StartTurn accepted invalid input")
 	}
-	if _, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{Ref: ref, Input: badInput}); err == nil {
+	if _, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
 		t.Fatal("startTurnWithClient accepted invalid input")
 	}
-	if err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: ref, ExpectedTurnID: "turn", Input: badInput}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn", Input: badInput}); err == nil {
 		t.Fatal("SteerTurn accepted invalid input")
 	}
 }
@@ -230,7 +233,7 @@ func fuzzScenarioCodexRPCResponseErrors(t *testing.T) {
 	calls := []func() error{
 		func() error { _, err := newSource().StartThread(ctx, appwire.ThreadStartParams{}); return err },
 		func() error {
-			_, err := newSource().startTurnWithClient(ctx, turnClient, appwire.TurnStartParams{Ref: ref})
+			_, err := newSource().startTurnWithClient(ctx, turnClient, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref})
 			return err
 		},
 		func() error {
@@ -279,7 +282,7 @@ func fuzzScenarioCodexInitialAndResumedTurnFailures(t *testing.T) {
 	if _, err := newSource().StartThread(context.Background(), appwire.ThreadStartParams{Input: input}); err == nil {
 		t.Fatal("StartThread returned nil")
 	}
-	if _, err := newSource().StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:thread", Input: input}); err == nil {
+	if _, err := newSource().StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:thread", Input: input}); err == nil {
 		t.Fatal("StartTurn returned nil")
 	}
 
@@ -313,7 +316,7 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 			callCtx, cancel := context.WithCancel(ctx)
 			transport := respondingTransport(func(method string) (any, error) {
 				if method == appwire.MethodInitialize && cancelAt != "initialize" {
-					return map[string]any{}, nil
+					return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
 				}
 				cancel()
 				return nil, errors.New("failed")
@@ -353,7 +356,12 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 	t.Run("subscription closes and cancels", func(t *testing.T) {
 		for _, publish := range []bool{false, true} {
 			callCtx, cancel := context.WithCancel(ctx)
-			transport := respondingTransport(func(string) (any, error) { return map[string]any{}, nil })
+			transport := respondingTransport(func(method string) (any, error) {
+				if method == appwire.MethodInitialize {
+					return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+				}
+				return map[string]any{}, nil
+			})
 			s := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, nil)
 			s.dial = dialTransport(transport)
 			out, err := s.SubscribeThread(callCtx, appwire.ThreadReadParams{Ref: "local:thread"})
@@ -374,7 +382,12 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 	})
 
 	t.Run("notification source closes", func(t *testing.T) {
-		transport := respondingTransport(func(string) (any, error) { return map[string]any{}, nil })
+		transport := respondingTransport(func(method string) (any, error) {
+			if method == appwire.MethodInitialize {
+				return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+			}
+			return map[string]any{}, nil
+		})
 		s := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, nil)
 		s.dial = dialTransport(transport)
 		out, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "local:thread"})

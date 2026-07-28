@@ -949,7 +949,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1100,7 +1100,7 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1141,7 +1141,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

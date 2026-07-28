@@ -309,7 +309,7 @@ func TestWeb_WorkspaceTaskStatusInitialIsNeutral(t *testing.T) {
 }
 
 func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": map[string]any{
 			"id":            params["threadId"],
@@ -350,14 +350,11 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	if detail.Ref != "codex:th_codex" || detail.Title != "Codex API task" {
 		t.Fatalf("detail=%+v", detail)
 	}
-	if !detail.Capabilities.Send {
-		t.Fatalf("codex supported capabilities missing: %+v", detail.Capabilities)
+	if detail.Capabilities.Send || detail.Capabilities.Steer || detail.Capabilities.Interrupt || detail.Capabilities.Queue {
+		t.Fatalf("codex mutation capability exposed: %+v", detail.Capabilities)
 	}
 	if !detail.Capabilities.Compact {
 		t.Fatalf("codex compact capability missing: %+v", detail.Capabilities)
-	}
-	if !detail.Capabilities.Steer || !detail.Capabilities.Interrupt {
-		t.Fatalf("codex turn action support missing: %+v", detail.Capabilities)
 	}
 	if detail.ActiveTurnID != "" {
 		t.Fatalf("idle codex detail exposed active turn id %q", detail.ActiveTurnID)
@@ -368,7 +365,7 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 }
 
 func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{
 			"id":            "th_codex",
@@ -425,7 +422,7 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 }
 
 func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{
 			"id":            "th_codex_ended",
@@ -504,7 +501,7 @@ func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
 	}
-	if detail.Ref != "codex-managed:th_fake" || !detail.Capabilities.Send {
+	if detail.Ref != "codex-managed:th_fake" || detail.Capabilities.Send || !detail.Capabilities.Compact {
 		t.Fatalf("detail=%+v", detail)
 	}
 }
@@ -549,7 +546,7 @@ func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
 }
 
 func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": map[string]any{
 			"id":            params["threadId"],
@@ -707,7 +704,7 @@ func TestAPI_SendEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
+	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	next := launcherRunningProcess(t, launcher, "codex-managed")
@@ -1036,28 +1033,28 @@ func (s *scriptedAppSource) StartTurn(ctx context.Context, params appwire.TurnSt
 	return appwire.TurnStartResponse{}, appwire.Unavailable("scripted source does not start turns")
 }
 
-func (s *scriptedAppSource) SteerTurn(context.Context, appwire.TurnSteerParams) error {
-	return appwire.Unavailable("scripted source does not steer turns")
+func (s *scriptedAppSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, appwire.Unavailable("scripted source does not steer turns")
 }
 
 func (s *scriptedAppSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
 	return appwire.Unavailable("scripted source does not resolve escalations")
 }
 
-func (s *scriptedAppSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
-	return appwire.Unavailable("scripted source does not interrupt turns")
+func (s *scriptedAppSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, appwire.Unavailable("scripted source does not interrupt turns")
 }
 
-func (s *scriptedAppSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
-	return appwire.Unavailable("scripted source does not queue turns")
+func (s *scriptedAppSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, appwire.Unavailable("scripted source does not queue turns")
 }
 
-func (s *scriptedAppSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
-	return appwire.Unavailable("scripted source does not drain as steer")
+func (s *scriptedAppSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("scripted source does not drain as steer")
 }
 
-func (s *scriptedAppSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
-	return appwire.Unavailable("scripted source does not promote queued messages")
+func (s *scriptedAppSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("scripted source does not promote queued messages")
 }
 
 func (s *scriptedAppSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -1286,7 +1283,7 @@ func TestWeb_ApiSpawn_AccessModeSetsSandboxOverride(t *testing.T) {
 
 func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 	workDir := t.TempDir()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var gotStart map[string]any
 	var gotTurnStart map[string]any
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -1356,7 +1353,7 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 
 func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 	remoteDir := "/remote/codex/workspace/not-on-hub"
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var gotStart map[string]any
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		gotStart = params
@@ -1403,7 +1400,7 @@ func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 
 func TestWeb_ApiSpawn_AllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	workDir := t.TempDir()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var startCalled bool
 	var turnCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
@@ -2624,7 +2621,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 }
 
 func TestWeb_ApiModels_RoutesCodexHarnessToSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local", AdapterNativeInitialize: true})
 	var gotParams appwire.ModelListParams
 	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		gotParams = params
@@ -3831,7 +3828,7 @@ func TestWeb_APISessionDetailKeepsFullTurnCountForLiveThread(t *testing.T) {
 	}
 }
 
-func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
+func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesDoNotExposeMutations(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	web := NewWebServer(hubcore.WebConfig{
@@ -3842,7 +3839,7 @@ func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
 	})
 
 	caps := web.liveWorkspaceCapabilities("codex-managed:th_fake", hubapi.SessionCapabilities{})
-	if !caps.Send {
+	if caps.Send || caps.Steer || caps.Interrupt || caps.Queue || caps.Clear {
 		t.Fatalf("capabilities=%+v", caps)
 	}
 }

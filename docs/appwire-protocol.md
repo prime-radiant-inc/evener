@@ -101,11 +101,11 @@ no router (reserved).
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
-| `turn/steer` | both | `TurnSteerParams` | `EmptyResponse` | Injects a steering message into the active turn. |
-| `turn/interrupt` | both | `TurnInterruptParams` | `EmptyResponse` | Cancels the active turn matching expectedTurnId. |
-| `turn/queue` | both | `TurnQueueParams` | `EmptyResponse` | Queues a user message for after the active turn completes. |
-| `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `EmptyResponse` | Drains the input queue and injects it as a single steering message. |
-| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `EmptyResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
+| `turn/steer` | both | `TurnSteerParams` | `TurnSteerResponse` | Injects a steering message into the active turn. |
+| `turn/interrupt` | both | `TurnInterruptParams` | `TurnInterruptResponse` | Cancels the active turn matching expectedTurnId. |
+| `turn/queue` | both | `TurnQueueParams` | `TurnQueueResponse` | Queues a user message for after the active turn completes. |
+| `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `TurnDrainAsSteerResponse` | Drains the input queue and injects it as a single steering message. |
+| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
@@ -201,7 +201,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
 | `delta` | `string` |  |  |
@@ -212,7 +212,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
 
@@ -414,6 +414,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `protocolVersion` | `string` |  |  |
 | `clientInfo` | `appwire.ClientInfo` |  |  |
 | `capabilities` | `appwire.Capabilities` |  |  |
 
@@ -474,7 +475,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `item` | `appwire.ThreadItem` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
@@ -711,7 +712,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
 | `summaryIndex` | `int` |  |  |
@@ -722,8 +723,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `escalationId` | `string` |  |  |
 | `mode` | `string` |  |  |
 | `tool` | `string` |  |  |
@@ -748,8 +749,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `escalationId` | `string` |  |  |
 
 
@@ -766,7 +767,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `job` | `appwire.SerfJobInfo` |  |  |
 
 
@@ -783,11 +784,12 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `text` | `string` | yes |  |
 | `images` | `[]appwire.InputItem` | yes |  |
 | `source` | `string` | yes |  |
 | `kind` | `string` | yes |  |
+| `clientMutationId` | `string` | yes |  |
 
 
 ### `SerfSubagentPreviewParams`
@@ -836,8 +838,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `total` | `int` |  |  |
 | `done` | `int` |  |  |
 
@@ -862,7 +864,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `reason` | `string` | yes |  |
 
 
@@ -961,8 +963,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `queue` | `appwire.QueueState` |  |  |
 
 
@@ -1062,7 +1064,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `thread` | `appwire.Thread` |  |  |
 
 
@@ -1071,7 +1073,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `status` | `appwire.ThreadStatus` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
 
@@ -1132,8 +1134,8 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` | yes |  |
 | `itemId` | `string` |  |  |
 | `callId` | `string` |  |  |
@@ -1146,7 +1148,8 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `index` | `int` |  |  |
-| `expectedEntryId` | `string` | yes |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedEntryId` | `string` |  |  |
 
 
 ### `TurnCancelQueuedResponse`
@@ -1155,12 +1158,15 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `removedText` | `string` |  |  |
 | `removedImages` | `int` | yes |  |
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnCompletedParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `turn` | `appwire.Turn` |  |  |
 
@@ -1170,7 +1176,17 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedTurnId` | `string` |  |  |
+| `expectedQueueRevision` | `uint64` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
+
+
+### `TurnDrainAsSteerResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnInterruptParams`
@@ -1179,7 +1195,15 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
-| `expectedTurnId` | `string` | yes |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedTurnId` | `string` |  |  |
+
+
+### `TurnInterruptResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnPromoteQueuedAsSteerParams`
@@ -1188,7 +1212,16 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `index` | `int` |  |  |
-| `expectedEntryId` | `string` | yes |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedTurnId` | `string` |  |  |
+| `expectedEntryId` | `string` |  |  |
+
+
+### `TurnPromoteQueuedAsSteerResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnQueueParams`
@@ -1196,7 +1229,16 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedTurnId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
+
+
+### `TurnQueueResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnStartParams`
@@ -1205,6 +1247,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
+| `clientMutationId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 
 
@@ -1213,6 +1256,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `turn` | `appwire.Turn` |  |  |
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnStartedParams`
@@ -1220,7 +1264,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `turn` | `appwire.Turn` |  |  |
 
 
@@ -1230,8 +1274,16 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
-| `expectedTurnId` | `string` | yes |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedTurnId` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
+
+
+### `TurnSteerResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `receipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `UpgradeParams`
@@ -1261,7 +1313,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
-| `ref` | `string` | yes |  |
+| `ref` | `string` |  |  |
 | `message` | `string` | yes |  |
 | `source` | `string` | yes |  |
 | `title` | `string` | yes |  |

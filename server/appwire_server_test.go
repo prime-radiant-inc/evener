@@ -34,11 +34,11 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -99,7 +99,7 @@ func TestServerAppWireProcessingWithoutReservedTurnIDReadsActiveWithNoTurnID(t *
 	srv.SetProcessing(true)
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -169,8 +169,8 @@ func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing
 	srv.SetCancelFunc(func() {})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "new input"}},
 	}))
@@ -213,7 +213,7 @@ func TestServerAppWireGoalSetInvokesGoalFunc(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
 		Ref:       "local:th_1",
 		Objective: "improve coverage",
@@ -243,7 +243,7 @@ func TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
 		Ref:       "local:th_1",
 		Objective: "",
@@ -265,7 +265,7 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
 		Ref:       "local:th_1",
 		Objective: "x",
@@ -280,11 +280,11 @@ func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		ThreadID: "th_1",
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "hello"},
@@ -324,8 +324,8 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 	cursor := history[len(history)-1].Seq
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -396,7 +396,7 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -463,7 +463,7 @@ func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -543,7 +543,7 @@ func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -600,7 +600,7 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, ItemsView: "full"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -629,7 +629,7 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	conn := srv.AppServer().NewConnection("test")
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
@@ -652,14 +652,14 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
-	bad := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+	bad := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID + "-stale",
 		Input:          []appwire.InputItem{{Type: "text", Text: "wrong turn"}},
@@ -671,7 +671,7 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 		t.Fatalf("stale steer invoked handler: %v", steered)
 	}
 
-	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID,
 		Input:          []appwire.InputItem{{Type: "text", Text: "right turn"}},
@@ -695,14 +695,14 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID,
 		Input: []appwire.InputItem{
@@ -730,14 +730,14 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID,
 		Input:          []appwire.InputItem{{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")}},
@@ -759,8 +759,8 @@ func TestServerAppWireTurnSteerRequiresTurnID(t *testing.T) {
 	srv.SetSteerFunc(func(string) {})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnSteer, appwire.TurnSteerParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "missing turn"}},
 	}))
@@ -779,27 +779,27 @@ func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
 	srv.SetCancelFunc(func() { cancelled++ })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
-	missing := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+	missing := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
 		Ref: "local:th_1",
 	}))
 	if missing.Kind() != appwire.MessageError || missing.Error.Error.Code != appwire.CodeInvalidParams {
 		t.Fatalf("interrupt without turn id=%+v", missing)
 	}
-	stale := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+	stale := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID + "-stale",
 	}))
 	if stale.Kind() != appwire.MessageError || stale.Error.Error.Code != appwire.CodeConflict {
 		t.Fatalf("stale interrupt=%+v", stale)
 	}
-	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(5), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(5), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "test-mutation",
 		Ref:            "local:th_1",
 		ExpectedTurnID: startResp.Turn.ID,
 	}))
@@ -821,7 +821,7 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           "local:th_1",
 		ModelProvider: "openai",
@@ -854,8 +854,8 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	srv.SetState("closed")
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
@@ -886,7 +886,7 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 	client := appwire.NewClient(transport)
 	client.Start(context.Background())
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
@@ -986,7 +986,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -1033,7 +1033,7 @@ func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -1065,7 +1065,7 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 		}
 
 		conn := srv.AppServer().NewConnection("test")
-		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 		resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 		data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
 		if !ok {
@@ -1102,7 +1102,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 			return 4200, &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}, 0
 		})
 		conn := srv.AppServer().NewConnection("test")
-		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 		resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 		data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
 		if !ok {
@@ -1133,7 +1133,7 @@ func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -1290,7 +1290,7 @@ func TestServerAppWireThreadShutdownInvokesCallback(t *testing.T) {
 	srv.SetShutdownFunc(func() { done <- struct{}{} })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -1316,7 +1316,7 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	defer transport.Close() //nolint:errcheck // test cleanup
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
@@ -1332,7 +1332,7 @@ func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -1404,8 +1404,8 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
@@ -1431,8 +1431,8 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
@@ -1453,8 +1453,8 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	srv.appReservedTurnID = "turn_reserved"
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "second"}},
 	}))
@@ -1508,8 +1508,8 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv.SetQueueFunc(func(string) error { return nil })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
@@ -1528,8 +1528,8 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv.SetQueueFunc(func(string) error { return nil })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref:   "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
 	}))
@@ -1552,8 +1552,8 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv.SetQueueDepthFunc(func() int { return 0 })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1575,8 +1575,8 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 	srv.SetQueueDepthFunc(func() int { return 1 })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageError {
@@ -1602,8 +1602,8 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv.SetQueueDepthFunc(func() int { return 2 })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 	}))
 	if resp.Kind() != appwire.MessageResponse {
@@ -1633,8 +1633,8 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv.SetQueueDepthFunc(func() int { return 0 })
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
 		Ref: "local:th_1",
 		Input: []appwire.InputItem{{Type: "text", Text: "composer payload"}, {
 			Type:      "image",

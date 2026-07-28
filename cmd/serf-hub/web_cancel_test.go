@@ -95,7 +95,7 @@ func TestHubRPCCancelQueuedRelays(t *testing.T) {
 		})
 	}
 
-	result, err := dispatch(appwire.TurnCancelQueuedParams{Ref: "remote:thread-1", Index: 2, ExpectedEntryID: "q_9_def"})
+	result, err := dispatch(appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", Ref: "remote:thread-1", Index: 2, ExpectedEntryID: "q_9_def"})
 	if err != nil {
 		t.Fatalf("dispatch cancel: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestHubRPCCancelQueuedRelays(t *testing.T) {
 		t.Fatalf("removedText=%q, want echo me", resp.RemovedText)
 	}
 
-	_, err = dispatch(appwire.TurnCancelQueuedParams{Ref: "remote:thread-1", Index: -1})
+	_, err = dispatch(appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "remote:thread-1", Index: -1})
 	if err == nil {
 		t.Fatal("expected error for negative index")
 	}

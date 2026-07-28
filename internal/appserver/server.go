@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"primeradiant.com/serf/appwire"
@@ -12,6 +13,9 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
+	// for adapters whose upstream protocol owns a different initialize shape.
+	AdapterNativeInitialize bool
 }
 
 type Server struct {
@@ -108,10 +112,19 @@ func (s *Server) SubscriberCount(threadID string) int {
 	return s.subs.ConnectionCount(threadID)
 }
 
-func (s *Server) initialize(context.Context, appwire.InitializeParams) (appwire.InitializeResponse, error) {
+func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
+	if !s.cfg.AdapterNativeInitialize && params.ProtocolVersion != appwire.ProtocolVersion {
+		return appwire.InitializeResponse{}, appwire.InvalidRequest(
+			fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, appwire.ProtocolVersion),
+		)
+	}
+	protocolVersion := appwire.ProtocolVersion
+	if s.cfg.AdapterNativeInitialize {
+		protocolVersion = ""
+	}
 	return appwire.InitializeResponse{
 		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
-		ProtocolVersion: appwire.ProtocolVersion,
+		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
 	}, nil
@@ -213,6 +226,11 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	if c.isInitialized() && req.Method == appwire.MethodInitialize {
 		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("already initialized"))
+	}
+	if !c.server.cfg.AdapterNativeInitialize {
+		if err := appwire.ValidateMutationParams(req.Method, req.Params); err != nil {
+			return appwire.ErrorMessage(req.ID, appwire.InvalidParams(err.Error()))
+		}
 	}
 	result, err := c.server.router.Dispatch(context.WithValue(ctx, connectionContextKey{}, c), req)
 	if err != nil {

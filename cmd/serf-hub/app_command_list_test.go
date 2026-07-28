@@ -184,7 +184,7 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.CommandList(context.Background())

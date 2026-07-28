@@ -234,44 +234,8 @@ func (s *CodexSource) ForkThread(ctx context.Context, params appwire.ThreadForkP
 	return appwire.ThreadForkResponse{Thread: s.mapLifecycleThread(out.Thread, out.Model, out.ModelProvider)}, nil
 }
 
-func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	input, err := codexInput("", params.Input)
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	var out codexTurnStartResponse
-	if live := s.liveThread(threadID); live != nil {
-		if err := codexTurnStart(ctx, live.client, threadID, input, &out); err != nil {
-			mapped := codexSourceCallError(err)
-			if codexSourceSessionUnavailable(mapped) {
-				s.removeLiveThread(threadID, live)
-				live.retire()
-			}
-			return appwire.TurnStartResponse{}, mapped
-		}
-		return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
-	}
-	client, closeClient, err := s.connect(ctx)
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	var resume codexThreadResumeResponse
-	if err := codexThreadResume(ctx, client, threadID, &resume); err != nil {
-		_ = closeClient()
-		return appwire.TurnStartResponse{}, codexSourceCallError(err)
-	}
-	live := s.newLiveThread(threadID, client, closeClient)
-	s.setLiveThread(threadID, live)
-	if err := codexTurnStart(ctx, client, threadID, input, &out); err != nil {
-		s.removeLiveThread(threadID, live)
-		live.retire()
-		return appwire.TurnStartResponse{}, codexSourceCallError(err)
-	}
-	return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
+func (s *CodexSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	return appwire.TurnStartResponse{}, appwire.Unavailable("codex source does not support turn/start")
 }
 
 func (s *CodexSource) startTurnWithClient(ctx context.Context, client *appwire.Client, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -297,40 +261,12 @@ func codexTurnStart(ctx context.Context, client *appwire.Client, threadID string
 	}, out)
 }
 
-func (s *CodexSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) error {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return err
-	}
-	turnID := params.ExpectedTurnID
-	if turnID == "" {
-		return appwire.InvalidParams("expectedTurnId is required for codex turn/steer")
-	}
-	input, err := codexInput("", params.Input)
-	if err != nil {
-		return err
-	}
-	return s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodTurnSteer, map[string]any{
-			"threadId":       threadID,
-			"expectedTurnId": turnID,
-			"input":          input,
-		}, nil)
-	})
+func (s *CodexSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, appwire.Unavailable("codex source does not support turn/steer")
 }
 
-func (s *CodexSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) error {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return err
-	}
-	turnID := params.ExpectedTurnID
-	if turnID == "" {
-		return appwire.InvalidParams("expectedTurnId is required for codex turn/interrupt")
-	}
-	return s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodTurnInterrupt, map[string]any{"threadId": threadID, "turnId": turnID, "expectedTurnId": turnID}, nil)
-	})
+func (s *CodexSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, appwire.Unavailable("codex source does not support turn/interrupt")
 }
 
 func (s *CodexSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
@@ -347,16 +283,16 @@ func (s *CodexSource) ShutdownThread(context.Context, appwire.ThreadShutdownPara
 	return appwire.Unavailable("codex source does not support thread/shutdown")
 }
 
-func (s *CodexSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
-	return appwire.Unavailable("codex source does not support turn/queue")
+func (s *CodexSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, appwire.Unavailable("codex source does not support turn/queue")
 }
 
-func (s *CodexSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
-	return appwire.Unavailable("codex source does not support turn/drainAsSteer")
+func (s *CodexSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("codex source does not support turn/drainAsSteer")
 }
 
-func (s *CodexSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
-	return appwire.Unavailable("codex source does not support turn/promoteQueuedAsSteer")
+func (s *CodexSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("codex source does not support turn/promoteQueuedAsSteer")
 }
 
 func (s *CodexSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -625,10 +561,14 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 	}
 	client := appwire.NewClient(transport)
 	client.Start(context.WithoutCancel(ctx))
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+	var initialized appwire.InitializeResponse
+	if err := client.Request(ctx, appwire.MethodInitialize, struct {
+		ClientInfo   appwire.ClientInfo   `json:"clientInfo"`
+		Capabilities appwire.Capabilities `json:"capabilities"`
+	}{
 		ClientInfo:   appwire.ClientInfo{Name: "serf-hub", Version: "0.1.0"},
 		Capabilities: appwire.Capabilities{ExperimentalAPI: true},
-	}); err != nil {
+	}, &initialized); err != nil {
 		_ = transport.Close()
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, nil, cerr
@@ -702,10 +642,7 @@ func (s *CodexSource) mapThread(thread codexThread) appwire.Thread {
 			Profile: thread.ModelProvider,
 			Ref:     ref,
 			Capabilities: appwire.ThreadCapabilities{
-				Send:      true,
-				Steer:     codexThreadSupportsTurnActions(thread.Status.Type),
-				Interrupt: codexThreadSupportsTurnActions(thread.Status.Type),
-				Compact:   true,
+				Compact: true,
 			},
 		},
 	}

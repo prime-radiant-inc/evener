@@ -85,7 +85,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 			ThreadTurnsList:   true,
 			TurnStart:         true,
 			TurnSteer:         true,
-			ThreadClear:       true,
+			ThreadClear:       false,
 			ThreadShutdown:    true,
 			ForkFromTurn:      true,
 			Tasks:             true,
@@ -312,25 +312,25 @@ func registerThreadHandlers(
 		}
 		return startTurn(ctx, source, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnSteerResponse{}, err
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "steer"); err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnSteerResponse{}, err
 		}
-		return appwire.EmptyResponse{}, source.SteerTurn(ctx, params)
+		return source.SteerTurn(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnInterruptResponse{}, err
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "interrupt"); err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnInterruptResponse{}, err
 		}
-		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
+		return source.InterruptTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
@@ -339,50 +339,50 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
-			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnQueueResponse{}, err
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnQueueResponse{}, err
 		}
-		return appwire.EmptyResponse{}, source.QueueTurn(ctx, params)
+		return source.QueueTurn(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
-			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnDrainAsSteerResponse{}, err
 		}
 		// drainAsSteer rides on the Steer capability — the daemon checks
 		// queue depth separately to return Conflict when there is nothing
 		// to drain.
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnDrainAsSteerResponse{}, err
 		}
-		return appwire.EmptyResponse{}, source.DrainAsSteer(ctx, params)
+		return source.DrainAsSteer(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
-			return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 		}
 		// promoteQueuedAsSteer rides on the Steer capability, same as
 		// drainAsSteer — the daemon checks the live queue and turn state
 		// itself and returns Conflict when the promote can't happen.
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
-			return appwire.EmptyResponse{}, err
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 		}
-		return appwire.EmptyResponse{}, source.PromoteQueuedAsSteer(ctx, params)
+		return source.PromoteQueuedAsSteer(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -403,8 +403,8 @@ func registerThreadHandlers(
 		}
 		return source.CancelQueued(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		return clearThreadWithResume(ctx, cfg, sources, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)

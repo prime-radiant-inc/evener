@@ -270,7 +270,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 				Send:         true,
 				ForkFromTurn: true,
 				Compact:      true,
-				Clear:        true,
+				Clear:        false,
 				ChangeModel:  true,
 				Shutdown:     true,
 				Goal:         true,

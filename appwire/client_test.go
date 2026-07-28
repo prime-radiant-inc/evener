@@ -157,6 +157,30 @@ func TestClientGoalSetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+		done <- err
+	}()
+
+	request := <-transport.writes
+	transport.reads <- ResponseMessage(request.Request.ID, InitializeResponse{ProtocolVersion: "serf-appwire-v1"})
+	if err := <-done; err == nil {
+		t.Fatal("mismatched initialize response accepted")
+	}
+	select {
+	case msg := <-transport.writes:
+		t.Fatalf("unexpected post-mismatch write: %+v", msg)
+	default:
+	}
+}
+
 func TestClientUpgradeRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)

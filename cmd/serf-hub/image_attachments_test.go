@@ -49,7 +49,7 @@ var testImageBytes = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 // configured source (kata t5j6 path 1).
 func TestWeb_ApiSpawn_ForwardsImageItemsToThreadStart(t *testing.T) {
 	workDir := t.TempDir()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 
 	// The codex source maps the wire-level "items" array into the turn's
 	// input. We observe MethodTurnStart on the downstream codex server using
@@ -165,8 +165,9 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{
-			ServerInfo: appwire.ServerInfo{Name: "daemon-test"},
-			Features:   appwire.FeatureSet{},
+			ServerInfo:      appwire.ServerInfo{Name: "daemon-test"},
+			ProtocolVersion: appwire.ProtocolVersion,
+			Features:        appwire.FeatureSet{},
 		}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -271,7 +272,7 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_items", Status: appwire.TurnStatusInProgress}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
-		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}, ProtocolVersion: appwire.ProtocolVersion}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{

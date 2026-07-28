@@ -729,22 +729,8 @@ func (s *Server) handleAppThreadShutdown(context.Context, appwire.ThreadShutdown
 	return appwire.EmptyResponse{}, nil
 }
 
-func (s *Server) handleAppThreadClear(ctx context.Context, _ appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	s.mu.RLock()
-	processing := s.processing
-	fn := s.clearFunc
-	s.mu.RUnlock()
-	if processing {
-		return appwire.ThreadClearResponse{}, appwire.Conflict("session is processing")
-	}
-	if fn == nil {
-		return appwire.ThreadClearResponse{}, appwire.Unavailable("clear not available")
-	}
-	if err := fn(ctx); err != nil {
-		return appwire.ThreadClearResponse{}, err
-	}
-	thread := s.appThread()
-	return appwire.ThreadClearResponse{Thread: thread, Ref: thread.Serf.Ref}, nil
+func (s *Server) handleAppThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
 }
 
 func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
@@ -1060,7 +1046,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		Steer:        steerAvailable && active && !closed,
 		Interrupt:    s.cancelFunc != nil,
 		Compact:      s.compactFunc != nil && !closed,
-		Clear:        s.clearFunc != nil && !processing && !closed,
+		Clear:        false,
 		ForkFromTurn: false,
 		Shutdown:     s.shutdownFunc != nil,
 		ChangeModel:  s.modelFunc != nil && !closed,

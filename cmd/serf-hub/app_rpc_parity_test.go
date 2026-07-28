@@ -64,9 +64,9 @@ func parityResumeFixture(t *testing.T, register func(daemon *appserver.Server)) 
 	return cfg, sessionID, &calls
 }
 
-// TestHubRPCThreadClearResumesPastThread proves ThreadClear on an exited
-// session resumes the daemon and retries, matching compact/model (kata qp94).
-func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
+// TestHubRPCThreadClearRejectsPastThreadWithoutResume proves the v2 clear
+// removal is enforced before an exited session can be resumed.
+func TestHubRPCThreadClearRejectsPastThreadWithoutResume(t *testing.T) {
 	var sessionID string
 	clearCalled := false
 	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
@@ -95,17 +95,17 @@ func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID}); err != nil {
-		t.Fatalf("ThreadClear: %v", err)
+	if _, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID}); err == nil {
+		t.Fatal("ThreadClear succeeded; want unsupported")
 	}
-	if *resumeCalls != 1 {
-		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	if *resumeCalls != 0 {
+		t.Fatalf("resume calls=%d, want 0", *resumeCalls)
 	}
-	if !clearCalled {
-		t.Fatal("clear was not routed after resume")
+	if clearCalled {
+		t.Fatal("clear was routed to the daemon")
 	}
 }
 
@@ -140,7 +140,7 @@ func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadNameSet(context.Background(), appwire.ThreadNameSetParams{Ref: "local:" + sessionID, Name: "renamed"}); err != nil {
@@ -187,7 +187,7 @@ func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:" + sessionID, Objective: "ship it"})
@@ -230,7 +230,7 @@ func TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
@@ -267,7 +267,7 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
@@ -316,7 +316,7 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 		t.Cleanup(hub.Close)
 		client := dialHubRPC(t, hub)
 		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
 		return client, &resumeCalled
@@ -331,22 +331,22 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 		call func(*appwire.Client) error
 	}{
 		{"steer", func(c *appwire.Client) error {
-			return c.TurnSteer(ctx, appwire.TurnSteerParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"interrupt", func(c *appwire.Client) error {
-			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{Ref: ref})
+			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref})
 		}},
 		{"queue", func(c *appwire.Client) error {
-			return c.TurnQueue(ctx, appwire.TurnQueueParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnQueue(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"drainAsSteer", func(c *appwire.Client) error {
-			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
 		{"promoteQueuedAsSteer", func(c *appwire.Client) error {
-			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{Ref: ref, Index: 0})
+			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", ExpectedTurnID: "test-turn", Ref: ref, Index: 0})
 		}},
 		{"cancelQueued", func(c *appwire.Client) error {
-			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{Ref: ref, Index: 0})
+			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: ref, Index: 0})
 			return err
 		}},
 	}
@@ -382,11 +382,8 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: sessionID, SessionID: sessionID, Source: "local",
-			Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Clear: true, Compact: true}},
+			Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Compact: true}},
 		}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadClear, func(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		return appwire.ThreadClearResponse{Ref: params.Ref}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, nil
@@ -428,7 +425,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	clientB := dialHubRPC(t, hub)
 	defer clientB.Close()
 	for _, c := range []*appwire.Client{clientA, clientB} {
-		if _, err := c.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		if _, err := c.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
 	}
@@ -438,7 +435,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	errs := make([]error, 2)
 	go func() {
 		defer wg.Done()
-		_, errs[0] = clientA.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID})
+		errs[0] = clientA.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:" + sessionID})
 	}()
 	go func() {
 		defer wg.Done()

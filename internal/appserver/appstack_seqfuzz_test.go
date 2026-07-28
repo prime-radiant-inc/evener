@@ -225,7 +225,7 @@ func exerciseWebSocket(t rapidTB) {
 	}
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
-	if _, err = client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+	if _, err = client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("websocket initialize: %v", err)
 	}
 	if _, err = client.ThreadRead(ctx, appwire.ThreadReadParams{}); err != nil {

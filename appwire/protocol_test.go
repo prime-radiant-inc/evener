@@ -1,6 +1,10 @@
 package appwire
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
 
 // TestMethodCatalogWellFormed guards the catalog's internal invariants: the
 // generated protocol doc and the router cross-checks both rely on these.
@@ -63,6 +67,58 @@ func TestConnectionAndReservedMethodsCataloged(t *testing.T) {
 			t.Errorf("method %q missing from catalog", name)
 		} else if got != want {
 			t.Errorf("method %q scope = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
+	tests := []struct {
+		method string
+		valid  string
+	}{
+		{MethodTurnStart, `{"clientMutationId":"m1"}`},
+		{MethodTurnSteer, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
+		{MethodTurnInterrupt, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
+		{MethodTurnQueue, `{"clientMutationId":"m1","expectedTurnId":"t1"}`},
+		{MethodTurnDrainAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":0}`},
+		{MethodTurnPromoteQueuedAsSteer, `{"clientMutationId":"m1","expectedTurnId":"t1","expectedEntryId":"q1"}`},
+		{MethodTurnCancelQueued, `{"clientMutationId":"m1","expectedEntryId":"q1"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			if err := ValidateMutationParams(tc.method, json.RawMessage(tc.valid)); err != nil {
+				t.Fatalf("valid shape rejected: %v", err)
+			}
+			if err := ValidateMutationParams(tc.method, json.RawMessage(`{}`)); err == nil {
+				t.Fatal("empty mutation shape accepted")
+			}
+		})
+	}
+}
+
+func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
+	global := map[string]bool{
+		NotifySerfAuthUpdated:        true,
+		NotifySerfLaunchUpdated:      true,
+		NotifySerfAttentionChanged:   true,
+		NotifySerfMarketplaceUpdated: true,
+		NotifySerfPluginUpdated:      true,
+		NotifySerfTreeChanged:        true,
+	}
+	for _, notification := range Notifications {
+		if global[notification.Name] {
+			continue
+		}
+		payloadType := reflect.TypeOf(notification.Payload)
+		for _, fieldName := range []string{"ThreadID", "Ref"} {
+			field, ok := payloadType.FieldByName(fieldName)
+			if !ok {
+				t.Errorf("%s payload %s has no %s", notification.Name, payloadType.Name(), fieldName)
+				continue
+			}
+			if got, want := field.Tag.Get("json"), map[string]string{"ThreadID": "threadId", "Ref": "ref"}[fieldName]; got != want {
+				t.Errorf("%s payload %s.%s json tag = %q, want %q", notification.Name, payloadType.Name(), fieldName, got, want)
+			}
 		}
 	}
 }

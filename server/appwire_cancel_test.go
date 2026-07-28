@@ -26,7 +26,7 @@ import (
 func cancelRPC(conn interface {
 	HandleMessage(context.Context, appwire.Message) appwire.Message
 }, id int64, params appwire.TurnCancelQueuedParams) appwire.Message {
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	return conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(id), appwire.MethodTurnCancelQueued, params))
 }
 
@@ -44,7 +44,7 @@ func TestServerAppWireTurnCancelQueuedDispatchesIndex(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: 1, ExpectedEntryID: "q_1_abc"})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", Ref: "local:th_1", Index: 1, ExpectedEntryID: "q_1_abc"})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
@@ -74,7 +74,7 @@ func TestServerAppWireTurnCancelQueuedAllowedWhileIdle(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: 0})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("idle cancel: resp=%v error=%+v, want success", resp.Kind(), resp.Error)
 	}
@@ -91,7 +91,7 @@ func TestServerAppWireTurnCancelQueuedRejectsNegativeIndex(t *testing.T) {
 	srv.SetCancelQueuedFunc(func(int, string) (string, int, error) { return "", 0, nil })
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: -1})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: -1})
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error, got %v", resp.Kind())
 	}
@@ -108,7 +108,7 @@ func TestServerAppWireTurnCancelQueuedRejectsWhenClosed(t *testing.T) {
 	srv.SetCancelQueuedFunc(func(int, string) (string, int, error) { return "", 0, nil })
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: 0})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error, got %v", resp.Kind())
 	}
@@ -124,7 +124,7 @@ func TestServerAppWireTurnCancelQueuedUnavailableWithoutFunc(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: 0})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 0})
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error, got %v", resp.Kind())
 	}
@@ -146,7 +146,7 @@ func TestServerAppWireTurnCancelQueuedPropagatesSessionError(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:th_1", Index: 3})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", Ref: "local:th_1", Index: 3})
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error, got %v", resp.Kind())
 	}
@@ -200,7 +200,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	srv.SetQueueTextsFunc(sess.QueueTexts)
 
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 
 	// The thread snapshot must carry the full untruncated texts and the
 	// entry ids the UI sends back as expected identity.
@@ -222,7 +222,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 
 	// Review F1: a cancel naming the WRONG entry id (a stale snapshot) is a
 	// Conflict and leaves the queue fully intact — nothing is removed.
-	mismatch := cancelRPC(conn, 3, appwire.TurnCancelQueuedParams{Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: queue.IDs[1]})
+	mismatch := cancelRPC(conn, 3, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: queue.IDs[1]})
 	if mismatch.Kind() != appwire.MessageError {
 		t.Fatalf("mismatch cancel: expected error, got %v", mismatch.Kind())
 	}
@@ -233,7 +233,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 		t.Fatalf("QueuePreview after mismatch: got %#v, want both entries intact", preview)
 	}
 
-	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: queue.IDs[0]})
+	resp := cancelRPC(conn, 2, appwire.TurnCancelQueuedParams{ClientMutationID: "test-mutation", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: queue.IDs[0]})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}

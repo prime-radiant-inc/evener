@@ -2,7 +2,7 @@
 
 export interface AgentMessageDeltaParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   turnId: string;
   itemId: string;
   delta: string;
@@ -10,7 +10,7 @@ export interface AgentMessageDeltaParams {
 
 export interface AgentMessageResetParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   turnId: string;
   itemId: string;
 }
@@ -213,6 +213,7 @@ export interface HarnessListResponse {
 }
 
 export interface InitializeParams {
+  protocolVersion: string;
   clientInfo: ClientInfo;
   capabilities: Capabilities;
 }
@@ -277,7 +278,7 @@ export interface InstanceSetDefaultParams {
 
 export interface ItemLifecycleParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   turnId: string;
   item: ThreadItem;
   failedToolCalls?: number;
@@ -466,6 +467,15 @@ export interface ModelListResponse {
   recent?: ModelDescriptor[];
 }
 
+export interface MutationReceipt {
+  clientMutationId: string;
+  disposition: string;
+  threadId: string;
+  turnId?: string;
+  queueEntryIds?: string[];
+  projectionState: string;
+}
+
 export interface OutputImage {
   source: string;
   name?: string;
@@ -495,6 +505,16 @@ export interface PathsCompleteParams {
 
 export interface PathsCompleteResponse {
   data: string[];
+}
+
+export interface PendingMutation {
+  clientMutationId: string;
+  method: string;
+  input?: InputItem[];
+  executionState: string;
+  turnId?: string;
+  queueEntryIds?: string[];
+  projectionState: string;
 }
 
 export interface PluginCheckNowResponse {
@@ -540,14 +560,16 @@ export interface ProjectsRecentResponse {
 
 export interface QueueState {
   depth?: number;
+  revision: number;
   preview?: string[];
   ids?: string[];
+  clientMutationIds?: string[];
   texts?: string[];
 }
 
 export interface ReasoningSummaryDeltaParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   turnId: string;
   itemId: string;
   summaryIndex: number;
@@ -562,8 +584,8 @@ export interface RepoLaunchConfigStatus {
 }
 
 export interface SandboxEscalationRequested {
-  threadId?: string;
-  ref?: string;
+  threadId: string;
+  ref: string;
   escalationId: string;
   mode: string;
   tool: string;
@@ -582,8 +604,8 @@ export interface SandboxEscalationResolveParams {
 }
 
 export interface SandboxEscalationResolved {
-  threadId?: string;
-  ref?: string;
+  threadId: string;
+  ref: string;
   escalationId: string;
 }
 
@@ -625,7 +647,7 @@ export interface SerfJobInfo {
 
 export interface SerfJobParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   job: SerfJobInfo;
 }
 
@@ -657,11 +679,12 @@ export interface SerfSkillInfo {
 
 export interface SerfSteeringInjectedParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   text?: string;
   images?: InputItem[];
   source?: string;
   kind?: string;
+  clientMutationId?: string;
 }
 
 export interface SerfSubagentPreviewParams {
@@ -688,6 +711,7 @@ export interface SerfThread {
   capabilities: ThreadCapabilities;
   diagnostics?: SerfDiagnostics;
   queue: QueueState;
+  pendingMutations?: PendingMutation[];
   tasks?: TaskAggregate;
   goal?: GoalState;
   usage?: SerfUsage;
@@ -788,8 +812,8 @@ export interface TaskListResponse {
 }
 
 export interface TaskUpdatedParams {
-  threadId?: string;
-  ref?: string;
+  threadId: string;
+  ref: string;
   total: number;
   done: number;
 }
@@ -844,7 +868,7 @@ export interface ThreadClearResponse {
 
 export interface ThreadClosedParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   reason?: string;
 }
 
@@ -893,6 +917,7 @@ export interface ThreadItem {
   eventKind?: ThreadItemEventKind;
   source?: string;
   steeringKind?: string;
+  clientMutationId?: string;
 }
 
 export interface ThreadListParams {
@@ -940,8 +965,8 @@ export interface ThreadNameSetParams {
 }
 
 export interface ThreadQueueChangedParams {
-  threadId?: string;
-  ref?: string;
+  threadId: string;
+  ref: string;
   queue: QueueState;
 }
 
@@ -1008,7 +1033,7 @@ export interface ThreadStartResponse {
 
 export interface ThreadStartedParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   thread: Thread;
 }
 
@@ -1019,7 +1044,7 @@ export interface ThreadStatus {
 
 export interface ThreadStatusChangedParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   status: ThreadStatus;
   failedToolCalls?: number;
 }
@@ -1069,8 +1094,8 @@ export interface ThreadTurnsListResponse {
 }
 
 export interface ToolOutputDeltaParams {
-  threadId?: string;
-  ref?: string;
+  threadId: string;
+  ref: string;
   turnId?: string;
   itemId: string;
   callId: string;
@@ -1093,22 +1118,33 @@ export interface Turn {
 export interface TurnCancelQueuedParams {
   ref: string;
   index: number;
-  expectedEntryId?: string;
+  clientMutationId: string;
+  expectedEntryId: string;
 }
 
 export interface TurnCancelQueuedResponse {
   removedText: string;
   removedImages?: number;
+  receipt: MutationReceipt;
 }
 
 export interface TurnCompletedParams {
+  threadId: string;
+  ref: string;
   turnId: string;
   turn: Turn;
 }
 
 export interface TurnDrainAsSteerParams {
   ref: string;
+  clientMutationId: string;
+  expectedTurnId: string;
+  expectedQueueRevision: number;
   input?: InputItem[];
+}
+
+export interface TurnDrainAsSteerResponse {
+  receipt: MutationReceipt;
 }
 
 export interface TurnError {
@@ -1124,41 +1160,65 @@ export interface TurnError {
 export interface TurnInterruptParams {
   ref?: string;
   threadId?: string;
-  expectedTurnId?: string;
+  clientMutationId: string;
+  expectedTurnId: string;
+}
+
+export interface TurnInterruptResponse {
+  receipt: MutationReceipt;
 }
 
 export interface TurnPromoteQueuedAsSteerParams {
   ref: string;
   index: number;
-  expectedEntryId?: string;
+  clientMutationId: string;
+  expectedTurnId: string;
+  expectedEntryId: string;
+}
+
+export interface TurnPromoteQueuedAsSteerResponse {
+  receipt: MutationReceipt;
 }
 
 export interface TurnQueueParams {
   ref: string;
+  clientMutationId: string;
+  expectedTurnId: string;
   input?: InputItem[];
+}
+
+export interface TurnQueueResponse {
+  receipt: MutationReceipt;
 }
 
 export interface TurnStartParams {
   ref?: string;
   threadId?: string;
+  clientMutationId: string;
   input?: InputItem[];
 }
 
 export interface TurnStartResponse {
   turn: Turn;
+  receipt: MutationReceipt;
 }
 
 export interface TurnStartedParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   turn: Turn;
 }
 
 export interface TurnSteerParams {
   ref?: string;
   threadId?: string;
-  expectedTurnId?: string;
+  clientMutationId: string;
+  expectedTurnId: string;
   input?: InputItem[];
+}
+
+export interface TurnSteerResponse {
+  receipt: MutationReceipt;
 }
 
 export interface UpgradeParams {
@@ -1179,7 +1239,7 @@ export interface UpgradeResponse {
 
 export interface WarningParams {
   threadId: string;
-  ref?: string;
+  ref: string;
   message?: string;
   source?: string;
   title?: string;
@@ -1353,11 +1413,11 @@ export interface MethodTypes {
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };
   "thread/shutdown": { params: ThreadShutdownParams; result: EmptyResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };
-  "turn/steer": { params: TurnSteerParams; result: EmptyResponse };
-  "turn/interrupt": { params: TurnInterruptParams; result: EmptyResponse };
-  "turn/queue": { params: TurnQueueParams; result: EmptyResponse };
-  "turn/drainAsSteer": { params: TurnDrainAsSteerParams; result: EmptyResponse };
-  "turn/promoteQueuedAsSteer": { params: TurnPromoteQueuedAsSteerParams; result: EmptyResponse };
+  "turn/steer": { params: TurnSteerParams; result: TurnSteerResponse };
+  "turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResponse };
+  "turn/queue": { params: TurnQueueParams; result: TurnQueueResponse };
+  "turn/drainAsSteer": { params: TurnDrainAsSteerParams; result: TurnDrainAsSteerResponse };
+  "turn/promoteQueuedAsSteer": { params: TurnPromoteQueuedAsSteerParams; result: TurnPromoteQueuedAsSteerResponse };
   "turn/cancelQueued": { params: TurnCancelQueuedParams; result: TurnCancelQueuedResponse };
   "goal/set": { params: GoalSetParams; result: GoalSetResponse };
   "serf/tasks/list": { params: TaskListParams; result: TaskListResponse };

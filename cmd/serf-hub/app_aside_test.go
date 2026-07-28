@@ -30,7 +30,7 @@ func TestHubRPCThreadForkAsideCreatesSideThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
@@ -77,7 +77,7 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
@@ -120,7 +120,7 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{

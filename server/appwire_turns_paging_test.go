@@ -108,7 +108,7 @@ func requireAppPageTurns(t testing.TB, srv *Server, threadID, cursor string, lim
 func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
 	srv := seedTranscriptServer(t, 4)
 	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 
 	// Baseline: the full, unbounded transcript.
 	all := readTurns(t, conn, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true}).Thread.Turns
@@ -190,7 +190,7 @@ func TestDaemonTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 func TestServerAppWireBoundedReadsDoNotProjectFullTranscript(t *testing.T) {
 	srv := seedTranscriptServer(t, 100)
 	conn := srv.AppServer().NewConnection("bounded-work")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 
 	all := readTurns(t, conn, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true}).Thread.Turns
 	if len(all) != 200 {
@@ -234,7 +234,7 @@ func TestServerAppWireNotificationSnapshotAdvancesFromLastSequence(t *testing.T)
 	srv.SetAppIdentity("local", "th_1")
 
 	conn := srv.AppServer().NewConnection("notification-snapshot")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 
 	processed := 0
 	previousHook := appTurnsEnsureTurnHook

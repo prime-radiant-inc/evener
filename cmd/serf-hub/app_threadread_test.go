@@ -628,7 +628,6 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		Send:         true,
 		ForkFromTurn: true,
 		Compact:      true,
-		Clear:        true,
 		ChangeModel:  true,
 		Shutdown:     true,
 		Goal:         true,

@@ -2,7 +2,7 @@ package appwire
 
 import "encoding/json"
 
-const ProtocolVersion = "serf-appwire-v1"
+const ProtocolVersion = "serf-appwire-v2"
 
 const (
 	MethodInitialize                = "initialize"
@@ -151,8 +151,9 @@ const (
 )
 
 type InitializeParams struct {
-	ClientInfo   ClientInfo   `json:"clientInfo"`
-	Capabilities Capabilities `json:"capabilities"`
+	ProtocolVersion string       `json:"protocolVersion"`
+	ClientInfo      ClientInfo   `json:"clientInfo"`
+	Capabilities    Capabilities `json:"capabilities"`
 }
 
 type ClientInfo struct {
@@ -259,7 +260,8 @@ type SerfThread struct {
 	// from this field rather than mirroring queue mutations locally, which
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
-	Queue QueueState `json:"queue"`
+	Queue            QueueState        `json:"queue"`
+	PendingMutations []PendingMutation `json:"pendingMutations,omitempty"`
 	// Tasks carries the task-list progress for a session snapshot. It is nil
 	// when the source cannot authoritatively read task state, including an old
 	// daemon or a missing persisted task file; a present zero is real zero.
@@ -380,18 +382,20 @@ type SerfUsage struct {
 // messages. Absent on old daemons; clients must treat a missing Texts as
 // "edit unavailable" rather than falling back to the truncated preview.
 type QueueState struct {
-	Depth   int      `json:"depth,omitempty"`
-	Preview []string `json:"preview,omitempty"`
-	IDs     []string `json:"ids,omitempty"`
-	Texts   []string `json:"texts,omitempty"`
+	Depth             int      `json:"depth,omitempty"`
+	Revision          uint64   `json:"revision"`
+	Preview           []string `json:"preview,omitempty"`
+	IDs               []string `json:"ids,omitempty"`
+	ClientMutationIDs []string `json:"clientMutationIds,omitempty"`
+	Texts             []string `json:"texts,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
 // (kata r80p). It mirrors the queue field on SerfThread so consumers can
 // store it verbatim on the cached thread state.
 type ThreadQueueChangedParams struct {
-	ThreadID string     `json:"threadId,omitempty"`
-	Ref      string     `json:"ref,omitempty"`
+	ThreadID string     `json:"threadId"`
+	Ref      string     `json:"ref"`
 	Queue    QueueState `json:"queue"`
 }
 
@@ -399,8 +403,8 @@ type ThreadQueueChangedParams struct {
 // task-list progress after a change, so a client refreshes the status row
 // event-driven instead of polling serf/tasks/list.
 type TaskUpdatedParams struct {
-	ThreadID string `json:"threadId,omitempty"`
-	Ref      string `json:"ref,omitempty"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
 	Total    int    `json:"total"`
 	Done     int    `json:"done"`
 }
@@ -408,8 +412,10 @@ type TaskUpdatedParams struct {
 // TurnCompletedParams is the payload of a turn/completed notification: the
 // completed turn and its ID.
 type TurnCompletedParams struct {
-	TurnID string `json:"turnId"`
-	Turn   Turn   `json:"turn"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	TurnID   string `json:"turnId"`
+	Turn     Turn   `json:"turn"`
 }
 
 // SandboxEscalationRequested is the payload of a
@@ -427,8 +433,8 @@ type SandboxEscalationRequested struct {
 	// route it by session (enqueue for a non-viewed session, answer the right one)
 	// rather than assuming the currently-viewed session — like every other
 	// thread-scoped notification.
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
+	ThreadID     string `json:"threadId"`
+	Ref          string `json:"ref"`
 	EscalationID string `json:"escalationId"`
 	Mode         string `json:"mode"`
 	Tool         string `json:"tool"`
@@ -449,8 +455,8 @@ type SandboxEscalationRequested struct {
 type SandboxEscalationResolved struct {
 	// ThreadID/Ref identify the SESSION this escalation belongs to, exactly like
 	// SandboxEscalationRequested above.
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
+	ThreadID     string `json:"threadId"`
+	Ref          string `json:"ref"`
 	EscalationID string `json:"escalationId"`
 }
 
@@ -715,7 +721,8 @@ type ThreadItem struct {
 	// (events.SteeringKind*), set at the injection site so a client labels it
 	// from ground truth instead of guessing from Text's prose. Empty on
 	// non-steering items and on steering items the daemon didn't classify.
-	SteeringKind string `json:"steeringKind,omitempty"`
+	SteeringKind     string `json:"steeringKind,omitempty"`
+	ClientMutationID string `json:"clientMutationId,omitempty"`
 }
 
 type OutputImage struct {
@@ -889,34 +896,86 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref      string      `json:"ref,omitempty"`
-	ThreadID string      `json:"threadId,omitempty"`
-	Input    []InputItem `json:"input,omitempty"`
+	Ref              string      `json:"ref,omitempty"`
+	ThreadID         string      `json:"threadId,omitempty"`
+	ClientMutationID string      `json:"clientMutationId"`
+	Input            []InputItem `json:"input,omitempty"`
 }
 
 type TurnStartResponse struct {
-	Turn Turn `json:"turn"`
+	Turn    Turn            `json:"turn"`
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 type TurnSteerParams struct {
-	Ref            string      `json:"ref,omitempty"`
-	ThreadID       string      `json:"threadId,omitempty"`
-	ExpectedTurnID string      `json:"expectedTurnId,omitempty"`
-	Input          []InputItem `json:"input,omitempty"`
+	Ref              string      `json:"ref,omitempty"`
+	ThreadID         string      `json:"threadId,omitempty"`
+	ClientMutationID string      `json:"clientMutationId"`
+	ExpectedTurnID   string      `json:"expectedTurnId"`
+	Input            []InputItem `json:"input,omitempty"`
 }
 
 type TurnInterruptParams struct {
-	Ref            string `json:"ref,omitempty"`
-	ThreadID       string `json:"threadId,omitempty"`
-	ExpectedTurnID string `json:"expectedTurnId,omitempty"`
+	Ref              string `json:"ref,omitempty"`
+	ThreadID         string `json:"threadId,omitempty"`
+	ClientMutationID string `json:"clientMutationId"`
+	ExpectedTurnID   string `json:"expectedTurnId"`
 }
 
 // TurnQueueParams queues a user message during a running turn for processing
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	Ref   string      `json:"ref"`
-	Input []InputItem `json:"input,omitempty"`
+	Ref              string      `json:"ref"`
+	ClientMutationID string      `json:"clientMutationId"`
+	ExpectedTurnID   string      `json:"expectedTurnId"`
+	Input            []InputItem `json:"input,omitempty"`
+}
+
+type MutationProjectionState string
+
+const (
+	MutationProjectionPending   MutationProjectionState = "pending"
+	MutationProjectionReflected MutationProjectionState = "reflected"
+	MutationProjectionRemoved   MutationProjectionState = "removed"
+)
+
+type MutationDisposition string
+
+const (
+	MutationDispositionApplied  MutationDisposition = "applied"
+	MutationDispositionReplayed MutationDisposition = "replayed"
+)
+
+type MutationReceipt struct {
+	ClientMutationID string                  `json:"clientMutationId"`
+	Disposition      MutationDisposition     `json:"disposition"`
+	ThreadID         string                  `json:"threadId"`
+	TurnID           string                  `json:"turnId,omitempty"`
+	QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`
+	ProjectionState  MutationProjectionState `json:"projectionState"`
+}
+
+type PendingMutation struct {
+	ClientMutationID string                  `json:"clientMutationId"`
+	Method           string                  `json:"method"`
+	Input            []InputItem             `json:"input,omitempty"`
+	ExecutionState   string                  `json:"executionState"`
+	TurnID           string                  `json:"turnId,omitempty"`
+	QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`
+	ProjectionState  MutationProjectionState `json:"projectionState"`
+}
+
+type TurnSteerResponse struct {
+	Receipt MutationReceipt `json:"receipt"`
+}
+
+type TurnInterruptResponse struct {
+	Receipt MutationReceipt `json:"receipt"`
+}
+
+type TurnQueueResponse struct {
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 // GoalSetParams sets (or clears) the session's /goal objective. An empty
@@ -941,8 +1000,15 @@ type GoalSetResponse struct {
 // them to the in-flight turn as a single STEERING message. Input lets clients
 // atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
-	Ref   string      `json:"ref"`
-	Input []InputItem `json:"input,omitempty"`
+	Ref                   string      `json:"ref"`
+	ClientMutationID      string      `json:"clientMutationId"`
+	ExpectedTurnID        string      `json:"expectedTurnId"`
+	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
+	Input                 []InputItem `json:"input,omitempty"`
+}
+
+type TurnDrainAsSteerResponse struct {
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 // TurnPromoteQueuedAsSteerParams is the wire shape for
@@ -958,9 +1024,15 @@ type TurnDrainAsSteerParams struct {
 // Conflict when no turn is in flight, the index is out of range, or the
 // expected id no longer matches.
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref             string `json:"ref"`
-	Index           int    `json:"index"`
-	ExpectedEntryID string `json:"expectedEntryId,omitempty"`
+	Ref              string `json:"ref"`
+	Index            int    `json:"index"`
+	ClientMutationID string `json:"clientMutationId"`
+	ExpectedTurnID   string `json:"expectedTurnId"`
+	ExpectedEntryID  string `json:"expectedEntryId"`
+}
+
+type TurnPromoteQueuedAsSteerResponse struct {
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 // TurnCancelQueuedParams is the wire shape for turn/cancelQueued (issue
@@ -976,9 +1048,10 @@ type TurnPromoteQueuedAsSteerParams struct {
 // the index is out of range (e.g. the entry was already consumed) or the
 // expected id no longer matches.
 type TurnCancelQueuedParams struct {
-	Ref             string `json:"ref"`
-	Index           int    `json:"index"`
-	ExpectedEntryID string `json:"expectedEntryId,omitempty"`
+	Ref              string `json:"ref"`
+	Index            int    `json:"index"`
+	ClientMutationID string `json:"clientMutationId"`
+	ExpectedEntryID  string `json:"expectedEntryId"`
 }
 
 // TurnCancelQueuedResponse echoes what turn/cancelQueued removed.
@@ -989,8 +1062,9 @@ type TurnCancelQueuedParams struct {
 // the user to re-attach before resending rather than silently dropping
 // them.
 type TurnCancelQueuedResponse struct {
-	RemovedText   string `json:"removedText"`
-	RemovedImages int    `json:"removedImages,omitempty"`
+	RemovedText   string          `json:"removedText"`
+	RemovedImages int             `json:"removedImages,omitempty"`
+	Receipt       MutationReceipt `json:"receipt"`
 }
 
 type ThreadCompactStartParams struct {
@@ -1239,7 +1313,7 @@ type EmptyResponse struct{}
 
 type ThreadStatusChangedParams struct {
 	ThreadID string       `json:"threadId"`
-	Ref      string       `json:"ref,omitempty"`
+	Ref      string       `json:"ref"`
 	Status   ThreadStatus `json:"status"`
 	// FailedToolCalls carries the session's running failure count (see
 	// SerfThread.FailedToolCalls) so a client WATCHING a session sees it move.
@@ -1258,7 +1332,7 @@ type ThreadStatusChangedParams struct {
 
 type AgentMessageDeltaParams struct {
 	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref,omitempty"`
+	Ref      string `json:"ref"`
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
 	Delta    string `json:"delta"`
@@ -1270,7 +1344,7 @@ type AgentMessageDeltaParams struct {
 // app-server reasoning stream so the web UI can render thinking live.
 type ReasoningSummaryDeltaParams struct {
 	ThreadID     string `json:"threadId"`
-	Ref          string `json:"ref,omitempty"`
+	Ref          string `json:"ref"`
 	TurnID       string `json:"turnId"`
 	ItemID       string `json:"itemId"`
 	SummaryIndex int    `json:"summaryIndex"`
@@ -1283,7 +1357,7 @@ type ReasoningSummaryDeltaParams struct {
 // that was already streamed.
 type AgentMessageResetParams struct {
 	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref,omitempty"`
+	Ref      string `json:"ref"`
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
 }
@@ -1292,8 +1366,8 @@ type AgentMessageResetParams struct {
 // notification. ItemID identifies the tool-call item; CallID is the legacy
 // alias kept for clients that still key on it.
 type ToolOutputDeltaParams struct {
-	ThreadID string `json:"threadId,omitempty"`
-	Ref      string `json:"ref,omitempty"`
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
 	TurnID   string `json:"turnId,omitempty"`
 	ItemID   string `json:"itemId"`
 	CallID   string `json:"callId"`
@@ -1305,7 +1379,7 @@ type ToolOutputDeltaParams struct {
 // render the session without a follow-up thread/read.
 type ThreadStartedParams struct {
 	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref,omitempty"`
+	Ref      string `json:"ref"`
 	Thread   Thread `json:"thread"`
 }
 
@@ -1314,7 +1388,7 @@ type ThreadStartedParams struct {
 // none.
 type ThreadClosedParams struct {
 	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref,omitempty"`
+	Ref      string `json:"ref"`
 	Reason   string `json:"reason,omitempty"`
 }
 
@@ -1324,11 +1398,10 @@ type ThreadResyncParams struct {
 }
 
 // TurnStartedParams is the params shape for the turn/started notification:
-// the newly opened (inProgress) turn. Its counterpart turn/completed
-// (TurnCompletedParams) deliberately carries no thread identifier.
+// the newly opened (inProgress) turn.
 type TurnStartedParams struct {
 	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref,omitempty"`
+	Ref      string `json:"ref"`
 	Turn     Turn   `json:"turn"`
 }
 
@@ -1339,7 +1412,7 @@ type TurnStartedParams struct {
 // notification method, not by shape.
 type ItemLifecycleParams struct {
 	ThreadID string     `json:"threadId"`
-	Ref      string     `json:"ref,omitempty"`
+	Ref      string     `json:"ref"`
 	TurnID   string     `json:"turnId"`
 	Item     ThreadItem `json:"item"`
 	// FailedToolCalls carries the session's running failure count (kata 895d),
@@ -1372,7 +1445,7 @@ type ItemLifecycleParams struct {
 // that render both channels do not show one error twice.
 type WarningParams struct {
 	ThreadID string           `json:"threadId"`
-	Ref      string           `json:"ref,omitempty"`
+	Ref      string           `json:"ref"`
 	Message  string           `json:"message,omitempty"`
 	Source   string           `json:"source,omitempty"`
 	Title    string           `json:"title,omitempty"`
@@ -1387,12 +1460,13 @@ type WarningParams struct {
 // "user" for human-sent steering (rendered as a user message) and omitted
 // entirely for daemon-originated steering (issue #24).
 type SerfSteeringInjectedParams struct {
-	ThreadID string      `json:"threadId"`
-	Ref      string      `json:"ref,omitempty"`
-	Text     string      `json:"text,omitempty"`
-	Images   []InputItem `json:"images,omitempty"`
-	Source   string      `json:"source,omitempty"`
-	Kind     string      `json:"kind,omitempty"`
+	ThreadID         string      `json:"threadId"`
+	Ref              string      `json:"ref"`
+	Text             string      `json:"text,omitempty"`
+	Images           []InputItem `json:"images,omitempty"`
+	Source           string      `json:"source,omitempty"`
+	Kind             string      `json:"kind,omitempty"`
+	ClientMutationID string      `json:"clientMutationId,omitempty"`
 }
 
 // SerfJobParams is the params shape shared by the serf/job/started and
@@ -1401,7 +1475,7 @@ type SerfSteeringInjectedParams struct {
 // job adds status/reason/exitCode/output), so one type describes both.
 type SerfJobParams struct {
 	ThreadID string      `json:"threadId"`
-	Ref      string      `json:"ref,omitempty"`
+	Ref      string      `json:"ref"`
 	Job      SerfJobInfo `json:"job"`
 }
 
@@ -1427,8 +1501,8 @@ type SerfLaunchUpdatedParams struct {
 // notifications (ref + threadId). Use it when you only need to know which
 // session a notification belongs to.
 type NotificationRef struct {
-	Ref      string `json:"ref,omitempty"`
-	ThreadID string `json:"threadId,omitempty"`
+	Ref      string `json:"ref"`
+	ThreadID string `json:"threadId"`
 }
 
 // EmptyParams is the typed-empty params shape used by methods that take none.

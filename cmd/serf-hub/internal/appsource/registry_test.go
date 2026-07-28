@@ -31,19 +31,23 @@ func (f fakeSource) ForkThread(context.Context, appwire.ThreadForkParams) (appwi
 func (f fakeSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	return appwire.TurnStartResponse{}, nil
 }
-func (f fakeSource) SteerTurn(context.Context, appwire.TurnSteerParams) error { return nil }
+func (f fakeSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, nil
+}
 func (f fakeSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
 	return nil
 }
-func (f fakeSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
-	return nil
+func (f fakeSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, nil
 }
-func (f fakeSource) QueueTurn(context.Context, appwire.TurnQueueParams) error { return nil }
-func (f fakeSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
-	return nil
+func (f fakeSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, nil
 }
-func (f fakeSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
-	return nil
+func (f fakeSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, nil
+}
+func (f fakeSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
 }
 func (f fakeSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	return appwire.TurnCancelQueuedResponse{}, nil

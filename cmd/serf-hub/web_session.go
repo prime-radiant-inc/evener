@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 )
 
 var (
@@ -99,7 +100,12 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	turnParams := appwire.TurnStartParams{Ref: ref, Input: inputItemsForText(body.Text)}
+	clientMutationID, err := identifier.NewSessionID()
+	if err != nil {
+		writeSessionActionError(w, r, appwire.InternalError("create turn mutation id: "+err.Error()))
+		return
+	}
+	turnParams := appwire.TurnStartParams{Ref: ref, ClientMutationID: clientMutationID, Input: inputItemsForText(body.Text)}
 	turnParams.Input = append(turnParams.Input, body.Items...)
 	startTurn := func(forceResume bool) error {
 		if forceResume {
@@ -208,7 +214,16 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 	}
 	switch action {
 	case "interrupt":
-		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, ExpectedTurnID: strings.TrimSpace(body.TurnID)})
+		clientMutationID, mutationIDErr := identifier.NewSessionID()
+		if mutationIDErr != nil {
+			err = appwire.InternalError("create interrupt mutation id: " + mutationIDErr.Error())
+			break
+		}
+		_, err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{
+			Ref:              ref,
+			ClientMutationID: clientMutationID,
+			ExpectedTurnID:   strings.TrimSpace(body.TurnID),
+		})
 	case "clear":
 		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: ref})
 	case "shutdown":

@@ -20,8 +20,28 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 )
 
+func fuzzScenarioCodexSourceUsesAdapterNativeInitialize(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodInitialize, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		if _, ok := params["protocolVersion"]; ok {
+			t.Fatalf("Codex initialize included Serf protocolVersion: %#v", params)
+		}
+		return map[string]any{"userAgent": "codex-test"}, nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []any{}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	if _, err := source.ListThreads(context.Background(), appwire.ThreadListParams{}); err != nil {
+		t.Fatalf("ListThreads after native initialize: %v", err)
+	}
+}
+
 func fuzzScenarioCodexSourceListsThreads(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		if params["searchTerm"] != "task" {
 			t.Fatalf("searchTerm=%v", params["searchTerm"])
@@ -73,13 +93,13 @@ func fuzzScenarioCodexSourceListsThreads(t *testing.T) {
 	if thread.Status.Type != appwire.ThreadStatusNotLoaded {
 		t.Fatalf("status=%+v", thread.Status)
 	}
-	if !thread.Serf.Capabilities.Send || !thread.Serf.Capabilities.Compact || thread.Serf.Capabilities.ForkFromTurn || thread.Serf.Capabilities.Steer || thread.Serf.Capabilities.Interrupt || thread.Serf.Capabilities.Shutdown {
+	if thread.Serf.Capabilities.Send || !thread.Serf.Capabilities.Compact || thread.Serf.Capabilities.ForkFromTurn || thread.Serf.Capabilities.Steer || thread.Serf.Capabilities.Interrupt || thread.Serf.Capabilities.Shutdown {
 		t.Fatalf("capabilities=%+v", thread.Serf.Capabilities)
 	}
 }
 
 func fuzzScenarioCodexSourceListThreadsTranslatesSerfStatusFilters(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		statuses, ok := params["statuses"].([]any)
 		if !ok || len(statuses) != 2 || statuses[0] != "active" || statuses[1] != "notLoaded" {
@@ -143,7 +163,7 @@ func fuzzScenarioMapCodexTurnPreservesErrorDetails(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{
 			{
@@ -181,11 +201,11 @@ func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 	active := resp.Data[0].Serf.Capabilities
-	if !active.Send || !active.Compact || !active.Steer || !active.Interrupt {
+	if active.Send || !active.Compact || active.Steer || active.Interrupt {
 		t.Fatalf("active capabilities=%+v", active)
 	}
 	idle := resp.Data[1].Serf.Capabilities
-	if !idle.Send || !idle.Compact || !idle.Steer || !idle.Interrupt {
+	if idle.Send || !idle.Compact || idle.Steer || idle.Interrupt {
 		t.Fatalf("idle capabilities=%+v", idle)
 	}
 	unloaded := resp.Data[2].Serf.Capabilities
@@ -195,7 +215,7 @@ func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	handleCodexResume(server)
 	var captured map[string]any
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -211,7 +231,7 @@ func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	resp, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
+	resp, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
@@ -232,7 +252,7 @@ func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	handleCodexResume(server)
 	var captured map[string]any
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -259,7 +279,7 @@ func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) 
 	}
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: items}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: items}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 	input, ok := captured["input"].([]any)
@@ -291,7 +311,7 @@ func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) 
 }
 
 func fuzzScenarioCodexSourceStartTurnResumesThreadBeforeStreaming(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var resumed bool
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
 		ThreadID string `json:"threadId"`
@@ -325,7 +345,7 @@ func fuzzScenarioCodexSourceStartTurnResumesThreadBeforeStreaming(t *testing.T) 
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
@@ -490,7 +510,7 @@ func assertCodexImageItems(t *testing.T, got, want []appwire.InputItem) {
 }
 
 func fuzzScenarioCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var captured map[string]any
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		captured = params
@@ -516,7 +536,7 @@ func fuzzScenarioCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	response := func(id string) map[string]any {
 		return map[string]any{
 			"thread":        codexThreadMap(id),
@@ -560,7 +580,7 @@ func fuzzScenarioCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceForkThreadRejectsEditAtTurnMetadata(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var forkCalled bool
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadFork, func(_ context.Context, _ map[string]any) (map[string]any, error) {
 		forkCalled = true
@@ -584,7 +604,7 @@ func fuzzScenarioCodexSourceForkThreadRejectsEditAtTurnMetadata(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -628,7 +648,7 @@ func fuzzScenarioCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T)
 }
 
 func fuzzScenarioCodexSourceSubscribeTreatsNoRolloutAsIdle(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
 		return nil, appwire.InvalidParams("no rollout found for thread id th_codex")
 	})
@@ -646,7 +666,7 @@ func fuzzScenarioCodexSourceSubscribeTreatsNoRolloutAsIdle(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -702,7 +722,7 @@ func fuzzScenarioCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *t
 
 func fuzzScenarioCodexSourceStartThreadRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
 	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -719,7 +739,7 @@ func fuzzScenarioCodexSourceStartThreadRetiresLiveConnectionWithoutSubscriber(t 
 }
 
 func fuzzScenarioCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -801,9 +821,8 @@ func fuzzScenarioCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySub
 			switch req.Method {
 			case appwire.MethodInitialize:
 				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
-					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
-					ProtocolVersion: appwire.ProtocolVersion,
-					SourceID:        "codex",
+					ServerInfo: appwire.ServerInfo{Name: "codex-test"},
+					SourceID:   "codex",
 				}))
 			case appwire.MethodThreadStart:
 				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
@@ -920,7 +939,7 @@ func fuzzScenarioCodexLiveThreadIsClosedAfterLastSubscriberRetires(t *testing.T)
 }
 
 func fuzzScenarioCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveConnection(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
 	})
@@ -993,9 +1012,8 @@ func fuzzScenarioCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testi
 			switch req.Method {
 			case appwire.MethodInitialize:
 				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
-					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
-					ProtocolVersion: appwire.ProtocolVersion,
-					SourceID:        "codex",
+					ServerInfo: appwire.ServerInfo{Name: "codex-test"},
+					SourceID:   "codex",
 				}))
 			case appwire.MethodThreadResume:
 				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
@@ -1022,7 +1040,7 @@ func fuzzScenarioCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testi
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 
@@ -1030,7 +1048,7 @@ func fuzzScenarioCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testi
 }
 
 func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	handleCodexResume(server)
 	var calls int
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
@@ -1053,13 +1071,13 @@ func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
 		t.Fatalf("first StartTurn: %v", err)
 	}
 	if source.liveThread("th_codex") == nil {
 		t.Fatal("first StartTurn did not cache live thread")
 	}
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "second"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "second"}}})
 	assertSessionUnavailable(t, err, t.Name())
 	if source.liveThread("th_codex") != nil {
 		t.Fatal("transport-shaped live StartTurn failure left stale live thread cached")
@@ -1068,7 +1086,7 @@ func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *
 
 func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
 	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	handleCodexResume(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
 		if params["threadId"] != "th_codex" {
@@ -1086,7 +1104,7 @@ func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *t
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 
@@ -1179,7 +1197,7 @@ func assertNoNotification(t *testing.T, notifications <-chan appwire.Notificatio
 }
 
 func fuzzScenarioCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var includeTurnsValues []any
 	var itemsViewValues []any
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -1210,7 +1228,7 @@ func fuzzScenarioCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *t
 }
 
 func fuzzScenarioCodexSourceSubscribeTranslatesNotifications(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
 		ThreadID string `json:"threadId"`
 	}) (map[string]any, error) {
@@ -1257,7 +1275,7 @@ func fuzzScenarioCodexSourceSubscribeTranslatesNotifications(t *testing.T) {
 }
 
 func fuzzScenarioCodexSourceTurnCompletedNotificationIncludesCanonicalRef(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
 		ThreadID string `json:"threadId"`
 	}) (map[string]any, error) {
@@ -1458,7 +1476,7 @@ func fuzzScenarioCodexSourceStartTurnMapsDialRefusedToSessionUnavailable(t *test
 	}
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: endpoint}, nil)
-	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	assertSessionUnavailable(t, err, t.Name())
 }
 
@@ -1484,9 +1502,8 @@ func fuzzScenarioCodexSourceStartTurnMapsDroppedTransportToSessionUnavailable(t 
 			switch req.Method {
 			case appwire.MethodInitialize:
 				_ = transport.Send(r.Context(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
-					ServerInfo:      appwire.ServerInfo{Name: "codex-test"},
-					ProtocolVersion: appwire.ProtocolVersion,
-					SourceID:        "codex",
+					ServerInfo: appwire.ServerInfo{Name: "codex-test"},
+					SourceID:   "codex",
 				}))
 			default:
 				_ = conn.Close(websocket.StatusAbnormalClosure, "dropped")
@@ -1497,12 +1514,12 @@ func fuzzScenarioCodexSourceStartTurnMapsDroppedTransportToSessionUnavailable(t 
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	assertSessionUnavailable(t, err, t.Name())
 }
 
 func fuzzScenarioCodexSourceStartTurnPassesThroughApplicationErrors(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ struct {
 		ThreadID string `json:"threadId"`
 	}) (map[string]any, error) {
@@ -1512,7 +1529,7 @@ func fuzzScenarioCodexSourceStartTurnPassesThroughApplicationErrors(t *testing.T
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	if err == nil {
 		t.Fatal("StartTurn unexpectedly succeeded")
 	}

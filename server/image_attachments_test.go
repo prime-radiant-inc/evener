@@ -42,11 +42,11 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref: "local:th_qimg",
 		Input: []appwire.InputItem{{Type: "text", Text: "queued describe"}, {
 			Type:      "image",
@@ -114,11 +114,11 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	srv.SetQueueDepthFunc(sess.QueueDepth)
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn",
 		Ref: "local:" + sess.ID(),
 		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
@@ -130,7 +130,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 		raw, _ := json.Marshal(r)
 		t.Fatalf("turn/queue: %s", raw)
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0,
 		Ref: "local:" + sess.ID(),
 	})); r.Kind() != appwire.MessageResponse {
 		raw, _ := json.Marshal(r)
@@ -185,11 +185,11 @@ func TestServerAppWireTurnStartImageItemReachesInputCh(t *testing.T) {
 	srv.SetAppIdentity("local", "th_img1")
 
 	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref: "local:th_img1",
 		Input: append([]appwire.InputItem{{Type: "text", Text: "describe this"}}, appwire.InputItem{
 			Type:      "image",

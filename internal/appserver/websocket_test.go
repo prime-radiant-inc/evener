@@ -31,7 +31,7 @@ func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	if _, err := client.ThreadList(ctx, appwire.ThreadListParams{}); err == nil {
 		t.Fatal("ThreadList before initialize succeeded")
 	}
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadList(ctx, appwire.ThreadListParams{})
@@ -61,7 +61,7 @@ func TestServeWebSocketPushesNotificationsToSubscribedThread(t *testing.T) {
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
 
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {

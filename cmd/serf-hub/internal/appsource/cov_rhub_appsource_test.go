@@ -143,9 +143,8 @@ func fuzzScenarioMapThread(t *testing.T) {
 	if out.Serf.Ref != "codex:th_1" {
 		t.Fatalf("Serf.Ref=%q, want codex:th_1", out.Serf.Ref)
 	}
-	// idle threads support steer/interrupt.
-	if !out.Serf.Capabilities.Steer || !out.Serf.Capabilities.Interrupt {
-		t.Fatalf("idle thread must advertise steer/interrupt: %+v", out.Serf.Capabilities)
+	if out.Serf.Capabilities.Send || out.Serf.Capabilities.Steer || out.Serf.Capabilities.Interrupt {
+		t.Fatalf("codex thread advertises mutations: %+v", out.Serf.Capabilities)
 	}
 	if len(out.Turns) != 1 || out.Turns[0].ID != "tn_1" {
 		t.Fatalf("turns not mapped: %+v", out.Turns)
@@ -380,15 +379,34 @@ func fuzzScenarioCodexSourceMetadata(t *testing.T) {
 func fuzzScenarioCodexSourceUnavailableMethods(t *testing.T) {
 	s := newTestCodexSource()
 	ctx := context.Background()
+	assertUnavailable := func(name string, err error) {
+		t.Helper()
+		wire, ok := err.(appwire.WireError)
+		if !ok || wire.Code != appwire.CodeUnavailable {
+			t.Errorf("%s error = %#v, want unavailable", name, err)
+		}
+	}
 
 	if err := s.ShutdownThread(ctx, appwire.ThreadShutdownParams{}); err == nil {
 		t.Error("ShutdownThread should be unavailable")
 	}
-	if err := s.QueueTurn(ctx, appwire.TurnQueueParams{}); err == nil {
-		t.Error("QueueTurn should be unavailable")
+	mutations := []struct {
+		name string
+		call func() error
+	}{
+		{"turn/start", func() error { _, err := s.StartTurn(ctx, appwire.TurnStartParams{}); return err }},
+		{"turn/steer", func() error { _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{}); return err }},
+		{"turn/interrupt", func() error { _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{}); return err }},
+		{"turn/queue", func() error { _, err := s.QueueTurn(ctx, appwire.TurnQueueParams{}); return err }},
+		{"turn/drainAsSteer", func() error { _, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{}); return err }},
+		{"turn/promoteQueuedAsSteer", func() error {
+			_, err := s.PromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{})
+			return err
+		}},
+		{"turn/cancelQueued", func() error { _, err := s.CancelQueued(ctx, appwire.TurnCancelQueuedParams{}); return err }},
 	}
-	if err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{}); err == nil {
-		t.Error("DrainAsSteer should be unavailable")
+	for _, mutation := range mutations {
+		assertUnavailable(mutation.name, mutation.call())
 	}
 	if err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{}); err == nil {
 		t.Error("SetThreadModel should be unavailable")
@@ -414,14 +432,14 @@ func fuzzScenarioCodexSourceTurnActionPreConnectValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Bad ref (wrong source) fails before any dial.
-	if err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: "other:th_1", ExpectedTurnID: "tn_1"}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "other:th_1", ExpectedTurnID: "tn_1"}); err == nil {
 		t.Error("SteerTurn with foreign ref should error")
 	}
 	// Missing expectedTurnId is rejected even with a valid ref.
-	if err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: "codex:th_1"}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: "codex:th_1"}); err == nil {
 		t.Error("SteerTurn without expectedTurnId should error")
 	}
-	if err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: "codex:th_1"}); err == nil {
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "codex:th_1"}); err == nil {
 		t.Error("InterruptTurn without expectedTurnId should error")
 	}
 	if err := s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: "other:th_1"}); err == nil {

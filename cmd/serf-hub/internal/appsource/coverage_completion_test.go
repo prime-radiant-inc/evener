@@ -59,22 +59,22 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if _, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref}); err != nil {
+	if _, err := source.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.SteerTurn(ctx, appwire.TurnSteerParams{Ref: ref}); err != nil {
+	if _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: ref, ExpectedTurnID: "turn"}); err != nil {
+	if _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.QueueTurn(ctx, appwire.TurnQueueParams{Ref: ref}); err != nil {
+	if _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: ref}); err != nil {
+	if _, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
@@ -199,23 +199,38 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 	ctx := context.Background()
 	ref := "local:missing"
 	calls := map[string]func() error{
-		"read":       func() error { _, err := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
-		"turns":      func() error { _, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref}); return err },
-		"start turn": func() error { _, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: ref}); return err },
-		"steer":      func() error { return s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: ref}) },
-		"resolve":    func() error { return s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}) },
-		"interrupt":  func() error { return s.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: ref}) },
-		"queue":      func() error { return s.QueueTurn(ctx, appwire.TurnQueueParams{Ref: ref}) },
-		"drain":      func() error { return s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: ref}) },
-		"compact":    func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
-		"shutdown":   func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
-		"model":      func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
-		"effort":     func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
-		"name":       func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
-		"goal":       func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
-		"clear":      func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
-		"tasks":      func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
-		"subscribe":  func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
+		"read":  func() error { _, err := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
+		"turns": func() error { _, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref}); return err },
+		"start turn": func() error {
+			_, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref})
+			return err
+		},
+		"steer": func() error {
+			_, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref})
+			return err
+		},
+		"resolve": func() error { return s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: ref}) },
+		"interrupt": func() error {
+			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref})
+			return err
+		},
+		"queue": func() error {
+			_, err := s.QueueTurn(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref})
+			return err
+		},
+		"drain": func() error {
+			_, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref})
+			return err
+		},
+		"compact":   func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
+		"shutdown":  func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
+		"model":     func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
+		"effort":    func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
+		"name":      func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
+		"goal":      func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
+		"clear":     func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
+		"tasks":     func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
+		"subscribe": func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
 	}
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
@@ -233,7 +248,7 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 }
 
 func fuzzScenarioCodexSourceRemainingRPCSurface(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(context.Context, map[string]any) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{"id": "turn", "status": "completed"}}, "nextCursor": "next"}, nil
 	})
@@ -252,17 +267,17 @@ func fuzzScenarioCodexSourceRemainingRPCSurface(t *testing.T) {
 	if err != nil || len(turns.Data) != 1 || turns.NextCursor != "next" {
 		t.Fatalf("turns = %+v, %v", turns, err)
 	}
-	if err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: ref}); err == nil {
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref}); err == nil {
 		t.Fatal("steer without turn accepted")
 	}
-	if err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: ref, ExpectedTurnID: "turn", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}}); err != nil {
-		t.Fatal(err)
+	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}}); err == nil {
+		t.Fatal("codex steer unexpectedly supported")
 	}
-	if err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: ref}); err == nil {
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: ref}); err == nil {
 		t.Fatal("interrupt without turn accepted")
 	}
-	if err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: ref, ExpectedTurnID: "turn"}); err != nil {
-		t.Fatal(err)
+	if _, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", Ref: ref, ExpectedTurnID: "turn"}); err == nil {
+		t.Fatal("codex interrupt unexpectedly supported")
 	}
 	if err := s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
 		t.Fatal(err)
@@ -289,10 +304,22 @@ func fuzzScenarioCodexSourceRejectsInvalidReferencesAcrossRPCSurface(t *testing.
 		func() error { _, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{}); return err },
 		func() error { _, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{}); return err },
 		func() error { _, err := s.ForkThread(ctx, appwire.ThreadForkParams{}); return err },
-		func() error { _, err := s.StartTurn(ctx, appwire.TurnStartParams{}); return err },
-		func() error { _, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{}); return err },
-		func() error { return s.SteerTurn(ctx, appwire.TurnSteerParams{}) },
-		func() error { return s.InterruptTurn(ctx, appwire.TurnInterruptParams{}) },
+		func() error {
+			_, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
+			return err
+		},
+		func() error {
+			_, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
+			return err
+		},
+		func() error {
+			_, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation"})
+			return err
+		},
+		func() error {
+			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation"})
+			return err
+		},
 		func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{}) },
 		func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{}); return err },
 	}

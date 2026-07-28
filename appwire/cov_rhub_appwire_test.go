@@ -324,7 +324,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 // don't need another round trip.
 func TestClientInitializeCachesFeatures(t *testing.T) {
 	resp := InitializeResponse{
-		ProtocolVersion: "1",
+		ProtocolVersion: ProtocolVersion,
 		SourceID:        "src",
 		Features:        FeatureSet{ThreadList: true, TurnSteer: true},
 	}

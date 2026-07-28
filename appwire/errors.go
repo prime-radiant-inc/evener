@@ -13,19 +13,40 @@ const (
 type ErrorInfo string
 
 const (
-	ErrorInvalidParams       ErrorInfo = "invalidParams"
-	ErrorMethodNotFound      ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable  ErrorInfo = "sessionUnavailable"
-	ErrorConflict            ErrorInfo = "conflict"
-	ErrorActionUnavailable   ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch           ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial  ErrorInfo = "queuedDrainPartial"
-	ErrorInternal            ErrorInfo = "internal"
+	ErrorInvalidParams          ErrorInfo = "invalidParams"
+	ErrorMethodNotFound         ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable    ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable     ErrorInfo = "sessionUnavailable"
+	ErrorConflict               ErrorInfo = "conflict"
+	ErrorActionUnavailable      ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch              ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial     ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown ErrorInfo = "mutationOutcomeUnknown"
+	ErrorInternal               ErrorInfo = "internal"
+)
+
+type MutationOutcome string
+
+const (
+	MutationOutcomeNotAccepted   MutationOutcome = "notAccepted"
+	MutationOutcomeUnknown       MutationOutcome = "unknown"
+	MutationOutcomeTargetDeleted MutationOutcome = "targetDeleted"
+)
+
+type RetryDisposition string
+
+const (
+	RetryDispositionAutomatic RetryDisposition = "automatic"
+	RetryDispositionBlocked   RetryDisposition = "blocked"
+	RetryDispositionNone      RetryDisposition = "none"
 )
 
 type ErrorData struct {
-	SerfErrorInfo ErrorInfo `json:"serfErrorInfo"`
+	SerfErrorInfo    ErrorInfo        `json:"serfErrorInfo"`
+	ClientMutationID string           `json:"clientMutationId,omitempty"`
+	MutationOutcome  MutationOutcome  `json:"mutationOutcome,omitempty"`
+	RetryDisposition RetryDisposition `json:"retryDisposition,omitempty"`
+	Cause            string           `json:"cause,omitempty"`
 }
 
 type WireError struct {

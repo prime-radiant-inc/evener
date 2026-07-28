@@ -4,6 +4,7 @@
     "detail": "initialize",
     "decoded": true,
     "output": {
+      "protocolVersion": "1",
       "clientInfo": {
         "name": "x",
         "version": ""
@@ -46,6 +47,7 @@
     "detail": "initialize",
     "decoded": true,
     "output": {
+      "protocolVersion": "",
       "clientInfo": {
         "name": "",
         "version": ""
@@ -65,6 +67,7 @@
     "detail": "initialize",
     "decoded": true,
     "output": {
+      "protocolVersion": "",
       "clientInfo": {
         "name": "",
         "version": ""

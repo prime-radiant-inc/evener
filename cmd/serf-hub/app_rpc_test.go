@@ -80,7 +80,7 @@ func TestHubRPCAdvertisesTurnListsWithHandlers(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	init, err := client.Initialize(context.Background(), appwire.InitializeParams{})
+	init, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})
@@ -464,7 +464,7 @@ func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{SearchTerm: "second task"})
@@ -520,7 +520,7 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})
@@ -864,7 +864,7 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
@@ -889,7 +889,7 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
@@ -984,7 +984,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1056,7 +1056,7 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1112,7 +1112,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
@@ -1144,7 +1144,7 @@ func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testi
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + sessionID, IncludeTurns: true})
@@ -1183,7 +1183,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + sessionID, IncludeTurns: true})
@@ -1229,7 +1229,7 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
@@ -1283,7 +1283,7 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img"}); err != nil {
@@ -1375,7 +1375,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 
 	clientA := dialHubRPC(t, srv)
 	defer clientA.Close()
-	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize clientA: %v", err)
 	}
 	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + threadID}); err != nil {
@@ -1383,7 +1383,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	}
 	clientB := dialHubRPC(t, srv)
 	defer clientB.Close()
-	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize clientB: %v", err)
 	}
 	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:" + threadID}); err != nil {
@@ -1462,7 +1462,7 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
@@ -1514,7 +1514,7 @@ func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) 
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1573,7 +1573,7 @@ func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *test
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -1667,7 +1667,7 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -1792,7 +1792,7 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -1888,7 +1888,7 @@ func TestHubRelayNoSyntheticFailureWithoutActiveTurn(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -1952,7 +1952,7 @@ func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNot
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -2035,7 +2035,7 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 	defer srv.Close()
 
 	client := dialHubRPC(t, srv)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -2088,7 +2088,7 @@ func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
 
 	replacementClient := dialHubRPC(t, srv)
 	defer replacementClient.Close()
-	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize replacement client: %v", err)
 	}
 	replacementReadErr := make(chan error, 1)
@@ -2150,7 +2150,7 @@ func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.
 	defer srv.Close()
 
 	client := dialHubRPC(t, srv)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
@@ -2188,7 +2188,7 @@ func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.
 
 	replacementClient := dialHubRPC(t, srv)
 	defer replacementClient.Close()
-	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize replacement: %v", err)
 	}
 	replacementRead := make(chan error, 1)
@@ -2239,7 +2239,7 @@ func TestHubRPCThreadReadRereadJoinsRelayRecovery(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -2336,7 +2336,7 @@ func TestHubRPCThreadReadReplacementStopsOldRelayRecovery(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	readErr := make(chan error, 1)
@@ -3080,7 +3080,7 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:th_a", Subscribe: true, ReplaceSubscription: true}); err != nil {
@@ -3156,7 +3156,7 @@ func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 	defer srv.Close()
 
 	client := dialHubRPC(t, srv)
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
@@ -3204,7 +3204,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
@@ -3222,7 +3222,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
 	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
@@ -3293,7 +3293,7 @@ func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *te
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
@@ -3303,7 +3303,7 @@ func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *te
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
 	rereadResult := make(chan error, 1)
@@ -3379,7 +3379,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
 	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
@@ -3398,7 +3398,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
 	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
@@ -3449,12 +3449,12 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 
 	client1 := dialHubRPC(t, srv)
 	defer client1.Close()
-	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
 	client2 := dialHubRPC(t, srv)
 	defer client2.Close()
-	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
 
@@ -3518,7 +3518,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 
 	failedClient := dialHubRPC(t, srv)
 	defer failedClient.Close()
-	if _, err := failedClient.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := failedClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize failedClient: %v", err)
 	}
 	if _, err := failedClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err == nil || !strings.Contains(err.Error(), "subscribe failed once") {
@@ -3527,7 +3527,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 
 	okClient := dialHubRPC(t, srv)
 	defer okClient.Close()
-	if _, err := okClient.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := okClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize okClient: %v", err)
 	}
 	if _, err := okClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
@@ -3942,28 +3942,28 @@ func (s *relayLifecycleSource) StartTurn(context.Context, appwire.TurnStartParam
 	return appwire.TurnStartResponse{}, appwire.Unavailable("relay lifecycle source does not start turns")
 }
 
-func (s *relayLifecycleSource) SteerTurn(context.Context, appwire.TurnSteerParams) error {
-	return appwire.Unavailable("relay lifecycle source does not steer turns")
+func (s *relayLifecycleSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, appwire.Unavailable("relay lifecycle source does not steer turns")
 }
 
 func (s *relayLifecycleSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
 	return appwire.Unavailable("relay lifecycle source does not resolve escalations")
 }
 
-func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
-	return appwire.Unavailable("relay lifecycle source does not interrupt turns")
+func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, appwire.Unavailable("relay lifecycle source does not interrupt turns")
 }
 
-func (s *relayLifecycleSource) QueueTurn(context.Context, appwire.TurnQueueParams) error {
-	return appwire.Unavailable("relay lifecycle source does not queue turns")
+func (s *relayLifecycleSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, appwire.Unavailable("relay lifecycle source does not queue turns")
 }
 
-func (s *relayLifecycleSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
-	return appwire.Unavailable("relay lifecycle source does not drain as steer")
+func (s *relayLifecycleSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("relay lifecycle source does not drain as steer")
 }
 
-func (s *relayLifecycleSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
-	return appwire.Unavailable("relay lifecycle source does not promote queued messages")
+func (s *relayLifecycleSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("relay lifecycle source does not promote queued messages")
 }
 
 func (s *relayLifecycleSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
@@ -4308,7 +4308,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:th_1"}); err != nil {
@@ -4407,7 +4407,7 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:" + sessionID}); err != nil {
@@ -4484,7 +4484,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
@@ -4545,7 +4545,7 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"})
@@ -4609,7 +4609,7 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:th_1", Objective: "do it"})
@@ -4663,7 +4663,7 @@ func TestHubRPCModelListUsesSerfLaunchContractWhenDaemonFails(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
@@ -4700,7 +4700,7 @@ func TestHubRPCModelListFallsBackToLocalDaemonWithoutLaunchContract(t *testing.T
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
@@ -4742,7 +4742,7 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
@@ -4773,7 +4773,7 @@ func TestHubRPCModelListUsesWorkingDirForSerfLaunchContract(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: "/tmp/project-with-oauth"})
@@ -4786,7 +4786,7 @@ func TestHubRPCModelListUsesWorkingDirForSerfLaunchContract(t *testing.T) {
 }
 
 func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local", AdapterNativeInitialize: true})
 	var gotParams appwire.ModelListParams
 	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		gotParams = params
@@ -4810,7 +4810,7 @@ func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-local"})
@@ -4854,7 +4854,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testin
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
@@ -4901,7 +4901,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
@@ -4922,7 +4922,7 @@ func TestHubRPCModelListReportsSerfLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-serf")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"serf-appwire-v1","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  printf '{"protocol":"serf-appwire-v2","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -4938,7 +4938,7 @@ exit 2
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp struct {
@@ -4984,7 +4984,7 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5051,7 +5051,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5095,7 +5095,7 @@ func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	nonInteractive := true
@@ -5131,7 +5131,7 @@ func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	nonInteractive := true
@@ -5167,7 +5167,7 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5244,7 +5244,7 @@ func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *te
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5287,7 +5287,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5330,7 +5330,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5368,7 +5368,7 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5408,7 +5408,7 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5445,7 +5445,7 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5493,7 +5493,7 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5560,7 +5560,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5577,7 +5577,7 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 }
 
 func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var startCalled bool
 	var turnCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -5629,7 +5629,7 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5660,7 +5660,7 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5687,7 +5687,7 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5736,7 +5736,7 @@ func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex-managed:th_fake"})
@@ -5768,7 +5768,7 @@ func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex-managed:th_fake"})
@@ -5804,15 +5804,11 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if resp.Turn.ID != "turn_fake" {
-		t.Fatalf("turn=%+v", resp.Turn)
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
+		t.Fatal("TurnStart succeeded for Codex source")
 	}
 	next := launcherRunningProcess(t, launcher, "codex-managed")
 	if next == first {
@@ -5930,7 +5926,7 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 }
 
 func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var startCalled bool
 	var turnCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
@@ -5959,7 +5955,7 @@ func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
@@ -5990,7 +5986,7 @@ func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp struct {
@@ -6047,7 +6043,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: "sess_old"})
@@ -6060,7 +6056,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var resumeCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		resumeCalled = true
@@ -6089,7 +6085,7 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_codex"})
@@ -6105,7 +6101,7 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 }
 
 func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var readCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		readCalled = true
@@ -6133,7 +6129,7 @@ func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
@@ -6149,7 +6145,7 @@ func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
 }
 
 func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var compactCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		if params["threadId"] != "th_codex" {
@@ -6183,7 +6179,7 @@ func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "codex:th_codex"}); err != nil {
@@ -6195,7 +6191,7 @@ func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
 }
 
 func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var forkCalled bool
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		if params["threadId"] != "th_codex" {
@@ -6233,7 +6229,7 @@ func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_codex"})
@@ -6272,7 +6268,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
@@ -6327,7 +6323,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
@@ -6378,7 +6374,7 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_resume_relay"})
@@ -6456,10 +6452,10 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if gotPrompt != "resume work" {
@@ -6511,10 +6507,10 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	client := dialHubRPC(t, srv)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if prompt := source.lastStartPrompt(); prompt != "resume after relay" {
@@ -6568,10 +6564,10 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "session is processing") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -6623,10 +6619,10 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -6681,13 +6677,13 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
@@ -6790,10 +6786,10 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -6911,10 +6907,10 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "codex-managed:th_managed",
 		Input: []appwire.InputItem{{Type: "text", Text: "keep going"}},
 	})
@@ -7003,10 +6999,10 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	client := dialHubRPC(t, srv)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		Ref:   "codex:th_unknown",
 		Input: []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
@@ -7052,7 +7048,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
@@ -7106,7 +7102,7 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{})
@@ -7189,7 +7185,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
@@ -7240,7 +7236,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_whole_fork"})
@@ -7281,7 +7277,7 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 
 	client := dialHubRPC(t, srv)
 	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
@@ -7317,7 +7313,7 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
@@ -7360,7 +7356,7 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
@@ -7412,7 +7408,7 @@ func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
@@ -7632,7 +7628,7 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	var resp appwire.InstanceListResponse
@@ -7678,7 +7674,7 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -7714,7 +7710,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -7750,7 +7746,7 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -7787,7 +7783,7 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -7866,7 +7862,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 

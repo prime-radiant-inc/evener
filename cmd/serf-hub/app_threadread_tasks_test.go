@@ -121,7 +121,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 		return &appwire.TaskAggregate{Total: len(tasks), Done: done}
 	})
 	conn := live.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	response := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:" + sess.ID()}))
 	liveRead, ok := response.Response.Result.(appwire.ThreadReadResponse)
 	if !ok {
