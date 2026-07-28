@@ -133,10 +133,10 @@ export class AppwireClient {
   // connect is idempotent: concurrent/repeated calls share the single
   // initialize+initialized handshake and its result.
   connect(): Promise<InitializeResponse> {
+    if (this.isClosed()) {
+      return Promise.reject(new ConnectionClosedError("AppwireClient: closed"));
+    }
     if (!this.connectPromise) {
-      if (this.isClosed()) {
-        return Promise.reject(new ConnectionClosedError("AppwireClient: closed"));
-      }
       this.connectPromise = this.performHandshake();
     }
     return this.connectPromise;

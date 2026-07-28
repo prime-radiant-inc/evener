@@ -105,6 +105,32 @@ describe("AppwireClient", () => {
     expect(sentFrames(fake).filter((f) => f.method === "initialize")).toHaveLength(1);
   });
 
+  test("connect after a successful connection is closed rejects as closed without creating a socket", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: true });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connecting = client.connect();
+    const socket = sockets[0];
+    if (!socket) throw new Error("expected the initial socket");
+    socket.open();
+    await connecting;
+    expect(client.connect()).toBe(connecting);
+
+    client.close();
+    const afterClose = client.connect();
+    const rejection = expect(afterClose).rejects.toBeInstanceOf(ConnectionClosedError);
+
+    await rejection;
+    expect(sockets).toHaveLength(1);
+  });
+
   test("connect after close rejects as closed without creating a socket", async () => {
     const sockets: FakeSocket[] = [];
     const client = new AppwireClient({
@@ -148,13 +174,20 @@ describe("AppwireClient", () => {
     });
   });
 
-  test("connect rejects and closes when the server rejects initialize", async () => {
+  test("connect after a terminal initialize failure rejects as closed without creating a socket", async () => {
     const fake = new FakeSocket({ autoInitialize: false });
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    let socketsCreated = 0;
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        socketsCreated += 1;
+        return fake;
+      },
+    });
 
     const connecting = client.connect();
-    fake.open();
     const rejection = expect(connecting).rejects.toBeInstanceOf(WireError);
+    fake.open();
 
     // Let performHandshake resume past waitForOpen and actually send
     // "initialize" before replying to it.
@@ -164,6 +197,12 @@ describe("AppwireClient", () => {
 
     await rejection;
     expect(client.state).toBe("closed");
+
+    const afterFailure = client.connect();
+    const terminalRejection = expect(afterFailure).rejects.toBeInstanceOf(ConnectionClosedError);
+
+    await terminalRejection;
+    expect(socketsCreated).toBe(1);
   });
 
   test("request resolves the matching id and types the result", async () => {
