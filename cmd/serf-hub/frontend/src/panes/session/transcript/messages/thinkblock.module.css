@@ -1,6 +1,8 @@
 /* The quietest layer in the transcript (mockup #5): never out-shouts the
- * agent's own prose. Live streams fully open at reduced contrast; settled
- * collapses to a single ink-low summary line. */
+ * agent's own prose — quiet through INK, not size. Thinking is body text
+ * like the turns around it (Jesse's review call: caption-sized thoughts
+ * read as footnotes, and they are not footnotes). Live streams fully open
+ * at reduced contrast; settled collapses to a single ink-low summary line. */
 .block {
   padding: var(--space-1) 0;
 }
@@ -32,7 +34,7 @@
   white-space: pre-wrap;
   overflow-wrap: break-word;
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-body);
   line-height: var(--line-height-body);
   --prose-ink: var(--ink-mid);
 }
@@ -101,7 +103,7 @@
   white-space: nowrap;
   border-radius: var(--radius-control);
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-size: var(--font-size-body);
   color: var(--ink-low);
 }
 

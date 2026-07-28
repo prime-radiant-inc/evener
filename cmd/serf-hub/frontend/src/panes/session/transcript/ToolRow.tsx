@@ -3,20 +3,23 @@
 // only its own CONTENT (what the verb/target is, what meta it shows, what its
 // expanded body looks like), never how the row is arranged.
 //
-// THE ROW GRAMMAR, one line, in document order:
+// THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
-//     [chevron?] [✗ failure glyph?] [purpose] verb target [· meta] [affordances]
+//     line 1: [✗ failure glyph?] [status?] purpose [affordances] [chevron?]
+//     line 2: verb target [· meta] [· duration]
 //
-//   - a COLLAPSED row with both a purpose and a summary composes them onto
-//     ONE line: purpose — summary · duration, the summary demoted, both
-//     ellipsis-clamped (full text on title). An expanded row stacks the
-//     purpose above its revealed body instead.
-//   - the chevron LEADS, appearing only when there is something to expand. It
-//     sits against the content it opens, the way a tree twisty does, rather
-//     than in a right-hand rail: at the far edge of a 76rem reading measure it
-//     was separated from its own row by up to a full column of whitespace, so
-//     the one cue that a row had more to show was the furthest thing from the
-//     row;
+//   - a COLLAPSED row with both a purpose and a summary STACKS them: the
+//     purpose (the agent's stated rationale, italic) on the first line, the
+//     verb/target summary demoted to a quiet mono second line,
+//     ellipsis-clamped (full text on title). Composing both onto one line
+//     was tried (tiered density) and reverted on review: two clamped,
+//     truncated fragments read worse than one full line plus one clamped
+//     one.
+//   - the chevron TRAILS, at the end of the first line: the purpose's
+//     flex-grow pushes it to the right edge, and the demoted second line's
+//     `order: 1` keeps it up on the first. (It led, tree-twisty style, for
+//     a while — see git history for the 76rem-measure argument; Jesse
+//     called the trailing placement back in review.)
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the purpose is the agent's own stated reason for the call
@@ -25,8 +28,8 @@
 //   - verb/target/meta are one string the descriptor's summary() produced;
 //   - affordances are trailing controls (e.g. "Open beside").
 //
-// A row with no inline body is a single line: no reserved glyph column, no
-// separate meta row, no chevron.
+// A row with no purpose is a single line: summary, then affordances, then
+// the chevron if there is something to expand.
 import type { ReactNode } from "react";
 import { Chevron, FailureGlyph } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -36,7 +39,6 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
-  separator: requireClass(styles.separator, "toolcallitem.module.css", "separator"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   duration: requireClass(styles.duration, "toolcallitem.module.css", "duration"),
@@ -96,19 +98,8 @@ export function ToolRow({
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
-  const oneLine = hasPurpose && hasSummary && !expanded;
   const content = (
     <>
-      {expandable && (
-        <span
-          className={CLASS.chevron}
-          aria-hidden="true"
-          data-open={expanded ? "true" : "false"}
-          data-testid="tool-row-chevron"
-        >
-          <Chevron />
-        </span>
-      )}
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.
           That is the OPPOSITE of the rail's signal gutter (shell/rail, which
           always reserves 6px) and it is deliberate: the rail needs one stable
@@ -122,20 +113,15 @@ export function ToolRow({
         </span>
       )}
       {hasPurpose && (
-        <span className={CLASS.purpose} data-testid="tool-row-purpose" title={oneLine ? statedPurpose : undefined}>
+        <span className={CLASS.purpose} data-testid="tool-row-purpose">
           {statedPurpose}
-        </span>
-      )}
-      {oneLine && (
-        <span className={CLASS.separator} aria-hidden="true">
-          {" — "}
         </span>
       )}
       {hasSummary && (
         <span
           className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary}
           data-testid="tool-row-summary"
-          title={oneLine ? summary : undefined}
+          title={hasPurpose ? summary : undefined}
         >
           {summary}
           {/* Nested rather than appended to `summary` itself: a stable hook to
@@ -151,18 +137,25 @@ export function ToolRow({
         </span>
       )}
       {trailing}
+      {/* The chevron TRAILS (see the grammar above): last in document order,
+          pushed to the end of the first line by the purpose's flex-grow, and
+          held off the demoted second line by that line's `order: 1`. */}
+      {expandable && (
+        <span
+          className={CLASS.chevron}
+          aria-hidden="true"
+          data-open={expanded ? "true" : "false"}
+          data-testid="tool-row-chevron"
+        >
+          <Chevron />
+        </span>
+      )}
     </>
   );
 
   if (!expandable) {
     return (
-      <div
-        className={CLASS.row}
-        data-testid="tool-row"
-        data-oneline={oneLine ? "true" : undefined}
-        data-purpose={hasPurpose ? "true" : undefined}
-        title={title}
-      >
+      <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
         {content}
       </div>
     );
@@ -183,7 +176,6 @@ export function ToolRow({
     <summary
       className={CLASS.row}
       data-testid="tool-row"
-      data-oneline={oneLine ? "true" : undefined}
       data-purpose={hasPurpose ? "true" : undefined}
       title={title}
       aria-expanded={expanded}

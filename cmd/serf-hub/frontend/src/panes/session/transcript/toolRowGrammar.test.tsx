@@ -47,7 +47,7 @@ test("a non-expandable row renders the summary in the shared row element", () =>
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran ls");
 });
 
-test("collapsed row with purpose and summary composes one line", () => {
+test("a purpose-bearing row stacks: purpose on line 1, demoted summary on line 2 - never one composed line", () => {
   render(
     <ToolRow
       summary="npm test -- src/foo"
@@ -59,11 +59,16 @@ test("collapsed row with purpose and summary composes one line", () => {
     />,
   );
   const row = screen.getByTestId("tool-row");
-  expect(row.dataset.oneline).toBe("true");
-  expect(row.textContent).toBe("Running the foo tests — npm test -- src/foo");
+  // No em-dash composition separator: the two spans are separate lines (the
+  // one-line compose was tried in tiered density and reverted on review).
+  expect(row.textContent).toBe("Running the foo testsnpm test -- src/foo");
+  // The demoted second line ellipsis-clamps, so the full summary rides the
+  // hover title; the unclamped purpose needs none.
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe("npm test -- src/foo");
+  expect(screen.getByTestId("tool-row-purpose").getAttribute("title")).toBe(null);
 });
 
-test("expanded row keeps the stacked grammar", () => {
+test("an expanded row has the same stacked grammar - open vs collapsed differs only in the body below", () => {
   render(
     <ToolRow
       summary="npm test -- src/foo"
@@ -74,12 +79,14 @@ test("expanded row keeps the stacked grammar", () => {
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tool-row").dataset.oneline).toBeUndefined();
+  expect(screen.getByTestId("tool-row").textContent).toBe("Running the foo testsnpm test -- src/foo");
 });
 
-test("purpose-less rows are unaffected", () => {
+test("a purpose-less row is a single line: summary, then the trailing chevron", () => {
   render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
-  expect(screen.getByTestId("tool-row").dataset.oneline).toBeUndefined();
+  const row = screen.getByTestId("tool-row");
+  expect(row.textContent).toBe("npm test");
+  expect(row.lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("an expandable row renders as a <summary> so it is natively keyboard-operable", () => {
@@ -160,21 +167,15 @@ test("statedPurposeOf is the one absent-vs-present rule both surfaces share", ()
 
 // --- A2: failure is a glyph on the left; success costs no space -----------
 
-// The chevron is row CHROME - the twisty that opens the row - and sits outside
-// the row's content the way a file tree's does, so on an expandable row it,
-// not the glyph, is the first element. What A2 actually promises is that
-// failure leads the CONTENT: nothing a reader would call part of the call
-// itself comes before it.
-test("a failed call renders the failure glyph ahead of everything but the chevron", () => {
+// The chevron is row CHROME and trails the row (see the grammar), so on a
+// failed row the glyph itself is the first element. What A2 actually promises
+// is that failure leads the CONTENT: nothing a reader would call part of the
+// call itself comes before it.
+test("a failed call leads with the failure glyph", () => {
   registerToolRenderer({ match: "trg_failed", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "trg_failed", error: "boom" })} turn={turn} live={false} />);
   const row = screen.getByTestId("tool-row");
-  const glyph = screen.getByTestId("failure-glyph");
-  const before = Array.from(row.children).slice(0, Array.from(row.children).indexOf(glyph));
-  for (const el of before) {
-    expect(el.getAttribute("data-testid")).toBe("tool-row-chevron");
-  }
-  expect(row.contains(glyph)).toBe(true);
+  expect(row.firstElementChild).toBe(screen.getByTestId("failure-glyph"));
 });
 
 // The other half of A2, and the case where the row has no leading chrome at
@@ -188,14 +189,14 @@ test("a clean call with nothing to open leads with its summary - no chevron, no 
   expect(screen.getByTestId("tool-row").firstElementChild).toBe(screen.getByTestId("tool-row-summary"));
 });
 
-// The chevron LEADS (see ToolRow.tsx's grammar). It used to trail, which at the
-// far edge of a 76rem reading measure put the row's only "there is more here"
-// cue a whole column of whitespace away from the row it belonged to.
-test("the chevron leads the row, against the content it opens", () => {
-  registerToolRenderer({ match: "trg_chev_lead", summary: () => "Ran ls", body: () => <div>more</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_chev_lead" })} turn={turn} live={false} />);
+// The chevron TRAILS (see ToolRow.tsx's grammar): last in document order,
+// pushed to the end of the first line by the purpose's flex-grow and held
+// off the demoted second line by that line's `order: 1` (asserted below).
+test("the chevron trails the row, at the end of its first line", () => {
+  registerToolRenderer({ match: "trg_chev_trail", summary: () => "Ran ls", body: () => <div>more</div> });
+  render(<ToolCallItem item={item({ toolName: "trg_chev_trail" })} turn={turn} live={false} />);
   const row = screen.getByTestId("tool-row");
-  expect(row.firstElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(row.lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("the failure glyph has a real accessible name, not a bare character", () => {
@@ -333,6 +334,13 @@ test("the demoted summary is ordered last so affordances do not wrap onto a thir
   expect(rowCss()).toMatch(/\.demoted\s*\{[^}]*order:\s*1/);
 });
 
+// The purpose is the agent's stated rationale for the call - commentary on
+// the machine text, set off in italics rather than a colour or size of its
+// own (Jesse's review call on the tiered-density follow-up).
+test("the stated purpose renders in italics", () => {
+  expect(rowCss()).toMatch(/\.purpose\s*\{[^}]*font-style:\s*italic/);
+});
+
 // kata rdry: the demoted line is a tool-RESULT ("Wrote fizzbuzz.py"), not a
 // placeholder/disabled/timestamp - --ink-low's documented job (design-system.md)
 // - and measures 2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor for body
@@ -349,8 +357,18 @@ test("the demoted summary line is readable text (--ink-mid), not the sub-AA --in
 
 test("the chevron rotation and the body fade are declared with real motion", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
+  expect(css).toMatch(/\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform/);
   expect(css).toMatch(/\.body\s*\{[^}]*animation:\s*tool-body-in/);
+});
+
+// The chevron SPAN is 1lh tall (first-line alignment) and so not square:
+// turning IT paints ~3.5px past its 14px layout box on each side, which at
+// the trailing edge escapes the row (overflowguard, 2026-07-28). The square
+// svg turns instead - a square rotates within its own bounds.
+test("the open-state rotation turns the square svg, never the 1lh-tall span", () => {
+  const css = rowCss();
+  expect(css).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+  expect(css).not.toMatch(/\.chevron\[data-open="true"\]\s*\{/);
 });
 
 test("the row's motion uses only existing motion tokens - no invented duration", () => {

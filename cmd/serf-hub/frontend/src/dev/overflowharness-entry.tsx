@@ -102,6 +102,26 @@ const snapshot: ThreadReadResponse = {
             argumentsJson: JSON.stringify({ task: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
           },
           {
+            // A purpose-bearing shell row: the two-line composition (italic
+            // rationale over the demoted verb/target line) is the transcript's
+            // most common tool-row shape, and this guard is the only thing
+            // that measures IT for horizontal escape at every width.
+            type: "commandExecution",
+            id: "i3b",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_1b",
+            status: "completed",
+            durationMs: 800,
+            description:
+              "Merging the transcript redesign into webui-workspace-shell and verifying the merged result is green",
+            argumentsJson: JSON.stringify({
+              command:
+                "cd ~/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell && git merge --no-ff --no-edit transcript-view-design",
+            }),
+            output: "Merge made by the 'ort' strategy.",
+          },
+          {
             type: "agentMessage",
             id: "i4",
             turnId: "turn_1",
@@ -382,7 +402,21 @@ const settled = new Promise<true>((resolve) => {
         // - through React's synthetic click - so the guard's two disclosure
         // fixtures exist by the time measure() runs.
         document.querySelector<HTMLElement>('[data-testid="notification-card"]')?.click();
-        requestAnimationFrame(() => setTimeout(() => resolve(true), 0));
+        requestAnimationFrame(() =>
+          setTimeout(() => {
+            // Boot-time expansions start CSS transitions, and a square chevron
+            // caught MID-rotation paints wider than its layout box (14px at
+            // 22° bounds ~18px) - a transient escape measure() would flag as
+            // real (it did, at 390px, 2026-07-28). Wait out every finite
+            // animation so the guard always measures a UI at rest. Infinite
+            // animations (live cadence pulses) are excluded - they never
+            // finish, and they are not the thing being measured.
+            const finite = document
+              .getAnimations()
+              .filter((a) => a.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+            Promise.all(finite.map((a) => a.finished.catch(() => undefined))).then(() => resolve(true));
+          }, 0),
+        );
       }, 0),
     ),
   );

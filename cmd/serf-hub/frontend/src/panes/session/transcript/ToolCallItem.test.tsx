@@ -72,7 +72,7 @@ test("renders the resolved descriptor's summary", () => {
   expect(screen.getByText("did a thing")).toBeTruthy();
 });
 
-test("settled purpose-bearing commandExecution rows compose one line", () => {
+test("settled purpose-bearing commandExecution rows stack purpose over the demoted summary", () => {
   registerToolRenderer({ match: "tci_one_line", summary: () => "Ran npm test -- src/foo" });
   render(
     <ToolCallItem
@@ -85,7 +85,11 @@ test("settled purpose-bearing commandExecution rows compose one line", () => {
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row").dataset.oneline).toBe("true");
+  // Two lines through the real consumer: no composed "purpose — summary"
+  // single line (tried in tiered density, reverted on review).
+  expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Running the foo tests");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran npm test -- src/foo");
+  expect(screen.getByTestId("tool-row").textContent).not.toContain(" — ");
 });
 
 // The expanded content mounts only while the row is open (the same shape

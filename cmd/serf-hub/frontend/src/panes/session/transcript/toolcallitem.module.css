@@ -7,9 +7,9 @@
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
- * implements. A purpose-bearing row wraps onto two lines (purpose above, quiet
- * verb/target below) via the flex-basis rule further down; without a purpose it
- * stays on one. */
+ * implements. A purpose-bearing row wraps onto two lines (italic purpose
+ * above, quiet verb/target below) via the demoted line's flex-basis rule
+ * further down; without a purpose it stays on one. */
 .row {
   display: flex;
   flex-wrap: wrap;
@@ -46,25 +46,27 @@ summary.row:focus-visible {
 }
 
 /* The agent's stated reason for the call - the one part of the row written for
- * a human, so it gets the sans face and the full-contrast ink.
+ * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
+ * review call) italics: a rationale reads as commentary on the call, set off
+ * from the machine text below it without a colour or size of its own.
  *
- * Stacked rows keep overflow-wrap:anywhere so long machine text can still break.
- * Collapsed one-line composition (tiered density): both spans stop growing,
- * clamp to one line, and ellipsis — the em-dash separator between them owns
- * the demotion boundary. The stacked two-line shape survives only on expanded
- * rows. */
+ * overflow-wrap:anywhere so long machine text can still break when the
+ * purpose itself is the long part. */
 .purpose {
   flex: 1 1 0;
   min-width: 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+  font-style: italic;
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
 /* verb + target + meta, the descriptor's own summary() string: machine text,
  * so mono. flex-basis 0 for the same reason .purpose has it - see there.
- * overflow-wrap:anywhere stays in the stacked/default case; the oneline override
- * below replaces it with nowrap + ellipsis when the row collapses. */
+ * overflow-wrap:anywhere serves the purpose-less one-line case; with a
+ * purpose present the .demoted override below replaces it with nowrap +
+ * ellipsis on the second line. */
 .summary {
   flex: 1 1 0;
   min-width: 0;
@@ -72,25 +74,6 @@ summary.row:focus-visible {
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   overflow-wrap: anywhere;
-}
-
-.row[data-oneline="true"] {
-  flex-wrap: nowrap;
-}
-
-.row[data-oneline="true"] .purpose,
-.row[data-oneline="true"] .summary {
-  flex: 0 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.separator {
-  flex: none;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-low);
 }
 
 .status {
@@ -132,15 +115,24 @@ summary.row:focus-visible {
   color: var(--ink-mid);
 }
 
-/* The disclosure affordance, LEADING the row (see ToolRow.tsx's grammar).
- * Same rotates-90°-when-open idiom as widgets/disclosure, now turning the
- * shared widgets/chevron icon: square, so the rotation cannot widen its
- * painted box. The old `▸` glyph's box was its line box - 6x18 at caption
- * size - and a 6x18 box turned 90° paints 18px wide, overhanging its own
- * layout box by 6px on each side. Against the right edge of the turn's
- * reading measure that overhang escaped the row, and the transcript's scroll
- * containers turned it into a horizontal scrollbar across the whole pane.
- * `npm run overflowguard` measures this; it fails if the glyph comes back.
+/* The disclosure affordance, TRAILING the row at the end of its first line
+ * (see ToolRow.tsx's grammar). Same rotates-90°-when-open idiom as
+ * widgets/disclosure, now turning the shared widgets/chevron icon: square,
+ * so the rotation cannot widen its painted box. The old `▸` glyph's box was
+ * its line box - 6x18 at caption size - and a 6x18 box turned 90° paints
+ * 18px wide, overhanging its own layout box by 6px on each side. Against
+ * the right edge of the turn's reading measure that overhang escaped the
+ * row, and the transcript's scroll containers turned it into a horizontal
+ * scrollbar across the whole pane. `npm run overflowguard` measures this;
+ * it fails if the glyph comes back.
+ *
+ * The same trap, one level up: THIS span is 1lh tall (the first-line
+ * alignment below) and so NOT square - turning the span paints it 1lh wide,
+ * ~3.5px past its 14px layout box on each side. Leading, that overhang was
+ * invisible (it painted into the pane's own padding); trailing, it escapes
+ * the row's right edge and overflowguard fails. So the open-state rotation
+ * turns the SQUARE svg inside (a square rotates within its own bounds) and
+ * never the span.
  *
  * --ink-mid: this is the row's one visible cue that there is more to see, not
  * a placeholder/disabled/timestamp (--ink-low's actual job, tokens.css).
@@ -163,12 +155,12 @@ summary.row:focus-visible {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .chevron {
+  .chevron > svg {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
   }
 }
 
-.chevron[data-open="true"] {
+.chevron[data-open="true"] > svg {
   transform: rotate(90deg);
 }
 

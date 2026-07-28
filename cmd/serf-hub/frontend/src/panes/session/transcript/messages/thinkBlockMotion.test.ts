@@ -47,3 +47,15 @@ test("the motion is a fade, not a slide or a bounce", () => {
   expect(keyframes![1]).not.toContain("translate");
   expect(keyframes![1]).not.toContain("scale");
 });
+
+// Not motion, but the same declaration-level style of check: thinking is body
+// text like the turns around it (Jesse's review call) - quiet through INK,
+// not size. Both the settled "Thought · preview" summary and the live
+// streaming paragraph render at --font-size-body.
+test("settled and live thinking render at body size, not caption/ui", () => {
+  const text = css();
+  expect(text).toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
+  expect(text).toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
+  expect(text).not.toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
+  expect(text).not.toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-ui\)/);
+});
