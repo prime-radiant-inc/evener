@@ -73,7 +73,7 @@ function ShellBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
   const body = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
-  return <CodeBlock text={body} copyLabel="Copy output" />;
+  return <CodeBlock text={body} copyLabel="Copy output" ansi />;
 }
 
 // nonzeroExit is the "this command failed" predicate shared by failed() and

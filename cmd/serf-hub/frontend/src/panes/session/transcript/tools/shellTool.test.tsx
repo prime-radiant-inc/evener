@@ -174,6 +174,19 @@ test("body renders the output only - it does NOT repeat the command the row alre
   expect(container.textContent).not.toContain("$ echo hi");
 });
 
+test("all bash-family tool bodies render ANSI SGR output as styled text", () => {
+  for (const toolName of ["shell", "exec_command", "run_shell_command"]) {
+    const Body = toolRendererFor(toolName).body!;
+    const { container, unmount } = render(
+      <Body item={item({ toolName, output: "\u001b[32mPASS\u001b[0m" })} live={false} />,
+    );
+
+    expect(container.querySelector("code")?.textContent).toBe("PASS");
+    expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe("PASS");
+    unmount();
+  }
+});
+
 test("body renders nothing for a command with no output at all", () => {
   const d = toolRendererFor("shell");
   const Body = d.body!;
