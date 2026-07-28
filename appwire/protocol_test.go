@@ -96,6 +96,33 @@ func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
 	}
 }
 
+func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "zero", value: "0"},
+		{name: "null", value: "null", wantErr: true},
+		{name: "fractional", value: "1.5", wantErr: true},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "string", value: `"0"`, wantErr: true},
+		{name: "overflow", value: "18446744073709551616", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			err := ValidateMutationParams(MethodTurnDrainAsSteer, raw)
+			if tc.wantErr && err == nil {
+				t.Fatal("invalid expectedQueueRevision accepted")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("valid expectedQueueRevision rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 	global := map[string]bool{
 		NotifySerfAuthUpdated:        true,

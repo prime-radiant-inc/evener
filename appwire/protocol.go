@@ -183,6 +183,10 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 			return fmt.Errorf("%s is required", name)
 		}
 		if name == "expectedQueueRevision" {
+			var revision uint64
+			if strings.TrimSpace(string(value)) == "null" || json.Unmarshal(value, &revision) != nil {
+				return fmt.Errorf("%s must be an unsigned integer", name)
+			}
 			continue
 		}
 		var text string

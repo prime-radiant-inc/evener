@@ -80,6 +80,58 @@ func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testin
 	}
 }
 
+func TestConnectionValidatesExpectedQueueRevisionBeforeDispatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		wantKind   appwire.MessageKind
+		wantCalled bool
+	}{
+		{name: "zero", value: "0", wantKind: appwire.MessageResponse, wantCalled: true},
+		{name: "null", value: "null", wantKind: appwire.MessageError},
+		{name: "fractional", value: "1.5", wantKind: appwire.MessageError},
+		{name: "negative", value: "-1", wantKind: appwire.MessageError},
+		{name: "string", value: `"0"`, wantKind: appwire.MessageError},
+		{name: "overflow", value: "18446744073709551616", wantKind: appwire.MessageError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+			called := false
+			HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+				called = true
+				if params.ExpectedQueueRevision != 0 {
+					t.Fatalf("expectedQueueRevision=%d, want 0", params.ExpectedQueueRevision)
+				}
+				return appwire.TurnDrainAsSteerResponse{}, nil
+			})
+			conn := server.NewConnection("conn-1")
+			initResp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(1),
+				appwire.MethodInitialize,
+				appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion},
+			))
+			if initResp.Kind() != appwire.MessageResponse {
+				t.Fatalf("init kind=%v, want response", initResp.Kind())
+			}
+
+			params := json.RawMessage(`{"clientMutationId":"m1","expectedTurnId":"t1","expectedQueueRevision":` + tc.value + `}`)
+			resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(2),
+				appwire.MethodTurnDrainAsSteer,
+				params,
+			))
+
+			if resp.Kind() != tc.wantKind {
+				t.Errorf("kind=%v, want %v", resp.Kind(), tc.wantKind)
+			}
+			if called != tc.wantCalled {
+				t.Errorf("handler called=%t, want %t", called, tc.wantCalled)
+			}
+		})
+	}
+}
+
 func TestConnectionAcceptsInitializedNotification(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
