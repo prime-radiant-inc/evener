@@ -228,7 +228,6 @@ type PendingThreadHydration = {
   client: AppwireClientLike;
   epoch: number;
   notifications: AnyNotification[];
-  notificationKeys: Set<string>;
   routing: PendingHydrationRouting;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
@@ -472,7 +471,6 @@ function beginThreadHydration(
     client,
     epoch,
     notifications: [],
-    notificationKeys: new Set<string>(),
     routing: pendingHydrationRouting(ref, model),
   };
   pendingThreadHydrations.set(ref, pending);
@@ -489,32 +487,25 @@ function beginWatchedHydration(
     client,
     epoch,
     notifications: [],
-    notificationKeys: new Set<string>(),
     routing: pendingHydrationRouting(ref, model),
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
 }
 
-function notificationKey(notification: AnyNotification): string {
-  return JSON.stringify(notification) ?? "";
-}
-
 function transferPendingHydration(previous: PendingThreadHydration | undefined, next: PendingThreadHydration): void {
   if (!previous) return;
 
+  // Notifications are ordered events: equal payloads can be distinct
+  // streaming chunks. The array copy transfers the existing buffer once
+  // without inventing payload identity or changing event multiplicity.
   next.notifications = [...previous.notifications];
-  next.notificationKeys = new Set(previous.notifications.map(notificationKey));
   next.routing = { ...previous.routing };
 }
 
-function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): boolean {
-  const key = notificationKey(notification);
-  if (pending.notificationKeys.has(key)) return false;
-  pending.notificationKeys.add(key);
+function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): void {
   pending.notifications.push(notification);
   advancePendingHydrationRouting(notification, pending);
-  return true;
 }
 
 function replayHydrationNotifications(
@@ -748,8 +739,12 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
         if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
         return publishThreadHydration(ref, pending, model);
       });
-      const trackAsInitialHydration = previous !== undefined && !threadsStore.getState().threads.has(ref);
-      if (trackAsInitialHydration) {
+      const hasPublishedModel = threadsStore.getState().threads.has(ref);
+      // A failed targeted predecessor may already have removed `previous`.
+      // Keep the newest targeted read adoptable by the still-active initial
+      // caller until a sufficient model has actually published.
+      const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
+      if (trackForActiveLifecycle) {
         inflightHydrates.set(ref, hydration);
         inflightHydrateClients.set(ref, client);
         inflightHydrateEpochs.set(ref, epoch);
@@ -785,8 +780,14 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
         if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
         return publishWatchedHydration(ref, pending, model, includeTurns, generation);
       });
-      const trackAsInitialHydration = previous !== undefined && !threadsStore.getState().watchedThreads.has(ref);
-      if (trackAsInitialHydration) {
+      const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
+      const hasSufficientPublishedModel =
+        hasPublishedModel && (!includeTurns || (watchHydratedIncludeTurns.get(ref) ?? false));
+      // Rich watched callers need the same adoption path as open callers,
+      // and a published lean model is not sufficient for includeTurns.
+      const trackForActiveLifecycle =
+        (previous !== undefined && !hasPublishedModel) || (targetedResync && !hasSufficientPublishedModel);
+      if (trackForActiveLifecycle) {
         inflightWatchHydrates.set(ref, hydration);
         inflightWatchHydrateClients.set(ref, client);
         inflightWatchHydrateEpochs.set(ref, epoch);

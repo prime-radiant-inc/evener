@@ -293,6 +293,51 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
   });
 
+  test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
+    const fake = connectFakeClient();
+    const snapshot = readResponse("ref_a", {
+      status: { type: "active", activeFlags: ["streaming"] },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    });
+    const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return snapshot;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        replacementRead.resolve = resolve;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => replacementRead.resolve !== null);
+
+    const delta = {
+      method: "item/agentMessage/delta" as const,
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "ha" },
+    };
+    fake.emitNotification(delta);
+    fake.emitNotification(delta);
+    replacementRead.resolve?.(snapshot);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText !== undefined);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.items[0]?.pendingText?.join("")).toBe("haha");
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(2);
+  });
+
   test("a thread resync supersedes an initial same-epoch open hydration", async () => {
     const fake = connectFakeClient();
     const reads: Array<(response: ThreadReadResponse) => void> = [];
@@ -360,6 +405,59 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
 
     reads[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
+  test("an open lifecycle follows a newest resync after its failed predecessor already cleared ownership", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    reads[1]!.reject(new Error("failed replacement B"));
+    await flushUntil(() => false);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    let rejected = false;
+    void ensuring.catch(() => {
+      rejected = true;
+    });
+    reads[0]!.reject(new Error("superseded initial A"));
+    await flushUntil(() => rejected);
+
+    expect(rejected).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
         serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
@@ -737,9 +835,8 @@ describe("useThreadsStore.ensureThread", () => {
     connectionStore.getState().connect(b);
     await flushUntil(() => bRead.resolve !== null);
 
-    // The same wire frame can be observed again after the new subscription;
-    // it must not be replayed twice after A's buffer is transferred.
-    b.emitNotification(status);
+    // B inherits A's two buffered events once. Re-copying either event during
+    // transfer would add an extra frame time below.
     aRead.reject?.(new Error("retired client A read"));
     await Promise.resolve();
     await Promise.resolve();
@@ -772,7 +869,6 @@ describe("useThreadsStore.ensureThread", () => {
     // with the previous ready epoch. The new pending record must inherit it.
     fake.emitNotification(completion);
     fake.emitNotification(turnCompleted);
-    fake.emitNotification(completion); // exact duplicate: replay once
     fake.emitReady();
     await flushUntil(() => reads.length === 2);
     fake.emitReady(); // same-ready duplicate must not start a third hydration
@@ -2666,7 +2762,8 @@ describe("useThreadsStore.watchThread", () => {
     connectionStore.getState().connect(b);
     await flushUntil(() => bRead.resolve !== null);
 
-    b.emitNotification(status);
+    // B inherits A's two buffered events once. Re-copying either event during
+    // transfer would add an extra frame time below.
     aRead.reject?.(new Error("retired client A watched read"));
     await Promise.resolve();
     await Promise.resolve();
@@ -2697,7 +2794,6 @@ describe("useThreadsStore.watchThread", () => {
     fake.emitStateChange("reconnecting");
     fake.emitNotification(completion);
     fake.emitNotification(turnCompleted);
-    fake.emitNotification(completion); // exact duplicate: replay once
     fake.emitReady();
     await flushUntil(() => reads.length === 2);
     fake.emitReady(); // same-ready duplicate must not start a third hydration
@@ -3028,6 +3124,61 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
 
     reads[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await watching;
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
+  test("a rich watched lifecycle follows a newest resync after its failed predecessor cleared ownership", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      (params) =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve, reject });
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    reads[1]!.reject(new Error("failed rich replacement B"));
+    await flushUntil(() => false);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    let rejected = false;
+    void watching.catch(() => {
+      rejected = true;
+    });
+    reads[0]!.reject(new Error("superseded initial rich A"));
+    await flushUntil(() => rejected);
+
+    expect(rejected).toBe(false);
+    expect(reads.map((read) => read.includeTurns)).toEqual([true, true, true]);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
         serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
