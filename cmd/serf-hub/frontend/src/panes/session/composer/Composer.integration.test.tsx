@@ -446,6 +446,53 @@ test("a queue submit ALSO registers an optimistic pending entry - uniform across
   expect(await screen.findByText("queued message")).toBeTruthy();
 });
 
+test("relay recovery refreshes stale queue capability without reconnecting or remounting the composer", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let readCount = 0;
+  fake.on("thread/read", () => {
+    readCount += 1;
+    return readResponse("ref_a", {
+      status: { type: "active" },
+      serf: {
+        ref: "ref_a",
+        capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
+        queue: {},
+        activeTurnId: "turn_1",
+      },
+    });
+  });
+  fake.on("turn/queue", () => ({}));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <>
+      <Toast />
+      <Composer ref="ref_a" />
+    </>,
+  );
+
+  await user.type(textarea() as HTMLTextAreaElement, "follow up");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  expect(await screen.findByText("Send is not available for this session")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
+  expect((textarea() as HTMLTextAreaElement).value).toBe("follow up");
+
+  await act(async () => {
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+  });
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.capabilities.queue).toBe(true));
+  expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+  expect(connectionStore.getState().client).toBe(fake);
+
+  await user.click(screen.getByTestId("composer-submit"));
+
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1));
+});
+
 // Both failure tests below defer their RPC's rejection via a manually-
 // resolved promise (matching Composer.test.tsx's own "text typed while a
 // send is still in flight" idiom) specifically so each can observe the

@@ -463,6 +463,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						}
 						continue
 					}
+					var firstNotification appwire.Notification
+					hasFirstNotification := false
 					select {
 					case notification, ok := <-result.notifications:
 						if !ok {
@@ -472,8 +474,17 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 							}
 							continue
 						}
-						broadcastNotification(notification)
+						firstNotification = notification
+						hasFirstNotification = true
 					default:
+					}
+					server.Broadcast(relayKey, appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+						ThreadID: threadID,
+						Ref:      subscribeParams.Ref,
+					})
+					if hasFirstNotification {
+						broadcastNotification(firstNotification)
+					} else {
 						backoff.Reset()
 						consecutiveFailures = 0
 					}

@@ -105,6 +105,7 @@ const (
 	NotifyToolOutputDelta              = "item/toolOutput/delta"
 	NotifyWarning                      = "warning"
 	NotifySerfContextPressure          = "serf/thread/contextPressure/updated"
+	NotifySerfThreadResync             = "serf/thread/resync"
 	NotifySerfTaskUpdated              = "serf/task/updated"
 	NotifySerfSteeringInjected         = "serf/steering/injected"
 	NotifySerfJobStarted               = "serf/job/started"
@@ -1315,6 +1316,11 @@ type ThreadClosedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+}
+
+type ThreadResyncParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
 }
 
 // TurnStartedParams is the params shape for the turn/started notification:

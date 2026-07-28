@@ -1542,8 +1542,76 @@ func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) 
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	notificationsB := make(chan appwire.Notification)
 	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	notificationsB <- relayDeltaNotification(t, threadID, "event B")
 	expectRelayDelta(t, client.Notifications(), "event B")
+}
+
+func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *testing.T) {
+	const threadID = "th_resync"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("initial relay emitted notification %+v, want none", got)
+	default:
+	}
+	notificationsA <- relayDeltaNotification(t, threadID, "initial event")
+	expectRelayDelta(t, client.Notifications(), "initial event")
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("replacement unavailable")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+
+	notificationsB <- relayDeltaNotification(t, threadID, "replacement event")
+	expectRelayDelta(t, client.Notifications(), "replacement event")
 }
 
 func TestRelayRetryClockWaitStopsOnCancellation(t *testing.T) {
@@ -1629,6 +1697,7 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	notificationsB := make(chan appwire.Notification)
 	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	notificationsB <- relayDeltaNotification(t, threadID, "recovered")
 	expectRelayDelta(t, client.Notifications(), "recovered")
 
@@ -1919,6 +1988,7 @@ func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNot
 	buffered <- relayDeltaNotification(t, threadID, "first notification")
 	close(buffered)
 	results <- relaySubscribeResult{notifications: buffered}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	expectRelayDelta(t, client.Notifications(), "first notification")
 
 	awaitRelaySubscribeCall(t, subscribeCalls)
@@ -2208,6 +2278,7 @@ func TestHubRPCThreadReadRereadJoinsRelayRecovery(t *testing.T) {
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	notificationsB := make(chan appwire.Notification)
 	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
 	notificationsB <- relayDeltaNotification(t, threadID, "after joined recovery")
 	expectRelayDelta(t, client.Notifications(), "after joined recovery")
 }
@@ -3782,6 +3853,26 @@ func relayDeltaNotification(t *testing.T, threadID, delta string) appwire.Notifi
 			ItemID:   "item_1",
 			Delta:    delta,
 		}),
+	}
+}
+
+func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifySerfThreadResync {
+			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifySerfThreadResync)
+		}
+		var params appwire.ThreadResyncParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal thread resync: %v", err)
+		}
+		want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
+		if params != want {
+			t.Fatalf("thread resync params=%+v, want %+v", params, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for thread resync after relay recovery")
 	}
 }
 

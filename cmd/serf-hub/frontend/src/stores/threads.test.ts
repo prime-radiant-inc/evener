@@ -241,6 +241,71 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
   });
 
+  test("a thread resync re-reads one open ref and replays notifications over the replacement snapshot", async () => {
+    const fake = connectFakeClient();
+    const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          status: { type: "active" },
+          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+        });
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        replacementRead.resolve = resolve;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.capabilities.queue).toBe(false);
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => replacementRead.resolve !== null);
+
+    const reads = fake.calls.filter((call) => call.method === "thread/read");
+    expect(reads).toHaveLength(2);
+    expect(reads[1]?.params).toMatchObject({ ref: "ref_a", includeTurns: true });
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        status: { type: "active", activeFlags: ["streaming"] },
+      },
+    });
+    replacementRead.resolve?.(
+      readResponse("ref_a", {
+        status: { type: "active" },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.capabilities.queue === true);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.capabilities.queue).toBe(true);
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+  });
+
+  test("a thread resync for an untracked ref does not read it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_untracked"));
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_untracked", ref: "ref_untracked" },
+    });
+    await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+  });
+
   test("replays a threadId-only item completion after an earlier buffered turn start establishes routing", async () => {
     const fake = connectFakeClient();
     const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
@@ -2640,6 +2705,60 @@ describe("useThreadsStore.watchThread", () => {
       replaceSubscription: false,
       turnLimit: 40,
     });
+  });
+
+  test("a thread resync preserves a watched ref's rich read and replays notifications over its replacement snapshot", async () => {
+    const fake = connectFakeClient();
+    const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_before", status: "completed", itemsView: "full", items: [] }],
+          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+        });
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        replacementRead.resolve = resolve;
+      });
+    });
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => replacementRead.resolve !== null);
+
+    const reads = fake.calls.filter((call) => call.method === "thread/read");
+    expect(reads).toHaveLength(2);
+    expect(reads[1]?.params).toMatchObject({ ref: "ref_a", includeTurns: true });
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toBeUndefined();
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        status: { type: "active", activeFlags: ["streaming"] },
+      },
+    });
+    replacementRead.resolve?.(
+      readResponse("ref_a", {
+        status: { type: "active" },
+        turns: [{ id: "turn_after", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.capabilities.queue === true);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.capabilities.queue).toBe(true);
+    expect(model?.turns[0]?.id).toBe("turn_after");
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toHaveLength(1);
   });
 
   test("a watch released before its in-flight hydrate resolves is not resurrected", async () => {

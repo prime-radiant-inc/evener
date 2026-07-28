@@ -980,6 +980,11 @@ export interface ThreadResumeResponse {
   thread: Thread;
 }
 
+export interface ThreadResyncParams {
+  threadId: string;
+  ref: string;
+}
+
 export interface ThreadShutdownParams {
   ref: string;
 }
@@ -1280,6 +1285,7 @@ export const NOTIFICATION_NAMES = [
   "serf/attention/changed",
   "serf/marketplace/updated",
   "serf/plugin/updated",
+  "serf/thread/resync",
   "serf/task/updated",
   "serf/sandbox/escalation/requested",
   "serf/sandbox/escalation/resolved",
@@ -1425,6 +1431,7 @@ export interface NotificationTypes {
   "serf/attention/changed": AttentionChangedPayload;
   "serf/marketplace/updated": EmptyParams;
   "serf/plugin/updated": EmptyParams;
+  "serf/thread/resync": ThreadResyncParams;
   "serf/task/updated": TaskUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
   "serf/sandbox/escalation/resolved": SandboxEscalationResolved;

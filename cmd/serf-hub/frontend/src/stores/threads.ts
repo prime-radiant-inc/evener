@@ -636,6 +636,10 @@ function applySubagentJobSignal(n: AnyNotification): void {
 }
 
 function handleNotification(n: AnyNotification): void {
+  if (n.method === "serf/thread/resync") {
+    if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
+    return;
+  }
   applySubagentJobSignal(n);
   const now = Date.now();
   const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
@@ -713,10 +717,11 @@ function storeWatchedModel(
   });
 }
 
-// handleReady re-subscribes every currently-tracked ref, additively, and
-// replaces its model wholesale from the fresh snapshot (hydrateThread) —
-// snapshot recovery, since notifications published while the socket was down
-// were missed. Fires on every client.onReady transition into "ready",
+// handleReady re-subscribes every currently-tracked ref by default, or only
+// targetRef when a relay-recovery hint names one thread. Either path subscribes
+// additively and replaces its model wholesale from the fresh snapshot
+// (hydrateThread) — snapshot recovery for notifications the old relay missed.
+// The full-set path fires on every client.onReady transition into "ready",
 // including the very first — a no-op in practice, since nothing is tracked
 // yet that early in the app's lifecycle — and every reconnect after it. Also
 // called directly (not via onReady) from rewireClient below, for the case
@@ -724,9 +729,13 @@ function storeWatchedModel(
 // fires on a FUTURE transition, never retroactively for a client that
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
-async function handleReady(client: AppwireClientLike, epoch: number): Promise<void> {
-  const refs = new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
-  const watchRefs = new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
+async function handleReady(client: AppwireClientLike, epoch: number, targetRef?: string): Promise<void> {
+  const refs = targetRef
+    ? new Set([targetRef])
+    : new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
+  const watchRefs = targetRef
+    ? new Set([targetRef])
+    : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
     ...Array.from(refs, async (ref) => {
       if ((refCounts.get(ref) ?? 0) <= 0) return;
