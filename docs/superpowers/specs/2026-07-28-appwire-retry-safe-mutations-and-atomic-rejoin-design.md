@@ -242,21 +242,36 @@ Every error response to an in-scope mutation carries:
 {
   "serfErrorInfo": "conflict",
   "clientMutationId": "9e03…",
-  "mutationOutcome": "notAccepted"
+  "mutationOutcome": "notAccepted",
+  "retryDisposition": "none"
 }
 ```
 
 `mutationOutcome` is:
 
 - `notAccepted` only when the responder guarantees the mutation did not apply;
-  or
 - `unknown` when a transport or persistence boundary cannot prove whether an
-  authoritative daemon committed it.
+  authoritative daemon committed it; or
+- `targetDeleted` when authoritative deletion removed the target and its
+  mutation journal, so replay must stop without claiming the mutation never
+  applied.
 
 `unknown` uses `serfErrorInfo: "mutationOutcomeUnknown"` and is never rendered
 as a mutation failure. The outbox retains the original record and retries it
 with the same ID. Terminal rejection replay returns the original error with
 `mutationOutcome: "notAccepted"`.
+
+`targetDeleted` is emitted only from authoritative deletion state, never from a
+transient missing relay or stale index. The browser moves the input to an
+orphaned recovery record associated with the deleted target and never
+resubmits it automatically. The record offers copy/export or explicit reuse in
+a new session without asserting whether the deleted session incorporated it.
+
+`retryDisposition` is `automatic`, `blocked`, or `none`. Transport loss uses
+`automatic`. A daemon journal write failure uses `blocked` with
+`serfErrorInfo: "mutationOutcomeUnknown"` and
+`cause: "persistenceUnavailable"`; elapsed time never changes one disposition
+into another. Terminal rejection and target deletion use `none`.
 
 Method-specific responses retain their existing fields:
 
@@ -328,6 +343,21 @@ execution against the wrong state.
 cancel, promote, drain, or restore changes it. A delayed drain must not consume
 entries that arrived after the snapshot from which the user chose “drain.”
 
+Start and queue acceptance reserve one future user-turn budget slot in the
+mutation journal under the lifecycle serializer. The acceptance check uses
+durable completed/active turns plus existing reservations, so work cannot be
+accepted and later rejected by `MaxTurns` before transcript incorporation.
+Claiming the record converts its reservation into the session turn count.
+Canceling a queued input or transforming it into steering releases the
+reservation in the same journal commit.
+
+Every other deterministic gate that can reject before the user item is appended
+is evaluated before the mutation becomes applied. If a later execution failure
+still prevents incorporation, the daemon writes a failed user item carrying the
+same mutation and turn identities and marks the execution terminal; it never
+leaves a successfully accepted record permanently runnable with no visible
+outcome.
+
 Precondition failure does not create a successful receipt because no mutation
 was accepted. For a well-formed, authenticated mutation ID, the daemon
 durably stores the typed conflict as that ID's terminal rejection before
@@ -348,7 +378,9 @@ The daemon owns a per-session mutation journal. Each record stores:
 - method-specific result;
 - the associated turn and queue entry IDs; and
 - outcome: `applied` or a terminal typed rejection;
-- execution state: `accepted`, `claimed`, or `terminal`; and
+- operation state: `inFlight`, `applied`, `rejected`, or `terminal`;
+- execution state for message-producing effects: `accepted`, `claimed`, or
+  `terminal`; and
 - projection state: `pending`, `reflected`, or `removed`.
 
 Version two retains these records for the lifetime of the session. It does not
@@ -383,14 +415,22 @@ Every in-scope daemon handler uses this order:
 3. look up `clientMutationId`;
 4. for an existing ID, replay its applied result or terminal rejection when
    the payload hash matches, and reject a hash mismatch;
-5. only for an unseen ID, validate current turn, queue revision, entry, and
-   dynamic availability;
-6. durably commit the applied effect or terminal precondition rejection; and
-7. publish in-memory state and notifications for an applied effect.
+5. only for an unseen ID, validate current turn, queue revision, entry, turn
+   budget, and dynamic availability;
+6. durably reserve the ID, method, and payload hash as `inFlight` before any
+   side effect;
+7. durably commit the applied effect or terminal precondition rejection; and
+8. publish in-memory state and notifications for an applied effect.
 
 Receipt lookup therefore precedes every check whose answer can change after
 the first attempt. In particular, a completed turn cannot make a retry of its
 successful start or interrupt fail.
+
+A concurrent same-ID retry that finds `inFlight` joins the operation's
+completion while the process is alive. After restart, recovery owns the
+operation: it either completes the recorded side effect or derives its terminal
+result from durable turn/journal state. A different method or payload cannot
+reuse an in-flight ID.
 
 The Hub performs syntax, authentication, source resolution, and static
 source-method support checks. For a Serf daemon source it does not reject an
@@ -403,20 +443,28 @@ current state.
 The mutation effect and its receipt must become durable as one serialized
 operation before the RPC returns success.
 
-For queue and steering mutations, the daemon:
+For every in-scope mutation, the daemon:
 
-1. acquires the existing queue mutation serialization boundary;
+1. acquires the per-session mutation/lifecycle serializer;
 2. normalizes the payload and checks the mutation journal;
 3. validates dynamic preconditions only for an unseen ID;
-4. computes the resulting queue/steering state and receipt;
-5. atomically writes the combined state;
+4. writes the `inFlight` reservation;
+5. computes and atomically writes the resulting domain state and receipt;
 6. publishes the corresponding in-memory state; and
-7. emits queue/steering notifications.
+7. emits notifications.
+
+The same serializer owns active-turn start and terminal transitions, queue
+claims, queue revision, turn-budget reservations, and every
+`expectedTurnId` compare-and-commit. AppWire handlers call this authoritative
+session state machine; server-side processing/capability shadows are projections
+and never decide a mutation. There is no unlock gap between validating turn A
+and committing an effect against turn A.
 
 If persistence fails, the method returns an internal error and does not publish
 the computed mutation or a success receipt. Because no terminal record was
-committed, that error carries `mutationOutcome: "unknown"` and remains
-retriable; it does not restore the composer payload as a rejection.
+committed, that error carries `mutationOutcome: "unknown"` with
+`retryDisposition: "blocked"`; it does not restore the composer payload as a
+rejection or enter an automatic retry storm.
 
 Once the durable effect and receipt commit, the daemon's semantic result is
 success. Notification enqueue or connection-write failure after that boundary
@@ -431,8 +479,11 @@ terminal rejection durably written before response may produce a
 mutation-failed UI state.
 
 For `turn/interrupt`, the receipt is committed with the target turn's terminal
-transition. A retry returns the original terminal result instead of reporting
-that no turn is active.
+transition. Its `inFlight` reservation is durable before cancellation. Recovery
+of an in-flight interrupt prevents the target execution record from resuming,
+commits the target's interrupted terminal state, and finalizes the interrupt
+receipt. A retry returns that result instead of reporting that no turn is
+active.
 
 ### Durable incorporation
 
@@ -490,16 +541,22 @@ identities.
 mount, WebSocket reconnect, relay resync, long-silence self-heal, and page
 reload.
 
-Each authoritative source has one internal projection sequencer. Snapshot
-capture and notification publication observe that sequencer, even though its
-sequence numbers are not exposed as a public replay cursor.
+Each authoritative source has one projection-commit boundary. Applying a
+durable state change to the in-memory projector, allocating its internal source
+sequence, and inserting its notification into every subscriber buffer happen
+under that one boundary. Notifications are emitted only after their durable
+state is projectable. Snapshot capture clones the same projector and records
+its cut while holding that boundary. Internal sequence numbers are not exposed
+as a public replay cursor.
 
 The server-side ordering is:
 
 1. resolve the authoritative source and thread;
-2. register the connection's subscription and begin buffering notifications
-   with their internal source sequence;
-3. capture the thread snapshot and its source-sequence cut;
+2. under the projection-commit boundary, register the connection's
+   subscription and begin buffering notifications with their internal source
+   sequence;
+3. under that same boundary, clone the authoritative thread projector and
+   record its source-sequence cut;
 4. discard buffered notifications at or before the cut because the snapshot
    already contains them;
 5. send the `thread/read` response; and
@@ -535,7 +592,8 @@ backoff while leaving the last model visible. It does not warn the user that
 the view failed to update.
 
 An adapter that cannot establish an atomic snapshot cut must synthesize
-full-state replacement notifications or remain read-only; it may not release
+full-state replacement notifications or disable live streaming; read-only
+mutation capability has no bearing on delta correctness. It may not release
 overlapping append-only deltas.
 
 ## Browser Recovery Outbox
@@ -564,8 +622,10 @@ An outbox record moves through:
 
 1. `submitting`: locally recorded, no authoritative outcome observed;
 2. removed after an applied or replayed receipt;
-3. retained as `submitting` after `mutationOutcomeUnknown`; or
-4. atomically transferred to the durable recovery draft after a terminal
+3. retained as `submitting` after a transient `mutationOutcomeUnknown`;
+4. `blockedUnknown` after a classified persistent storage failure;
+5. moved to orphaned recovery after `targetDeleted`; or
+6. atomically transferred to the durable recovery draft after a terminal
    rejection.
 
 There is no elapsed-time transition to failed.
@@ -580,6 +640,13 @@ turn window.
 All new and recovery submissions pass through the same per-target outbox
 dispatcher. A newly created sequence does not bypass unresolved lower
 sequences.
+
+After committing an outbox record, a tab broadcasts its target through
+`BroadcastChannel`. Every ready tab rescans that target. Startup, connection
+ready, online, focus, and visibility transitions rescan all targets, and a
+two-second ready-state liveness scan covers an origin tab that crashes between
+its IndexedDB commit and broadcast. This timer only discovers durable work; it
+never changes a mutation outcome or declares failure.
 
 On reconnect or reload, the WebUI:
 
@@ -610,6 +677,30 @@ and acknowledges recovery drafts in intent order; later rejected inputs remain
 durable rather than overwriting the first. Component-local state is never the
 sole restored copy. Crashing or closing a tab at any boundary leaves either
 the outbox record or its recovery-draft record durable.
+
+Authoritative session or project deletion first writes a compact deleted-target
+tombstone outside the target's deletable directory, then removes the session
+and mutation journal. The tombstone contains only stable ref/thread identity
+and deletion generation and is retained for the lifetime of Hub state. Replay
+against it returns `targetDeleted`. In one IndexedDB transaction the browser
+moves the outbox record to orphaned recovery and deletes the dispatchable
+record. This interaction is in scope even though making deletion itself a
+retry-safe client mutation is a separate design.
+
+Recovery drafts render in a separate recovery tray rather than merging
+automatically into the current composer. Editing a recovered entry is backed
+by that durable record and leaves the main composer untouched. Sending it
+atomically creates a new sequenced outbox record with a new mutation ID before
+deleting the recovery record; attachment presentation IDs are re-minted while
+the original blobs remain durable through the transfer.
+
+`blockedUnknown` is entered from an explicit persistence-unavailable outcome,
+not elapsed time. It keeps the payload durable, blocks later sequences for that
+target, stops automatic retry storms, and presents actions to retry, copy or
+export the payload, or explicitly abandon it after explaining that the server
+could have accepted it. Abandonment is the only action that advances later
+sequences without an authoritative outcome, and is recorded as an orphaned
+recovery entry rather than silently deleting the payload.
 
 ## UI Behavior
 
@@ -670,8 +761,18 @@ supports operations such as start, steer, or queue. They are not protocol
 version negotiation. A source adapter that exposes an in-scope mutation must
 provide the same durable receipt and retry contract. The current Codex bridge
 cannot do that because its client message ID is correlation metadata rather
-than durable idempotency. In this implementation its send and steer
-capabilities become false while read/list/stream behavior remains available.
+than durable idempotency. In this implementation its send, steer, interrupt,
+queue, and queue-transform capabilities are all false.
+
+Codex read/list behavior remains available. Its current separate snapshot and
+live connections cannot establish a shared upstream cut, so the adapter does
+not forward raw append-only deltas. Each upstream change marks the thread
+dirty; a single-flight loop re-reads authoritative full state and emits a
+thread resync/full replacement. If another change arrives during the read, the
+loop reads again before becoming clean. Reconnect performs an unconditional
+full read. This preserves live convergence without claiming delta-level
+atomicity the upstream protocol does not provide.
+
 Restoring Codex mutations requires a separate upstream-supported idempotency
 design; the Hub must not emulate certainty across an ambiguous upstream call.
 
@@ -683,15 +784,18 @@ The first implementation includes:
 - receipt types;
 - daemon mutation-journal persistence, rejection replay, and idempotency for
   the seven turn/queue methods;
+- durable in-flight operation reservation and lifecycle serialization;
 - durable start/queue/steer claim and incorporation recovery;
+- user-turn budget reservation and failed-incorporation projection;
 - client mutation identity on queue, steering, and transcript projections;
 - queue revisions and required preconditions;
 - Hub forwarding without dynamic pre-rejection or stripping receipt fields;
 - qualified v2 notifications and atomic `thread/read` snapshot-cut ordering;
-- frontend ordered IndexedDB outbox, durable recovery drafts, and
-  identity-based reconciliation;
+- frontend ordered IndexedDB outbox, cross-tab wakeup, blocked-unknown and
+  deleted-target recovery, durable recovery drafts, and identity-based
+  reconciliation;
 - reconnect, reload, resync, and silence-triggered automatic recovery;
-- Codex bridge read-only capability projection;
+- Codex mutation-capability removal and full-state streaming convergence;
 - removal of confirmation timeout warnings; and
 - generated TypeScript/AppWire documentation updates.
 
@@ -725,6 +829,8 @@ seams to prove:
 
 - response loss followed by same-ID retry produces one effect and a replayed
   receipt for each in-scope method;
+- concurrent or restarted retries of an `inFlight` record join or recover one
+  operation and reject payload-hash reuse;
 - a same-ID retry replays its applied result or terminal rejection before
   current dynamic preconditions are evaluated;
 - concurrent identical retries serialize to one effect;
@@ -735,6 +841,12 @@ seams to prove:
 - persistence failure publishes neither mutation nor success receipt;
 - `turn/start` returns the same reserved turn after retry;
 - accepted and claimed start records resume the same logical turn after crash;
+- interrupt persists its in-flight claim before cancellation and remains
+  terminal after restart;
+- start and queue reserve `MaxTurns` capacity at acceptance, including the
+  final available slot and queued cancellation/steering release paths;
+- a deterministic pre-append failure produces one failed item with the original
+  mutation and turn identities;
 - steering may remain pending across arbitrary model/tool delay without
   changing receipt state;
 - a crash between claim and transcript append loses no queue or steering input,
@@ -743,6 +855,9 @@ seams to prove:
 - drain rejects stale active-turn or queue-revision preconditions without
   consuming new entries;
 - queue rejects a stale active-turn precondition;
+- deterministic barriers between expected-turn validation and lifecycle
+  transition cannot attach queue, steer, promote, drain, or interrupt to a
+  later turn;
 - promote and cancel never target a shifted queue entry;
 - interrupt retry returns the original terminal result; and
 - identical-text messages reconcile independently by identity.
@@ -765,11 +880,16 @@ Script the real Hub relay/request paths to prove:
   version;
 - the Hub rejects a mismatched daemon rendezvous entry or initialize handshake
   before relay attachment;
-- Codex uses its adapter-native initialize shape and exposes no unsupported
-  mutation capability;
+- Codex uses its adapter-native initialize shape and exposes no send, steer,
+  interrupt, queue, or queue-transform capability;
+- Codex suppresses raw deltas and repeats full-state reads when an upstream
+  change races its current read;
 - `thread/read` subscribes before snapshot capture;
 - append-only deltas at or before the snapshot cut are discarded from the
   buffer, while deltas after the cut are delivered once;
+- pausing before projector mutation, between projector mutation and sequence
+  allocation, and before buffer insertion cannot create a snapshot/event gap or
+  overlap;
 - every notification, including `turn/completed`, routes by authoritative ref
   and thread ID;
 - replacement subscription has no ownership gap;
@@ -790,6 +910,8 @@ Composer/QueueStrip components with fake transports and IndexedDB:
   than the hydration window;
 - per-target replay preserves IndexedDB intent sequence under reversed network
   scheduling and concurrent tabs;
+- another ready tab discovers a committed record when the origin crashes before
+  broadcast;
 - accepted-but-not-yet-reflected steering remains pending beyond the old
   timeout without failure;
 - A-to-B client replacement rejects late A hydration and settlement;
@@ -797,6 +919,12 @@ Composer/QueueStrip components with fake transports and IndexedDB:
 - an explicit rejection restores editable input and clears its outbox record;
 - a crash or tab handoff during rejection restoration leaves the payload in
   either the outbox or the durable recovery draft;
+- recovered attachment input remains independently editable without replacing
+  a nonempty main composer;
+- `targetDeleted` moves unresolved input to orphaned recovery without automatic
+  resend;
+- a persistence-classified `blockedUnknown` stops retry storms and later
+  dispatch while preserving retry/export/abandon actions;
 - local outbox failure leaves composer content untouched and sends no RPC; and
 - the frontend never branches between legacy and retry-safe mutation paths.
 
@@ -825,6 +953,12 @@ behavior.
 - Append-only deltas are neither lost nor duplicated across the snapshot cut.
 - Concurrent threads cannot consume one another's notifications.
 - Recovery replay preserves per-target user-intent order.
+- A committed browser outbox record is eventually discovered even if its
+  originating tab dies immediately.
+- Permanent authoritative persistence failure preserves user input and blocks
+  later target mutations without converting uncertainty into failure.
+- Authoritative target deletion converges unresolved outbox records into
+  orphaned recovery rather than retrying or claiming non-acceptance.
 - Content equality is never used to reconcile user mutations.
 - Browser, Hub, and daemon protocol mismatches fail before any mutation can be
   submitted.
