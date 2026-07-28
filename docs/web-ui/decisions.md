@@ -165,24 +165,17 @@ contrast is deliberately inverted from the mockup — `.tag` is `--ink-hi` and
 separation, with the ratios recorded in `usermessageitem.module.css`.
 
 That is only the colour half of Alt A, and it is all this entry originally
-checked. It never audited Alt A's GEOMETRY: `.a-you{display:flex;gap:var(--s3);
-align-items:baseline}` with `.tag{flex:none;width:40px}` (mockup 03's own CSS)
-puts the tag in a fixed-width column baseline-aligned with the first line of
-the message beside it — matching the golden reference's identical `.you`/`.tag`
-row. What shipped instead stacked the tag in a `.header` row above the text,
-a shape none of mockup 03's four alternatives actually draws (B and C read as
-demotion-by-position with no stacked label at all; D's own `.d-you` is the
-same flex row as A). Unaudited, not merely unmentioned — the earlier verdict's
+checked. The 40px inline gutter column is now superseded by the stacked `You`
+eyebrow described in `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md`
+§Decision revisions requiring Jesse's ratification, item 3. The earlier verdict's
 "by design" covered the contrast inversion, not this.
 
-`usermessageitem.module.css:.message` is now the same flex row as the
-mockup's `.a-you` (kata 8v4n): `.tag` carries `flex: none; width:
-var(--space-7)` (the app's space scale standing in for the mockup's
-hand-measured 34/40px), and `.body` holds the gallery/text/fork-action column
-beside it. Steering rendering is being worked separately and is out of scope
-here, but `steeringitem.module.css`'s divider still stacks its own summary
-above its body the same pre-fix way — it will need the identical column when
-that work lands.
+`usermessageitem.module.css:.message` still carries the exchange-boundary
+geometry measured at 32px in the live app; the change is that the speaker cue
+has moved from the inline gutter to the stacked eyebrow. Steering rendering is
+being worked separately and is out of scope here, but `steeringitem.module.css`'s
+divider still stacks its own summary above its body the same pre-fix way — it
+will need the identical eyebrow when that work lands.
 
 **04 · Assistant hero & reading hierarchy** — chose A (size + space) + D
 (contrast), explicitly **not** C (first-sentence lede). Shipped in the React
@@ -192,7 +185,8 @@ rewrite by `cd4663a99` and `bf1c7f318`.
 | --- | --- | --- |
 | D — agent prose at full contrast, user demoted | LIVE | `widgets/markdown:.root` is `--ink-hi`; `usermessageitem:.text` is `--ink-mid`. |
 | C — first-sentence lede | ABSENT | Correctly rejected. Agent text is one plain `<Markdown>` block. |
-| A — agent prose wins on **size and space** | LIVE | `agentmessageitem.module.css:.message` sets `--prose-font-size: var(--font-size-pane-title)` on the shared live/final wrapper and the agent renderer gives the hero one spacing step more than body text. |
+| A — agent prose wins on **size and space** | CHANGED, **SUPERSEDED** | `agentmessageitem.module.css:.message` no longer sets `--prose-font-size: var(--font-size-pane-title)`; agent prose is body-size now. The surviving hierarchy is the contrast pair from `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 1: `--ink-hi` agent prose against `--ink-mid` user text (decisions.md:193). The size signal was applied per-fragment and cancelled itself. |
+| B — no visible agent label | **SUPERSEDED** | The SR-only `Agent` label is superseded by the visible exchange-boundary eyebrow `Agent · {model}` described in `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 2. The eyebrow is shown only at exchange boundaries, matching the measured 32px boundary mechanic (decisions.md:119-130). |
 | (all four alternatives agreed) inline code is a quiet underline, never a filled chip | LIVE | `markdown.module.css:.inlineCode` uses relative mono sizing and an `--edge` bottom rule with no background, padding, or radius. |
 
 **05 · Thinking block** — chose A (reserved-slot collapse) + D
@@ -206,7 +200,8 @@ it never measures an in-progress item or invents a missing duration. Its
 collapsed line also carries a bounded plain-text rendering of the final
 meaningful nonblank thought line, while expansion renders the complete
 Markdown body. The newer kgp2 record explicitly supersedes the earlier
-no-preview choice; session-keyed disclosure state remains unchanged.
+no-preview choice; session-keyed disclosure state remains unchanged. The preview
+is closed-only; the open state shows just the short label, per `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 4.
 
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
@@ -223,7 +218,10 @@ Verdict **LIVE for both chosen alternatives.** `systemnoticeitem.module.css:.lin
 is `--ink-low` with no rule or divider and no character count, citing the mockup
 by number; `transcript/messages/systemGrouping.ts:shouldGroup` coalesces at three
 or more, pinned by its own test. One nuance differs: the group headline names the
-chronologically first event rather than the most consequential one.
+chronologically first event rather than the most consequential one. The round
+timings joined this quiet one-liner rule too; the scaffold box no longer applies
+to them, per `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md`
+§Decision revisions requiring Jesse's ratification, item 5.
 
 The topic's third fix — Alt C, "✓-only silent success" for a call that returns
 nothing — was not among the chosen alternatives and was not audited. It appears
