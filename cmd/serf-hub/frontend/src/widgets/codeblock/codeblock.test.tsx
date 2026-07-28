@@ -37,6 +37,17 @@ test("renders the code text", () => {
   expect(screen.getByText("const x = 1;")).toBeTruthy();
 });
 
+test("ANSI mode renders Vitest SGR output as styled text instead of escape fragments", () => {
+  const vitestOutput =
+    "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m283 passed\u001b[39m\u001b[22m\n" +
+    "\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m4904 passed\u001b[39m\u001b[22m";
+  const { container } = render(<CodeBlock text={vitestOutput} ansi />);
+
+  expect(container.querySelector("code")?.textContent).toBe(" Test Files  283 passed\n      Tests  4904 passed");
+  expect(screen.getByText("283 passed").closest('[data-ansi-fg="green"]')).toBeTruthy();
+  expect(container.querySelector("[data-ansi-dim]")?.textContent).toBe(" Test Files ");
+});
+
 test("renders in a <pre><code> pairing", () => {
   const { container } = render(<CodeBlock text="const x = 1;" />);
   expect(container.querySelector("pre > code")).toBeTruthy();

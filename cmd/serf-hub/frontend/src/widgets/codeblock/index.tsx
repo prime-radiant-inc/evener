@@ -1,12 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
+import { parseAnsiLines } from "./ansi";
+import { AnsiLineContent } from "./ansiLine";
 import styles from "./codeblock.module.css";
 
 export interface CodeBlockProps {
   text: string;
   language?: string;
+  /** Interpret ANSI Select Graphic Rendition sequences as styled text. Other
+   * terminal controls are consumed; this remains a log block, not a terminal. */
+  ansi?: boolean;
   /** Shows a right-aligned line-number column ahead of each line. */
   showLineNumbers?: boolean;
   /** The copy control's accessible name. Defaults to "Copy"; a caller whose
@@ -70,8 +75,14 @@ function CopiedIcon() {
  * its own scroller for the opposite reason - column alignment across lines is
  * part of a diff's meaning, and wrapping destroys it.
  */
-export function CodeBlock({ text, language, showLineNumbers = false, copyLabel = "Copy" }: CodeBlockProps) {
-  const allLines = useMemo(() => text.split("\n"), [text]);
+export function CodeBlock({
+  text,
+  language,
+  ansi = false,
+  showLineNumbers = false,
+  copyLabel = "Copy",
+}: CodeBlockProps) {
+  const allLines = useMemo(() => (ansi ? parseAnsiLines(text) : text.split("\n")), [ansi, text]);
   const isLong = allLines.length > TAIL_VISIBLE_LINES;
   // "revealed" lifts the fold - once the reader has asked to see everything,
   // re-folding is their own explicit "Show fewer lines" click below, not
@@ -146,10 +157,18 @@ export function CodeBlock({ text, language, showLineNumbers = false, copyLabel =
                     <span className={CLASS.gutter} aria-hidden="true">
                       {tailStart + i + 1}
                     </span>
-                    <span>{line}</span>
+                    <span>{typeof line === "string" ? line : <AnsiLineContent line={line} />}</span>
                   </span>
                 ))
-              : visibleLines.join("\n")}
+              : ansi
+                ? visibleLines.map((line, index) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + index is the stable displayed source line number
+                    <Fragment key={tailStart + index}>
+                      {index > 0 ? "\n" : null}
+                      {typeof line === "string" ? line : <AnsiLineContent line={line} />}
+                    </Fragment>
+                  ))
+                : visibleLines.join("\n")}
           </code>
         </pre>
       </div>

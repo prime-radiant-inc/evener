@@ -19,6 +19,8 @@
   "license": "ISC",
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.7",
+    "anser": "^2.3.5",
+    "ansi-regex": "^6.2.2",
     "dockview": "^7.0.2",
     "dockview-react": "^7.0.2",
     "dompurify": "^3.4.12",

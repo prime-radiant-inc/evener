@@ -59,6 +59,24 @@
   --diff-add-bg: #131A1B;
   --diff-del-bg: #1D1519;
 
+  /* --- terminal notation (dark) -------------------------------------- */
+  --ansi-black: #5C6673;
+  --ansi-red: #E5484D;
+  --ansi-green: #3FB68B;
+  --ansi-yellow: #E8A33D;
+  --ansi-blue: #6CA0F5;
+  --ansi-magenta: #B892F6;
+  --ansi-cyan: #5CC8D7;
+  --ansi-white: #E6EAF0;
+  --ansi-bright-black: #7D8794;
+  --ansi-bright-red: #FF6B70;
+  --ansi-bright-green: #62D5A9;
+  --ansi-bright-yellow: #F5BE62;
+  --ansi-bright-blue: #8DB7FF;
+  --ansi-bright-magenta: #D0AEFF;
+  --ansi-bright-cyan: #80DDEA;
+  --ansi-bright-white: #FFFFFF;
+
   /* --- type -------------------------------------------------------------
    * IBM Plex Sans for UI + prose, IBM Plex Mono for code/tool output/paths/
    * timings (never for chrome labels). Font files: src/styles/global.css.
@@ -142,6 +160,23 @@
   /* Diff notation remains domain-specific rather than a status signal. */
   --diff-add-bg: #E9F3EC;
   --diff-del-bg: #F5E7EB;
+
+  --ansi-black: #161B22;
+  --ansi-red: #B4232A;
+  --ansi-green: #216E4E;
+  --ansi-yellow: #805500;
+  --ansi-blue: #1558B0;
+  --ansi-magenta: #7A3E9D;
+  --ansi-cyan: #006B75;
+  --ansi-white: #545E6E;
+  --ansi-bright-black: #545E6E;
+  --ansi-bright-red: #DB1F25;
+  --ansi-bright-green: #2B7D60;
+  --ansi-bright-yellow: #9D6513;
+  --ansi-bright-blue: #1668EF;
+  --ansi-bright-magenta: #8E4EC6;
+  --ansi-bright-cyan: #0E7490;
+  --ansi-bright-white: #161B22;
 }
 
 /* --- font-size + phone-density preference application ------------------

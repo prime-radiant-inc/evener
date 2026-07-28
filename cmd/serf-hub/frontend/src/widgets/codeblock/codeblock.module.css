@@ -77,6 +77,34 @@
   line-height: var(--line-height-body);
 }
 
+.ansiBold {
+  font-weight: var(--font-weight-semibold);
+}
+
+.ansiDim {
+  opacity: 0.65;
+}
+
+.ansiItalic {
+  font-style: italic;
+}
+
+.ansiUnderline {
+  text-decoration-line: underline;
+}
+
+.ansiHidden {
+  visibility: hidden;
+}
+
+.ansiStrikethrough {
+  text-decoration-line: line-through;
+}
+
+.ansiUnderline.ansiStrikethrough {
+  text-decoration-line: underline line-through;
+}
+
 .line {
   display: flex;
 }
