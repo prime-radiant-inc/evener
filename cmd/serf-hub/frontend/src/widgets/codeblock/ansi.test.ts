@@ -81,3 +81,7 @@ test("a malformed escape byte cannot leak into rendered text", () => {
   expect(plainText(lines)).toBe("safebroken");
   expect(plainText(lines)).not.toContain("\u001b");
 });
+
+test("carriage return is consumed as a terminal control rather than retained in log text", () => {
+  expect(plainText(parseAnsiLines("before\rafter"))).toBe("beforeafter");
+});

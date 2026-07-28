@@ -90,6 +90,7 @@ function presentationalText(text: string): string {
       (code >= 0x00 && code <= 0x08) ||
       code === 0x0b ||
       code === 0x0c ||
+      code === 0x0d ||
       (code >= 0x0e && code <= 0x1a) ||
       (code >= 0x1c && code <= 0x1f) ||
       code === 0x7f;
