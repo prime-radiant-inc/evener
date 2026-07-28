@@ -245,10 +245,58 @@
     "supports_effort_parameter": false,
     "supports_web_search": false
   },
+  "k3": {
+    "_note": "Serf-only entry for Kimi K3. The Kimi Code Anthropic-compatible /v1/models response omits token limits, and LiteLLM does not yet catalog this model.",
+    "provider": "kimi",
+    "display_name": "Kimi K3",
+    "context_window": 1048576,
+    "supports_tools": true,
+    "supports_vision": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "low",
+      "high",
+      "max"
+    ],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": true
+  },
+  "k3-256k": {
+    "_note": "Serf-only entry for Kimi K3's fixed 256K variant. The Kimi Code Anthropic-compatible /v1/models response omits token limits, and LiteLLM does not yet catalog this model.",
+    "provider": "kimi",
+    "display_name": "Kimi K3 256K",
+    "context_window": 262144,
+    "supports_tools": true,
+    "supports_vision": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "low",
+      "high",
+      "max"
+    ],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": true
+  },
   "kimi-for-coding": {
     "_note": "Serf-only entry \u2014 the Kimi coding plan's single model (K2.7 Code); not in the LiteLLM catalog. context_window present, so this materializes a catalog entry.",
     "provider": "kimi",
     "display_name": "K2.7 Code",
+    "context_window": 262144,
+    "supports_tools": true,
+    "supports_reasoning": true,
+    "reasoning_effort_levels": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ],
+    "supports_adaptive_thinking": false,
+    "supports_effort_parameter": false
+  },
+  "kimi-for-coding-highspeed": {
+    "_note": "Serf-only entry for K2.7 Code HighSpeed. The Kimi Code Anthropic-compatible /v1/models response omits token limits, and LiteLLM does not yet catalog this model.",
+    "provider": "kimi",
+    "display_name": "K2.7 Code HighSpeed",
     "context_window": 262144,
     "supports_tools": true,
     "supports_reasoning": true,

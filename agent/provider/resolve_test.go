@@ -180,21 +180,37 @@ func TestResolveProfileFromConfig_MiniMax(t *testing.T) {
 func TestResolveProfileFromConfig_KimiAnthropic(t *testing.T) {
 	cfg := providercfg.Config{
 		Instances: []providercfg.InstanceConfig{
-			{Name: "kimi", Type: "kimi-anthropic"},
+			{Name: "kimi-anthropic-api", Type: "kimi-anthropic"},
 		},
 	}
-	p, err := provider.ResolveProfileFromConfig(cfg, "kimi/kimi-for-coding")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p.ID() != "kimi" {
-		t.Errorf("ID() = %q, want %q", p.ID(), "kimi")
-	}
-	if p.BehaviorTag() != "kimi-anthropic" {
-		t.Errorf("BehaviorTag() = %q, want %q", p.BehaviorTag(), "kimi-anthropic")
-	}
-	if p.Model() != "kimi-for-coding" {
-		t.Errorf("Model() = %q, want %q", p.Model(), "kimi-for-coding")
+
+	for _, tc := range []struct {
+		model         string
+		contextWindow int
+	}{
+		{model: "k3", contextWindow: 1_048_576},
+		{model: "k3-256k", contextWindow: 262_144},
+		{model: "kimi-for-coding", contextWindow: 262_144},
+		{model: "kimi-for-coding-highspeed", contextWindow: 262_144},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			p, err := provider.ResolveProfileFromConfig(cfg, "kimi-anthropic-api/"+tc.model)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.ID() != "kimi-anthropic-api" {
+				t.Errorf("ID() = %q, want %q", p.ID(), "kimi-anthropic-api")
+			}
+			if p.BehaviorTag() != "kimi-anthropic" {
+				t.Errorf("BehaviorTag() = %q, want %q", p.BehaviorTag(), "kimi-anthropic")
+			}
+			if p.Model() != tc.model {
+				t.Errorf("Model() = %q, want %q", p.Model(), tc.model)
+			}
+			if got := p.ContextWindowSize(); got != tc.contextWindow {
+				t.Errorf("ContextWindowSize() = %d, want %d", got, tc.contextWindow)
+			}
+		})
 	}
 }
 

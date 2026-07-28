@@ -429,9 +429,12 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			if len(m.ReasoningEffortLevels) > 0 {
 				entry["reasoning_effort_levels"] = m.ReasoningEffortLevels
 			}
-			// Keep catalog enrichment for static pricing/capability hints, but
-			// do not replace live token limits with catalog values.
+			// Keep catalog enrichment for metadata the live endpoint omits, but
+			// never replace a live token limit with a catalog value.
 			if mi != nil {
+				if _, ok := entry["context_window"]; !ok && mi.ContextWindow > 0 {
+					entry["context_window"] = mi.ContextWindow
+				}
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
 				if _, ok := entry["supports_tools"]; !ok {

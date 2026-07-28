@@ -974,22 +974,32 @@ func TestEmbeddedCatalog_DeepSeekV4Models(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCatalog_KimiForCoding(t *testing.T) {
+func TestEmbeddedCatalog_KimiCodeModels(t *testing.T) {
 	cat := EmbeddedModelCatalog()
-	mi := cat.GetModelInfo("kimi-for-coding")
-	if mi == nil {
-		t.Fatal("kimi-for-coding missing from embedded catalog")
-	}
-	if mi.ContextWindow != 262144 {
-		t.Errorf("kimi-for-coding ContextWindow = %d, want 262144", mi.ContextWindow)
-	}
-	if len(mi.ReasoningEffortLevels) == 0 {
-		t.Error("kimi-for-coding has no reasoning_effort_levels")
-	}
-	// kimi-for-coding is tool-capable (verified end-to-end: it drives delegate +
-	// shell). The catalog must reflect that, not the no-tools default.
-	if !mi.SupportsTools {
-		t.Error("kimi-for-coding should be SupportsTools=true")
+	for _, tc := range []struct {
+		model         string
+		contextWindow int
+	}{
+		{model: "k3", contextWindow: 1_048_576},
+		{model: "k3-256k", contextWindow: 262_144},
+		{model: "kimi-for-coding", contextWindow: 262_144},
+		{model: "kimi-for-coding-highspeed", contextWindow: 262_144},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			mi := cat.GetModelInfo(tc.model)
+			if mi == nil {
+				t.Fatalf("%s missing from embedded catalog", tc.model)
+			}
+			if mi.ContextWindow != tc.contextWindow {
+				t.Errorf("%s ContextWindow = %d, want %d", tc.model, mi.ContextWindow, tc.contextWindow)
+			}
+			if len(mi.ReasoningEffortLevels) == 0 {
+				t.Errorf("%s has no reasoning_effort_levels", tc.model)
+			}
+			if !mi.SupportsTools {
+				t.Errorf("%s should be SupportsTools=true", tc.model)
+			}
+		})
 	}
 }
 

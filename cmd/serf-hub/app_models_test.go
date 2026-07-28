@@ -9,7 +9,69 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
+
+type modelMetadataAdapter struct {
+	name   string
+	models []llm.ModelInfo
+}
+
+func (a *modelMetadataAdapter) Name() string { return a.name }
+
+func (a *modelMetadataAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, nil
+}
+
+func (a *modelMetadataAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, nil
+}
+
+func (a *modelMetadataAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+	return append([]llm.ModelInfo(nil), a.models...), nil
+}
+
+func TestFetchLiveModels_KimiContextWindow(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&modelMetadataAdapter{
+		name: "kimi-anthropic-api",
+		models: []llm.ModelInfo{
+			{ID: "k3", DisplayName: "Kimi K3"},
+			{ID: "k3-256k", DisplayName: "Kimi K3 256K", ContextWindow: 123_456},
+		},
+	})
+	client.SetNameToTag(map[string]string{"kimi-anthropic-api": "kimi-anthropic"})
+
+	oldLoadClient := webSpawnLoadClient
+	webSpawnLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		return client, providercfg.Config{}, true, nil
+	}
+	t.Cleanup(func() {
+		webSpawnLoadClient = oldLoadClient
+	})
+
+	server := NewWebServer(hubcore.WebConfig{
+		ProviderConfig: &providercfg.Config{Instances: []providercfg.InstanceConfig{
+			{Name: "kimi-anthropic-api", Type: "kimi-anthropic"},
+		}},
+	})
+	models := server.fetchLiveModels(context.Background())
+	contextByModel := make(map[string]int, len(models))
+	for _, model := range models {
+		modelID, _ := model["model"].(string)
+		if contextWindow, ok := model["context_window"].(int); ok {
+			contextByModel[modelID] = contextWindow
+		}
+	}
+
+	if got := contextByModel["k3"]; got != 1_048_576 {
+		t.Errorf("k3 context_window = %d, want 1048576 from catalog when live metadata omits it", got)
+	}
+	if got := contextByModel["k3-256k"]; got != 123_456 {
+		t.Errorf("k3-256k context_window = %d, want live value 123456", got)
+	}
+}
 
 // TestHubModelList_AttachesRecentFromPastIndex verifies every ModelList
 // response (the path both the TUI's appwire RPC and the web's non-serf-harness

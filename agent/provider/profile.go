@@ -849,12 +849,19 @@ func newMiniMaxProfile(model string) *Profile {
 // newKimiAnthropicProfile returns a *Profile for the Kimi coding plan using the
 // given model, talking to Kimi's Anthropic-compatible endpoint.
 func newKimiAnthropicProfile(model string) *Profile {
+	model = strings.TrimSpace(model)
+	contextWindow := 262_144
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.GetModelInfo(model); mi != nil && mi.Provider == "kimi" && mi.ContextWindow > 0 {
+			contextWindow = mi.ContextWindow
+		}
+	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "kimi-anthropic",
 		behaviorTag:     providercfg.BehaviorTag("kimi-anthropic", ""),
 		model:           model,
 		parallel:        true,
-		contextWindow:   262_144,
+		contextWindow:   contextWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,

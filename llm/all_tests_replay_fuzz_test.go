@@ -249,7 +249,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestApplyOverrides_MaxOutputTokens(t)
 		TestEmbeddedCatalog_ZAIGLMModels(t)
 		TestEmbeddedCatalog_DeepSeekV4Models(t)
-		TestEmbeddedCatalog_KimiForCoding(t)
+		TestEmbeddedCatalog_KimiCodeModels(t)
 		TestApplyOverrides_ContextWindowOverlaysMatchedModel(t)
 		TestParseLiteLLMCatalog_SkipsNonModelObjects(t)
 		TestGetPrice_ExactMatch(t)
