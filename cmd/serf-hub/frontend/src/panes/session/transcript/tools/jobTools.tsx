@@ -125,6 +125,7 @@ function JobListBody({ item, live }: ToolRenderProps) {
 
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
+  icon: "job",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const parsedOutput = parseJSONObject(item.output);
@@ -157,6 +158,7 @@ registerToolRenderer({
 
 registerToolRenderer({
   match: "job_list",
+  icon: "job",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const status = args.status;
@@ -168,6 +170,7 @@ registerToolRenderer({
 
 registerToolRenderer({
   match: "job_stop",
+  icon: "job",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "job_id") ?? "";
@@ -200,6 +203,7 @@ function delegateSendTarget(args: Record<string, unknown>): string {
 
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
+  icon: "send",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const target = clip(delegateSendTarget(args), ID_CLIP);
@@ -230,6 +234,7 @@ registerToolRenderer({
 // resolves for a job_* name none of the specific descriptors claimed.
 registerToolRenderer({
   match: (name) => name.startsWith("job_"),
+  icon: "job",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const operation = str(args, "operation");

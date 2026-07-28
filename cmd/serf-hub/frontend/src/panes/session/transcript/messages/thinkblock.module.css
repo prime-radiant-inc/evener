@@ -20,11 +20,27 @@
 }
 
 .label {
-  display: block;
+  /* flex, not block: the row now leads with the kind icon (see .icon), and
+   * only a flex row centres the glyph against the caption text. */
+  display: flex;
+  align-items: center;
+  column-gap: var(--space-2);
   margin-bottom: var(--space-1);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
+}
+
+/* The kind glyph leading the thought row - the same leading-icon grammar the
+ * tool rows use (widgets/toolicon at 14px), in the row's own quiet ink: the
+ * widget strokes currentColor, and both .label and .summary set --ink-low,
+ * so no colour is declared here. align-self: center because .summary's
+ * baseline alignment would seat the icon's box on its bottom edge instead of
+ * centring the glyph on the text. */
+.icon {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
 }
 
 .liveBody {
@@ -69,6 +85,7 @@
 .summary {
   display: inline-flex;
   align-items: baseline;
+  column-gap: var(--space-2);
   max-width: 100%;
   cursor: pointer;
   overflow: hidden;

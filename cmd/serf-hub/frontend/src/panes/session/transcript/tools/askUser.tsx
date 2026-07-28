@@ -109,6 +109,7 @@ function AskUserBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "ask_user",
+  icon: "ask",
   summary(item: ItemModel) {
     const questions = parseAskUserQuestions(item);
     if (!questions) return "Asked a question";

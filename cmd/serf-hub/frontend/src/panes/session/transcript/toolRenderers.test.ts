@@ -56,6 +56,13 @@ test("a predicate that does not match falls through to the default descriptor", 
   expect(toolRendererFor("tt_completely_different").body).toBe(RawToolOutput);
 });
 
+// Every unregistered tool - which includes every MCP tool - wears the generic
+// tool glyph rather than rendering icon-less (Jesse's ask: "for mcps a
+// generic tool icon").
+test("the default descriptor's icon is the generic wrench", () => {
+  expect(toolRendererFor("tt_mcp_server__some_tool").icon).toBe("wrench");
+});
+
 test("an exact match wins over a predicate that would also match, registered exact-first", () => {
   registerToolRenderer({ match: "tt_precedence_a", summary: () => "exact wins" });
   registerToolRenderer({ match: (name) => name.startsWith("tt_precedence_"), summary: () => "predicate" });

@@ -92,6 +92,25 @@ summary.row:focus-visible {
   gap: var(--space-1);
 }
 
+/* The tool-KIND glyph leading the row (ToolRow's icon prop). Unlike the
+ * chevron - which rides inline because it belongs to the words it opens -
+ * the icon belongs to the ROW, so it is a flex item pinned to the first
+ * line: 1lh tall with the svg centred in that height, align-self flex-start
+ * against the row's baseline alignment. The 1lh wrapper is safe here (no
+ * rotation - contrast the chevron's own warning about turning a non-square
+ * wrapper).
+ *
+ * --ink-mid: a scannability aid, not the row's headline, so it takes the
+ * summary's ink rather than the purpose's full-contrast one. */
+.icon {
+  flex: none;
+  align-self: flex-start;
+  height: 1lh;
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-mid);
+}
+
 /* With a purpose above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer. flex-basis 100% is what forces the
  * line break inside the wrapping row.
@@ -111,6 +130,18 @@ summary.row:focus-visible {
   order: 1;
   flex: 0 0 100%;
   color: var(--ink-mid);
+}
+
+/* With a kind icon leading, line 2's demoted summary indents to align under
+ * line 1's TEXT rather than under the icon, so the two text columns share a
+ * left edge. The indent comes OUT of the flex basis (margin + basis = 100%),
+ * otherwise basis 100% plus a margin overflows the row. The 14px is
+ * ToolIcon's default box edge (widgets/toolicon's DEFAULT_SIZE); if the icon
+ * size ever changes, this goes with it. Placed AFTER the plain .demoted rule
+ * so the file reads base-first, override-second. */
+.row[data-icon="true"] .demoted {
+  flex-basis: calc(100% - 14px - var(--space-2));
+  margin-left: calc(14px + var(--space-2));
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a

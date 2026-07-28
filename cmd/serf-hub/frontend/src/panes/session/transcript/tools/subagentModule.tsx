@@ -512,6 +512,7 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "delegate",
+  icon: "delegate",
   summary(item: ItemModel) {
     return item.description ?? "";
   },

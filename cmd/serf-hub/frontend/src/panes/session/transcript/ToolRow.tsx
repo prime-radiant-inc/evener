@@ -5,8 +5,10 @@
 //
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
-//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline] [affordances]
-//     line 2: verb target [· meta]
+//     line 1: [✗ failure glyph?] [kind icon?] [status?] purpose[chevron inline] [affordances]
+//     line 2: verb target [· meta]   (indented to align under line 1's text
+//                                     when a kind icon leads - see .icon in
+//                                     toolcallitem.module.css)
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
@@ -36,7 +38,7 @@
 // A row with no purpose is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
 import type { ReactNode } from "react";
-import { Chevron, FailureGlyph } from "../../../widgets";
+import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./toolcallitem.module.css";
 
@@ -45,6 +47,7 @@ const CLASS = {
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
+  icon: requireClass(styles.icon, "toolcallitem.module.css", "icon"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
@@ -58,6 +61,9 @@ export interface ToolRowProps {
   /** The agent's stated reason for the call (ItemModel.description). Blank or
    * absent renders nothing at all — no placeholder, no empty separator. */
   purpose?: string;
+  /** The tool-FAMILY glyph leading the row (the descriptor's `icon` field).
+   * Absent renders no icon and no reserved gutter. */
+  icon?: ToolIconKind;
   failed: boolean;
   expandable: boolean;
   expanded: boolean;
@@ -98,6 +104,7 @@ function middleSplit(text: string): [head: string, tail: string] {
 export function ToolRow({
   summary,
   purpose,
+  icon,
   failed,
   expandable,
   expanded,
@@ -132,6 +139,16 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failed && <FailureGlyph />}
+      {icon !== undefined && (
+        // The kind glyph LEADS the row's text: a flex item pinned to the
+        // first line (1lh, align-self flex-start - see .icon in the css),
+        // unlike the chevron which rides inline because it belongs to the
+        // words it opens. The icon belongs to the ROW, not to any phrase in
+        // it, so it must not drift with the wrap.
+        <span className={CLASS.icon} data-testid="tool-row-icon" aria-hidden="true">
+          <ToolIcon kind={icon} />
+        </span>
+      )}
       {status !== undefined && (
         <span className={CLASS.status} data-testid="tool-row-status">
           {status}
@@ -173,7 +190,13 @@ export function ToolRow({
 
   if (!expandable) {
     return (
-      <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
+      <div
+        className={CLASS.row}
+        data-testid="tool-row"
+        data-purpose={hasPurpose ? "true" : undefined}
+        data-icon={icon !== undefined ? "true" : undefined}
+        title={title}
+      >
         {content}
       </div>
     );
@@ -195,6 +218,7 @@ export function ToolRow({
       className={CLASS.row}
       data-testid="tool-row"
       data-purpose={hasPurpose ? "true" : undefined}
+      data-icon={icon !== undefined ? "true" : undefined}
       title={title}
       aria-expanded={expanded}
       onClick={(e) => {

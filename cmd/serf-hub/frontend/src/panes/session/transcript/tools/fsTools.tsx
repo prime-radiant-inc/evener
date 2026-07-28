@@ -6,7 +6,7 @@
 // target/result slot on the wire like the legacy DOM had).
 
 import type { ItemModel } from "../../../../protocol/model";
-import { registerToolRenderer } from "../toolRenderers";
+import { registerToolRenderer, type ToolRendererDescriptor } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 import { clip, lineCount, parseArgs, str } from "./helpers";
 
@@ -27,6 +27,7 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
 
 registerToolRenderer({
   match: "read_file",
+  icon: "file",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const target = str(args, "file_path") ?? str(args, "path") ?? "";
@@ -49,8 +50,9 @@ function grepTarget(args: Record<string, unknown>): string {
   return `"${pattern}" in ${path}${globFilter ? ` (${globFilter})` : ""}`;
 }
 
-const grepDescriptor = {
+const grepDescriptor: ToolRendererDescriptor = {
   match: (name: string) => name === "grep" || name === "grep_files" || name === "grep_search",
+  icon: "search",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     return `Searched ${grepTarget(args)} · ${lineCount(item.output ?? "")} hits`;
@@ -59,8 +61,9 @@ const grepDescriptor = {
 };
 registerToolRenderer(grepDescriptor);
 
-const lsDescriptor = {
+const lsDescriptor: ToolRendererDescriptor = {
   match: (name: string) => name === "list_dir" || name === "list_directory",
+  icon: "folder",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const path = str(args, "path") ?? ".";
@@ -73,6 +76,7 @@ registerToolRenderer(lsDescriptor);
 
 registerToolRenderer({
   match: "glob",
+  icon: "search",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const pattern = str(args, "pattern") ?? str(args, "glob") ?? "";

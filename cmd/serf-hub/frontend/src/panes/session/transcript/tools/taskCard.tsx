@@ -215,6 +215,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "task_list",
+  icon: "tasks",
   summary(item: ItemModel) {
     const progress = parseProgress(item.output);
     return progress ? `Tasks · ${progress.done} / ${progress.total}` : "Tasks";

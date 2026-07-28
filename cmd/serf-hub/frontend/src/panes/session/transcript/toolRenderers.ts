@@ -5,6 +5,7 @@
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
 import type { ComponentType } from "react";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
+import type { ToolIconKind } from "../../../widgets";
 import { RawToolOutput } from "./RawToolOutput";
 
 export interface ToolRenderProps {
@@ -25,6 +26,13 @@ export interface ToolRenderProps {
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
   summary(item: ItemModel): string; // one-line purpose-first summary
+  // The tool-FAMILY glyph the row leads with (widgets/toolicon), so the kind
+  // of work - shell vs file read vs edit vs web - is scannable down a run of
+  // calls without reading the summary text. Optional: a descriptor without
+  // one renders no icon (ToolRow's icon-less grammar), and every unregistered
+  // tool - including every MCP tool - inherits the DEFAULT_DESCRIPTOR's
+  // generic wrench.
+  icon?: ToolIconKind;
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one
@@ -90,6 +98,9 @@ export function registerToolRenderer(d: ToolRendererDescriptor): void {
 const DEFAULT_DESCRIPTOR: ToolRendererDescriptor = {
   match: () => true,
   summary: (item) => item.toolName ?? "tool",
+  // The generic tool glyph: MCP tools (and any other unregistered name) have
+  // no family descriptor, so they all wear the wrench.
+  icon: "wrench",
   body: RawToolOutput,
 };
 

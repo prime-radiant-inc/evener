@@ -66,6 +66,7 @@ function filePathArg(item: ItemModel): string | undefined {
 
 registerToolRenderer({
   match: "edit_file",
+  icon: "edit",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const path = str(args, "file_path") ?? str(args, "path") ?? "";
@@ -85,6 +86,7 @@ function WriteFileBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "write_file",
+  icon: "edit",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const path = str(args, "file_path") ?? str(args, "path") ?? "";
@@ -125,6 +127,7 @@ function ApplyPatchBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "apply_patch",
+  icon: "edit",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const patch = str(args, "patch") ?? "";

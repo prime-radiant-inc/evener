@@ -79,6 +79,8 @@ export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
 export type { ToastKind } from "./toast";
 export { Toast, useToasts } from "./toast";
+export type { ToolIconKind, ToolIconProps } from "./toolicon";
+export { ToolIcon } from "./toolicon";
 export type { TooltipProps } from "./tooltip";
 export { Tooltip } from "./tooltip";
 export type { TreeNode, TreeProps, TreeRowInfo } from "./tree";

@@ -21,6 +21,7 @@ function UseSkillBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "use_skill",
+  icon: "skill",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const skillName = str(args, "skill_name") ?? str(args, "name") ?? "";

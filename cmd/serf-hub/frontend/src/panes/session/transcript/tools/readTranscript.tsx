@@ -153,6 +153,7 @@ function ReadTranscriptBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: (name) => name === "read_transcript" || name === "read_session_transcript",
+  icon: "transcript",
   // Says what was read and how much, never a dump of the call.
   summary(item: ItemModel) {
     const how = extent(item);

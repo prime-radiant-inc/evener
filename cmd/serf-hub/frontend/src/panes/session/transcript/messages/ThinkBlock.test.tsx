@@ -68,6 +68,33 @@ test("live stacks the label above the streaming body - no flex gutter", () => {
   expect(thinkCss()).not.toMatch(/\.live\s*\{[^}]*display:\s*flex/);
 });
 
+// --- the kind icon: the thought row leads with the lightbulb ----------------
+// Jesse's review call: "thinking should also have an icon" - the same
+// leading-icon grammar the tool rows use (widgets/toolicon).
+
+test("the live eyebrow leads with the thought icon, decorative only", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
+  const icon = screen.getByTestId("think-block-icon");
+  expect(icon.getAttribute("aria-hidden")).toBe("true");
+  expect(icon.querySelector("svg")).not.toBeNull();
+});
+
+test("the settled summary leads with the thought icon, ahead of the label text", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["done thinking"]] })} turn={turn} live={false} />);
+  const summary = document.querySelector("summary");
+  const icon = screen.getByTestId("think-block-icon");
+  expect(summary?.contains(icon)).toBe(true);
+  expect(summary?.firstElementChild).toBe(icon);
+});
+
+test("the thought icon is a centred flex-none glyph (baseline alignment would seat it on its bottom edge)", () => {
+  const css = thinkCss();
+  const rule = /\.icon\s*\{([^}]*)\}/.exec(css);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("flex: none");
+  expect(rule![1]).toContain("align-self: center");
+});
+
 test("an expanded thought renders as a full-width row below its summary - no column chrome", () => {
   const css = thinkCss();
   // No [open] flex row squeezing the body beside the label...

@@ -50,6 +50,7 @@ function WebFetchBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "web_fetch",
+  icon: "globe",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const url = str(args, "url") ?? "";
@@ -80,6 +81,7 @@ function WebSearchBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "web_search",
+  icon: "search",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const query = clip(str(args, "query") ?? str(args, "q") ?? "", QUERY_CLIP);

@@ -46,7 +46,7 @@
 // message types behave the same way under streaming.
 
 import { memo } from "react";
-import { Markdown } from "../../../../widgets";
+import { Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
@@ -64,12 +64,23 @@ const CLASS = {
   block: requireClass(styles.block, "thinkblock.module.css", "block"),
   live: requireClass(styles.live, "thinkblock.module.css", "live"),
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
+  icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
 };
+
+// The thought row leads with the same leading-icon grammar the tool rows use
+// (Jesse's review call: "thinking should also have an icon") - the lightbulb
+// kind glyph at the transcript's one icon size, in the row's own quiet ink
+// (the widget strokes currentColor; .label and .summary both set --ink-low).
+const thoughtIcon = (
+  <span className={CLASS.icon} data-testid="think-block-icon" aria-hidden="true">
+    <ToolIcon kind="thought" />
+  </span>
+);
 
 const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
@@ -93,7 +104,10 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
     return (
       <div className={CLASS.block} data-testid="think-block" data-live="true">
         <div className={CLASS.live}>
-          <span className={CLASS.label}>Thinking…</span>
+          <span className={CLASS.label}>
+            {thoughtIcon}
+            Thinking…
+          </span>
           <div className={CLASS.liveBody}>
             {(item.reasoningSummaries ?? []).map((chunks, i) =>
               // A zero-chunk index (a later summaryIndex has started streaming
@@ -151,6 +165,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
             toggleDisclosure(disclosureKey, false);
           }}
         >
+          {thoughtIcon}
           {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
         </summary>
         <div className={CLASS.body}>

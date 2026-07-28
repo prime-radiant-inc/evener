@@ -343,6 +343,60 @@ test("the exit code is reachable WITHOUT a mouse - via the raw output's own trai
   expect(screen.queryByTestId("tool-call-detail")).toBe(null);
 });
 
+// --- the kind icon: a per-family glyph leads the row ------------------------
+
+test("a descriptor with an icon leads the row with the kind glyph, ahead of the purpose", () => {
+  registerToolRenderer({ match: "trg_icon", summary: () => "Ran ls", icon: "terminal" });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "trg_icon", description: "Check the working directory." })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  const icon = screen.getByTestId("tool-row-icon");
+  const purpose = screen.getByTestId("tool-row-purpose");
+  const children = Array.from(row.querySelectorAll("[data-testid]"));
+  expect(children.indexOf(icon)).toBeLessThan(children.indexOf(purpose));
+  expect(row.getAttribute("data-icon")).toBe("true");
+});
+
+test("a descriptor WITHOUT an icon renders no icon element and no gutter - the icon-less grammar is unchanged", () => {
+  registerToolRenderer({ match: "trg_no_icon", summary: () => "Ran ls" });
+  render(<ToolCallItem item={item({ toolName: "trg_no_icon" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-icon")).toBe(null);
+  expect(screen.getByTestId("tool-row").getAttribute("data-icon")).toBe(null);
+});
+
+test("an unregistered tool - every MCP tool - inherits the default descriptor's generic wrench", () => {
+  render(<ToolCallItem item={item({ toolName: "trg_unregistered_mcp_thing" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-row-icon")).toBeTruthy();
+});
+
+test("the kind icon is decorative - the row's text already names the action", () => {
+  render(<ToolRow summary="Ran ls" icon="terminal" failed={false} expandable={false} expanded={false} />);
+  const icon = screen.getByTestId("tool-row-icon");
+  expect(icon.getAttribute("aria-hidden")).toBe("true");
+});
+
+test("the icon is pinned to the row's first line, not baseline-drifting with the wrap", () => {
+  const css = rowCss();
+  const iconRule = css.match(/\.icon\s*\{([^}]*)\}/);
+  expect(iconRule).not.toBe(null);
+  expect(iconRule?.[1]).toContain("align-self: flex-start");
+  expect(iconRule?.[1]).toContain("height: 1lh");
+});
+
+test("with an icon leading, line 2 indents under line 1's TEXT - and the indent comes out of the flex basis", () => {
+  const css = rowCss();
+  const indentRule = css.match(/\.row\[data-icon="true"\]\s+\.demoted\s*\{([^}]*)\}/);
+  expect(indentRule).not.toBe(null);
+  // margin-left alone would push basis-100% past the row's right edge.
+  expect(indentRule?.[1]).toContain("margin-left: calc(14px + var(--space-2))");
+  expect(indentRule?.[1]).toContain("flex-basis: calc(100% - 14px - var(--space-2))");
+});
+
 // --- A3: the row looks clickable ------------------------------------------
 
 test("an expandable row exposes aria-expanded reflecting its state", () => {
