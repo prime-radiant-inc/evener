@@ -123,6 +123,11 @@ If a response is lost, the client reconnects and resubmits the identical method
 and normalized payload with the same client mutation ID. The server returns the
 original result without applying the mutation again.
 
+The same rule applies to state-dependent rejections. Once the daemon durably
+rejects a well-formed mutation ID for a failed precondition, a retry returns
+that rejection even if session state later changes. A delayed retry must never
+turn a previously rejected intent into an applied one.
+
 ### Server-to-client streams
 
 Every notification family must be one of:
@@ -202,7 +207,8 @@ Each in-scope response carries:
     "disposition": "applied",
     "threadId": "01…",
     "turnId": "turn_42",
-    "queueEntryIds": ["q_…"]
+    "queueEntryIds": ["q_…"],
+    "projectionState": "reflected"
   }
 }
 ```
@@ -216,6 +222,42 @@ Each in-scope response carries:
 `threadId` is always present. `turnId` and `queueEntryIds` are present only when
 the method produces them.
 
+Every receipt also carries the current authoritative projection state:
+
+- `pending` when the accepted intent is durable but has not yet appeared in a
+  queue, transcript item, or terminal operation state;
+- `reflected` when authoritative state contains the mutation identity, even if
+  that state is outside the current transcript window; or
+- `removed` when a receipt-only mutation deliberately removed or terminated
+  its target.
+
+Projection state is current metadata computed when the receipt is returned; it
+is not part of the immutable original method result.
+
+### Mutation error outcome
+
+Every error response to an in-scope mutation carries:
+
+```json
+{
+  "serfErrorInfo": "conflict",
+  "clientMutationId": "9e03…",
+  "mutationOutcome": "notAccepted"
+}
+```
+
+`mutationOutcome` is:
+
+- `notAccepted` only when the responder guarantees the mutation did not apply;
+  or
+- `unknown` when a transport or persistence boundary cannot prove whether an
+  authoritative daemon committed it.
+
+`unknown` uses `serfErrorInfo: "mutationOutcomeUnknown"` and is never rendered
+as a mutation failure. The outbox retains the original record and retries it
+with the same ID. Terminal rejection replay returns the original error with
+`mutationOutcome: "notAccepted"`.
+
 Method-specific responses retain their existing fields:
 
 - `turn/start` retains its reserved `turn`;
@@ -225,6 +267,24 @@ Method-specific responses retain their existing fields:
 
 The original method result is stored with the receipt so replay returns the
 same turn ID, removed text, image count, and affected queue entry IDs.
+
+### Pending mutation projection
+
+`SerfThread` gains `pendingMutations`. It contains every accepted or claimed
+message-producing mutation that is not yet represented by a durable transcript
+item, including its client mutation ID, method, complete input, execution
+state, turn ID when assigned, and queue entry IDs. Queue entries also remain in
+`QueueState`; clients deduplicate the two projections by mutation ID.
+
+This projection makes accepted work reconstructible after the browser has
+received a receipt and removed its transport outbox record. On reload, a
+pending start or steer remains visible without depending on component memory.
+Once the transcript contains the identity, the pending projection disappears
+and the transcript item replaces it in place.
+
+`projectionState: "reflected"` means the identity is present in
+`pendingMutations`, `QueueState`, a transcript item, or the terminal operation
+state. Receipt delivery alone does not claim reflection.
 
 ### Identity on authoritative state
 
@@ -256,6 +316,7 @@ Idempotency prevents duplicate execution; preconditions prevent delayed
 execution against the wrong state.
 
 - `turn/steer` requires `expectedTurnId`.
+- `turn/queue` requires `expectedTurnId`.
 - `turn/interrupt` requires `expectedTurnId`.
 - `turn/promoteQueuedAsSteer` requires `expectedTurnId` and
   `expectedEntryId`.
@@ -268,42 +329,74 @@ cancel, promote, drain, or restore changes it. A delayed drain must not consume
 entries that arrived after the snapshot from which the user chose “drain.”
 
 Precondition failure does not create a successful receipt because no mutation
-was accepted. The response is a typed conflict carrying the current active
-turn ID and/or queue revision needed to rehydrate the control.
+was accepted. For a well-formed, authenticated mutation ID, the daemon
+durably stores the typed conflict as that ID's terminal rejection before
+responding. The conflict carries the current active turn ID and/or queue
+revision needed to rehydrate the control. A retry with the same method and
+payload replays the same rejection; a different payload remains invalid.
 
 ## Durable Acceptance
 
 ### Per-session receipt state
 
-The daemon owns a per-session client-mutation index. Each entry stores:
+The daemon owns a per-session mutation journal. Each record stores:
 
 - client mutation ID;
 - normalized method;
 - semantic payload hash;
+- the complete accepted input while incorporation is pending;
 - method-specific result;
 - the associated turn and queue entry IDs; and
-- committed disposition.
+- outcome: `applied` or a terminal typed rejection;
+- execution state: `accepted`, `claimed`, or `terminal`; and
+- projection state: `pending`, `reflected`, or `removed`.
 
-Version one retains receipts for the lifetime of the session. It does not add a
-time-based pruning policy: an expired idempotency window would reintroduce an
-unsafe retry boundary. The receipt record is small relative to the transcript
-entry generated by most mutations. Session deletion removes its receipts.
+Version two retains these records for the lifetime of the session. It does not
+add a time-based pruning policy: an expired idempotency window would
+reintroduce an unsafe retry boundary. Session deletion removes its journal.
 
-Receipts are co-located with the durable domain transition whenever possible:
+Applied records are co-located with the durable domain transition:
 
-- a started user turn stores its own client mutation ID and result identity;
-- a queued input or pending steer stores its client mutation ID in the
-  persisted queue state;
+- a started user turn stores its full input, client mutation ID, reserved turn
+  ID, and runnable execution state;
+- a queued input or pending steer remains in the journal until its transcript
+  incorporation is durable;
 - an incorporated queue or steer carries that identity into its transcript
   turn; and
 - queue transforms, cancellations, and interrupts retain compact receipt
-  tombstones in the per-session mutation index.
+  tombstones.
 
-The in-memory index is reconstructed from these records on resume. The
-persisted queue state is expanded to retain the receipt tombstones it owns; an
-empty queue no longer causes that state file to disappear while such receipts
-remain. The design does not duplicate every successful turn receipt into the
-queue file.
+The in-memory index and queue projection are reconstructed from the journal and
+transcript on resume. An empty visible queue does not delete the journal.
+
+Terminal precondition rejections are journaled too. Schema, authentication,
+unknown-source, and unsupported-method failures that happen before a mutation
+can be normalized to an authoritative session remain deterministic stateless
+errors.
+
+### Lookup order
+
+Every in-scope daemon handler uses this order:
+
+1. authenticate and resolve the authoritative session;
+2. normalize the method and semantic payload, including every precondition;
+3. look up `clientMutationId`;
+4. for an existing ID, replay its applied result or terminal rejection when
+   the payload hash matches, and reject a hash mismatch;
+5. only for an unseen ID, validate current turn, queue revision, entry, and
+   dynamic availability;
+6. durably commit the applied effect or terminal precondition rejection; and
+7. publish in-memory state and notifications for an applied effect.
+
+Receipt lookup therefore precedes every check whose answer can change after
+the first attempt. In particular, a completed turn cannot make a retry of its
+successful start or interrupt fail.
+
+The Hub performs syntax, authentication, source resolution, and static
+source-method support checks. For a Serf daemon source it does not reject an
+ID-bearing retry from a fresh thread snapshot's dynamic capabilities; it
+forwards the request so the daemon can replay its journal before evaluating
+current state.
 
 ### Atomic mutation rule
 
@@ -313,35 +406,83 @@ operation before the RPC returns success.
 For queue and steering mutations, the daemon:
 
 1. acquires the existing queue mutation serialization boundary;
-2. validates the active turn, queue revision, and entry preconditions;
-3. checks the receipt index;
+2. normalizes the payload and checks the mutation journal;
+3. validates dynamic preconditions only for an unseen ID;
 4. computes the resulting queue/steering state and receipt;
 5. atomically writes the combined state;
 6. publishes the corresponding in-memory state; and
 7. emits queue/steering notifications.
 
 If persistence fails, the method returns an internal error and does not publish
-the computed mutation or a success receipt.
+the computed mutation or a success receipt. Because no terminal record was
+committed, that error carries `mutationOutcome: "unknown"` and remains
+retriable; it does not restore the composer payload as a rejection.
 
-Once the durable effect and receipt commit, the method must return success.
-Notification enqueue or connection-write failure after that boundary cannot
-turn the result into a JSON-RPC rejection; clients recover the missing
-reflection through rejoin. This makes every explicit mutation rejection proof
-that the mutation was not accepted.
+Once the durable effect and receipt commit, the daemon's semantic result is
+success. Notification enqueue or connection-write failure after that boundary
+cannot change it to a rejection. A lost daemon-to-Hub response is represented
+upstream as `mutationOutcomeUnknown`, never as a rejection that claims the
+mutation was not accepted. The browser retains the outbox record, reconnects,
+and retries the same ID. A pre-forwarding transport failure may use the same
+outcome because a harmless extra retry is safer than a false rejection.
 
-For `turn/start`, the client mutation ID is persisted on the reserved user turn
-before the response is sent or model work begins. Resume reconstructs the
-receipt index from the persisted turn and returns the same reserved turn for a
-duplicate start.
+Only a normalized validation error, a replayed terminal rejection, or a new
+terminal rejection durably written before response may produce a
+mutation-failed UI state.
 
 For `turn/interrupt`, the receipt is committed with the target turn's terminal
 transition. A retry returns the original terminal result instead of reporting
 that no turn is active.
 
-Crash tests must cover every boundary around durable write, in-memory
-publication, event emission, and response delivery. No boundary may produce
-both a success receipt and a missing mutation after resume, or apply one client
-mutation ID twice.
+### Durable incorporation
+
+Acceptance and later incorporation are separate durable transitions. Removing
+an accepted input from its visible queue is never the incorporation commit.
+
+For start and queued user input:
+
+1. start acceptance persists the full input and reserved turn identity; queue
+   acceptance persists the full input and stable queue-entry identity;
+2. the runner durably changes `accepted` to `claimed`, assigning a queued input
+   its stable turn identity in the same write;
+3. transcript append writes a user item carrying `clientMutationId` and the
+   same turn identity;
+4. the record remains runnable until that turn reaches a durable terminal
+   state; and
+5. terminal completion removes the stored input payload but retains the compact
+   lifetime receipt.
+
+On resume, an `accepted` record is runnable. A `claimed` record with no durable
+terminal turn resumes under the same turn identity. Provider or tool work may
+be re-entered after a process crash; exactly-once external side effects are not
+promised, but the accepted user intent is never silently discarded and a
+second logical turn is never created.
+
+For pending steering:
+
+1. acceptance persists the full steering input;
+2. a boundary consumer marks it `claimed` without deleting it;
+3. transcript append writes a steering item with the mutation identity; and
+4. only after that append succeeds does the record become incorporated and
+   release its stored payload.
+
+Drain and promotion atomically mark their source queue records removed and
+create the operation record that owns the resulting steering input. Cancel
+atomically marks its target queue record removed and commits the cancel
+operation receipt. A crash cannot expose both the original queue projection and
+the transformed steering projection, or neither.
+
+Recovery scans transcript mutation identities. A claimed record already present
+in the transcript is finalized without a second append; a claimed record absent
+from the transcript returns to runnable state. Queue projections show accepted
+but unclaimed entries and omit claimed entries, while the durable journal owns
+both.
+
+Crash tests cover every boundary around journal write, claim, transcript
+append, terminal turn write, in-memory publication, event emission, and RPC
+response. No boundary may leave a success receipt with neither runnable nor
+incorporated intent after resume, apply one ID twice, or create two logical turn
+identities.
 
 ## Atomic Thread Rejoin
 
@@ -349,22 +490,39 @@ mutation ID twice.
 mount, WebSocket reconnect, relay resync, long-silence self-heal, and page
 reload.
 
+Each authoritative source has one internal projection sequencer. Snapshot
+capture and notification publication observe that sequencer, even though its
+sequence numbers are not exposed as a public replay cursor.
+
 The server-side ordering is:
 
 1. resolve the authoritative source and thread;
-2. register the connection's subscription;
-3. begin buffering matching notifications for that connection;
-4. capture the thread snapshot;
+2. register the connection's subscription and begin buffering notifications
+   with their internal source sequence;
+3. capture the thread snapshot and its source-sequence cut;
+4. discard buffered notifications at or before the cut because the snapshot
+   already contains them;
 5. send the `thread/read` response; and
-6. release buffered notifications in producer order, followed by live events.
+6. release buffered notifications after the cut in producer order, followed by
+   live events.
 
 Events may arrive before the response on the physical socket. The frontend
 already has a hydration buffer and must keep buffering by hydration generation
 until the matching response is installed.
 
-The snapshot and buffered events may overlap. Reducers must therefore be
-idempotent by stable turn, item, queue-entry, escalation, job, and mutation
-identity. The contract is no loss, not exactly-once notification delivery.
+The snapshot and released buffer do not semantically overlap. This is
+load-bearing for append-only agent-message, reasoning, and tool-output deltas:
+stable item identity cannot make the same text delta idempotent. Full-state and
+terminal reducers remain idempotent by stable thread-scoped turn, item,
+queue-entry, escalation, job, and mutation identity.
+
+Every v2 thread notification carries authoritative `threadId` and `ref`,
+including `turn/completed`. Turn and item identities are scoped to that thread;
+a multiplexed client never routes by matching an unqualified turn ID.
+
+The contract is no loss and no duplicate append-only delta across the snapshot
+cut. It is not a general exactly-once notification or public event-journal
+contract.
 
 `replaceSubscription: true` performs the swap in the same serialized operation.
 There is no interval in which neither the old nor the new subscription owns
@@ -376,6 +534,10 @@ after a Hub-to-daemon relay recovers. A failed rejoin retries with reconnect
 backoff while leaving the last model visible. It does not warn the user that
 the view failed to update.
 
+An adapter that cannot establish an atomic snapshot cut must synthesize
+full-state replacement notifications or remain read-only; it may not release
+overlapping append-only deltas.
+
 ## Browser Recovery Outbox
 
 An in-memory optimistic registry cannot survive the full reload that currently
@@ -385,6 +547,8 @@ recovery record to IndexedDB containing:
 - client mutation ID;
 - target ref and resolved thread ID when known;
 - method and complete request payload, including attachment blobs;
+- a monotonically increasing per-target intent sequence allocated by the shared
+  IndexedDB transaction;
 - creation time for presentation only; and
 - the optimistic display data.
 
@@ -398,33 +562,54 @@ ambiguous server outcome.
 
 An outbox record moves through:
 
-1. `submitting`: locally recorded, RPC response not yet observed;
-2. `accepted`: an applied or replayed receipt was observed;
-3. `reflected`: for a message-producing operation, an authoritative snapshot
-   or notification contains the same client mutation ID; and
-4. removed after reflection, or immediately after an authoritative receipt for
-   a receipt-only operation such as cancel or interrupt.
+1. `submitting`: locally recorded, no authoritative outcome observed;
+2. removed after an applied or replayed receipt;
+3. retained as `submitting` after `mutationOutcomeUnknown`; or
+4. atomically transferred to the durable recovery draft after a terminal
+   rejection.
 
 There is no elapsed-time transition to failed.
+
+The outbox is strictly a transport ambiguity journal. It is not the
+post-acceptance optimistic-rendering registry. A durable applied/replayed
+receipt is sufficient to remove it because the daemon now owns both the intent
+and its recovery state. The receipt's current projection state lets the client
+settle an old mutation even when its transcript item is outside the latest
+turn window.
+
+All new and recovery submissions pass through the same per-target outbox
+dispatcher. A newly created sequence does not bypass unresolved lower
+sequences.
 
 On reconnect or reload, the WebUI:
 
 1. initializes the AppWire connection;
 2. performs atomic `thread/read` rejoin for tracked outbox refs;
-3. removes records already reflected in the snapshot;
-4. resubmits every remaining record with its original client mutation ID; and
-5. reconciles the replayed receipt and eventual state by identity.
+3. removes records whose mutation identity is reflected in the snapshot;
+4. for each target, resubmits remaining records serially by intent sequence,
+   awaiting an authoritative receipt or terminal rejection before advancing;
+   and
+5. reconciles optimistic state and eventual notifications by identity.
 
-Multiple tabs may replay the same record concurrently. Server idempotency makes
-that safe; no browser lease or leader election is required for correctness.
+Multiple tabs may replay the same record concurrently. Every tab observes the
+same IndexedDB sequence order and waits at the same record boundaries. Server
+idempotency makes duplicate submissions safe, so no browser lease or leader
+election is required for correctness. Before sending each loaded record, a tab
+rechecks that it still exists; another tab may already have settled it.
 
 Outbox records pin their target refs for recovery until removal. A ref need not
 be visibly open in the restored workspace layout: startup scans the outbox and
 hydrates those refs in the thread store before replay.
 
-Explicit server rejection removes the outbox record only when the error
-guarantees that no mutation was accepted. The original composer payload is
-restored for user editing when the rejected method created user input.
+Explicit server rejection settles the outbox only when the error carries
+`mutationOutcome: "notAccepted"`. In one IndexedDB transaction, the browser
+moves the original text and attachment blobs into a durable recovery-draft
+record keyed by ref, intent sequence, and client mutation ID, then deletes the
+outbox record. Exactly one tab can consume that outbox record. A composer loads
+and acknowledges recovery drafts in intent order; later rejected inputs remain
+durable rather than overwriting the first. Component-local state is never the
+sole restored copy. Crashing or closing a tab at any boundary leaves either
+the outbox record or its recovery-draft record durable.
 
 ## UI Behavior
 
@@ -457,11 +642,12 @@ browser, Hub, and Serf daemon ship as one release unit. There is no
 and no mixed-version UI.
 
 Set `appwire.ProtocolVersion` to `serf-appwire-v2` and add required
-`protocolVersion` to `InitializeParams`. Each AppWire client sends that exact
-version, each server rejects a mismatch before accepting any other request, and
-each client verifies the response version before sending `initialized`. The Hub
-likewise ignores or rejects rendezvous entries from a daemon with a different
-protocol version and never relays to them.
+`protocolVersion` to the Serf `InitializeParams`. The Serf browser, Hub, and
+Serf daemon send that exact version, each Serf server rejects a mismatch before
+accepting any other request, and each Serf client verifies the response version
+before sending `initialized`. The Hub likewise ignores or rejects rendezvous
+entries from a Serf daemon with a different protocol version and never relays
+to them.
 
 A protocol mismatch is a terminal deployment error for that connection, not a
 per-thread disabled control and not a reconnectable transport failure. The
@@ -474,10 +660,20 @@ an old daemon process cannot remain attached to a new Hub and an old browser
 asset cannot operate a new Hub. Active pages running old assets must load the
 new application as part of the cutover.
 
+The generic JSON-RPC transport and codec may still be shared with source
+adapters, but Serf v2 initialization is not sent to an upstream Codex App
+Server or any other adapter-native protocol. Those adapters retain their native
+handshake.
+
 Existing source-specific method capabilities still describe whether a source
 supports operations such as start, steer, or queue. They are not protocol
 version negotiation. A source adapter that exposes an in-scope mutation must
-implement the receipt contract; otherwise it must not expose that method.
+provide the same durable receipt and retry contract. The current Codex bridge
+cannot do that because its client message ID is correlation metadata rather
+than durable idempotency. In this implementation its send and steer
+capabilities become false while read/list/stream behavior remains available.
+Restoring Codex mutations requires a separate upstream-supported idempotency
+design; the Hub must not emulate certainty across an ambiguous upstream call.
 
 ## Scope of the First Implementation
 
@@ -485,13 +681,17 @@ The first implementation includes:
 
 - the AppWire protocol-version bump and exact initialize/rendezvous validation;
 - receipt types;
-- daemon receipt persistence and idempotency for the seven turn/queue methods;
+- daemon mutation-journal persistence, rejection replay, and idempotency for
+  the seven turn/queue methods;
+- durable start/queue/steer claim and incorporation recovery;
 - client mutation identity on queue, steering, and transcript projections;
 - queue revisions and required preconditions;
-- Hub forwarding without stripping receipt fields;
-- atomic `thread/read` snapshot/subscription ordering;
-- frontend IndexedDB outbox and identity-based reconciliation;
+- Hub forwarding without dynamic pre-rejection or stripping receipt fields;
+- qualified v2 notifications and atomic `thread/read` snapshot-cut ordering;
+- frontend ordered IndexedDB outbox, durable recovery drafts, and
+  identity-based reconciliation;
 - reconnect, reload, resync, and silence-triggered automatic recovery;
+- Codex bridge read-only capability projection;
 - removal of confirmation timeout warnings; and
 - generated TypeScript/AppWire documentation updates.
 
@@ -525,15 +725,24 @@ seams to prove:
 
 - response loss followed by same-ID retry produces one effect and a replayed
   receipt for each in-scope method;
+- a same-ID retry replays its applied result or terminal rejection before
+  current dynamic preconditions are evaluated;
 - concurrent identical retries serialize to one effect;
 - same ID with a different method or payload is rejected;
 - restart after acceptance still replays the original receipt;
+- `thread/read` projects accepted and claimed inputs until their transcript
+  identity is durable;
 - persistence failure publishes neither mutation nor success receipt;
 - `turn/start` returns the same reserved turn after retry;
+- accepted and claimed start records resume the same logical turn after crash;
 - steering may remain pending across arbitrary model/tool delay without
   changing receipt state;
+- a crash between claim and transcript append loses no queue or steering input,
+  and a crash after transcript append duplicates no item;
+- recovery recognizes an already-incorporated transcript mutation identity;
 - drain rejects stale active-turn or queue-revision preconditions without
   consuming new entries;
+- queue rejects a stale active-turn precondition;
 - promote and cancel never target a shifted queue entry;
 - interrupt retry returns the original terminal result; and
 - identical-text messages reconcile independently by identity.
@@ -546,15 +755,23 @@ state write, in-memory publication, notification emission, and RPC response.
 Script the real Hub relay/request paths to prove:
 
 - receipt fields survive browser-to-Hub-to-daemon forwarding;
+- a current capability change does not block replay of a previously applied or
+  rejected mutation;
+- a dropped daemon response becomes `mutationOutcomeUnknown`, never a
+  not-accepted rejection;
 - the browser sends `serf-appwire-v2` and rejects a different initialize
   response version;
 - the Hub rejects an initialize request with a missing or different protocol
   version;
 - the Hub rejects a mismatched daemon rendezvous entry or initialize handshake
   before relay attachment;
+- Codex uses its adapter-native initialize shape and exposes no unsupported
+  mutation capability;
 - `thread/read` subscribes before snapshot capture;
-- an event produced before, during, and after snapshot capture is represented
-  by the final client model;
+- append-only deltas at or before the snapshot cut are discarded from the
+  buffer, while deltas after the cut are delivered once;
+- every notification, including `turn/completed`, routes by authoritative ref
+  and thread ID;
 - replacement subscription has no ownership gap;
 - relay recovery emits resync and the subsequent rejoin converges.
 
@@ -566,12 +783,20 @@ Composer/QueueStrip components with fake transports and IndexedDB:
 - disconnect before a mutation response, reconnect, retry the same ID, and
   reconcile without a warning;
 - full reload restores text and attachment blobs from the outbox;
+- full reload reconstructs receipt-settled but unincorporated input from
+  `pendingMutations`;
 - hydration removes already-reflected records before replay;
+- a replayed receipt settles an accepted record whose transcript item is older
+  than the hydration window;
+- per-target replay preserves IndexedDB intent sequence under reversed network
+  scheduling and concurrent tabs;
 - accepted-but-not-yet-reflected steering remains pending beyond the old
   timeout without failure;
 - A-to-B client replacement rejects late A hydration and settlement;
 - two same-text messages reconcile only their matching IDs;
 - an explicit rejection restores editable input and clears its outbox record;
+- a crash or tab handoff during rejection restoration leaves the payload in
+  either the outbox or the durable recovery draft;
 - local outbox failure leaves composer content untouched and sends no RPC; and
 - the frontend never branches between legacy and retry-safe mutation paths.
 
@@ -590,11 +815,16 @@ behavior.
 - A response can be dropped after any in-scope mutation without duplicating or
   losing the user intent on retry.
 - Daemon restart after a success receipt preserves the mutation and receipt.
+- Daemon restart after acceptance preserves a runnable or incorporated user
+  intent under the same logical turn identity.
 - A full page reload recovers unresolved text and attachments automatically.
 - A steer can take arbitrarily long to reach a model boundary without any
   timeout-derived warning or failure.
 - A rejoining client receives an authoritative snapshot plus every later
   notification with no gap.
+- Append-only deltas are neither lost nor duplicated across the snapshot cut.
+- Concurrent threads cannot consume one another's notifications.
+- Recovery replay preserves per-target user-intent order.
 - Content equality is never used to reconcile user mutations.
 - Browser, Hub, and daemon protocol mismatches fail before any mutation can be
   submitted.
