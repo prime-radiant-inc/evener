@@ -23,9 +23,8 @@ import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { clip, parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
+import { parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
 
-const COMMAND_CLIP = 80;
 const TAIL_MAX_CHARS = 8000;
 
 function shellCommand(args: Record<string, unknown>): string {
@@ -64,12 +63,12 @@ function shellExitCode(item: ItemModel): number | undefined {
 }
 
 // The body is the OUTPUT, nothing else. It does not repeat the command: the
-// collapsed row above already names it (A4 - "repeats the tool call but not
-// truncated"). A long command stays clipped with an ellipsis in the row; A4's
-// answer for seeing it in full is "the row's own text expanding", which nothing
-// implements yet - so a very long command is currently not readable in full
-// anywhere. That is a known, deliberate gap, not an oversight: the alternative
-// (a second copy of the call under the row) is the thing being removed.
+// row above already names it, and names it in FULL (A4 - "repeats the tool
+// call but not truncated"): the row owns truncation as presentation -
+// middle-truncated when collapsed, wrapped in full when expanded - so a
+// descriptor hands over the whole string and never clips for the row
+// (Jesse's review call closed the "not readable in full anywhere" gap this
+// comment used to carry).
 function ShellBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
@@ -97,17 +96,17 @@ registerToolRenderer({
   // in the expanded body.
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    return `Ran ${clip(shellCommand(args), COMMAND_CLIP)}`;
+    return `Ran ${shellCommand(args)}`;
   },
   body: ShellBody,
   failed: nonzeroExit,
   // The exit code, and ONLY the exit code. It deliberately does not carry the
-  // untruncated command as well: detail() renders as real text in the expanded
-  // body (that is what makes it keyboard-reachable, not just a hover title), so
-  // folding the command in here would put a second copy of the call under the
-  // row - precisely the repetition A4 exists to remove. A long command stays
-  // clipped with an ellipsis in the row; showing it in full is "the row's own
-  // text expanding" (A4), which nothing here implements yet.
+  // command as well: detail() renders as real text in the expanded body (that
+  // is what makes it keyboard-reachable, not just a hover title), so folding
+  // the command in would put a second copy of the call under the row -
+  // precisely the repetition A4 exists to remove. The row shows the command
+  // in full when expanded (its own text wrapping - the A4 mechanism), so
+  // nothing is lost.
   detail(item: ItemModel) {
     const exitCode = shellExitCode(item);
     return exitCode === undefined ? undefined : `exit ${exitCode}`;

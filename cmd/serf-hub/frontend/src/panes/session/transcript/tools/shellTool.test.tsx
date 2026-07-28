@@ -78,10 +78,15 @@ test("detail: also recognizes the buffered-execenv fallback's differently-shaped
   expect(d.failed?.(withCommand("false", { output: out }))).toBe(true);
 });
 
-test("summary: a long command is clipped", () => {
+// Truncation is the ROW's presentation job, not the descriptor's: the row
+// middle-truncates when collapsed and wraps in full when expanded, so the
+// summary hands over the whole command (Jesse's review call - an expanded
+// row must show the full call, which an 80-char descriptor clip made
+// impossible).
+test("summary: a long command passes through UNCLIPPED - truncation is the row's job", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
-  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(80)}…`);
+  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
 });
 
 test("summary: falls back to the `cmd` arg key when `command` is absent", () => {
@@ -184,6 +189,6 @@ test("body renders nothing for a command with no output at all", () => {
 test("detail does NOT repeat the command - that is what A4 took out of the body", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
-  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(80)}…`);
+  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
   expect(d.detail?.(withCommand(longCmd, { exitCode: 0 }))).toBe("exit 0");
 });

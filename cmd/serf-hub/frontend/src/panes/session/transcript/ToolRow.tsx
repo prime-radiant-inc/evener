@@ -5,16 +5,20 @@
 //
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
-//     line 1: [✗ failure glyph?] [status?] purpose [affordances] [chevron?]
+//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline] [affordances]
 //     line 2: verb target [· meta]
+//
+//   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
+//   command's ending always visible - the file being written, the branch
+//   being merged - and the full text on the hover title); EXPANDED it wraps
+//   in full, so an open row always shows the whole call.
 //
 //   - a COLLAPSED row with both a purpose and a summary STACKS them: the
 //     purpose (the agent's stated rationale, italic) on the first line, the
-//     verb/target summary demoted to a quiet mono second line,
-//     ellipsis-clamped (full text on title). Composing both onto one line
-//     was tried (tiered density) and reverted on review: two clamped,
-//     truncated fragments read worse than one full line plus one clamped
-//     one.
+//     verb/target summary demoted to a quiet mono second line (truncation
+//     per above). Composing both onto one line was tried (tiered density)
+//     and reverted on review: two clamped, truncated fragments read worse
+//     than one full line plus one clamped one.
 //   - the chevron rides INLINE at the end of the headline text - inside the
 //     purpose when there is one, otherwise inside the summary - wrapping with
 //     the words it opens. It is never a flex item of the row: right-justified
@@ -42,6 +46,9 @@ const CLASS = {
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
+  clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
+  clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
+  clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
 
@@ -74,6 +81,18 @@ export interface ToolRowProps {
 export function statedPurposeOf(item: { description?: string }): string | undefined {
   const trimmed = item.description?.trim();
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+}
+
+/** The collapsed second line's middle-truncation split: head gets ~60% of the
+ * characters and ellipsis-clamps under pressure; the tail always renders in
+ * full, because a command's ENDING is the part end-truncation kept hiding
+ * (the file being written, the branch being merged). Split on code POINTS
+ * (Array.from), never UTF-16 units - a cut through a surrogate pair would
+ * render a replacement glyph. */
+function middleSplit(text: string): [head: string, tail: string] {
+  const chars = Array.from(text);
+  const cut = Math.ceil(chars.length * 0.6);
+  return [chars.slice(0, cut).join(""), chars.slice(cut).join("")];
 }
 
 export function ToolRow({
@@ -126,11 +145,24 @@ export function ToolRow({
       )}
       {hasSummary && (
         <span
-          className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary}
+          className={
+            hasPurpose ? `${CLASS.summary} ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : CLASS.summary
+          }
           data-testid="tool-row-summary"
           title={hasPurpose ? summary : undefined}
         >
-          {summary}
+          {hasPurpose && !expanded ? (
+            <>
+              <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
+                {middleSplit(summary)[0]}
+              </span>
+              <span className={CLASS.clampedTail} data-testid="tool-row-summary-tail">
+                {middleSplit(summary)[1]}
+              </span>
+            </>
+          ) : (
+            summary
+          )}
           {!hasPurpose && chevron}
         </span>
       )}

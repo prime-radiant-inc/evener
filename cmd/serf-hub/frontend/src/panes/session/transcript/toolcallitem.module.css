@@ -93,8 +93,7 @@ summary.row:focus-visible {
 }
 
 /* With a purpose above it the summary is a glanceable detail, not the story:
- * it takes the whole next line, dimmer and clipped to one line rather than
- * wrapping and out-shouting the purpose. flex-basis 100% is what forces the
+ * it takes the whole next line, dimmer. flex-basis 100% is what forces the
  * line break inside the wrapping row.
  *
  * order: 1 pushes it AFTER every other item in the wrap sequence, so the
@@ -112,10 +111,39 @@ summary.row:focus-visible {
   order: 1;
   flex: 0 0 100%;
   color: var(--ink-mid);
+}
+
+/* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
+ * middle-truncate, not an end-truncate. The line becomes a two-span flex row
+ * - the head ellipsis-clamps under pressure, the tail never shrinks, so the
+ * command's ENDING (the file being written, the branch being merged) is
+ * always on screen and the cut lands wherever the width puts it. One
+ * exception, by construction: a command so long that its tail alone passes
+ * 60% of the line ellipsizes the tail too (max-width below) - a glyph-less
+ * clip at the container edge reads as a rendering bug, an ellipsis does
+ * not. Expanded rows drop this class entirely and the summary wraps in
+ * full. */
+.clamped {
+  display: flex;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.clampedHead {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
-  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.clampedTail {
+  flex: none;
+  max-width: 60%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The disclosure affordance, riding INLINE at the end of the headline text

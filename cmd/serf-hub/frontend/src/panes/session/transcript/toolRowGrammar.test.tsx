@@ -82,6 +82,64 @@ test("an expanded row has the same stacked grammar - open vs collapsed differs o
   expect(screen.getByTestId("tool-row").textContent).toBe("Running the foo testsnpm test -- src/foo");
 });
 
+// The collapsed second line middle-truncates (Jesse's review call): the
+// command's ENDING stays on screen - end-truncation kept hiding the file
+// being written / the branch being merged. The head ellipsis-clamps under
+// pressure; the tail never shrinks. Expanded rows show the WHOLE call,
+// wrapping in full with no clamp at all.
+test("a collapsed row splits the summary into a clampable head and an always-full tail", () => {
+  const summary = "Ran cd ~/prime-radiant/toil-suite/serf && git merge --no-ff transcript-view-design";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Merging the redesign"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const head = screen.getByTestId("tool-row-summary-head");
+  const tail = screen.getByTestId("tool-row-summary-tail");
+  expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
+  // The split lands mid-string, and the command's ending is the part kept whole.
+  expect(head.textContent?.length).toBeGreaterThan(0);
+  expect(tail.textContent?.length).toBeGreaterThan(0);
+  expect(tail.textContent).toBe(summary.slice(-(tail.textContent?.length ?? 0)));
+  expect(summary.endsWith(tail.textContent ?? "")).toBe(true);
+  // The full text also rides the hover title.
+  expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(summary);
+});
+
+test("an expanded row drops the clamp entirely - the full call wraps, no head/tail split", () => {
+  const summary = "Ran cd ~/prime-radiant/toil-suite/serf && git merge --no-ff transcript-view-design";
+  render(
+    <ToolRow summary={summary} purpose="Merging the redesign" failed={false} expandable expanded onToggle={() => {}} />,
+  );
+  expect(screen.queryByTestId("tool-row-summary-head")).toBe(null);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
+});
+
+test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the clamp lives off .demoted", () => {
+  const css = rowCss();
+  expect(css).toMatch(/\.clampedHead\s*\{[^}]*text-overflow:\s*ellipsis/);
+  // The tail never SHRINKS (flex: none) - but a command whose tail alone
+  // passes 60% of the line ellipsizes the tail too, because a glyph-less
+  // clip at the container edge reads as a rendering bug, an ellipsis does
+  // not.
+  const tail = /\.clampedTail\s*\{([^}]*)\}/.exec(css);
+  expect(tail).not.toBeNull();
+  expect(tail![1]).toMatch(/flex:\s*none/);
+  expect(tail![1]).toContain("max-width: 60%");
+  expect(tail![1]).toContain("text-overflow: ellipsis");
+  // The clamp is collapsed-only (the .clamped modifier); .demoted itself
+  // must not reintroduce end-truncation for expanded rows.
+  const demoted = /\.demoted\s*\{([^}]*)\}/.exec(css);
+  expect(demoted).not.toBeNull();
+  expect(demoted![1]).not.toContain("text-overflow");
+  expect(demoted![1]).not.toContain("nowrap");
+});
+
 test("a purpose-less row is a single line: summary text with the chevron inline at its end", () => {
   render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
