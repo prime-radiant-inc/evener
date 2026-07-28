@@ -344,7 +344,7 @@ export class AppwireClient {
   // second, concurrent call from either caller from dialing a second socket
   // on top of this one.
   private async attemptReconnect(): Promise<void> {
-    if (this.isClosed()) return;
+    if (this.connectionState !== "reconnecting" || this.reconnectInFlight) return;
     this.reconnectInFlight = true;
     try {
       await this.dialAndHandshake();

@@ -362,6 +362,27 @@ describe("AppwireClient retryNow", () => {
     expect(client.state).toBe("ready");
   });
 
+  test("does not start the scheduled attempt over a reentrant manual retry handshake", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    client.onStateChange((state) => {
+      if (state === "reconnecting") client.retryNow();
+    });
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(sockets).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+
+    expect(sockets).toHaveLength(2);
+
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+    expect(client.state).toBe("ready");
+  });
+
   test("a failed retryNow attempt falls back to the ordinary backoff sequence, continuing from where it left off", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
