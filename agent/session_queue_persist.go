@@ -106,9 +106,9 @@ func loadQueuesFS(fs afero.Fs, stateDir, id string) ([]steeringMessage, []queued
 	return snap.Steering, snap.Input, nil
 }
 
-// persistQueuesSnapshot writes the session's current steering and input
-// queues to disk. Called after every queue mutation (enqueue, drain,
-// promote, cancel, pop/push), always with s.mu already released — matching
+// persistQueuesSnapshot writes only daemon-authored steering to the legacy
+// queue file. Client queue and steering authority lives exclusively in the
+// mutation snapshot. Called with s.mu already released — matching
 // maybeAutoSave's discipline of never holding a Session lock across file I/O.
 // A write failure is reported as a warning, not a returned error: the
 // in-memory queue mutation the caller already committed must not be undone
@@ -126,37 +126,21 @@ func (s *Session) persistQueuesSnapshot() {
 	s.queuePersistMu.Lock()
 	defer s.queuePersistMu.Unlock()
 	s.mu.Lock()
-	steering := userSourcedSteering(s.steeringQueue)
-	input := append([]queuedInput{}, s.inputQueue...)
+	steering := daemonSourcedSteering(s.steeringQueue)
 	stateDir := s.stateDir
 	id := s.id
 	s.mu.Unlock()
-	if err := saveQueues(stateDir, id, steering, input); err != nil {
+	if err := saveQueues(stateDir, id, steering, nil); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
 	}
 }
 
-// userSourcedSteering returns the entries of queue sent by a human (Source ==
-// events.SteeringSourceUser) — the only steeringQueue entries in the scope of
-// restart parity (turn/steer, DrainAsSteer, PromoteQueuedAsSteer). Daemon/hook
-// -authored steering (Source == "": SessionStart hook context, compaction and
-// task-reminder nudges, vision descriptions, subagent task reminders — every
-// plain Steer() call site) is deliberately excluded from persistence: it is
-// inherently tied to the CURRENT process's evaluation of CURRENT state
-// (current task, current hook matchers, the tool round just executed),
-// re-derived fresh rather than replayed. Blindly persisting it is actively
-// wrong, not merely unnecessary — session_init.go's own dedicated resume path
-// (drainPendingSessionStartHooksForUserTurn) replays SessionStart hook output
-// on resume by re-matching hooks against the "resume" event; a hook whose
-// matcher is startup-only must NOT fire again on resume
-// (TestResume_DualFlavorPlugin_DoesNotReinject). Resurrecting a stale,
-// already-queued-but-undrained "startup" hook message from the old process
-// via the queue-persistence path would silently reintroduce exactly the
-// re-injection that mechanism exists to prevent.
-func userSourcedSteering(queue []steeringMessage) []steeringMessage {
+func daemonSourcedSteering(queue []steeringMessage) []steeringMessage {
 	var out []steeringMessage
 	for _, m := range queue {
-		if m.Source == events.SteeringSourceUser {
+		// SessionStart hook context has a dedicated matcher-aware resume path.
+		// Persisting that daemon entry here would inject it a second time.
+		if m.Source != events.SteeringSourceUser && m.Kind != events.SteeringKindHookContext {
 			out = append(out, m)
 		}
 	}

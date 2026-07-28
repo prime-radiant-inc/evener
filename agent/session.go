@@ -204,6 +204,10 @@ type Session struct {
 	// atomic to external observers (Enqueue/DrainAsSteer/pop/pushQueueHead).
 	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
+	// publishedQueueRevision is guarded by queueEventsMu and prevents a late
+	// publisher from installing a queue projection older than one already
+	// emitted.
+	publishedQueueRevision uint64
 	// queuePersistMu serializes persistQueuesSnapshot's own snapshot-then-write
 	// critical section. inputQueue's mutators already serialize end-to-end via
 	// queueEventsMu (held across their persist call too), but steeringQueue's
@@ -221,7 +225,14 @@ type Session struct {
 	// materialized client-side queue projection. It has its own serializer;
 	// callers must not hold Session.mu while reserving or updating it because
 	// persistence performs filesystem I/O.
-	clientMutations *clientMutationStore
+	clientMutations       *clientMutationStore
+	clientMutationsInitMu sync.Mutex
+	// clientMutationTranscriptAppend is a deterministic test seam for the
+	// durable append boundary. Nil in production.
+	clientMutationTranscriptAppend func(schema.Turn) error
+	// restoredClientMutationTurns is the complete transcript identity index
+	// captured before ResumeHistory compacts model context.
+	restoredClientMutationTurns map[string]string
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult

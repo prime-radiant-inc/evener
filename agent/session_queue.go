@@ -13,10 +13,31 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
 
 type queuedInputDrainContextKey struct{}
+type queuedClientMutationContextKey struct{}
+
+type queuedClientMutationIdentity struct {
+	ClientMutationID string
+	StableTurnID     string
+	QueueEntryID     string
+}
+
+func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
+	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{
+		ClientMutationID: queued.ClientMutationID,
+		StableTurnID:     queued.StableTurnID,
+		QueueEntryID:     queued.ID,
+	})
+}
+
+func queuedClientMutationFromContext(ctx context.Context) queuedClientMutationIdentity {
+	identity, _ := ctx.Value(queuedClientMutationContextKey{}).(queuedClientMutationIdentity)
+	return identity
+}
 
 type queuedInputDrainConfig struct {
 	rootCtx context.Context
@@ -49,9 +70,11 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // watch origin (nil for human/system-authored steering) so consuming the
 // message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Text       string             `json:"text,omitempty"`
-	Images     []ImageAttachment  `json:"images,omitempty"`
-	Provenance *provenance.Causal `json:"provenance,omitempty"`
+	Text             string             `json:"text,omitempty"`
+	Images           []ImageAttachment  `json:"images,omitempty"`
+	Provenance       *provenance.Causal `json:"provenance,omitempty"`
+	ClientMutationID string             `json:"client_mutation_id,omitempty"`
+	StableTurnID     string             `json:"stable_turn_id,omitempty"`
 	// Source marks who sent the steering: events.SteeringSourceUser for
 	// human-sent steering (the UI steer action, or queued user input
 	// drained as steering), empty for daemon/system nudges. Surfaced on the
@@ -66,10 +89,12 @@ type steeringMessage struct {
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
 	return events.SteeringInjectedData{
-		Text:   msg.Text,
-		Images: userInputImagesFromAttachments(msg.Images),
-		Source: msg.Source,
-		Kind:   msg.Kind,
+		Text:             msg.Text,
+		Images:           userInputImagesFromAttachments(msg.Images),
+		ClientMutationID: msg.ClientMutationID,
+		StableTurnID:     msg.StableTurnID,
+		Source:           msg.Source,
+		Kind:             msg.Kind,
 	}
 }
 
@@ -117,7 +142,17 @@ func (s *Session) SteerFromUser(msg string) {
 // SteerFromUserWithImages is SteerFromUser with optional image attachments,
 // mirroring SteerWithImages for the human-sent path.
 func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) {
-	_ = s.trySteerEnqueue(msg, images, nil, events.SteeringSourceUser, "")
+	if strings.TrimSpace(msg) == "" && len(images) == 0 {
+		return
+	}
+	_, err := s.clientMutationSteer(appwire.TurnSteerParams{
+		Ref:              s.ID(),
+		ClientMutationID: "legacy_" + newQueueEntryID(),
+		Input:            clientMutationInput(msg, images),
+	})
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist client steering failed: %v", err)})
+	}
 }
 
 func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
@@ -160,15 +195,9 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	s.mu.Unlock()
-	// Design review Important-2: only a user-sourced entry can change the
-	// persisted view (persistQueuesSnapshot's userSourcedSteering filter drops
-	// everything else before writing), so skip the lock-acquire+syscall cycle
-	// entirely for daemon/hook-authored steering. Vision descriptions
-	// (session_tool_round.go) call plain Steer() once per image-bearing tool
-	// result — a real hot path across a multi-round turn, not a theoretical
-	// one — and every one of those calls was otherwise persisting unchanged
-	// (filtered-to-nothing-new) content.
-	if source == events.SteeringSourceUser {
+	// Client-authored steering is persisted by the mutation store. The legacy
+	// snapshot has one remaining authority: daemon-authored steering.
+	if source != events.SteeringSourceUser {
 		s.persistQueuesSnapshot()
 	}
 	return true
@@ -221,10 +250,12 @@ func (s *Session) FollowUp(msg string) {
 // queue snapshot so a promote-by-index request can verify the entry it meant
 // is still the entry at that index (review F1, issue #22).
 type queuedInput struct {
-	ID         string             `json:"id"`
-	Text       string             `json:"text,omitempty"`
-	Images     []ImageAttachment  `json:"images,omitempty"`
-	Provenance *provenance.Causal `json:"provenance,omitempty"`
+	ID               string             `json:"id"`
+	ClientMutationID string             `json:"client_mutation_id,omitempty"`
+	StableTurnID     string             `json:"stable_turn_id,omitempty"`
+	Text             string             `json:"text,omitempty"`
+	Images           []ImageAttachment  `json:"images,omitempty"`
+	Provenance       *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // queueEntrySeq guarantees queue-entry id uniqueness by construction,
@@ -261,23 +292,18 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return errors.New("queue: text or images required")
 	}
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return errors.New("queue: session is closed")
 	}
-	entry := queuedInput{ID: newQueueEntryID(), Text: text}
-	if len(images) > 0 {
-		entry.Images = append([]ImageAttachment(nil), images...)
-	}
-	s.inputQueue = append(s.inputQueue, entry)
-	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
-	return nil
+	_, err := s.clientMutationQueue(appwire.TurnQueueParams{
+		Ref:              s.ID(),
+		ClientMutationID: "legacy_" + newQueueEntryID(),
+		Input:            clientMutationInput(text, images),
+	})
+	return err
 }
 
 // DrainAsSteer pops every queued message, joins them with a blank line, and
@@ -298,8 +324,6 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -309,38 +333,23 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 		s.mu.Unlock()
 		return errors.New("drain: no active turn to steer")
 	}
-	if strings.TrimSpace(text) != "" || len(images) > 0 {
-		entry := queuedInput{ID: newQueueEntryID(), Text: text}
-		if len(images) > 0 {
-			entry.Images = append([]ImageAttachment(nil), images...)
-		}
-		s.inputQueue = append(s.inputQueue, entry)
+	s.mu.Unlock()
+	if err := s.ensureClientMutationStore(); err != nil {
+		return err
 	}
-	if len(s.inputQueue) == 0 {
-		s.mu.Unlock()
+	snapshot := s.clientMutations.snapshot()
+	if len(snapshot.InputQueue) == 0 && strings.TrimSpace(text) == "" && len(images) == 0 {
 		return errors.New("drain: queue is empty")
 	}
-	entries := append([]queuedInput{}, s.inputQueue...)
-	s.inputQueue = nil
-	data := s.queueChangedDataLocked()
-	s.mu.Unlock()
-	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
-	texts := make([]string, 0, len(entries))
-	var drainedImages []ImageAttachment
-	var combinedProvenance *provenance.Causal
-	for _, entry := range entries {
-		if strings.TrimSpace(entry.Text) != "" {
-			texts = append(texts, entry.Text)
-		}
-		drainedImages = append(drainedImages, entry.Images...)
-		combinedProvenance = provenance.Union(combinedProvenance, entry.Provenance)
+	_, err := s.clientMutationDrain(appwire.TurnDrainAsSteerParams{
+		Ref:                   s.ID(),
+		ClientMutationID:      "legacy_" + newQueueEntryID(),
+		ExpectedQueueRevision: snapshot.QueueRevision,
+		Input:                 clientMutationInput(text, images),
+	})
+	if err != nil {
+		return err
 	}
-	combined := strings.Join(texts, "\n\n")
-	// The drained queue is user-typed input force-steered into the in-flight
-	// turn by a user action (turn/drainAsSteer), so the combined steering
-	// message keeps user provenance for rendering (issue #24).
-	s.trySteerEnqueue(combined, drainedImages, combinedProvenance, events.SteeringSourceUser, "")
 	return nil
 }
 
@@ -361,8 +370,6 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -372,25 +379,14 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 		s.mu.Unlock()
 		return errors.New("promote: no active turn to steer")
 	}
-	if index < 0 || index >= len(s.inputQueue) {
-		s.mu.Unlock()
-		return fmt.Errorf("promote: queue index %d out of range (depth %d)", index, len(s.inputQueue))
-	}
-	entry := s.inputQueue[index]
-	if expectedID != "" && entry.ID != expectedID {
-		s.mu.Unlock()
-		return fmt.Errorf("promote: queue entry at index %d no longer matches the snapshot (queue changed)", index)
-	}
-	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
-	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
-	// The promoted entry is user-typed input steered into the in-flight turn
-	// by a user action, so it keeps user provenance for rendering — same as
-	// the DrainAsSteer collapse (issue #24).
-	s.trySteerEnqueue(entry.Text, entry.Images, entry.Provenance, events.SteeringSourceUser, "")
-	return nil
+	_, err := s.clientMutationPromote(appwire.TurnPromoteQueuedAsSteerParams{
+		Ref:              s.ID(),
+		Index:            index,
+		ClientMutationID: "legacy_" + newQueueEntryID(),
+		ExpectedEntryID:  expectedID,
+	})
+	return err
 }
 
 // CancelQueued removes the single queued message at index so it is never
@@ -412,28 +408,22 @@ func (s *Session) CancelQueued(ctx context.Context, index int, expectedID string
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return "", 0, errors.New("cancel: session is closed")
 	}
-	if index < 0 || index >= len(s.inputQueue) {
-		s.mu.Unlock()
-		return "", 0, fmt.Errorf("cancel: queue index %d out of range (depth %d)", index, len(s.inputQueue))
-	}
-	entry := s.inputQueue[index]
-	if expectedID != "" && entry.ID != expectedID {
-		s.mu.Unlock()
-		return "", 0, fmt.Errorf("cancel: queue entry at index %d no longer matches the snapshot (queue changed)", index)
-	}
-	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
-	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
-	return entry.Text, len(entry.Images), nil
+	response, err := s.clientMutationCancel(appwire.TurnCancelQueuedParams{
+		Ref:              s.ID(),
+		Index:            index,
+		ClientMutationID: "legacy_" + newQueueEntryID(),
+		ExpectedEntryID:  expectedID,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return response.RemovedText, response.RemovedImages, nil
 }
 
 // QueueDepth returns the number of messages currently in the input queue.
@@ -493,28 +483,88 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
 func (s *Session) popQueueHead() queuedInput {
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
-	s.mu.Lock()
-	if len(s.inputQueue) == 0 {
-		s.mu.Unlock()
+	if err := s.ensureClientMutationStore(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}
 	}
-	entry := s.inputQueue[0]
-	s.inputQueue = s.inputQueue[1:]
-	data := s.queueChangedDataLocked()
-	s.mu.Unlock()
-	s.persistQueuesSnapshot()
-	s.emit(events.EventQueueChanged, data)
-	return entry
+	var queued queuedInput
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if len(snapshot.InputQueue) == 0 {
+			return nil
+		}
+		entry := snapshot.InputQueue[0]
+		if clientMutationQueueEntryReserved(snapshot, entry.ID) {
+			return nil
+		}
+		record := snapshot.Journal[entry.ClientMutationID]
+		if record.StableTurnID == "" {
+			reserveClientMutationTurnID(snapshot, &record)
+		}
+		record.ExecutionState = "claimed"
+		record.ProjectionState = appwire.MutationProjectionRemoved
+		snapshot.Journal[entry.ClientMutationID] = record
+		snapshot.PendingExecutions[entry.ClientMutationID] = appwire.PendingMutation{
+			ClientMutationID: entry.ClientMutationID,
+			Method:           record.Method,
+			Input:            cloneClientMutationInput(entry.Input),
+			ExecutionState:   "claimed",
+			TurnID:           record.StableTurnID,
+			QueueEntryIDs:    []string{entry.ID},
+			ProjectionState:  appwire.MutationProjectionRemoved,
+		}
+		snapshot.InputQueue = snapshot.InputQueue[1:]
+		snapshot.QueueRevision++
+		delete(snapshot.BudgetReservations, entry.ClientMutationID)
+		snapshot.AcceptedTurns++
+		queued = queuedInputFromClientMutation(entry)
+		queued.ClientMutationID = entry.ClientMutationID
+		queued.StableTurnID = record.StableTurnID
+		return nil
+	})
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
+		return queuedInput{}
+	}
+	if queued.ClientMutationID != "" {
+		s.reflectDurableInputQueue()
+	}
+	return queued
 }
 
 func (s *Session) pushQueueHead(entry queuedInput) {
 	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
 		return
 	}
-	s.queueEventsMu.Lock()
-	defer s.queueEventsMu.Unlock()
+	if entry.ClientMutationID != "" {
+		err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
+			if !ok || pending.ExecutionState != "claimed" {
+				return nil
+			}
+			record := snapshot.Journal[entry.ClientMutationID]
+			record.ExecutionState = "accepted"
+			record.ProjectionState = appwire.MutationProjectionReflected
+			snapshot.Journal[entry.ClientMutationID] = record
+			delete(snapshot.PendingExecutions, entry.ClientMutationID)
+			snapshot.InputQueue = append([]clientMutationQueueEntry{{
+				ID:               entry.ID,
+				ClientMutationID: entry.ClientMutationID,
+				Input:            clientMutationInput(entry.Text, entry.Images),
+			}}, snapshot.InputQueue...)
+			snapshot.QueueRevision++
+			if snapshot.AcceptedTurns > 0 {
+				snapshot.AcceptedTurns--
+			}
+			snapshot.BudgetReservations[entry.ClientMutationID] = clientMutationBudgetReservation{TurnID: entry.StableTurnID, Slots: 1}
+			return nil
+		})
+		if err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("return claimed input failed: %v", err)})
+			return
+		}
+		s.reflectDurableInputQueue()
+		return
+	}
 	s.mu.Lock()
 	s.inputQueue = append([]queuedInput{entry}, s.inputQueue...)
 	data := s.queueChangedDataLocked()
@@ -624,6 +674,8 @@ func (s *Session) drainSteering() []steeringMessage {
 // each message is durably recorded, bounding a mid-drain crash's loss to the
 // single in-flight message rather than the whole batch.
 func (s *Session) popSteeringHead() (steeringMessage, bool) {
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if len(s.steeringQueue) == 0 {
 		s.mu.Unlock()
@@ -632,6 +684,27 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	entry := s.steeringQueue[0]
 	s.steeringQueue = s.steeringQueue[1:]
 	s.mu.Unlock()
+	if entry.ClientMutationID != "" {
+		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
+			if !ok {
+				return fmt.Errorf("client steering %q is not pending", entry.ClientMutationID)
+			}
+			pending.ExecutionState = "claimed"
+			snapshot.PendingExecutions[entry.ClientMutationID] = pending
+			record := snapshot.Journal[entry.ClientMutationID]
+			record.ExecutionState = "claimed"
+			snapshot.Journal[entry.ClientMutationID] = record
+			return nil
+		}); err != nil {
+			s.mu.Lock()
+			s.steeringQueue = append([]steeringMessage{entry}, s.steeringQueue...)
+			s.mu.Unlock()
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v", err)})
+			return steeringMessage{}, false
+		}
+		return entry, true
+	}
 	s.persistQueuesSnapshot()
 	return entry, true
 }
@@ -681,6 +754,25 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source
 	t.SteeringKind = msg.Kind
+	t.ClientMutationID = msg.ClientMutationID
+	t.StableTurnID = msg.StableTurnID
+	if msg.ClientMutationID != "" {
+		if err := s.appendClientMutationTranscript(t); err != nil {
+			_ = s.returnClaimedSteering(msg.ClientMutationID)
+			s.reflectDurableClientSteering()
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			return
+		}
+		s.mu.Lock()
+		s.history = append(s.history, t)
+		s.mu.Unlock()
+		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
+			return
+		}
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		return
+	}
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
@@ -688,6 +780,21 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+}
+
+func (s *Session) returnClaimedSteering(clientMutationID string) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		pending, ok := snapshot.PendingExecutions[clientMutationID]
+		if !ok {
+			return nil
+		}
+		pending.ExecutionState = "accepted"
+		snapshot.PendingExecutions[clientMutationID] = pending
+		record := snapshot.Journal[clientMutationID]
+		record.ExecutionState = "accepted"
+		snapshot.Journal[clientMutationID] = record
+		return nil
+	})
 }
 
 // appendSteeringTurn records a daemon steering turn and announces it,

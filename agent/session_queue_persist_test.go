@@ -116,18 +116,7 @@ func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestQueuePersist_HookSourcedSteering_DoesNotPersist locks in a real
-// regression this feature discovered: a plain Steer() (Source=="", the daemon
-// /hook nudge path — SessionStart hook context, task/compaction reminders,
-// vision descriptions) must NOT survive restart via queue persistence.
-// Resume replays SessionStart hook output through its own dedicated,
-// matcher-aware path (drainPendingSessionStartHooksForUserTurn); resurrecting
-// a stale undrained hook message from the old process would silently
-// reintroduce the exact re-injection that mechanism exists to prevent
-// (TestResume_DualFlavorPlugin_DoesNotReinject, plugin_integration_test.go).
-// Only user-sent steering (turn/steer, DrainAsSteer, PromoteQueuedAsSteer) is
-// in scope for restart parity.
-func TestQueuePersist_HookSourcedSteering_DoesNotPersist(t *testing.T) {
+func TestQueuePersist_DaemonAndClientSteeringUseDistinctAuthorities(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -144,21 +133,16 @@ func TestQueuePersist_HookSourcedSteering_DoesNotPersist(t *testing.T) {
 	defer restored.Close()
 
 	got := restored.SteeringQueueSnapshot()
-	want := []SteeringEntry{{Text: "please check the tests"}}
+	want := []SteeringEntry{
+		{Text: "<SYSTEM-REMINDER>daemon nudge</SYSTEM-REMINDER>"},
+		{Text: "please check the tests"},
+	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("restored SteeringQueueSnapshot = %#v, want %#v (only the user-sent entry should survive)", got, want)
+		t.Fatalf("restored SteeringQueueSnapshot = %#v, want %#v", got, want)
 	}
 }
 
-// TestQueuePersist_SystemSourcedSteering_DoesNotTouchFile locks in design
-// review Important-2: a system/hook-sourced Steer() call (Source=="") must
-// not trigger a write at all, since userSourcedSteering filters it out of
-// the persisted view regardless. This matters because vision-description
-// steering (session_tool_round.go) fires via plain Steer() once per
-// image-bearing tool result — a real hot path across a multi-round turn, not
-// a theoretical one — so an unconditional persist cycle there would be
-// avoidable write amplification on every such call.
-func TestQueuePersist_SystemSourcedSteering_DoesNotTouchFile(t *testing.T) {
+func TestQueuePersist_ClientSteeringDoesNotTouchLegacyFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -166,39 +150,32 @@ func TestQueuePersist_SystemSourcedSteering_DoesNotTouchFile(t *testing.T) {
 	path := queuePersistFilePath(dir, id)
 	defer sess.Close()
 
-	// A system-sourced steer on its own must never create the file.
+	// The legacy file contains daemon-authored steering.
 	sess.Steer("<SYSTEM-REMINDER>vision description</SYSTEM-REMINDER>")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("queue file created by a system-sourced steer alone: stat err=%v", err)
-	}
-
-	// Once a user-sourced entry exists (file present), a later
-	// system-sourced steer must not rewrite it either.
-	sess.SteerFromUser("please check the tests")
 	before, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read queue file after user-sourced steer: %v", err)
+		t.Fatalf("read queue file after daemon steer: %v", err)
 	}
 	infoBefore, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat queue file after user-sourced steer: %v", err)
 	}
 
-	sess.Steer("<SYSTEM-REMINDER>another vision description</SYSTEM-REMINDER>")
+	sess.SteerFromUser("please check the tests")
 
 	after, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read queue file after system-sourced steer: %v", err)
+		t.Fatalf("read queue file after client steer: %v", err)
 	}
 	infoAfter, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("stat queue file after system-sourced steer: %v", err)
+		t.Fatalf("stat queue file after client steer: %v", err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatalf("queue file content changed after a system-sourced steer:\nbefore=%s\nafter=%s", before, after)
+		t.Fatalf("legacy queue file changed after client steer:\nbefore=%s\nafter=%s", before, after)
 	}
 	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
-		t.Fatalf("queue file mtime changed after a system-sourced steer (want untouched): before=%v after=%v", infoBefore.ModTime(), infoAfter.ModTime())
+		t.Fatalf("legacy queue file mtime changed after client steer: before=%v after=%v", infoBefore.ModTime(), infoAfter.ModTime())
 	}
 }
 
@@ -334,8 +311,8 @@ func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 	if err := sess.Enqueue(ctx, "alpha"); err != nil {
 		t.Fatalf("Enqueue alpha: %v", err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("queue file missing after enqueue: %v", err)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("legacy queue file created by client enqueue: stat err=%v", err)
 	}
 
 	popped := sess.popQueueHead()
@@ -349,20 +326,12 @@ func TestQueuePersist_EmptyQueue_NoResidueOnDisk(t *testing.T) {
 
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
-	if depth := restored.QueueDepth(); depth != 0 {
-		t.Fatalf("restored QueueDepth = %d, want 0", depth)
+	if depth := restored.QueueDepth(); depth != 1 {
+		t.Fatalf("restored QueueDepth = %d, want 1 (claimed input returns runnable)", depth)
 	}
 }
 
-// TestQueuePersist_CrashBetweenDequeueAndConsume_ItemNotDuplicated exercises
-// the crash-window semantics decision (report §4): popQueueHead persists the
-// shrunk queue synchronously, before the popped item is ever handed to
-// processOneInput/acceptUserInput for its durable transcript append. A crash
-// in that narrow, I/O-free window loses the just-popped item at most once; it
-// must NEVER resurrect it (which would risk re-running tools twice), matching
-// the orphaned-tool-call precedent in history_repair.go (never re-execute,
-// accept a gap instead).
-func TestQueuePersist_CrashBetweenDequeueAndConsume_ItemNotDuplicated(t *testing.T) {
+func TestQueuePersist_CrashBetweenClaimAndConsume_ReturnsRunnable(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -385,13 +354,17 @@ func TestQueuePersist_CrashBetweenDequeueAndConsume_ItemNotDuplicated(t *testing
 	if popped.Text != "alpha" {
 		t.Fatalf("popped = %q, want alpha", popped.Text)
 	}
+	claimedRevision := sess.clientMutations.snapshot().QueueRevision
 
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
 
 	gotTexts := restored.QueueTexts()
-	if !reflect.DeepEqual(gotTexts, []string{"bravo"}) {
-		t.Fatalf("restored QueueTexts = %#v, want [bravo] (alpha lost in the dequeue-to-consume window, never duplicated)", gotTexts)
+	if !reflect.DeepEqual(gotTexts, []string{"alpha", "bravo"}) {
+		t.Fatalf("restored QueueTexts = %#v, want [alpha bravo]", gotTexts)
+	}
+	if got := restored.clientMutations.snapshot().QueueRevision; got != claimedRevision+1 {
+		t.Fatalf("recovery queue revision = %d, want %d", got, claimedRevision+1)
 	}
 }
 
@@ -444,24 +417,21 @@ func TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem(t *testing.T) {
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
 
-	// charlie survives: it was never popped, so the pop-one/persist-per-item
-	// drain left it durably queued. bravo — the single in-flight item at crash
-	// time — is the only loss, proving the window is bounded to one message, not
-	// the whole remaining batch.
+	// Claimed but unincorporated bravo returns to runnable state; charlie was
+	// never claimed and remains behind it.
 	got := restored.SteeringQueueSnapshot()
-	if len(got) != 1 || got[0].Text != "charlie" {
-		t.Fatalf("restored SteeringQueueSnapshot = %#v, want [charlie] (only the in-flight bravo may be lost; the not-yet-popped charlie must survive)", got)
+	if len(got) != 2 || got[0].Text != "bravo" || got[1].Text != "charlie" {
+		t.Fatalf("restored SteeringQueueSnapshot = %#v, want [bravo charlie]", got)
 	}
 	// alpha survived because consumeSteeringMessage durably appended it to the
-	// transcript/history before the crash; bravo did not (popped, never
-	// consumed) and must not be resurrected into the queue.
+	// transcript/history before the crash; bravo did not and remains runnable.
 	foundAlpha := false
 	for _, turn := range restored.history {
 		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "alpha" {
 			foundAlpha = true
 		}
 		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "bravo" {
-			t.Fatalf("restored history unexpectedly contains bravo (lost in the pop-to-consume window, must not resurrect); kinds=%v", restored.history)
+			t.Fatalf("restored history unexpectedly contains unincorporated bravo; kinds=%v", restored.history)
 		}
 	}
 	if !foundAlpha {

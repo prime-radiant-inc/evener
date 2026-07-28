@@ -475,6 +475,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
 	}
+	restoredClientMutationTurns := make(map[string]string)
+	for _, entry := range transcriptEntries {
+		if entry.Turn.ClientMutationID != "" {
+			restoredClientMutationTurns[entry.Turn.ClientMutationID] = entry.Turn.StableTurnID
+		}
+	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	delegationAllowance := cfg.spawn.delegationAllowance
@@ -529,10 +535,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			updated: meta.NameUpdatedAt,
 			set:     strings.TrimSpace(meta.Name) != "",
 		},
-		readFiles:       map[string]bool{},
-		sessionCtx:      sessCtx,
-		cancelFunc:      sessCancel,
-		clientMutations: clientMutations,
+		readFiles:                   map[string]bool{},
+		sessionCtx:                  sessCtx,
+		cancelFunc:                  sessCancel,
+		clientMutations:             clientMutations,
+		restoredClientMutationTurns: restoredClientMutationTurns,
 	}
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
@@ -595,12 +602,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// the pending-ask restore below — so a damaged queue snapshot degrades to
 	// "queue lost" (today's status quo for every crash) rather than blocking
 	// the whole session from resuming.
-	if steering, input, err := loadQueues(s.stateDir, s.id); err != nil {
+	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
 	} else {
-		s.steeringQueue = steering
-		s.inputQueue = input
+		s.steeringQueue = daemonSourcedSteering(steering)
 	}
+	s.restoreDurableClientMutationQueues()
 
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume
 	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",

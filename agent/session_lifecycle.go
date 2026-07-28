@@ -605,6 +605,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
@@ -658,6 +659,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = drainCtx
+							processCtx = withQueuedClientMutation(processCtx, queued)
 							s.mu.Lock()
 							s.sessionEndEmitted = false
 							s.mu.Unlock()
@@ -750,6 +752,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		case runQueued:
 			next = queued.Text
 			nextImages = queued.Images
+			processCtx = withQueuedClientMutation(processCtx, queued)
 			s.mu.Lock()
 			s.sessionEndEmitted = false
 			s.mu.Unlock()
@@ -1186,17 +1189,23 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
-	s.mu.Lock()
-	turns := s.turns
-	s.mu.Unlock()
-
-	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
-		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
-		return &budgetExhaustionError{
-			Budget:    exhaustedBudgetTurns,
-			Limit:     s.cfg.MaxTurns,
-			Resumable: false,
+	queuedIdentity := queuedClientMutationFromContext(ctx)
+	if queuedIdentity.ClientMutationID == "" {
+		s.mu.Lock()
+		acceptedTurnsFloor := uint64(s.turns)
+		s.mu.Unlock()
+		err := s.claimDirectClientMutationTurn(acceptedTurnsFloor)
+		if err != nil {
+			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
+				return fmt.Errorf("reserve user turn budget: %w", err)
+			}
+			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			return &budgetExhaustionError{
+				Budget:    exhaustedBudgetTurns,
+				Limit:     s.cfg.MaxTurns,
+				Resumable: false,
+			}
 		}
 	}
 
@@ -1217,12 +1226,40 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		s.drainPendingSessionStartHooksForUserTurn(ctx)
 	}
 
+	if queuedIdentity.ClientMutationID == "" {
+		s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+	} else {
+		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
+		turn.ClientMutationID = queuedIdentity.ClientMutationID
+		turn.StableTurnID = queuedIdentity.StableTurnID
+		if err := s.appendClientMutationTranscript(turn); err != nil {
+			s.mu.Lock()
+			s.turns--
+			s.mu.Unlock()
+			s.pushQueueHead(queuedInput{
+				ID:               queuedIdentity.QueueEntryID,
+				ClientMutationID: queuedIdentity.ClientMutationID,
+				StableTurnID:     queuedIdentity.StableTurnID,
+				Text:             input,
+				Images:           append([]ImageAttachment(nil), images...),
+				Provenance:       provenance.Clone(inputProvenance),
+			})
+			return fmt.Errorf("append claimed queued input: %w", err)
+		}
+		s.mu.Lock()
+		s.history = append(s.history, turn)
+		s.mu.Unlock()
+		if err := s.markClaimedQueueTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
+			return fmt.Errorf("incorporate claimed queued input: %w", err)
+		}
+	}
 	s.emit(events.EventUserInput, events.UserInputData{
-		Text:   input,
-		Images: userInputImagesFromAttachments(images),
-		Turn:   userInputTurn,
+		Text:             input,
+		Images:           userInputImagesFromAttachments(images),
+		ClientMutationID: queuedIdentity.ClientMutationID,
+		StableTurnID:     queuedIdentity.StableTurnID,
+		Turn:             userInputTurn,
 	})
-	s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 	s.launchInitialPromptNamer(s.sessionCtx, input)
 
 	// UserPromptSubmit hooks

@@ -136,6 +136,11 @@ type Turn struct {
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// ClientMutationID and StableTurnID identify retry-safe client-authored
+	// user and steering turns across live events, transcript recovery, and
+	// mutation replay.
+	ClientMutationID string `json:"client_mutation_id,omitempty"`
+	StableTurnID     string `json:"stable_turn_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`

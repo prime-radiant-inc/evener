@@ -178,8 +178,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				"turn":     turn,
 			}))
 		}
-		turnID := p.startTurn()
 		data := eventData[events.UserInputData](event.Data)
+		if data.StableTurnID != "" {
+			p.reservedTurnID = data.StableTurnID
+		}
+		turnID := p.startTurn()
 		item := appwire.ThreadItem{
 			Type:                 "userMessage",
 			ID:                   p.nextItemID("user"),
@@ -188,6 +191,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Text:                 data.Text,
 			Images:               projectUserInputImages(data.Images),
 			Status:               "completed",
+			ClientMutationID:     data.ClientMutationID,
 		}
 		out = append(out,
 			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
@@ -647,6 +651,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.Kind != "" {
 			params["kind"] = data.Kind
 		}
+		if data.ClientMutationID != "" {
+			params["clientMutationId"] = data.ClientMutationID
+		}
 		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, params)}
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
@@ -726,10 +733,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Queue: appwire.QueueState{
-				Depth:   data.Depth,
-				Preview: append([]string(nil), data.Preview...),
-				IDs:     append([]string(nil), data.IDs...),
-				Texts:   append([]string(nil), data.Texts...),
+				Depth:             data.Depth,
+				Revision:          data.Revision,
+				Preview:           append([]string(nil), data.Preview...),
+				IDs:               append([]string(nil), data.IDs...),
+				ClientMutationIDs: append([]string(nil), data.ClientMutationIDs...),
+				Texts:             append([]string(nil), data.Texts...),
 			},
 		})}
 	case events.EventTaskUpdated:

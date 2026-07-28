@@ -160,12 +160,22 @@ func validateClientMutationSnapshot(snapshot clientMutationSnapshot, sessionID s
 		if record.Method == "" {
 			return fmt.Errorf("client mutation %q has no method", id)
 		}
-		if len(record.Payload) == 0 || !json.Valid(record.Payload) {
-			return fmt.Errorf("client mutation %q has an invalid payload", id)
-		}
-		sum := sha256.Sum256(record.Payload)
-		if record.PayloadHash != hex.EncodeToString(sum[:]) {
-			return fmt.Errorf("client mutation %q payload hash does not match payload", id)
+		if len(record.Payload) == 0 {
+			if record.OperationState != clientMutationOperationTerminal &&
+				record.OperationState != clientMutationOperationRejected {
+				return fmt.Errorf("client mutation %q has no payload outside terminal or rejected state", id)
+			}
+			if record.PayloadHash == "" {
+				return fmt.Errorf("terminal client mutation %q has no payload hash", id)
+			}
+		} else {
+			if !json.Valid(record.Payload) {
+				return fmt.Errorf("client mutation %q has an invalid payload", id)
+			}
+			sum := sha256.Sum256(record.Payload)
+			if record.PayloadHash != hex.EncodeToString(sum[:]) {
+				return fmt.Errorf("client mutation %q payload hash does not match payload", id)
+			}
 		}
 		if record.AttemptGeneration == 0 {
 			return fmt.Errorf("client mutation %q has no attempt generation", id)

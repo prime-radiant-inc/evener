@@ -48,8 +48,10 @@ type SessionEndData struct {
 
 // UserInputData is the payload for an EventUserInput event.
 type UserInputData struct {
-	Text   string           `json:"text"`
-	Images []UserInputImage `json:"images,omitempty"`
+	Text             string           `json:"text"`
+	Images           []UserInputImage `json:"images,omitempty"`
+	ClientMutationID string           `json:"client_mutation_id,omitempty"`
+	StableTurnID     string           `json:"stable_turn_id,omitempty"`
 	// Turn is the 1-based transcript entry index for this USER_INPUT turn.
 	// The hub renderer uses it for turn-targeted operations such as fork.
 	Turn int `json:"turn,omitempty"`
@@ -244,8 +246,10 @@ var AllSteeringKinds = []string{
 
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
 type SteeringInjectedData struct {
-	Text   string           `json:"text"`
-	Images []UserInputImage `json:"images,omitempty"`
+	Text             string           `json:"text"`
+	Images           []UserInputImage `json:"images,omitempty"`
+	ClientMutationID string           `json:"client_mutation_id,omitempty"`
+	StableTurnID     string           `json:"stable_turn_id,omitempty"`
 	// Source carries the steering provenance: SteeringSourceUser for
 	// human-sent steering, empty for daemon/system steering. Optional and
 	// additive; absent means system.
@@ -266,10 +270,12 @@ type SteeringInjectedData struct {
 // the composer — the preview line alone would silently truncate multi-line
 // messages.
 type QueueChangedData struct {
-	Depth   int      `json:"depth"`
-	Preview []string `json:"preview,omitempty"`
-	IDs     []string `json:"ids,omitempty"`
-	Texts   []string `json:"texts,omitempty"`
+	Depth             int      `json:"depth"`
+	Revision          uint64   `json:"revision"`
+	Preview           []string `json:"preview,omitempty"`
+	IDs               []string `json:"ids,omitempty"`
+	ClientMutationIDs []string `json:"client_mutation_ids,omitempty"`
+	Texts             []string `json:"texts,omitempty"`
 }
 
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current

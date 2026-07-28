@@ -50,7 +50,7 @@ type clientMutationRejection struct {
 type clientMutationRecord struct {
 	ClientMutationID    string                          `json:"clientMutationId"`
 	Method              string                          `json:"method"`
-	Payload             json.RawMessage                 `json:"payload"`
+	Payload             json.RawMessage                 `json:"payload,omitempty"`
 	Preconditions       clientMutationPreconditions     `json:"preconditions,omitempty"`
 	StableTurnID        string                          `json:"stableTurnId,omitempty"`
 	StableQueueEntryIDs []string                        `json:"stableQueueEntryIds,omitempty"`
@@ -80,8 +80,13 @@ type clientMutationInterruptFence struct {
 }
 
 type clientMutationSnapshot struct {
-	Version                int                                        `json:"version"`
-	SessionID              string                                     `json:"sessionId"`
+	Version   int    `json:"version"`
+	SessionID string `json:"sessionId"`
+	// ActiveTurnID is the sole durable authority used by retry-safe mutation
+	// preconditions. Task 4 owns lifecycle writes; queue and steering
+	// transitions only compare it while holding this store's serializer.
+	ActiveTurnID           string                                     `json:"activeTurnId,omitempty"`
+	AcceptedTurns          uint64                                     `json:"acceptedTurns"`
 	Journal                map[string]clientMutationRecord            `json:"journal"`
 	InputQueue             []clientMutationQueueEntry                 `json:"inputQueue"`
 	QueueRevision          uint64                                     `json:"queueRevision"`
@@ -90,6 +95,7 @@ type clientMutationSnapshot struct {
 	BudgetReservations     map[string]clientMutationBudgetReservation `json:"budgetReservations"`
 	InterruptFence         *clientMutationInterruptFence              `json:"interruptFence,omitempty"`
 	PendingExecutions      map[string]appwire.PendingMutation         `json:"pendingExecutions"`
+	SteeringOrder          []string                                   `json:"steeringOrder,omitempty"`
 }
 
 type clientMutationRequest struct {
@@ -104,6 +110,7 @@ type clientMutationRequest struct {
 // reserved resources for an unseen mutation. The store invokes it only while
 // holding its serializer and before the mutation's first snapshot write.
 type clientMutationPrepare func(*clientMutationSnapshot, *clientMutationRecord) error
+type clientMutationEffect func(*clientMutationSnapshot, *clientMutationRecord) error
 
 func newClientMutationRequest(method, id string, payload any) (clientMutationRequest, error) {
 	if method == "" {
@@ -193,6 +200,124 @@ func (s *clientMutationStore) reserve(request clientMutationRequest) (clientMuta
 	return s.reservePrepared(request, nil)
 }
 
+// executeAtomic is the Task 3 transition primitive. It deliberately keeps the
+// store serializer from journal lookup through precondition validation,
+// reservation persistence, effect persistence, and publication. Queue and
+// steering mutations must not use reservePrepared followed by update: that
+// split is appropriate for long-running execution ownership, but would let a
+// different queue mutation invalidate an index, entry ID, turn, revision, or
+// budget between validation and effect.
+func (s *clientMutationStore) executeAtomic(
+	request clientMutationRequest,
+	prepare clientMutationPrepare,
+	effect clientMutationEffect,
+) (clientMutationLookup, error) {
+	if err := validateClientMutationRequest(request); err != nil {
+		return clientMutationLookup{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, exists := s.state.Journal[request.ClientMutationID]
+	if exists {
+		if current.Method != request.Method || current.PayloadHash != request.PayloadHash {
+			return clientMutationLookup{}, errClientMutationMismatch
+		}
+		switch current.OperationState {
+		case clientMutationOperationApplied, clientMutationOperationRejected, clientMutationOperationTerminal:
+			return clientMutationLookup{
+				Disposition: clientMutationDispositionReplayed,
+				Record:      cloneClientMutationRecord(current),
+			}, nil
+		case clientMutationOperationInFlight:
+			// An in-flight record with no serializer holder is a crash-recovery
+			// takeover. Stable IDs and reservations already live in the snapshot;
+			// prepare must not run again.
+		default:
+			return clientMutationLookup{}, fmt.Errorf("client mutation %q has invalid operation state %q", request.ClientMutationID, current.OperationState)
+		}
+	}
+
+	if !exists {
+		next := cloneClientMutationSnapshot(s.state)
+		current = clientMutationRecord{
+			ClientMutationID: request.ClientMutationID,
+			Method:           request.Method,
+			Payload:          append(json.RawMessage(nil), request.Payload...),
+			PayloadHash:      request.PayloadHash,
+			Preconditions:    cloneClientMutationPreconditions(request.Preconditions),
+			OperationState:   clientMutationOperationInFlight,
+			ExecutionState:   "pending",
+			ProjectionState:  appwire.MutationProjectionPending,
+		}
+		if prepare != nil {
+			if err := prepare(&next, &current); err != nil {
+				return clientMutationLookup{}, err
+			}
+		}
+		current.AttemptGeneration++
+		next.Journal[request.ClientMutationID] = current
+		next = cloneClientMutationSnapshot(next)
+		current = next.Journal[request.ClientMutationID]
+		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
+			return clientMutationLookup{}, err
+		}
+		s.state = next
+		if current.OperationState != clientMutationOperationInFlight {
+			return clientMutationLookup{
+				Disposition: clientMutationDispositionReserved,
+				Record:      cloneClientMutationRecord(current),
+			}, nil
+		}
+		if s.faults.AfterReservation != nil {
+			if err := s.faults.AfterReservation(); err != nil {
+				return clientMutationLookup{}, err
+			}
+		}
+	} else {
+		next := cloneClientMutationSnapshot(s.state)
+		current.AttemptGeneration++
+		next.Journal[request.ClientMutationID] = current
+		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
+			return clientMutationLookup{}, err
+		}
+		s.state = next
+		if s.faults.AfterReservation != nil {
+			if err := s.faults.AfterReservation(); err != nil {
+				return clientMutationLookup{}, err
+			}
+		}
+	}
+
+	next := cloneClientMutationSnapshot(s.state)
+	current = next.Journal[request.ClientMutationID]
+	if effect != nil {
+		if err := effect(&next, &current); err != nil {
+			return clientMutationLookup{}, err
+		}
+	}
+	next.Journal[request.ClientMutationID] = current
+	next = cloneClientMutationSnapshot(next)
+	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
+		return clientMutationLookup{}, err
+	}
+	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
+	if renamed {
+		s.state = next
+	}
+	if err != nil {
+		return clientMutationLookup{}, err
+	}
+	if !renamed {
+		return clientMutationLookup{}, errors.New("client mutation snapshot was not committed")
+	}
+	return clientMutationLookup{
+		Disposition: clientMutationDispositionReserved,
+		Record:      cloneClientMutationRecord(current),
+	}, nil
+}
+
 func (s *clientMutationStore) reservePrepared(
 	request clientMutationRequest,
 	prepare clientMutationPrepare,
@@ -257,6 +382,13 @@ func (s *clientMutationStore) reservePrepared(
 		return clientMutationLookup{}, err
 	}
 	s.state = next
+
+	if record.OperationState != clientMutationOperationInFlight {
+		return clientMutationLookup{
+			Disposition: clientMutationDispositionReserved,
+			Record:      cloneClientMutationRecord(record),
+		}, nil
+	}
 
 	s.nextOwnerToken++
 	owner := clientMutationOwner{
@@ -333,6 +465,30 @@ func (s *clientMutationStore) snapshot() clientMutationSnapshot {
 	return cloneClientMutationSnapshot(s.state)
 }
 
+func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneClientMutationSnapshot(s.state)
+	if err := mutate(&next); err != nil {
+		return err
+	}
+	next = cloneClientMutationSnapshot(next)
+	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
+		return err
+	}
+	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
+	if renamed {
+		s.state = next
+	}
+	if err != nil {
+		return err
+	}
+	if !renamed {
+		return errors.New("client mutation snapshot was not committed")
+	}
+	return nil
+}
+
 func (s *clientMutationStore) release(lease *clientMutationLease) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -390,6 +546,7 @@ func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnaps
 		pending.QueueEntryIDs = append([]string(nil), pending.QueueEntryIDs...)
 		dst.PendingExecutions[id] = pending
 	}
+	dst.SteeringOrder = append([]string(nil), src.SteeringOrder...)
 	return dst
 }
 
