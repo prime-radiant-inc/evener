@@ -32,6 +32,7 @@ func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -167,6 +168,7 @@ func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing
 	srv.SetTranscriptPathFunc(func() string { return path })
 	srv.SetSteerFunc(func(string) {})
 	srv.SetCancelFunc(func() {})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -278,6 +280,7 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -320,6 +323,7 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 		SessionID: "th_1",
 		Data:      events.AssistantTextEndData{Text: "done"},
 	})
+	installProjectedMutationCallbacksForTest(srv)
 	history := srv.AppNotificationsAfter(0, "th_1")
 	cursor := history[len(history)-1].Seq
 
@@ -650,6 +654,7 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	srv.SetSteerFunc(func(text string) {
 		steered = append(steered, text)
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -693,6 +698,7 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 		gotText = text
 		gotImages = append([]ImageAttachment(nil), images...)
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -728,6 +734,7 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 	srv.SetSteerFunc(func(text string) {
 		steered = append(steered, text)
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -777,6 +784,7 @@ func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	cancelled := 0
 	srv.SetCancelFunc(func() { cancelled++ })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -852,6 +860,7 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetState("closed")
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1402,6 +1411,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 		got = append(got, text)
 		return nil
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1429,6 +1439,7 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 		got = append(got, text)
 		return nil
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1451,6 +1462,7 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1506,6 +1518,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
 	srv.SetQueueFunc(func(string) error { return nil })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1526,6 +1539,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.SetQueueFunc(func(string) error { return nil })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1550,6 +1564,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetDrainAsSteerFunc(func() error { return nil })
 	srv.SetQueueDepthFunc(func() int { return 0 })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1573,6 +1588,7 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
 	srv.SetQueueDepthFunc(func() int { return 1 })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1600,6 +1616,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
 	srv.SetQueueDepthFunc(func() int { return 2 })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1631,6 +1648,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 		return nil
 	})
 	srv.SetQueueDepthFunc(func() int { return 0 })
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

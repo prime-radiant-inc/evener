@@ -4348,6 +4348,99 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCTurnMutationForwardsWithoutDynamicCapabilityGate(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Serf: appwire.SerfThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{},
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+		if inputTextForTest(params.Input) == "reject" {
+			return appwire.TurnQueueResponse{}, appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "turn changed",
+				Data: appwire.ErrorData{
+					SerfErrorInfo:    appwire.ErrorConflict,
+					ClientMutationID: params.ClientMutationID,
+					MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+					RetryDisposition: appwire.RetryDispositionNone,
+				},
+			}
+		}
+		return appwire.TurnQueueResponse{Receipt: appwire.MutationReceipt{
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      appwire.MutationDispositionReplayed,
+			ThreadID:         "th_1",
+			TurnID:           params.ExpectedTurnID,
+			QueueEntryIDs:    []string{"queue_1"},
+			ProjectionState:  appwire.MutationProjectionReflected,
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	params := appwire.TurnQueueParams{
+		Ref:              "local:th_1",
+		ClientMutationID: "mutation-queue",
+		ExpectedTurnID:   "turn_1",
+		Input:            []appwire.InputItem{{Type: "text", Text: "queue"}},
+	}
+	var response appwire.TurnQueueResponse
+	if err := client.Request(context.Background(), appwire.MethodTurnQueue, params, &response); err != nil {
+		t.Fatalf("TurnQueue: %v", err)
+	}
+	if response.Receipt.ClientMutationID != params.ClientMutationID ||
+		response.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		response.Receipt.TurnID != params.ExpectedTurnID ||
+		!slices.Equal(response.Receipt.QueueEntryIDs, []string{"queue_1"}) {
+		t.Fatalf("receipt=%+v", response.Receipt)
+	}
+
+	params.ClientMutationID = "mutation-reject"
+	params.Input = []appwire.InputItem{{Type: "text", Text: "reject"}}
+	err := client.Request(context.Background(), appwire.MethodTurnQueue, params, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("TurnQueue rejection %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok ||
+		data["clientMutationId"] != params.ClientMutationID ||
+		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
+	}
+}
+
 func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()

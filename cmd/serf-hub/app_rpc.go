@@ -283,6 +283,9 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
 		source, err := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
@@ -313,21 +316,30 @@ func registerThreadHandlers(
 		return startTurn(ctx, source, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+		if err := validateAppWireInputItems(params.Input); err != nil {
+			return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedTurnID) == "" {
+			return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			return appwire.TurnSteerResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "steer"); err != nil {
 			return appwire.TurnSteerResponse{}, err
 		}
 		return source.SteerTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedTurnID) == "" {
+			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			return appwire.TurnInterruptResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "interrupt"); err != nil {
 			return appwire.TurnInterruptResponse{}, err
 		}
 		return source.InterruptTurn(ctx, params)
@@ -343,11 +355,14 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedTurnID) == "" {
+			return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.TurnQueueResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
 			return appwire.TurnQueueResponse{}, err
 		}
 		return source.QueueTurn(ctx, params)
@@ -356,14 +371,14 @@ func registerThreadHandlers(
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedTurnID) == "" {
+			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.TurnDrainAsSteerResponse{}, err
-		}
-		// drainAsSteer rides on the Steer capability — the daemon checks
-		// queue depth separately to return Conflict when there is nothing
-		// to drain.
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
 			return appwire.TurnDrainAsSteerResponse{}, err
 		}
 		return source.DrainAsSteer(ctx, params)
@@ -372,14 +387,17 @@ func registerThreadHandlers(
 		if params.Index < 0 {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
 		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedTurnID) == "" {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
+		}
+		if strings.TrimSpace(params.ExpectedEntryID) == "" {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-		}
-		// promoteQueuedAsSteer rides on the Steer capability, same as
-		// drainAsSteer — the daemon checks the live queue and turn state
-		// itself and returns Conflict when the promote can't happen.
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 		}
 		return source.PromoteQueuedAsSteer(ctx, params)
@@ -388,17 +406,14 @@ func registerThreadHandlers(
 		if params.Index < 0 {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
 		}
+		if strings.TrimSpace(params.ClientMutationID) == "" {
+			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("clientMutationId is required")
+		}
+		if strings.TrimSpace(params.ExpectedEntryID) == "" {
+			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return appwire.TurnCancelQueuedResponse{}, err
-		}
-		// cancelQueued rides on the Queue capability — the same gate as
-		// turn/queue. It must NOT gate on Send: Send is false while a turn
-		// is in flight, which is exactly when the queue preview (and its
-		// cancel/edit buttons) exists (review C1). The daemon checks the
-		// live queue itself and returns Conflict when the index no longer
-		// resolves or the expected id mismatches (review F1).
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
 			return appwire.TurnCancelQueuedResponse{}, err
 		}
 		return source.CancelQueued(ctx, params)

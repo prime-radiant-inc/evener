@@ -19,6 +19,35 @@ var (
 	errClientMutationOwner    = errors.New("client mutation owner is no longer active")
 )
 
+// NormalizeClientMutationError converts Session mutation failures into the
+// structured AppWire contract at the daemon boundary. Existing WireErrors are
+// already authoritative. A reused ID with different content is a protocol
+// error; any other unclassified failure means the journal could not prove the
+// outcome and retry must remain blocked until persistence recovers.
+func NormalizeClientMutationError(clientMutationID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var wire appwire.WireError
+	if errors.As(err, &wire) {
+		return err
+	}
+	if errors.Is(err, errClientMutationMismatch) {
+		return appwire.InvalidRequest(err.Error())
+	}
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: err.Error(),
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  appwire.MutationOutcomeUnknown,
+			RetryDisposition: appwire.RetryDispositionBlocked,
+			Cause:            "persistenceUnavailable",
+		},
+	}
+}
+
 const (
 	clientMutationMethodStart     = "turn/start"
 	clientMutationMethodInterrupt = "turn/interrupt"
@@ -318,6 +347,24 @@ func (s *Session) ClaimClientMutationStart() (queuedInput, bool, error) {
 		s.reflectDurableInputQueue()
 	}
 	return claimed, claimed.ClientMutationID != "", nil
+}
+
+// ProcessClientMutationStart claims and processes the next durable start using
+// the payload and identity stored by AcceptClientMutationStart.
+func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func()) (string, bool, error) {
+	if !s.hasRunnableClientMutationStart() {
+		return "", false, nil
+	}
+	if onRunnable != nil {
+		onRunnable()
+	}
+	claimed, ok, err := s.ClaimClientMutationStart()
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	ctx = withQueuedClientMutation(ctx, claimed)
+	result, err := s.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput)
+	return result, true, err
 }
 
 // InterruptClientMutation persists an interrupt fence under the lifecycle

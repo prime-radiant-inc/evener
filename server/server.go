@@ -22,9 +22,23 @@ type ImageAttachment = agent.ImageAttachment
 // attached images. Kind classifies the turn (user input vs. a goal-engine
 // continuation); its zero value is agent.EntryUserInput.
 type InputMessage struct {
-	Text   string
-	Images []ImageAttachment
-	Kind   agent.EntryKind
+	Text                string
+	Images              []ImageAttachment
+	Kind                agent.EntryKind
+	ClientMutationStart bool
+	SessionID           string
+}
+
+// RetrySafeTurnFunctions is the daemon's typed bridge to the authoritative
+// per-session client-mutation state machine.
+type RetrySafeTurnFunctions struct {
+	Start     func(appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	Steer     func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error)
+	Queue     func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error)
+	Drain     func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error)
+	Promote   func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error)
+	Cancel    func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
+	Interrupt func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error)
 }
 
 // ToolInfo describes a registered tool and its source.
@@ -183,6 +197,7 @@ type Server struct {
 	// never suppressed as "unchanged" by whatever the previous session on
 	// this server left behind.
 	appLastStampedFailedToolCalls *int
+	retrySafeTurns                RetrySafeTurnFunctions
 	cancelFunc                    context.CancelFunc
 	steerFunc                     func(string)
 	steerWithImagesFunc           func(string, []ImageAttachment)
@@ -241,6 +256,14 @@ type Server struct {
 	inputCh                      chan InputMessage
 	hubToken                     string
 	sameOrigin                   httpguard.SameOriginPolicy
+}
+
+// SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
+// callbacks for the seven v2 turn methods.
+func (s *Server) SetRetrySafeTurnFunctions(functions RetrySafeTurnFunctions) {
+	s.mu.Lock()
+	s.retrySafeTurns = functions
+	s.mu.Unlock()
 }
 
 // NewServer creates a new Server.
@@ -753,6 +776,16 @@ func (s *Server) SubmitContinuation(prompt string) {
 func (s *Server) SubmitNotification() {
 	select {
 	case s.inputCh <- InputMessage{Kind: agent.EntryNotification}:
+	default:
+	}
+}
+
+// SubmitClientMutationStart wakes the serve loop after a turn/start intent is
+// durably accepted. The loop claims the stored payload and identity from the
+// named session rather than carrying either through this process-local signal.
+func (s *Server) SubmitClientMutationStart(sessionID string) {
+	select {
+	case s.inputCh <- InputMessage{ClientMutationStart: true, SessionID: sessionID}:
 	default:
 	}
 }

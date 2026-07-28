@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -456,54 +457,38 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
-
-	turnID, err := s.reserveAppTurnIDForStart()
-	if err != nil {
-		return appwire.TurnStartResponse{}, err
-	}
-	select {
-	case s.inputCh <- InputMessage{Text: text, Images: images}:
-	default:
-		s.releaseAppTurnID(turnID)
-		return appwire.TurnStartResponse{}, appwire.Conflict("input buffer full")
-	}
-	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress}}, nil
-}
-
-func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-	text, images := inputFromItems("", params.Input)
-	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("input is required")
-	}
-	turnID := strings.TrimSpace(params.ExpectedTurnID)
-	if turnID == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("expectedTurnId is required")
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
 	s.mu.RLock()
-	fn := s.steerFunc
-	imgFn := s.steerWithImagesFunc
-	activeTurnID := s.appActiveTurnID
-	reservedTurnID := s.appReservedTurnID
-	processing := s.processing
+	fn := s.retrySafeTurns.Start
 	s.mu.RUnlock()
-	if fn == nil && imgFn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("steer not available")
+	if fn == nil {
+		return appwire.TurnStartResponse{}, appwire.Unavailable("turn start not available")
 	}
-	if len(images) > 0 && imgFn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("steer with images not available")
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
+}
+
+func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	text, images := inputFromItems("", params.Input)
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
 	}
-	if !processing && strings.TrimSpace(reservedTurnID) == "" {
-		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
-	if turnID != activeTurnID {
-		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
-	if imgFn != nil {
-		imgFn(text, images)
-	} else {
-		fn(text)
+	s.mu.RLock()
+	fn := s.retrySafeTurns.Steer
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.TurnSteerResponse{}, appwire.Unavailable("steer not available")
 	}
-	return appwire.EmptyResponse{}, nil
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
 func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
@@ -526,167 +511,106 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 	return appwire.EmptyResponse{}, nil
 }
 
-func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
-	turnID := strings.TrimSpace(params.ExpectedTurnID)
-	if turnID == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("expectedTurnId is required")
+func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
 	s.mu.RLock()
-	cancel := s.cancelFunc
-	activeTurnID := s.appActiveTurnID
+	fn := s.retrySafeTurns.Interrupt
 	s.mu.RUnlock()
-	if turnID != activeTurnID {
-		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
+	if fn == nil {
+		return appwire.TurnInterruptResponse{}, appwire.Unavailable("interrupt not available")
 	}
-	if cancel != nil {
-		cancel()
-	}
-	return appwire.EmptyResponse{}, nil
+	response, err := fn(ctx, params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-// handleAppTurnQueue handles turn/queue (kata 111a). The session must be
-// processing for the call to be meaningful — calling on an idle session is
-// rejected with Conflict so callers fall back to turn/start instead.
-// When params.Input carries image attachments (kata t5j6), the request is
-// routed through queueWithImagesFunc when available so the queued entry
-// preserves the image bytes for the eventual user turn.
-func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 	text, images := inputFromItems("", params.Input)
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("input required")
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
+	}
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
 	s.mu.RLock()
-	fn := s.queueFunc
-	imgFn := s.queueWithImagesFunc
-	processing := s.processing
-	reservedTurnID := s.appReservedTurnID
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	fn := s.retrySafeTurns.Queue
 	s.mu.RUnlock()
-	if closed {
-		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
-	}
-	if !processing && strings.TrimSpace(reservedTurnID) == "" {
-		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to queue against")
-	}
-	if len(images) > 0 {
-		if imgFn == nil {
-			return appwire.EmptyResponse{}, appwire.Unavailable("image queue not available")
-		}
-		if err := imgFn(text, images); err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		return appwire.EmptyResponse{}, nil
-	}
 	if fn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("queue not available")
+		return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
 	}
-	if err := fn(text); err != nil {
-		return appwire.EmptyResponse{}, err
-	}
-	return appwire.EmptyResponse{}, nil
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-// handleAppTurnDrainAsSteer handles turn/drainAsSteer (kata 0bq1).
-func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
-	text, images := inputFromItems("", params.Input)
-	hasInput := strings.TrimSpace(text) != "" || len(images) > 0
+func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
+	}
 	s.mu.RLock()
-	fn := s.drainSteerFunc
-	inputFn := s.drainSteerInputFunc
-	depthFn := s.queueDepthFn
-	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	fn := s.retrySafeTurns.Drain
 	s.mu.RUnlock()
-	if closed {
-		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
-	}
-	if !processing {
-		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
-	}
 	if fn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("drain-as-steer not available")
+		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
 	}
-	if hasInput && inputFn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("drain-as-steer with input not available")
-	}
-	if !hasInput && depthFn != nil && depthFn() == 0 {
-		return appwire.EmptyResponse{}, appwire.Conflict("queue is empty")
-	}
-	var err error
-	if hasInput {
-		err = inputFn(text, images)
-	} else {
-		err = fn()
-	}
-	if err != nil {
-		return appwire.EmptyResponse{}, err
-	}
-	return appwire.EmptyResponse{}, nil
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-// handleAppTurnPromoteQueuedAsSteer handles turn/promoteQueuedAsSteer
-// (issue #22): removes the queued follow-up at params.Index and injects it
-// as user-sourced steering into the in-flight turn. A negative index is an
-// InvalidParams rejection; an idle or closed session is a Conflict (the
-// queued message stays a normal follow-up — nothing is silently dropped).
-// Session-side rejections are all queue-state conflicts — the index fell
-// out of range or the expected entry id no longer matches because the queue
-// shifted under the client's snapshot (review F1) — so they map to Conflict
-// and the client can re-sync its preview (review F2).
-func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
+// handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
+// active-turn and queue compare-and-commit decisions to the Session callback.
+func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	if params.Index < 0 {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
+	}
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
+	}
+	if strings.TrimSpace(params.ExpectedEntryID) == "" {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
 	s.mu.RLock()
-	fn := s.promoteSteerFunc
-	processing := s.processing
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	fn := s.retrySafeTurns.Promote
 	s.mu.RUnlock()
-	if closed {
-		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
-	}
-	if !processing {
-		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
-	}
 	if fn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
 	}
-	if err := fn(params.Index, params.ExpectedEntryID); err != nil {
-		return appwire.EmptyResponse{}, appwire.Conflict(err.Error())
-	}
-	return appwire.EmptyResponse{}, nil
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-// handleAppTurnCancelQueued handles turn/cancelQueued (issue #23): removes
-// the queued follow-up at params.Index so it is never consumed, echoing the
-// removed entry's full text and image count. Unlike promote, cancel does
-// NOT require an in-flight turn — a queued entry is cancellable whenever it
-// is still queued, including entries buffered on an idle session. A
-// negative index is an InvalidParams rejection; a closed session is a
-// Conflict. Session-side rejections are all queue-state conflicts — the
-// index fell out of range (the entry was already consumed) or the expected
-// entry id no longer matches because the queue shifted under the client's
-// snapshot (review F1) — so they map to Conflict and the client can re-sync
-// its preview (review F2).
+// handleAppTurnCancelQueued validates static request shape and leaves queue
+// compare-and-commit decisions to the Session callback.
 func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	if params.Index < 0 {
 		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
 	}
-	s.mu.RLock()
-	fn := s.cancelQueuedFunc
-	closed := appStatus(s.status.State, s.processing) == appwire.ThreadStatusClosed
-	s.mu.RUnlock()
-	if closed {
-		return appwire.TurnCancelQueuedResponse{}, appwire.Conflict("session is closed")
+	if strings.TrimSpace(params.ExpectedEntryID) == "" {
+		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("clientMutationId is required")
+	}
+	s.mu.RLock()
+	fn := s.retrySafeTurns.Cancel
+	s.mu.RUnlock()
 	if fn == nil {
 		return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("cancel-queued not available")
 	}
-	text, images, err := fn(params.Index, params.ExpectedEntryID)
-	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, appwire.Conflict(err.Error())
-	}
-	return appwire.TurnCancelQueuedResponse{RemovedText: text, RemovedImages: images}, nil
+	response, err := fn(params)
+	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
 // handleAppGoalSet handles goal/set. An empty objective clears the goal; both

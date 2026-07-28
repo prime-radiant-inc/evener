@@ -40,6 +40,7 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 		gotImages = images
 		return nil
 	})
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -112,6 +113,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	})
 	srv.SetDrainAsSteerFunc(func() error { return sess.DrainAsSteer(context.Background()) })
 	srv.SetQueueDepthFunc(sess.QueueDepth)
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -183,6 +185,7 @@ func (a *blockingServerAdapter) Stream(context.Context, llm.Request) (llm.Stream
 func TestServerAppWireTurnStartImageItemReachesInputCh(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_img1")
+	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

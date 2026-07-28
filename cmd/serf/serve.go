@@ -98,9 +98,11 @@ type serveServer interface {
 	SetProcessing(bool)
 	SetState(string)
 	SetCancelFunc(context.CancelFunc)
+	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
+	SubmitClientMutationStart(string)
 }
 
 type serveDeps struct {
@@ -495,6 +497,35 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	var notifyCallback func()
 	var subscriberCallback func() int
+	var mutationRunnerMu sync.Mutex
+	var mutationRunnerCancel context.CancelFunc
+	var mutationRunnerDone <-chan struct{}
+	setMutationRunner := func(cancel context.CancelFunc, done <-chan struct{}) {
+		mutationRunnerMu.Lock()
+		mutationRunnerCancel = cancel
+		mutationRunnerDone = done
+		mutationRunnerMu.Unlock()
+	}
+	clearMutationRunner := func(done <-chan struct{}) {
+		mutationRunnerMu.Lock()
+		if mutationRunnerDone == done {
+			mutationRunnerCancel = nil
+			mutationRunnerDone = nil
+		}
+		mutationRunnerMu.Unlock()
+	}
+	cancelAndWaitMutationRunner := func() {
+		mutationRunnerMu.Lock()
+		cancelRunner := mutationRunnerCancel
+		runnerDone := mutationRunnerDone
+		mutationRunnerMu.Unlock()
+		if cancelRunner != nil {
+			cancelRunner()
+		}
+		if runnerDone != nil {
+			<-runnerDone
+		}
+	}
 	bridgeSession := func(s *agent.Session) {
 		// The idle kick is set on the Session, so it must be re-established
 		// whenever the session is replaced (e.g. on /clear). It feeds the
@@ -508,6 +539,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// into the serve loop so the parent drains it on the next turn.
 		notifyCallback = func() { srv.SubmitNotification() }
 		s.SetNotifyFunc(notifyCallback)
+		s.SetClientMutationStartWakeFunc(func() {
+			srv.SubmitClientMutationStart(s.ID())
+		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire
 		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks
@@ -549,6 +583,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
 		return getSession().CancelQueued(ctx, index, expectedID)
+	})
+	srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
+		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			return getSession().AcceptClientMutationStart(params)
+		},
+		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			return getSession().AcceptClientMutationSteer(params)
+		},
+		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return getSession().AcceptClientMutationQueue(params)
+		},
+		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			return getSession().AcceptClientMutationDrainAsSteer(params)
+		},
+		Promote: func(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			return getSession().AcceptClientMutationPromoteQueuedAsSteer(params)
+		},
+		Cancel: func(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+			return getSession().AcceptClientMutationCancelQueued(params)
+		},
+		Interrupt: func(waitCtx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+			return getSession().InterruptClientMutation(waitCtx, params, func() {
+				cancelAndWaitMutationRunner()
+			})
+		},
 	})
 	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
@@ -684,43 +743,65 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	inputLoopDone := make(chan struct{})
 	go func() {
 		defer close(inputLoopDone)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-srv.InputCh():
-				if !ok {
-					return
-				}
-				sess := getSession()
-				var currentCancel context.CancelFunc
-				var nextTurnCtx func(context.Context) (context.Context, context.CancelFunc)
-				nextTurnCtx = func(root context.Context) (context.Context, context.CancelFunc) {
-					drainCtx, cancelDrain := context.WithCancel(root)
-					drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
-					currentCancel = cancelDrain
-					srv.SetProcessing(true)
-					srv.SetState(string(agent.SessionProcessing))
-					srv.SetCancelFunc(cancelDrain)
-					return drainCtx, cancelDrain
-				}
-				turnCtx, cancelTurn := context.WithCancel(ctx)
-				currentCancel = cancelTurn
-				turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
+		processMessage := func(sess *agent.Session, msg server.InputMessage) bool {
+			if msg.ClientMutationStart && msg.SessionID != sess.ID() {
+				return false
+			}
+			runnerDone := make(chan struct{})
+			var currentCancel context.CancelFunc
+			var nextTurnCtx func(context.Context) (context.Context, context.CancelFunc)
+			nextTurnCtx = func(root context.Context) (context.Context, context.CancelFunc) {
+				drainCtx, cancelDrain := context.WithCancel(root)
+				drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
+				currentCancel = cancelDrain
+				srv.SetProcessing(true)
+				srv.SetState(string(agent.SessionProcessing))
+				srv.SetCancelFunc(cancelDrain)
+				setMutationRunner(cancelDrain, runnerDone)
+				return drainCtx, cancelDrain
+			}
+			turnCtx, cancelTurn := context.WithCancel(ctx)
+			currentCancel = cancelTurn
+			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
+			if !msg.ClientMutationStart {
 				srv.SetCancelFunc(cancelTurn)
+				setMutationRunner(cancelTurn, runnerDone)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
 					srv.SetState(string(agent.SessionProcessing))
 				}
-				result, processErr := sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
-				srv.SetProcessing(false)
-				srv.SetState(sess.WireState())
-				srv.SetCancelFunc(nil)
-				currentCancel()
-				if processErr != nil {
-					fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
-				}
-				_ = result
+			}
+			var result string
+			var processErr error
+			processed := true
+			if msg.ClientMutationStart {
+				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func() {
+					srv.SetCancelFunc(cancelTurn)
+					setMutationRunner(cancelTurn, runnerDone)
+					srv.SetProcessing(true)
+					srv.SetState(string(agent.SessionProcessing))
+				})
+			} else {
+				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
+			}
+			srv.SetProcessing(false)
+			srv.SetCancelFunc(nil)
+			srv.SetState(sess.WireState())
+			currentCancel()
+			close(runnerDone)
+			clearMutationRunner(runnerDone)
+			if processErr != nil {
+				fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
+			}
+			_ = result
+			return processed
+		}
+		for {
+			sess := getSession()
+			if !processNextServeInput(ctx, srv.InputCh(), sess.ID(), func(msg server.InputMessage) bool {
+				return processMessage(getSession(), msg)
+			}) {
+				return
 			}
 		}
 	}()
@@ -781,6 +862,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// processNextServeInput gives durable turn/start work priority over the
+// process-local wake channel. The caller repeats it after every processed
+// message, so an accepted start still progresses when its wake was coalesced
+// because the channel was full.
+func processNextServeInput(
+	ctx context.Context,
+	input <-chan server.InputMessage,
+	sessionID string,
+	process func(server.InputMessage) bool,
+) bool {
+	if process(server.InputMessage{ClientMutationStart: true, SessionID: sessionID}) {
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case msg, ok := <-input:
+		if !ok {
+			return false
+		}
+		process(msg)
+		return true
+	}
 }
 
 func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []appwire.SandboxEscalationRequested {

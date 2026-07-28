@@ -117,7 +117,7 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 		return appwire.TurnStartResponse{}, err
 	}
 	var out appwire.TurnStartResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.TurnStart(ctx, params)
 		return callErr
@@ -131,7 +131,7 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 		return appwire.TurnSteerResponse{}, err
 	}
 	var out appwire.TurnSteerResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnSteer, params, &out)
 	})
 	return out, err
@@ -156,7 +156,7 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	var out appwire.TurnInterruptResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnInterrupt, params, &out)
 	})
 	return out, err
@@ -198,7 +198,7 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 		return appwire.TurnQueueResponse{}, err
 	}
 	var out appwire.TurnQueueResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnQueue, params, &out)
 	})
 	return out, err
@@ -210,7 +210,7 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
 	var out appwire.TurnDrainAsSteerResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnDrainAsSteer, params, &out)
 	})
 	return out, err
@@ -222,7 +222,7 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
 	var out appwire.TurnPromoteQueuedAsSteerResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
 	return out, err
@@ -234,7 +234,7 @@ func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.Tur
 		return appwire.TurnCancelQueuedResponse{}, err
 	}
 	var resp appwire.TurnCancelQueuedResponse
-	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
 		var cerr error
 		resp, cerr = client.TurnCancelQueued(ctx, params)
 		return cerr
@@ -408,6 +408,26 @@ func forwardLocalDaemonNotification(ctx context.Context, out chan<- appwire.Noti
 }
 
 func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Entry, fn func(*appwire.Client) error) error {
+	return s.withClientCallMapper(ctx, entry, fn, localDaemonCallError)
+}
+
+func (s *LocalDaemonSource) withMutationClient(
+	ctx context.Context,
+	entry rendezvous.Entry,
+	clientMutationID string,
+	fn func(*appwire.Client) error,
+) error {
+	return s.withClientCallMapper(ctx, entry, fn, func(err error) error {
+		return localDaemonMutationCallError(clientMutationID, err)
+	})
+}
+
+func (s *LocalDaemonSource) withClientCallMapper(
+	ctx context.Context,
+	entry rendezvous.Entry,
+	fn func(*appwire.Client) error,
+	mapCallError func(error) error,
+) error {
 	transport, err := s.dial(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -425,7 +445,7 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 		return localDaemonInitializeError(err)
 	}
 	if err := fn(client); err != nil {
-		return localDaemonCallError(err)
+		return mapCallError(err)
 	}
 	return nil
 }
@@ -511,6 +531,28 @@ func localDaemonCallError(err error) error {
 		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 	}
 	return err
+}
+
+func localDaemonMutationCallError(clientMutationID string, err error) error {
+	mapped := localDaemonCallError(err)
+	var wire appwire.WireError
+	if !errors.As(mapped, &wire) {
+		return mapped
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || !ok || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+		return mapped
+	}
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: "mutation outcome is unknown after local daemon response loss",
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  appwire.MutationOutcomeUnknown,
+			RetryDisposition: appwire.RetryDispositionAutomatic,
+		},
+	}
 }
 
 func localDaemonInitializeError(err error) error {

@@ -30,7 +30,50 @@ import (
 	apilog "primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
+	"primeradiant.com/serf/server"
 )
+
+func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T) {
+	input := make(chan server.InputMessage, 1)
+	input <- server.InputMessage{Text: "already queued"}
+	durableStart := false
+	var processed []string
+	process := func(msg server.InputMessage) bool {
+		if msg.ClientMutationStart {
+			if !durableStart {
+				return false
+			}
+			if msg.SessionID != "session-1" {
+				t.Fatalf("durable session = %q, want session-1", msg.SessionID)
+			}
+			processed = append(processed, "durable")
+			durableStart = false
+			return true
+		}
+		processed = append(processed, msg.Text)
+		durableStart = true
+		input <- server.InputMessage{Text: "later queued"}
+		return true
+	}
+
+	if !processNextServeInput(context.Background(), input, "session-1", process) {
+		t.Fatal("first input iteration stopped")
+	}
+	if !processNextServeInput(context.Background(), input, "session-1", process) {
+		t.Fatal("durable input iteration stopped")
+	}
+	if len(processed) != 2 || processed[0] != "already queued" || processed[1] != "durable" {
+		t.Fatalf("processed = %#v, want queued input then durable start", processed)
+	}
+	select {
+	case msg := <-input:
+		if msg.Text != "later queued" {
+			t.Fatalf("remaining input = %#v", msg)
+		}
+	default:
+		t.Fatal("durable start did not take priority over the full wake channel")
+	}
+}
 
 // TestBuildInitialProfile_ConfigPath verifies that buildInitialProfile resolves
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
@@ -362,8 +405,9 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		Ref:   ref,
-		Input: []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
+		ClientMutationID: "shutdown-in-flight",
+		Ref:              ref,
+		Input:            []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}

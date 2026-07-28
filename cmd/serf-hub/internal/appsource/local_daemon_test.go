@@ -620,7 +620,7 @@ func fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t 
 	}
 }
 
-func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcomeUnknown(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -662,7 +662,12 @@ func fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavaila
 		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
-	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+	if !ok ||
+		wire.Code != appwire.CodeInternalError ||
+		data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.ClientMutationID != "test-mutation" ||
+		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+		data.RetryDisposition != appwire.RetryDispositionAutomatic {
 		t.Fatalf("wire=%+v", wire)
 	}
 }

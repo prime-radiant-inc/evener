@@ -164,8 +164,9 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		Ref:   ref,
-		Input: []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
+		ClientMutationID: "stream-error-turn",
+		Ref:              ref,
+		Input:            []appwire.InputItem{{Type: "text", Text: "trigger a closed stream"}},
 	}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}

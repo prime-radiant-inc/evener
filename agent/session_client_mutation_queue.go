@@ -104,6 +104,12 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	return response, nil
 }
 
+// AcceptClientMutationQueue durably accepts or replays one client-authored
+// queued input.
+func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return s.clientMutationQueue(params)
+}
+
 func rejectClientMutation(record *clientMutationRecord, err error) {
 	wireErr, ok := err.(appwire.WireError)
 	if !ok {
@@ -287,6 +293,12 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 	return response, nil
 }
 
+// AcceptClientMutationSteer durably accepts or replays one client-authored
+// steering input.
+func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return s.clientMutationSteer(params)
+}
+
 func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
@@ -364,6 +376,12 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	s.reflectDurableInputQueue()
 	s.reflectDurableClientSteering()
 	return response, nil
+}
+
+// AcceptClientMutationDrainAsSteer durably accepts or replays one queued-input
+// drain into steering.
+func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return s.clientMutationDrain(params)
 }
 
 func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []appwire.InputItem) []appwire.InputItem {
@@ -462,6 +480,12 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	return response, nil
 }
 
+// AcceptClientMutationPromoteQueuedAsSteer durably accepts or replays one
+// queued-input promotion into steering.
+func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return s.clientMutationPromote(params)
+}
+
 func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnCancelQueuedResponse{}, err
@@ -534,6 +558,12 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 	}
 	s.reflectDurableInputQueue()
 	return response, nil
+}
+
+// AcceptClientMutationCancelQueued durably accepts or replays one queued-input
+// cancellation.
+func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return s.clientMutationCancel(params)
 }
 
 func reserveClientMutationTurnID(snapshot *clientMutationSnapshot, record *clientMutationRecord) {

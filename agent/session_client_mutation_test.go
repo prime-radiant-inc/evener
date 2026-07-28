@@ -472,6 +472,74 @@ func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T)
 	}
 }
 
+func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) {
+	sess := newSession(t,
+		withSteps(func(llm.Request) llm.Response { return finalResponse("done") }),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}),
+	)
+	params := appwire.TurnStartParams{
+		ClientMutationID: "process-durable-start",
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "process this durable input"},
+			{Type: "image", MediaType: "image/png", Data: []byte("image-bytes"), Name: "input.png"},
+		},
+	}
+	accepted, err := sess.AcceptClientMutationStart(params)
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+
+	result, claimed, err := sess.ProcessClientMutationStart(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ProcessClientMutationStart: %v", err)
+	}
+	if !claimed {
+		t.Fatal("ProcessClientMutationStart reported no durable start")
+	}
+	if result != "done" {
+		t.Fatalf("ProcessClientMutationStart result = %q, want done", result)
+	}
+
+	sess.mu.Lock()
+	var userTurn *schema.Turn
+	for i := range sess.history {
+		if sess.history[i].ClientMutationID == params.ClientMutationID &&
+			sess.history[i].Kind == schema.TurnUserInput {
+			turn := sess.history[i]
+			userTurn = &turn
+			break
+		}
+	}
+	sess.mu.Unlock()
+	if userTurn == nil {
+		t.Fatal("durable start produced no identity-bearing user turn")
+	}
+	if userTurn.StableTurnID != accepted.Turn.ID {
+		t.Fatalf("user turn stable ID = %q, want %q", userTurn.StableTurnID, accepted.Turn.ID)
+	}
+	if userTurn.Message.Role != llm.RoleUser {
+		t.Fatalf("user turn role = %q, want %q", userTurn.Message.Role, llm.RoleUser)
+	}
+	if len(userTurn.Message.Content) != 2 {
+		t.Fatalf("user turn content = %#v, want text and image parts", userTurn.Message.Content)
+	}
+	textPart := userTurn.Message.Content[0]
+	if textPart.Kind != llm.ContentText || textPart.Text != "process this durable input" {
+		t.Fatalf("user turn text part = %#v, want durable text", textPart)
+	}
+	imagePart := userTurn.Message.Content[1]
+	if imagePart.Kind != llm.ContentImage || imagePart.Image == nil {
+		t.Fatalf("user turn image part = %#v, want durable image", imagePart)
+	}
+	if imagePart.Image.MediaType != "image/png" || string(imagePart.Image.Data) != "image-bytes" {
+		t.Fatalf("user turn image = %#v, want durable PNG bytes", imagePart.Image)
+	}
+}
+
 func TestClientMutation_StartCrashAfterReservationRecoversCompleteIntent(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)

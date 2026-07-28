@@ -10,7 +10,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -32,9 +31,11 @@ func newPromoteTestServer(t *testing.T, processing bool) (*Server, *int) {
 	}
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: state})
 	called := 0
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		called++
-		return nil
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			called++
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+		},
 	})
 	return srv, &called
 }
@@ -53,10 +54,12 @@ func TestServerAppWireTurnPromoteQueuedAsSteerDispatchesIndex(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
 	var gotExpectedID string
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		gotIndex = index
-		gotExpectedID = expectedID
-		return nil
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Promote: func(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			gotIndex = params.Index
+			gotExpectedID = params.ExpectedEntryID
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+		},
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -87,18 +90,15 @@ func TestServerAppWireTurnPromoteQueuedAsSteerRejectsNegativeIndex(t *testing.T)
 	}
 }
 
-func TestServerAppWireTurnPromoteQueuedAsSteerRejectsWhenIdle(t *testing.T) {
+func TestServerAppWireTurnPromoteQueuedAsSteerDelegatesWhenProjectionIsIdle(t *testing.T) {
 	srv, called := newPromoteTestServer(t, false)
 	conn := srv.AppServer().NewConnection("test")
 	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", ExpectedTurnID: "test-turn", Ref: "local:th_1", Index: 0})
-	if resp.Kind() != appwire.MessageError {
-		t.Fatalf("expected error, got %v", resp.Kind())
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("idle projection dispatch: resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
-	if resp.Error.Error.Code != appwire.CodeConflict {
-		t.Fatalf("error=%+v", resp.Error.Error)
-	}
-	if *called != 0 {
-		t.Fatalf("promote called=%d, want 0", *called)
+	if *called != 1 {
+		t.Fatalf("promote called=%d, want 1", *called)
 	}
 }
 
@@ -126,8 +126,10 @@ func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		return errors.New("promote: queue index 3 out of range (depth 1)")
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Conflict("promote: queue index 3 out of range (depth 1)")
+		},
 	})
 	conn := srv.AppServer().NewConnection("test")
 	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedEntryID: "test-entry", ExpectedTurnID: "test-turn", Ref: "local:th_1", Index: 3})
@@ -170,13 +172,20 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 			t.Fatalf("Enqueue %s: %v", msg, err)
 		}
 	}
+	start, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "promote-active-turn",
+		Input:            []appwire.InputItem{{Type: "text", Text: "durable turn"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
 
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: sess.ID(), State: "active"})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
-		return sess.PromoteQueuedAsSteer(context.Background(), index, expectedID)
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Promote: sess.AcceptClientMutationPromoteQueuedAsSteer,
 	})
 	srv.SetQueuePreviewFunc(sess.QueuePreview)
 	srv.SetQueueIDsFunc(sess.QueueIDs)
@@ -200,7 +209,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 
 	// Review F1: a promote naming the WRONG entry id (a stale snapshot) is a
 	// Conflict and leaves the queue fully intact — nothing is steered.
-	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[1]})
+	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-mismatch", ExpectedTurnID: start.Turn.ID, Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[1]})
 	if mismatch.Kind() != appwire.MessageError {
 		t.Fatalf("mismatch promote: expected error, got %v", mismatch.Kind())
 	}
@@ -214,7 +223,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
 	}
 
-	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[0]})
+	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promote-alpha", ExpectedTurnID: start.Turn.ID, Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[0]})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
