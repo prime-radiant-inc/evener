@@ -22,13 +22,13 @@ import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
-  AuthTestResponse,
   AuthDevicePollResponse,
   AuthDeviceStartResponse,
   AuthLoginCompleteResponse,
   AuthLoginStartResponse,
   AuthLogoutResponse,
   AuthStatusResponse,
+  AuthTestResponse,
   InstanceCreateParams,
   InstanceEditParams,
   InstanceEntry,

@@ -87,7 +87,8 @@ const CREDENTIAL_TEST_MESSAGES: Record<string, string> = {
   configuration_failure: "Provider configuration could not be loaded. Check the instance settings.",
   unsupported: "This provider does not support harmless credential verification.",
 };
-const ENDPOINT_FAILURE_MESSAGE = "The provider endpoint could not be reached. Check the endpoint and network connection.";
+const ENDPOINT_FAILURE_MESSAGE =
+  "The provider endpoint could not be reached. Check the endpoint and network connection.";
 
 export function safeCredentialTestResult(provider: string, response: AuthTestResponse): AuthTestResponse {
   const message = CREDENTIAL_TEST_MESSAGES[response.status];

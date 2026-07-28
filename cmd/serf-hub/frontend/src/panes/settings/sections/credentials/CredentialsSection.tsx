@@ -61,6 +61,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   }
   const toast = useToasts();
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: instances is a deliberate trigger-only dependency; each refreshed list invalidates results from the prior provider configuration
   useEffect(() => {
     setCredentialTests({});
   }, [instances]);
