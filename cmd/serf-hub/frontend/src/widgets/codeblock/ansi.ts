@@ -98,11 +98,9 @@ function isSgrSequence(sequence: string): boolean {
 }
 
 function normalizedSgr(sequence: string, state: SgrState): string {
-  const parameters = sequence
-    .slice(2, -1)
-    .split(";")
-    .map((parameter) => (parameter === "" ? 0 : Number(parameter)));
-  const normalized: number[] = [];
+  const rawParameters = sequence.slice(2, -1).split(";");
+  const parameters = rawParameters.map((parameter) => (parameter === "" ? 0 : Number(parameter)));
+  const normalized: Array<number | string> = [];
 
   for (let index = 0; index < parameters.length; index += 1) {
     const code = parameters[index] ?? 0;
@@ -110,18 +108,22 @@ function normalizedSgr(sequence: string, state: SgrState): string {
       const truecolor = parameters[index + 1] === 2;
       const colorLength = truecolor ? 5 : 3;
       const color = parameters.slice(index, index + colorLength);
+      const rawColor = rawParameters.slice(index, index + colorLength);
       if (color.length < colorLength) {
-        normalized.push(code, parameters[index + 1] ?? 0);
+        normalized.push(rawParameters[index] ?? code, rawParameters[index + 1] ?? "");
         index += 1;
         continue;
       }
       const channels = truecolor ? color.slice(2) : color.slice(2, 3);
-      const validColor = channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+      const rawChannels = truecolor ? rawColor.slice(2) : rawColor.slice(2, 3);
+      const validColor =
+        rawChannels.every((channel) => channel !== "") &&
+        channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
       if (validColor) {
         if (code === 38) state.foreground = color;
         else state.background = color;
       }
-      normalized.push(...color);
+      normalized.push(...rawColor);
       index += colorLength - 1;
       continue;
     }

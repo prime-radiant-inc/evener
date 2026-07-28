@@ -123,3 +123,21 @@ test("an ESC interrupts an incomplete CSI sequence and starts the next style", (
   expect(plainText(lines)).toBe("PASS");
   expect(lines[0]).toMatchObject([{ text: "PASS", foreground: { kind: "named", name: "green" } }]);
 });
+
+test("empty extended-color fields do not replace active foreground or background colors", () => {
+  const [line] = parseAnsiLines("\u001b[31;44mactive\u001b[38;5;m foreground\u001b[48;2;;2;3m background");
+
+  expect(line).toMatchObject([
+    { text: "active", foreground: { kind: "named", name: "red" }, background: { kind: "named", name: "blue" } },
+    {
+      text: " foreground",
+      foreground: { kind: "named", name: "red" },
+      background: { kind: "named", name: "blue" },
+    },
+    {
+      text: " background",
+      foreground: { kind: "named", name: "red" },
+      background: { kind: "named", name: "blue" },
+    },
+  ]);
+});

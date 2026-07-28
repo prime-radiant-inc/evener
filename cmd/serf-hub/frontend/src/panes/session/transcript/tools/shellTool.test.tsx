@@ -280,6 +280,16 @@ test("incomplete truecolor parameters retain Anser reset and bold semantics at t
   expect(container.querySelector('[data-ansi-fg="red"]')).toBeNull();
 });
 
+test("an empty palette field does not replace inherited color at the boundary", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `\u001b[31m\u001b[38;5;m${"x".repeat(8_100)}AFTER`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(
+    Array.from(container.querySelectorAll('[data-ansi-fg="red"]')).some((node) => node.textContent?.endsWith("AFTER")),
+  ).toBe(true);
+});
+
 test("display and copy share the same raw boundary across a large OSC payload", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
