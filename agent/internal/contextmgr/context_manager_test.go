@@ -1686,45 +1686,91 @@ func TestSafeCutoff_SkipsSteering(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_PreservesToolCallAcrossHookCompleted(t *testing.T) {
-	const callID = "call_with_hook"
+func TestSafeCutoff_DoesNotSkipStandaloneHookCompleted(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
-		{Kind: schema.TurnAssistant, Message: assistantWithToolCall(callID, "probe", `{}`)},
-		schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")),
-		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+		schema.NewTurn(schema.TurnHookCompleted, llm.System("SessionStart hook exit 0")),
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
-	result := checkpoint(history, 2, nil, "communicate")
+	if got := safeCutoff(history, 2); got != 2 {
+		t.Fatalf("safeCutoff = %d, want 2 (standalone hook must not move cutoff)", got)
+	}
+}
 
-	gotKinds := make([]string, len(result))
-	for i, turn := range result {
-		gotKinds[i] = string(turn.Kind)
-	}
-	if got, want := strings.Join(gotKinds, ","), "CHECKPOINT,ASSISTANT,HOOK_COMPLETED,TOOL_RESULTS,ASSISTANT"; got != want {
-		t.Fatalf("checkpoint kinds = %s, want %s", got, want)
+func TestCheckpoint_PreservesToolCallAcrossHookCompleted(t *testing.T) {
+	const callID = "call_with_hook"
+	tests := []struct {
+		name           string
+		hookMessages   []string
+		preserveRecent int
+		wantKinds      string
+	}{
+		{
+			name:           "cutoff on tool results",
+			hookMessages:   []string{"PreToolUse hook exit 0"},
+			preserveRecent: 2,
+			wantKinds:      "CHECKPOINT,ASSISTANT,HOOK_COMPLETED,TOOL_RESULTS,ASSISTANT",
+		},
+		{
+			name:           "cutoff on hook marker",
+			hookMessages:   []string{"PreToolUse hook exit 0"},
+			preserveRecent: 3,
+			wantKinds:      "CHECKPOINT,ASSISTANT,HOOK_COMPLETED,TOOL_RESULTS,ASSISTANT",
+		},
+		{
+			name:           "cutoff on adjacent hook markers",
+			hookMessages:   []string{"PreToolUse first hook exit 0", "PreToolUse second hook exit 0"},
+			preserveRecent: 4,
+			wantKinds:      "CHECKPOINT,ASSISTANT,HOOK_COMPLETED,HOOK_COMPLETED,TOOL_RESULTS,ASSISTANT",
+		},
 	}
 
-	foundCall := false
-	for _, part := range result[1].Message.Content {
-		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
-			foundCall = true
-		}
-	}
-	if !foundCall {
-		t.Fatalf("preserved assistant is missing tool call %q", callID)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			history := []schema.Turn{
+				{Kind: schema.TurnUserInput, Message: llm.User("task")},
+				{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
+				{Kind: schema.TurnAssistant, Message: assistantWithToolCall(callID, "probe", `{}`)},
+			}
+			for _, message := range tc.hookMessages {
+				history = append(history, schema.NewTurn(schema.TurnHookCompleted, llm.System(message)))
+			}
+			history = append(history,
+				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+				schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+			)
 
-	foundResult := false
-	for _, part := range result[3].Message.Content {
-		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
-			foundResult = true
-		}
-	}
-	if !foundResult {
-		t.Fatalf("preserved result is missing tool call ID %q", callID)
+			result := checkpoint(history, tc.preserveRecent, nil, "communicate")
+
+			gotKinds := make([]string, len(result))
+			for i, turn := range result {
+				gotKinds[i] = string(turn.Kind)
+			}
+			if got := strings.Join(gotKinds, ","); got != tc.wantKinds {
+				t.Fatalf("checkpoint kinds = %s, want %s", got, tc.wantKinds)
+			}
+
+			foundCall := false
+			foundResult := false
+			for _, turn := range result {
+				for _, part := range turn.Message.Content {
+					if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+						foundCall = true
+					}
+					if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+						foundResult = true
+					}
+				}
+			}
+			if !foundCall {
+				t.Fatalf("preserved assistant is missing tool call %q", callID)
+			}
+			if !foundResult {
+				t.Fatalf("preserved result is missing tool call ID %q", callID)
+			}
+		})
 	}
 }
 

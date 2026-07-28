@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -211,6 +213,65 @@ func TestHookCompletedTurnIsNeverSentToModel(t *testing.T) {
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("history messages = %d, want 2 (user + assistant)", len(msgs))
+	}
+}
+
+func TestCompactedHookToolExchangeProjectsValidProviderMessages(t *testing.T) {
+	const callID = "call_with_hook"
+	tests := []struct {
+		name           string
+		preserveRecent int
+	}{
+		{name: "cutoff on tool results", preserveRecent: 2},
+		{name: "cutoff on hook marker", preserveRecent: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			history := []schema.Turn{
+				{Kind: schema.TurnUserInput, Message: llm.User("task")},
+				{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
+				schema.NewTurn(schema.TurnAssistant, llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{{
+						Kind: llm.ContentToolCall,
+						ToolCall: &llm.ToolCallData{
+							ID:        callID,
+							Name:      "probe",
+							Type:      "function",
+							Arguments: json.RawMessage(`{}`),
+						},
+					}},
+				}),
+				schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")),
+				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+				{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+			}
+			cm := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil)
+			cm.PreserveRecentTurns = tc.preserveRecent
+			cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {})
+
+			// expandHistory is the production projection that creates the
+			// per-message slice sent to the provider.
+			messages := expandHistory(history, replayScope{})
+			callIndex, resultIndex := -1, -1
+			for i, message := range messages {
+				for _, part := range message.Content {
+					if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+						callIndex = i
+					}
+					if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+						resultIndex = i
+						if message.Role != llm.RoleTool || message.ToolCallID != callID {
+							t.Fatalf("projected result message = %+v, want tool role linked to %q", message, callID)
+						}
+					}
+				}
+			}
+			if callIndex < 0 || resultIndex < 0 || callIndex >= resultIndex {
+				t.Fatalf("projected tool exchange order call=%d result=%d; messages=%+v", callIndex, resultIndex, messages)
+			}
+		})
 	}
 }
 
