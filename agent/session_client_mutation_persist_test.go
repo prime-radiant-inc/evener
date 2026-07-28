@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,115 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
+
+func TestClientMutationPersist_UnseenPreparationIsAtomicAndRunsOnce(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	injected := errors.New("after reservation")
+	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{
+		AfterReservation: func() error { return injected },
+	})
+	if err != nil {
+		t.Fatalf("new mutation store: %v", err)
+	}
+	request := testClientMutationRequest(t, "turn/start", "mutation-1", appwire.TurnStartParams{
+		ClientMutationID: "mutation-1",
+		Input:            []appwire.InputItem{{Type: "text", Text: "reserve atomically"}},
+	})
+	prepareCalls := 0
+	preparedQueueIDs := []string{"queue-1", "queue-2"}
+	prepare := func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		prepareCalls++
+		snapshot.NextTurnSequence++
+		record.StableTurnID = fmt.Sprintf("turn-%d", snapshot.NextTurnSequence)
+		snapshot.NextQueueEntrySequence += uint64(len(preparedQueueIDs))
+		record.StableQueueEntryIDs = preparedQueueIDs
+		snapshot.BudgetReservations[record.ClientMutationID] = clientMutationBudgetReservation{
+			TurnID: record.StableTurnID,
+			Slots:  1,
+		}
+		return nil
+	}
+
+	if _, err := store.reservePrepared(request, prepare); !errors.Is(err, injected) {
+		t.Fatalf("reserve error = %v, want %v", err, injected)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("preparation calls after unseen reservation = %d, want 1", prepareCalls)
+	}
+	preparedQueueIDs[0] = "mutated-by-prepare-caller"
+	if got := store.snapshot().Journal["mutation-1"].StableQueueEntryIDs; !reflect.DeepEqual(got, []string{"queue-1", "queue-2"}) {
+		t.Fatalf("same-process stable queue IDs = %v, want isolated original IDs", got)
+	}
+
+	recovered, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
+	if err != nil {
+		t.Fatalf("reload post-reservation snapshot: %v", err)
+	}
+	durable := recovered.snapshot()
+	record := durable.Journal["mutation-1"]
+	if record.StableTurnID != "turn-1" {
+		t.Fatalf("durable stable turn ID = %q, want turn-1", record.StableTurnID)
+	}
+	if !reflect.DeepEqual(record.StableQueueEntryIDs, []string{"queue-1", "queue-2"}) {
+		t.Fatalf("durable stable queue IDs = %v, want [queue-1 queue-2]", record.StableQueueEntryIDs)
+	}
+	if durable.NextTurnSequence != 1 || durable.NextQueueEntrySequence != 2 {
+		t.Fatalf(
+			"durable sequences = turn:%d queue:%d, want turn:1 queue:2",
+			durable.NextTurnSequence,
+			durable.NextQueueEntrySequence,
+		)
+	}
+	if got := durable.BudgetReservations["mutation-1"]; got != (clientMutationBudgetReservation{TurnID: "turn-1", Slots: 1}) {
+		t.Fatalf("durable budget reservation = %#v, want turn-1/1", got)
+	}
+
+	store.faults.AfterReservation = nil
+	takeover, err := store.reservePrepared(request, prepare)
+	if err != nil {
+		t.Fatalf("same-process takeover: %v", err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("preparation calls after same-process takeover = %d, want 1", prepareCalls)
+	}
+	takeover.Lease.Release()
+
+	restarted, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
+	if err != nil {
+		t.Fatalf("restart mutation store: %v", err)
+	}
+	owner, err := restarted.reservePrepared(request, prepare)
+	if err != nil {
+		t.Fatalf("restart takeover: %v", err)
+	}
+	joined, err := restarted.reservePrepared(request, prepare)
+	if err != nil {
+		t.Fatalf("active-owner join: %v", err)
+	}
+	if joined.Disposition != clientMutationDispositionJoined {
+		t.Fatalf("active-owner disposition = %q, want joined", joined.Disposition)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("preparation calls after restart takeover and join = %d, want 1", prepareCalls)
+	}
+	if err := restarted.update(owner.Lease, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
+		record.OperationState = clientMutationOperationApplied
+		record.Result = json.RawMessage(`{"turnId":"turn-1"}`)
+		return nil
+	}); err != nil {
+		t.Fatalf("complete mutation: %v", err)
+	}
+	replay, err := restarted.reservePrepared(request, prepare)
+	if err != nil {
+		t.Fatalf("terminal replay: %v", err)
+	}
+	if replay.Disposition != clientMutationDispositionReplayed {
+		t.Fatalf("terminal disposition = %q, want replayed", replay.Disposition)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("preparation calls after terminal replay = %d, want 1", prepareCalls)
+	}
+}
 
 func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 	fs := afero.NewMemMapFs()
@@ -41,9 +151,18 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 		ExpectedTurnID:        "turn-2",
 		ExpectedQueueRevision: uint64Pointer(8),
 	}
-	request.StableQueueEntryIDs = []string{"queue-11", "queue-12"}
 
-	reserved, err := store.reserve(request)
+	reserved, err := store.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		record.StableTurnID = "turn-7"
+		record.StableQueueEntryIDs = []string{"queue-11", "queue-12"}
+		snapshot.NextTurnSequence = 7
+		snapshot.NextQueueEntrySequence = 13
+		snapshot.BudgetReservations["mutation-1"] = clientMutationBudgetReservation{
+			TurnID: "turn-7",
+			Slots:  1,
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("reserve mutation: %v", err)
 	}
@@ -60,12 +179,6 @@ func TestClientMutationPersist_FullSnapshotRoundTrip(t *testing.T) {
 			}},
 		}}
 		snapshot.QueueRevision = 9
-		snapshot.NextTurnSequence = 7
-		snapshot.NextQueueEntrySequence = 13
-		snapshot.BudgetReservations["mutation-1"] = clientMutationBudgetReservation{
-			TurnID: "turn-7",
-			Slots:  1,
-		}
 		snapshot.InterruptFence = &clientMutationInterruptFence{
 			ClientMutationID: "interrupt-1",
 			ExpectedTurnID:   "turn-2",

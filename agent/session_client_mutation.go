@@ -41,7 +41,11 @@ type clientMutationPreconditions struct {
 	ExpectedQueueRevision *uint64 `json:"expectedQueueRevision,omitempty"`
 }
 
-type clientMutationRejection = appwire.WireError
+type clientMutationRejection struct {
+	Code    int               `json:"code"`
+	Message string            `json:"message"`
+	Data    appwire.ErrorData `json:"data"`
+}
 
 type clientMutationRecord struct {
 	ClientMutationID    string                          `json:"clientMutationId"`
@@ -89,14 +93,17 @@ type clientMutationSnapshot struct {
 }
 
 type clientMutationRequest struct {
-	ClientMutationID    string
-	Method              string
-	Payload             json.RawMessage
-	PayloadHash         string
-	Preconditions       clientMutationPreconditions
-	StableTurnID        string
-	StableQueueEntryIDs []string
+	ClientMutationID string
+	Method           string
+	Payload          json.RawMessage
+	PayloadHash      string
+	Preconditions    clientMutationPreconditions
 }
+
+// clientMutationPrepare atomically claims stable IDs, sequence numbers, and
+// reserved resources for an unseen mutation. The store invokes it only while
+// holding its serializer and before the mutation's first snapshot write.
+type clientMutationPrepare func(*clientMutationSnapshot, *clientMutationRecord) error
 
 func newClientMutationRequest(method, id string, payload any) (clientMutationRequest, error) {
 	if method == "" {
@@ -183,6 +190,13 @@ func newClientMutationStoreFS(fs afero.Fs, stateDir, sessionID string, faults cl
 }
 
 func (s *clientMutationStore) reserve(request clientMutationRequest) (clientMutationLookup, error) {
+	return s.reservePrepared(request, nil)
+}
+
+func (s *clientMutationStore) reservePrepared(
+	request clientMutationRequest,
+	prepare clientMutationPrepare,
+) (clientMutationLookup, error) {
 	if err := validateClientMutationRequest(request); err != nil {
 		return clientMutationLookup{}, err
 	}
@@ -220,20 +234,25 @@ func (s *clientMutationStore) reserve(request clientMutationRequest) (clientMuta
 	record := current
 	if !exists {
 		record = clientMutationRecord{
-			ClientMutationID:    request.ClientMutationID,
-			Method:              request.Method,
-			Payload:             append(json.RawMessage(nil), request.Payload...),
-			PayloadHash:         request.PayloadHash,
-			Preconditions:       cloneClientMutationPreconditions(request.Preconditions),
-			StableTurnID:        request.StableTurnID,
-			StableQueueEntryIDs: append([]string(nil), request.StableQueueEntryIDs...),
-			OperationState:      clientMutationOperationInFlight,
-			ExecutionState:      "pending",
-			ProjectionState:     appwire.MutationProjectionPending,
+			ClientMutationID: request.ClientMutationID,
+			Method:           request.Method,
+			Payload:          append(json.RawMessage(nil), request.Payload...),
+			PayloadHash:      request.PayloadHash,
+			Preconditions:    cloneClientMutationPreconditions(request.Preconditions),
+			OperationState:   clientMutationOperationInFlight,
+			ExecutionState:   "pending",
+			ProjectionState:  appwire.MutationProjectionPending,
+		}
+		if prepare != nil {
+			if err := prepare(&next, &record); err != nil {
+				return clientMutationLookup{}, err
+			}
 		}
 	}
 	record.AttemptGeneration++
 	next.Journal[request.ClientMutationID] = record
+	next = cloneClientMutationSnapshot(next)
+	record = next.Journal[request.ClientMutationID]
 	if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 		return clientMutationLookup{}, err
 	}
@@ -290,6 +309,7 @@ func (s *clientMutationStore) update(lease *clientMutationLease, mutate func(*cl
 		}
 	}
 	next.Journal[lease.clientMutationID] = record
+	next = cloneClientMutationSnapshot(next)
 	if err := validateClientMutationSnapshot(next, s.sessionID); err != nil {
 		return err
 	}

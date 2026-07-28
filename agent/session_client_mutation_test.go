@@ -127,6 +127,98 @@ func TestClientMutationStore_SameIDPayloadMismatch(t *testing.T) {
 	}
 }
 
+func TestClientMutationStore_RejectionIsIsolatedAcrossReplayAndRestart(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	store, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
+	if err != nil {
+		t.Fatalf("new mutation store: %v", err)
+	}
+	request := testClientMutationRequest(t, "turn/steer", "mutation-1", appwire.TurnSteerParams{
+		ClientMutationID: "mutation-1",
+		ExpectedTurnID:   "turn-1",
+		Input:            []appwire.InputItem{{Type: "text", Text: "too late"}},
+	})
+	reserved, err := store.reserve(request)
+	if err != nil {
+		t.Fatalf("reserve mutation: %v", err)
+	}
+	originalRejection := &clientMutationRejection{
+		Code:    appwire.CodeConflict,
+		Message: "expected turn no longer active",
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorConflict,
+			ClientMutationID: "mutation-1",
+			MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+			RetryDisposition: appwire.RetryDispositionNone,
+			Cause:            "expected turn no longer active",
+		},
+	}
+	callbackInput := []clientMutationQueueEntry{{
+		ID:               "queue-1",
+		ClientMutationID: "mutation-1",
+		Input: []appwire.InputItem{{
+			Type:     "image",
+			Data:     []byte{1, 2, 3},
+			Metadata: map[string]string{"source": "original"},
+		}},
+	}}
+	if err := store.update(reserved.Lease, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		snapshot.InputQueue = callbackInput
+		record.OperationState = clientMutationOperationRejected
+		record.Rejection = originalRejection
+		return nil
+	}); err != nil {
+		t.Fatalf("commit rejection: %v", err)
+	}
+
+	originalRejection.Data.Cause = "mutated by callback owner"
+	callbackInput[0].Input[0].Data[0] = 9
+	callbackInput[0].Input[0].Metadata["source"] = "mutated"
+	storedInput := store.snapshot().InputQueue[0].Input[0]
+	if !reflect.DeepEqual(storedInput.Data, []byte{1, 2, 3}) || storedInput.Metadata["source"] != "original" {
+		t.Fatalf("stored callback input = %#v, want isolated original input", storedInput)
+	}
+	firstReplay, err := store.reserve(request)
+	if err != nil {
+		t.Fatalf("first rejection replay: %v", err)
+	}
+	if got := firstReplay.Record.Rejection.Data.Cause; got != "expected turn no longer active" {
+		t.Fatalf("first replay cause = %v, want original cause", got)
+	}
+
+	firstReplay.Record.Rejection.Data.Cause = "mutated by replay caller"
+	secondReplay, err := store.reserve(request)
+	if err != nil {
+		t.Fatalf("second rejection replay: %v", err)
+	}
+	if got := secondReplay.Record.Rejection.Data.Cause; got != "expected turn no longer active" {
+		t.Fatalf("second replay cause = %v, want original cause", got)
+	}
+
+	restarted, err := newClientMutationStoreFS(fs, "/state", "session-1", clientMutationFaults{})
+	if err != nil {
+		t.Fatalf("restart mutation store: %v", err)
+	}
+	restartReplay, err := restarted.reserve(request)
+	if err != nil {
+		t.Fatalf("restart rejection replay: %v", err)
+	}
+	wantRejection := &clientMutationRejection{
+		Code:    appwire.CodeConflict,
+		Message: "expected turn no longer active",
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorConflict,
+			ClientMutationID: "mutation-1",
+			MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+			RetryDisposition: appwire.RetryDispositionNone,
+			Cause:            "expected turn no longer active",
+		},
+	}
+	if !reflect.DeepEqual(restartReplay.Record.Rejection, wantRejection) {
+		t.Fatalf("restart replay rejection = %#v, want %#v", restartReplay.Record.Rejection, wantRejection)
+	}
+}
+
 func TestClientMutationOwnership_JoinReleaseAndTakeover(t *testing.T) {
 	store := newTestClientMutationStore(t, clientMutationFaults{})
 	request := testClientMutationRequest(t, "turn/start", "mutation-1", appwire.TurnStartParams{
