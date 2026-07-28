@@ -5,14 +5,23 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../../../widgets/internal/requireClass";
+import rawStreamingStyles from "../streamingtext.module.css";
 import { TurnBlock } from "../TurnBlock";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { ThinkBlock } from "./ThinkBlock";
+
+const STREAMING_LIVE = requireClass(rawStreamingStyles.live, "streamingtext.module.css", "live");
 
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
 });
+
+function thinkCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "thinkblock.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
@@ -39,6 +48,35 @@ test("live shows a Thinking label and streams the reasoning text open (not colla
   expect(screen.getByTestId("streaming-text").textContent).toBe("thinking about the problem");
   // Open while live: no collapsed <details> present at all.
   expect(document.querySelector("details")).toBeNull();
+});
+
+// Jesse's review call: a blinking caret inside a read-only reasoning view
+// reads as an edit cursor. Liveness is carried by the "Thinking…" eyebrow
+// and the visibly growing text, so ThinkBlock mounts StreamingText with the
+// caret class OFF even while the stream is live. (Agent prose keeps the
+// caret - it is the design system's reserved streaming cue THERE.)
+test("live streaming shows NO blinking caret", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
+  expect(screen.getByTestId("streaming-text").classList.contains(STREAMING_LIVE)).toBe(false);
+});
+
+// The layout contract behind the second review pass: both the live view and
+// the expanded settled view are stacked rows (eyebrow/label line, then a
+// full-width body), never a label-beside-body column that squeezes the
+// thought into a narrow offset strip.
+test("live stacks the label above the streaming body - no flex gutter", () => {
+  expect(thinkCss()).not.toMatch(/\.live\s*\{[^}]*display:\s*flex/);
+});
+
+test("an expanded thought renders as a full-width row below its summary - no column chrome", () => {
+  const css = thinkCss();
+  // No [open] flex row squeezing the body beside the label...
+  expect(css).not.toMatch(/\.details\[open\]\s*\{[^}]*display:\s*flex/);
+  // ...and no left border/inset making the body an offset column.
+  const body = /\.body\s*\{([^}]*)\}/.exec(css);
+  expect(body).not.toBeNull();
+  expect(body![1]).not.toContain("border-left");
+  expect(body![1]).not.toContain("padding-left");
 });
 
 // jsdom does not evaluate CSS cascade, so the live quiet-ink contract is
@@ -440,16 +478,15 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 
 // A closed <details> hides its non-summary children through the UA's own
 // skipped-contents mechanism, which any `display` set on the <details> element
-// REPLACES. So the gutter layout must be scoped to [open]: unscoped, a
-// collapsed thought leaks a sliver of its body text beside the label. jsdom
-// evaluates no cascade, so this asserts the declaration rather than the pixels
-// - the same stylesheet-source idiom toolRowGrammar.test.tsx uses, comments
-// stripped first so the rule cannot match its own prose.
-test("the settled gutter layout is scoped to [open], so a collapsed thought cannot leak its body", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "thinkblock.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
-  expect(css).toMatch(/\.details\[open\]\s*\{[^}]*display:\s*flex/);
-  expect(css).not.toMatch(/\.details\s*\{[^}]*display:\s*flex/);
+// A `display` value set on a <details> element REPLACES the UA's skipped-
+// contents mechanism that hides a collapsed details' body - so any
+// display:flex/grid on .details (the old gutter row had one, scoped to
+// [open]) is both the column layout the second review pass removed AND a
+// potential body-leak-while-collapsed if its scope is ever dropped. The
+// invariant is now total: .details never sets display at all, the UA hides
+// the collapsed body natively. jsdom evaluates no cascade, so this asserts
+// the declaration - comments stripped first so the rule cannot match its
+// own prose.
+test("a collapsed thought cannot leak its body - .details never overrides the UA's native hiding", () => {
+  expect(thinkCss()).not.toMatch(/\.details(\[open\])?\s*\{[^}]*display:/);
 });

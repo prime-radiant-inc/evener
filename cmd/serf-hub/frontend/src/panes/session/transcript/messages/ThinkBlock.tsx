@@ -108,7 +108,13 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
               chunks.length === 0 ? null : (
                 // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
                 <p key={i} className={CLASS.paragraph}>
-                  <StreamingText chunks={chunks} />
+                  {/* live={false}: NO blinking caret (Jesse's review call).
+                      The caret is the design system's reserved streaming cue
+                      for AGENT prose; inside a read-only reasoning view it
+                      reads as an edit cursor, and the thought's liveness is
+                      already carried by the "Thinking…" eyebrow plus the
+                      visibly growing text. */}
+                  <StreamingText chunks={chunks} live={false} />
                 </p>
               ),
             )}

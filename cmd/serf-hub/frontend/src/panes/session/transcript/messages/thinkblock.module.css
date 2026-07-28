@@ -2,30 +2,32 @@
  * agent's own prose — quiet through INK, not size. Thinking is body text
  * like the turns around it (Jesse's review call: caption-sized thoughts
  * read as footnotes, and they are not footnotes). Live streams fully open
- * at reduced contrast; settled collapses to a single ink-low summary line. */
+ * at reduced contrast; settled collapses to a single ink-low summary line.
+ *
+ * Both live and expanded-settled are STACKED ROWS, never a label-beside-
+ * body column (Jesse, second review pass: the gutter layout squeezed the
+ * thought into a narrow column offset right of its own label - a thought
+ * gets the full reading measure like every other row). */
 .block {
   padding: var(--space-1) 0;
 }
 
-/* The live "Thinking..." label sits in the same left gutter every other
- * speaker/eyebrow label in the transcript uses (kata 8v4n) - baseline-
- * aligned beside the first line of the streaming paragraph(s), not stacked
- * on a line of its own above them. */
+/* Live: a quiet eyebrow row above the streaming text - the same stacked
+ * eyebrow idiom the exchange boundaries use ("You" / "Agent · model"),
+ * not a left gutter. */
 .live {
-  display: flex;
-  gap: var(--space-3);
-  align-items: baseline;
+  display: block;
 }
 
 .label {
-  flex: none;
+  display: block;
+  margin-bottom: var(--space-1);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 
 .liveBody {
-  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -43,32 +45,6 @@
   margin-bottom: 0;
 }
 
-/* Settled, expanded, this is the same gutter shape as the live case above:
- * the summary label stays beside the revealed body's first line instead of
- * sitting on a line above it (kata 8v4n). Deliberately NOT flex-wrap: a
- * multi-line flex container decides which line an item lands on using its
- * UNSHRUNK hypothetical size, so a .body wide enough to overflow one line
- * unwrapped (i.e. almost any real paragraph) would always wrap to a line of
- * its own regardless of how short the label is - silently recreating the
- * exact stacked layout this rule exists to remove. The default (nowrap) row
- * instead lets .body's flex-shrink push it down to whatever width remains
- * beside .summary, and IT wraps internally at that narrower width - the
- * same mechanism the golden reference's own `.think`/`.think-body` uses.
- *
- * Scoped to [open], and that is load-bearing rather than tidiness. A closed
- * <details> hides its non-summary children through the UA's own skipped-
- * contents mechanism, which a `display` value set on the <details> element
- * REPLACES - so `display: flex` unscoped keeps the body laid out while
- * collapsed, squeezed to a ~14px sliver of leaked text beside the label.
- * Measured, not reasoned: `npm run overflowguard` caught it as a genuine
- * horizontal scroller. Closed, this element stays block and the UA hides the
- * body as it always did. */
-.details[open] {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
-}
-
 .details {
   padding: 0;
 }
@@ -80,21 +56,18 @@
  * not a collapsed disclosure. inline-flex shrinks the box to its own
  * content (max-width/ellipsis still guard the rare long-duration case,
  * though today's labels are all short), so hover/focus decoration only
- * ever wraps the words actually on screen. flex: none holds that same
- * shrink-to-content width now that .details is itself a flex row beside
- * .body (kata 8v4n) - safe here specifically because thoughtLabel's output
- * is a bounded "Thought"/"Thought for Ns" (never more than ~17 chars), so
- * its clamped size can never approach the full row the way
- * systemnoticeitem.module.css's .scaffoldSummary's UNbounded fallback label
- * can (see that file's comment for the overflow this exact combination
- * caused there, and why THAT one has to give space back via flex-shrink
- * instead). Making this one shrinkable too was tried and reverted: with
- * genuinely short body text the shrink math still takes a slice of
- * .summary's own tiny width, ellipsis-clipping "Thought" itself for no
- * reason, since nothing here was ever at risk of overflowing. */
+ * ever wraps the words actually on screen - safe here specifically because
+ * thoughtLabel's collapsed output is a bounded "Thought · preview" (the
+ * preview is clamped at 120 chars, see THOUGHT_PREVIEW_MAX_LENGTH), never
+ * the UNbounded fallback label systemnoticeitem.module.css's
+ * .scaffoldSummary can carry (see that file's comment for the overflow
+ * this exact combination caused there, and why THAT one has to give space
+ * back via flex-shrink instead). Making this one shrinkable too was tried
+ * and reverted: with genuinely short body text the shrink math still takes
+ * a slice of .summary's own tiny width, ellipsis-clipping "Thought" itself
+ * for no reason, since nothing here was ever at risk of overflowing. */
 .summary {
   display: inline-flex;
-  flex: none;
   align-items: baseline;
   max-width: 100%;
   cursor: pointer;
@@ -128,17 +101,12 @@
  * thought stays quieter than the agent message below it. .paragraph's
  * --ink-mid does the same job for the live streaming path.
  *
- * flex: 1 1 auto + min-width: 0 claims the row's remaining width (the same
- * overflow-safety reasoning as .liveBody above); the left border and inset
- * are unchanged from the pre-gutter stacked layout, and stay right even
- * now that .body sits beside .summary rather than below it - the golden
- * reference's own `.think-body` carries the identical border+inset while
- * ALSO sitting beside its label, so the two aren't in tension. */
+ * The body is a full-width ROW below the summary line - no left border, no
+ * inset, no label column (the second review pass: beside-the-label it read
+ * as a narrow offset column, not a thought). Markdown owns its own block
+ * layout inside. */
 .body {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--edge);
+  margin-top: var(--space-1);
   --markdown-ink: var(--ink-mid);
 }
 
