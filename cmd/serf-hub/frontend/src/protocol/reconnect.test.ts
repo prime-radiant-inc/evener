@@ -142,6 +142,26 @@ describe("AppwireClient heartbeat", () => {
     expect(client.state).toBe("ready");
     expect(sockets).toHaveLength(2);
   });
+
+  test("a retired socket cannot deliver notifications after its replacement is ready", async () => {
+    const { factory, sockets } = dialer({ emitCloseEventOnClientClose: false });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    let notifications = 0;
+    client.onNotification(() => {
+      notifications += 1;
+    });
+
+    socketAt(sockets, 0).autoInitialize = false;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS + RECONNECT_BASE_MS);
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+
+    socketAt(sockets, 0).receive({ method: "thread/started", params: {} });
+
+    expect(notifications).toBe(0);
+  });
 });
 
 describe("AppwireClient reconnect", () => {
