@@ -944,15 +944,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (model) return;
         } catch (err) {
           const replacement = inflightHydrates.get(ref);
-          if (
-            ensureGenerations.get(ref) === generation &&
-            (refCounts.get(ref) ?? 0) > 0 &&
-            replacement &&
-            replacement !== inflight
-          ) {
+          const lifecycleActive = ensureGenerations.get(ref) === generation && (refCounts.get(ref) ?? 0) > 0;
+          if (lifecycleActive && replacement && replacement !== inflight) {
             inflight = replacement;
             continue;
           }
+          if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             client = requireClient();
@@ -1100,18 +1097,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (model) return;
       } catch (err) {
         const replacement = inflightWatchHydrates.get(ref);
-        if (
-          (watchRefCounts.get(ref) ?? 0) > 0 &&
-          (watchGenerations.get(ref) ?? 0) === generation &&
-          replacement &&
-          replacement !== inflight
-        ) {
+        const lifecycleActive = (watchRefCounts.get(ref) ?? 0) > 0 && (watchGenerations.get(ref) ?? 0) === generation;
+        if (lifecycleActive && replacement && replacement !== inflight) {
           inflight = replacement;
           continue;
         }
+        const hydrated = threadsStore.getState().watchedThreads.get(ref);
+        if (lifecycleActive && hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
-          const hydrated = threadsStore.getState().watchedThreads.get(ref);
           if (hydrated && (!needTurns || (watchHydratedIncludeTurns.get(ref) ?? false))) return;
           client = requireClient();
           if (client.state !== "ready") {

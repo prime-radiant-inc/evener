@@ -372,6 +372,54 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.capabilities.queue).toBe(true);
   });
 
+  test("a published newest open resync survives later superseded rejections", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    reads[2]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    reads[1]!.reject(new Error("superseded replacement B"));
+    await Promise.resolve();
+    await Promise.resolve();
+    reads[0]!.reject(new Error("superseded initial A"));
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
   test("a second thread resync supersedes the first targeted refresh in the same epoch", async () => {
     const fake = connectFakeClient();
     const replacementReads: Array<(response: ThreadReadResponse) => void> = [];
@@ -2985,6 +3033,56 @@ describe("useThreadsStore.watchThread", () => {
         serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
       }),
     );
+    await watching;
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
+  test("a published newest rich watched resync survives later superseded rejections", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      (params) =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve, reject });
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 3);
+
+    expect(reads.map((read) => read.includeTurns)).toEqual([true, true, true]);
+    reads[2]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    reads[1]!.reject(new Error("superseded rich replacement B"));
+    await Promise.resolve();
+    await Promise.resolve();
+    reads[0]!.reject(new Error("superseded initial rich A"));
     await watching;
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
