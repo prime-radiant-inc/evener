@@ -38,12 +38,14 @@ export interface FakeSocketOptions {
 export class FakeSocket implements WebSocketLike {
   autoInitialize: boolean;
   readonly sent: string[] = [];
+  readonly closeRequests: Array<number | undefined> = [];
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onclose: ((ev: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
 
   private isClosed = false;
+  private clientClosePending = false;
   private readonly emitCloseEventOnClientClose: boolean;
 
   constructor(options: FakeSocketOptions = {}) {
@@ -66,7 +68,11 @@ export class FakeSocket implements WebSocketLike {
   }
 
   close(code?: number): void {
-    if (!this.emitCloseEventOnClientClose) return;
+    this.closeRequests.push(code);
+    if (!this.emitCloseEventOnClientClose) {
+      this.clientClosePending = true;
+      return;
+    }
     this.closeInternal(code ?? 1000);
   }
 
@@ -90,6 +96,8 @@ export class FakeSocket implements WebSocketLike {
   // event synchronously, matching a browser delivering it after a replacement
   // transport is already live.
   finishClientClose(code = 1000): void {
+    if (!this.clientClosePending) throw new Error("FakeSocket: no client close request is pending");
+    this.clientClosePending = false;
     this.closeInternal(code);
   }
 

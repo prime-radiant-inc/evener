@@ -154,10 +154,7 @@ export class AppwireClient {
       abortHandshake(new ConnectionClosedError("AppwireClient: closed"));
     }
     if (socket) {
-      socket.onopen = null;
-      socket.onmessage = null;
-      socket.onclose = null;
-      socket.onerror = null;
+      this.detachSocketHandlers(socket);
       try {
         socket.close();
       } catch {
@@ -306,6 +303,7 @@ export class AppwireClient {
     const socket = this.socket;
     this.socket = null;
     if (socket) {
+      this.detachSocketHandlers(socket);
       try {
         socket.close();
       } catch {
@@ -452,6 +450,7 @@ export class AppwireClient {
     // lifecycle state or reject pending requests.
     if (this.socket !== socket || this.connectionState === "closed") return;
     this.socket = null;
+    this.detachSocketHandlers(socket);
     this.failAllPending(new Error(`AppwireClient: socket closed (code ${code})`));
     if (this.connectionState === "ready") {
       // A previously-healthy connection just dropped (server-initiated close,
@@ -470,6 +469,13 @@ export class AppwireClient {
       // try/catch is what schedules that case's next backoff.)
       this.setState("closed");
     }
+  }
+
+  private detachSocketHandlers(socket: WebSocketLike): void {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
   }
 
   private handleMessage(data: unknown): void {

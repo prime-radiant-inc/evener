@@ -118,6 +118,7 @@ describe("AppwireClient heartbeat", () => {
     await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS);
 
     expect(client.state).toBe("reconnecting");
+    expect(socketAt(sockets, 0).closeRequests).toEqual([undefined]);
 
     await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
     expect(sockets).toHaveLength(2);
