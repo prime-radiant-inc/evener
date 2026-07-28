@@ -341,12 +341,13 @@ test("the item_system_prompt id still classifies as scaffold when the wire carri
   );
 });
 
-// --- round timings redesign (kata 7zkv) --------------------------------------
+// --- round timings redesign (kata 7zkv) ------------------------------------
 // A round_timings item's raw dump ("Round 0 total=6.411312958s
 // llm=4.935822084s context=8.625µs ...") answered "where did this round go"
-// only if a reader did the arithmetic themselves. It now renders a rounded
-// summary leading with the dominant phase, with the full per-phase breakdown
-// one click away - built from item.raw's structured numbers, not by
+// only if a reader did the arithmetic themselves. It renders ONE quiet line
+// leading with the dominant phase - no disclosure (Jesse's review call on
+// the tiered-density follow-up) - with the full per-phase breakdown on the
+// line's hover title, built from item.raw's structured numbers, not by
 // re-parsing that prose.
 
 function showRoundTimings() {
@@ -376,40 +377,34 @@ function roundTimingsItem(id: string, fields: Record<string, number> = {}): Item
   });
 }
 
-test("a round_timings item with structured raw renders a collapsed summary naming the dominant phase, not the raw dump", () => {
+test("a round_timings item with structured raw renders ONE quiet line naming the dominant phase - no disclosure, not the raw dump", () => {
   showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  const timings = screen.getByTestId("system-notice-timings") as HTMLDetailsElement;
-  expect(timings.tagName).toBe("DETAILS");
-  expect(timings.open).toBe(false);
-  expect(timings.querySelector("summary")?.textContent).toBe("Round 0 · 6.4s — LLM 4.9s (77%)");
+  expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 · 6.4s — LLM 4.9s (77%)");
+  expect(screen.queryByTestId("system-notice-timings")).toBeNull();
   expect(screen.queryByText(/total=6\.411312958s/)).toBeNull();
 });
 
-test("expanding a round_timings item's summary reveals the full phase breakdown, sub-1ms phases folded into an omitted count", () => {
+test("the full phase breakdown rides the line's hover title, sub-1ms phases folded into an omitted count", () => {
   showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  fireEvent.click(screen.getByTestId("system-notice-timings").querySelector("summary")!);
-  const body = screen.getByTestId("system-notice-timings").textContent ?? "";
-  expect(body).toContain("LLM 4.9s (77%)");
-  expect(body).toContain("Tools 1.5s (23%)");
-  expect(body).toContain("Persistence 9ms (<1%)");
-  expect(body).toContain("Overhead 4ms (<1%)");
+  const title = screen.getByTestId("system-notice-line").getAttribute("title") ?? "";
+  expect(title).toContain("LLM 4.9s (77%)");
+  expect(title).toContain("Tools 1.5s (23%)");
+  expect(title).toContain("Persistence 9ms (<1%)");
+  expect(title).toContain("Overhead 4ms (<1%)");
   // context (8.625µs), prompt (83ns), history (12.5µs), after_action (500ns)
   // all round under 1ms; folded into a count, not shown as false "1ms" rows.
-  expect(body).toContain("+ 4 phases under 1ms");
-  expect(body).not.toContain("Context");
-  expect(body).not.toContain("Prompt");
+  expect(title).toContain("+ 4 phases under 1ms");
+  expect(title).not.toContain("Context");
+  expect(title).not.toContain("Prompt");
 });
 
-test("an expanded round_timings disclosure stays open across an unmount+remount (store-backed by the item id)", () => {
+test("a round_timings item renders nothing expandable - no details element, no disclosure state to persist", () => {
   showRoundTimings();
-  const { unmount } = render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  fireEvent.click(screen.getByTestId("system-notice-timings").querySelector("summary")!);
-  expect((screen.getByTestId("system-notice-timings") as HTMLDetailsElement).open).toBe(true);
-  unmount();
-  render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  expect((screen.getByTestId("system-notice-timings") as HTMLDetailsElement).open).toBe(true);
+  const { container } = render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
+  expect(container.querySelector("details")).toBeNull();
+  expect(container.querySelector("summary")).toBeNull();
 });
 
 test("a round_timings item with no raw (older daemon) falls back to the plain prose line", () => {

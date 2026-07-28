@@ -46,10 +46,6 @@ const CLASS = {
   scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
-  timings: requireClass(styles.timings, "systemnoticeitem.module.css", "timings"),
-  timingsSummary: requireClass(styles.timingsSummary, "systemnoticeitem.module.css", "timingsSummary"),
-  timingsBody: requireClass(styles.timingsBody, "systemnoticeitem.module.css", "timingsBody"),
-  timingsPhase: requireClass(styles.timingsPhase, "systemnoticeitem.module.css", "timingsPhase"),
 };
 
 // SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
@@ -148,14 +144,19 @@ function pctLabel(pct: number): string {
 // only if a reader did the arithmetic themselves. This reads the real
 // per-phase numbers (roundTimingsSummary, from item.raw) and leads with the
 // one phase that actually explains the round's length, at a precision a
-// reader can act on (whole ms, not ns) - full per-phase detail stays one
-// click away for anyone who wants it, negligible (<1ms) phases dropped
+// reader can act on (whole ms, not ns) - negligible (<1ms) phases dropped
 // rather than rounded into a false "1ms".
+//
+// It is ONE quiet line with no disclosure (Jesse's review call on the
+// tiered-density follow-up: the expanded breakdown - LLM/Tools/Overhead
+// rows - was more furniture than the opt-in diagnostic is worth). The full
+// per-phase breakdown stays reachable on the line's hover title; nothing
+// else is lost, since the raw numbers remain on the wire item itself.
 //
 // Falls back to the plain prose line when raw is absent or malformed - a
 // heterogeneous-version relay from a daemon predating this field still shows
 // something rather than nothing.
-function RoundTimingsLine({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
+function RoundTimingsLine({ item }: { item: ItemModel }) {
   const summary = roundTimingsSummary(item.raw);
   if (!summary) {
     return (
@@ -173,34 +174,17 @@ function RoundTimingsLine({ item, sessionRef }: { item: ItemModel; sessionRef?: 
       </div>
     );
   }
-  const disclosureKey = itemScopeKey(sessionRef, item.id);
-  const open = isDisclosureOpen(disclosureKey, false);
   const headline = `Round ${summary.round} · ${total} — ${summary.dominant.label} ${formatDurationMs(summary.dominant.ms)} (${pctLabel(summary.dominant.pct)})`;
+  const breakdown = [
+    ...summary.phases.map((phase) => `${phase.label} ${formatDurationMs(phase.ms)} (${pctLabel(phase.pct)})`),
+    ...(summary.omittedCount > 0
+      ? [`+ ${summary.omittedCount} phase${summary.omittedCount === 1 ? "" : "s"} under 1ms`]
+      : []),
+  ].join("\n");
   return (
-    <details className={CLASS.timings} data-testid="system-notice-timings" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.timingsSummary}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(disclosureKey, false);
-        }}
-      >
-        {headline}
-      </summary>
-      <div className={CLASS.timingsBody}>
-        {summary.phases.map((phase) => (
-          <div key={phase.label} className={CLASS.timingsPhase}>
-            {phase.label} {formatDurationMs(phase.ms)} ({pctLabel(phase.pct)})
-          </div>
-        ))}
-        {summary.omittedCount > 0 && (
-          <div className={CLASS.timingsPhase}>
-            + {summary.omittedCount} phase{summary.omittedCount === 1 ? "" : "s"} under 1ms
-          </div>
-        )}
-      </div>
-    </details>
+    <div className={CLASS.line} data-testid="system-notice-line" title={breakdown}>
+      {headline}
+    </div>
   );
 }
 
@@ -243,7 +227,7 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
 function SystemLine({ item, turn, sessionRef }: { item: ItemModel; turn: TurnModel; sessionRef?: string }) {
   if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
-  if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} sessionRef={sessionRef} />;
+  if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
       {noticeText(item)}
