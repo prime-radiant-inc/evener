@@ -943,6 +943,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           const model = await inflight;
           if (model) return;
         } catch (err) {
+          const replacement = inflightHydrates.get(ref);
+          if (
+            ensureGenerations.get(ref) === generation &&
+            (refCounts.get(ref) ?? 0) > 0 &&
+            replacement &&
+            replacement !== inflight
+          ) {
+            inflight = replacement;
+            continue;
+          }
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             client = requireClient();
@@ -1089,6 +1099,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         const model = await inflight;
         if (model) return;
       } catch (err) {
+        const replacement = inflightWatchHydrates.get(ref);
+        if (
+          (watchRefCounts.get(ref) ?? 0) > 0 &&
+          (watchGenerations.get(ref) ?? 0) === generation &&
+          replacement &&
+          replacement !== inflight
+        ) {
+          inflight = replacement;
+          continue;
+        }
         if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
           if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
           const hydrated = threadsStore.getState().watchedThreads.get(ref);

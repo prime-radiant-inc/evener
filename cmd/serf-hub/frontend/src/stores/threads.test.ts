@@ -327,6 +327,51 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.capabilities.queue).toBe(true);
   });
 
+  test("an initial open hydration rejection follows its same-epoch resync replacement", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ resolve, reject });
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    let rejected = false;
+    void ensuring.catch(() => {
+      rejected = true;
+    });
+    reads[0]!.reject(new Error("superseded initial read"));
+    await flushUntil(() => rejected);
+
+    expect(rejected).toBe(false);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    reads[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
   test("a second thread resync supersedes the first targeted refresh in the same epoch", async () => {
     const fake = connectFakeClient();
     const replacementReads: Array<(response: ThreadReadResponse) => void> = [];
@@ -2897,6 +2942,53 @@ describe("useThreadsStore.watchThread", () => {
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
     expect(model?.turns[0]?.id).toBe("turn_newest");
+    expect(model?.capabilities.queue).toBe(true);
+  });
+
+  test("a rich watched hydration rejection follows its same-epoch resync replacement", async () => {
+    const fake = connectFakeClient();
+    const reads: Array<{
+      includeTurns: boolean;
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    fake.on(
+      "thread/read",
+      (params) =>
+        new Promise<ThreadReadResponse>((resolve, reject) => {
+          reads.push({ includeTurns: (params as { includeTurns: boolean }).includeTurns, resolve, reject });
+        }),
+    );
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => reads.length === 1);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => reads.length === 2);
+
+    let rejected = false;
+    void watching.catch(() => {
+      rejected = true;
+    });
+    reads[0]!.reject(new Error("superseded initial rich read"));
+    await flushUntil(() => rejected);
+
+    expect(rejected).toBe(false);
+    expect(reads.map((read) => read.includeTurns)).toEqual([true, true]);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    reads[1]!.resolve(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+      }),
+    );
+    await watching;
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns[0]?.id).toBe("turn_authoritative");
     expect(model?.capabilities.queue).toBe(true);
   });
 
