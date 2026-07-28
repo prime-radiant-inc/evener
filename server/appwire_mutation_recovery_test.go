@@ -306,6 +306,75 @@ func TestAppWireMutationPayloadMismatchIsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestAppWireMutationHandlersRejectNonCanonicalInputShapes(t *testing.T) {
+	inputs := []struct {
+		name  string
+		input []appwire.InputItem
+	}{
+		{"empty type", []appwire.InputItem{{Text: "legacy"}}},
+		{"legacy text", []appwire.InputItem{{Type: "input_text", Text: "legacy"}}},
+		{"legacy image", []appwire.InputItem{{Type: "input_image", MediaType: "image/png", Data: []byte("legacy")}}},
+		{"unsupported", []appwire.InputItem{{Type: "audio", Data: []byte("unsupported")}}},
+	}
+	for _, input := range inputs {
+		t.Run(input.name, func(t *testing.T) {
+			called := 0
+			srv := NewServer(ServerConfig{})
+			srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					called++
+					return appwire.TurnStartResponse{}, nil
+				},
+				Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+					called++
+					return appwire.TurnSteerResponse{}, nil
+				},
+				Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+					called++
+					return appwire.TurnQueueResponse{}, nil
+				},
+				Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+					called++
+					return appwire.TurnDrainAsSteerResponse{}, nil
+				},
+			})
+			requests := []struct {
+				name string
+				call func() error
+			}{
+				{"start", func() error {
+					_, err := srv.handleAppTurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "start", Input: input.input})
+					return err
+				}},
+				{"steer", func() error {
+					_, err := srv.handleAppTurnSteer(context.Background(), appwire.TurnSteerParams{ClientMutationID: "steer", ExpectedTurnID: "turn_1", Input: input.input})
+					return err
+				}},
+				{"queue", func() error {
+					_, err := srv.handleAppTurnQueue(context.Background(), appwire.TurnQueueParams{ClientMutationID: "queue", ExpectedTurnID: "turn_1", Input: input.input})
+					return err
+				}},
+				{"drain", func() error {
+					_, err := srv.handleAppTurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", ExpectedTurnID: "turn_1", Input: input.input})
+					return err
+				}},
+			}
+			for _, request := range requests {
+				t.Run(request.name, func(t *testing.T) {
+					err := request.call()
+					var wire appwire.WireError
+					if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+						t.Fatalf("error = %T %v, want InvalidParams", err, err)
+					}
+				})
+			}
+			if called != 0 {
+				t.Fatalf("authoritative mutation callbacks called %d times for invalid input", called)
+			}
+		})
+	}
+}
+
 func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	sess := newMutationReplaySession(t)
 	turnID := acceptMutationReplayActiveTurn(t, sess)

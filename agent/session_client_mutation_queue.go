@@ -41,6 +41,11 @@ func (s *Session) ensureClientMutationStore() error {
 }
 
 func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnQueueResponse{}, err
 	}
@@ -239,6 +244,11 @@ func clientMutationInput(text string, images []ImageAttachment) []appwire.InputI
 }
 
 func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
@@ -300,6 +310,11 @@ func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (app
 }
 
 func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}

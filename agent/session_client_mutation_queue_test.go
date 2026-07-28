@@ -41,6 +41,117 @@ func TestClientMutation_QueuePublicPathUsesDurableAuthority(t *testing.T) {
 	}
 }
 
+func TestClientMutation_InputShapesMatchDaemonBoundary(t *testing.T) {
+	invalidInputs := []struct {
+		name  string
+		input []appwire.InputItem
+	}{
+		{"empty type", []appwire.InputItem{{Text: "legacy"}}},
+		{"legacy text", []appwire.InputItem{{Type: "input_text", Text: "legacy"}}},
+		{"legacy image", []appwire.InputItem{{Type: "input_image", Data: []byte("legacy")}}},
+		{"unsupported", []appwire.InputItem{{Type: "audio", Data: []byte("unsupported")}}},
+	}
+	for _, invalid := range invalidInputs {
+		t.Run(invalid.name, func(t *testing.T) {
+			sess := newQueuePersistTestSession(t, t.TempDir())
+			defer sess.Close()
+			setTestClientMutationActiveTurn(t, sess, "turn_1")
+			calls := []struct {
+				name string
+				call func() error
+			}{
+				{"start", func() error {
+					_, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "start", Input: invalid.input})
+					return err
+				}},
+				{"steer", func() error {
+					_, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer", ExpectedTurnID: "turn_1", Input: invalid.input})
+					return err
+				}},
+				{"queue", func() error {
+					_, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "queue", ExpectedTurnID: "turn_1", Input: invalid.input})
+					return err
+				}},
+				{"drain", func() error {
+					_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{ClientMutationID: "drain", ExpectedTurnID: "turn_1", Input: invalid.input})
+					return err
+				}},
+			}
+			for _, call := range calls {
+				t.Run(call.name, func(t *testing.T) {
+					err := call.call()
+					var wire appwire.WireError
+					if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+						t.Fatalf("error = %T %v, want InvalidParams", err, err)
+					}
+				})
+			}
+			if snapshot := sess.clientMutations.snapshot(); len(snapshot.Journal) != 0 {
+				t.Fatalf("invalid inputs reached durable journal: %#v", snapshot.Journal)
+			}
+		})
+	}
+}
+
+func TestClientMutation_DrainRejectsSemanticallyEmptyExtraInputWithEmptyQueue(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	setTestClientMutationActiveTurn(t, sess, "turn_1")
+
+	_, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+		ClientMutationID:      "empty-drain",
+		ExpectedTurnID:        "turn_1",
+		ExpectedQueueRevision: 0,
+		Input:                 []appwire.InputItem{{Type: "text", Text: " \t\n "}},
+	})
+	assertClientMutationConflict(t, err)
+	if steering := sess.SteeringQueueSnapshot(); len(steering) != 0 {
+		t.Fatalf("empty drain produced steering: %#v", steering)
+	}
+}
+
+func TestClientMutation_CanonicalTextAndImagePayloadsArePreserved(t *testing.T) {
+	input := []appwire.InputItem{
+		{Type: "text", Text: "canonical text"},
+		{Type: "image", MediaType: "image/png", Data: []byte{1, 2, 3}, Name: "proof.png", Metadata: map[string]string{"source": "test"}},
+	}
+	assertInput := func(t *testing.T, got []appwire.InputItem) {
+		t.Helper()
+		if len(got) != 2 || got[0].Type != "text" || got[0].Text != "canonical text" ||
+			got[1].Type != "image" || got[1].MediaType != "image/png" || got[1].Name != "proof.png" ||
+			!slices.Equal(got[1].Data, []byte{1, 2, 3}) || got[1].Metadata["source"] != "test" {
+			t.Fatalf("canonical payload = %#v", got)
+		}
+	}
+
+	t.Run("start", func(t *testing.T) {
+		sess := newQueuePersistTestSession(t, t.TempDir())
+		defer sess.Close()
+		if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "canonical-start", Input: input}); err != nil {
+			t.Fatalf("AcceptClientMutationStart: %v", err)
+		}
+		assertInput(t, sess.clientMutations.snapshot().PendingExecutions["canonical-start"].Input)
+	})
+	t.Run("steer", func(t *testing.T) {
+		sess := newQueuePersistTestSession(t, t.TempDir())
+		defer sess.Close()
+		setTestClientMutationActiveTurn(t, sess, "turn_1")
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "canonical-steer", ExpectedTurnID: "turn_1", Input: input}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer: %v", err)
+		}
+		assertInput(t, sess.clientMutations.snapshot().PendingExecutions["canonical-steer"].Input)
+	})
+	t.Run("queue", func(t *testing.T) {
+		sess := newQueuePersistTestSession(t, t.TempDir())
+		defer sess.Close()
+		setTestClientMutationActiveTurn(t, sess, "turn_1")
+		if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "canonical-queue", ExpectedTurnID: "turn_1", Input: input}); err != nil {
+			t.Fatalf("AcceptClientMutationQueue: %v", err)
+		}
+		assertInput(t, sess.clientMutations.snapshot().InputQueue[0].Input)
+	})
+}
+
 func TestClientMutation_QueuePublicationRejectsOlderRevision(t *testing.T) {
 	sess := newTestSession(t)
 	if err := sess.Enqueue(context.Background(), "durable"); err != nil {

@@ -4348,7 +4348,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 }
 
-func TestHubRPCTurnMutationForwardsWithoutDynamicCapabilityGate(t *testing.T) {
+func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -4359,6 +4359,27 @@ func TestHubRPCTurnMutationForwardsWithoutDynamicCapabilityGate(t *testing.T) {
 				Capabilities: appwire.ThreadCapabilities{},
 			},
 		}}, nil
+	})
+	called := make(map[string]int)
+	receipt := func(method, mutationID string) appwire.MutationReceipt {
+		called[method]++
+		return appwire.MutationReceipt{
+			ClientMutationID: mutationID,
+			Disposition:      appwire.MutationDispositionReplayed,
+			ThreadID:         "th_1",
+			TurnID:           "turn_1",
+			QueueEntryIDs:    []string{"queue_1"},
+			ProjectionState:  appwire.MutationProjectionReflected,
+		}
+	}
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}, Receipt: receipt(appwire.MethodTurnStart, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+		return appwire.TurnSteerResponse{Receipt: receipt(appwire.MethodTurnSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+		return appwire.TurnInterruptResponse{Receipt: receipt(appwire.MethodTurnInterrupt, params.ClientMutationID)}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if inputTextForTest(params.Input) == "reject" {
@@ -4373,14 +4394,16 @@ func TestHubRPCTurnMutationForwardsWithoutDynamicCapabilityGate(t *testing.T) {
 				},
 			}
 		}
-		return appwire.TurnQueueResponse{Receipt: appwire.MutationReceipt{
-			ClientMutationID: params.ClientMutationID,
-			Disposition:      appwire.MutationDispositionReplayed,
-			ThreadID:         "th_1",
-			TurnID:           params.ExpectedTurnID,
-			QueueEntryIDs:    []string{"queue_1"},
-			ProjectionState:  appwire.MutationProjectionReflected,
-		}}, nil
+		return appwire.TurnQueueResponse{Receipt: receipt(appwire.MethodTurnQueue, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+		return appwire.TurnDrainAsSteerResponse{Receipt: receipt(appwire.MethodTurnDrainAsSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		return appwire.TurnPromoteQueuedAsSteerResponse{Receipt: receipt(appwire.MethodTurnPromoteQueuedAsSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnCancelQueued, func(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+		return appwire.TurnCancelQueuedResponse{RemovedText: "queued", RemovedImages: 1, Receipt: receipt(appwire.MethodTurnCancelQueued, params.ClientMutationID)}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -4408,33 +4431,76 @@ func TestHubRPCTurnMutationForwardsWithoutDynamicCapabilityGate(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	params := appwire.TurnQueueParams{
-		Ref:              "local:th_1",
-		ClientMutationID: "mutation-queue",
-		ExpectedTurnID:   "turn_1",
-		Input:            []appwire.InputItem{{Type: "text", Text: "queue"}},
+	tests := []struct {
+		name   string
+		method string
+		id     string
+		params any
+		result any
+	}{
+		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
+		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
+		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt", ExpectedTurnID: "turn_1"}, &appwire.TurnInterruptResponse{}},
+		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
+		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedTurnID: "turn_1", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
+		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedTurnID: "turn_1", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
+		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
 	}
-	var response appwire.TurnQueueResponse
-	if err := client.Request(context.Background(), appwire.MethodTurnQueue, params, &response); err != nil {
-		t.Fatalf("TurnQueue: %v", err)
-	}
-	if response.Receipt.ClientMutationID != params.ClientMutationID ||
-		response.Receipt.Disposition != appwire.MutationDispositionReplayed ||
-		response.Receipt.TurnID != params.ExpectedTurnID ||
-		!slices.Equal(response.Receipt.QueueEntryIDs, []string{"queue_1"}) {
-		t.Fatalf("receipt=%+v", response.Receipt)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := client.Request(context.Background(), tc.method, tc.params, tc.result); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+			if called[tc.method] != 1 {
+				t.Fatalf("%s daemon calls = %d, want 1", tc.method, called[tc.method])
+			}
+			var got appwire.MutationReceipt
+			switch response := tc.result.(type) {
+			case *appwire.TurnStartResponse:
+				got = response.Receipt
+			case *appwire.TurnSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnInterruptResponse:
+				got = response.Receipt
+			case *appwire.TurnQueueResponse:
+				got = response.Receipt
+			case *appwire.TurnDrainAsSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnPromoteQueuedAsSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnCancelQueuedResponse:
+				got = response.Receipt
+				if response.RemovedText != "queued" || response.RemovedImages != 1 {
+					t.Fatalf("cancel response = %+v", response)
+				}
+			default:
+				t.Fatalf("unexpected response type %T", tc.result)
+			}
+			if got.ClientMutationID != tc.id ||
+				got.Disposition != appwire.MutationDispositionReplayed ||
+				got.TurnID != "turn_1" ||
+				!slices.Equal(got.QueueEntryIDs, []string{"queue_1"}) ||
+				got.ProjectionState != appwire.MutationProjectionReflected {
+				t.Fatalf("receipt = %+v", got)
+			}
+		})
 	}
 
-	params.ClientMutationID = "mutation-reject"
-	params.Input = []appwire.InputItem{{Type: "text", Text: "reject"}}
-	err := client.Request(context.Background(), appwire.MethodTurnQueue, params, &response)
+	rejected := appwire.TurnQueueParams{
+		Ref:              "local:th_1",
+		ClientMutationID: "mutation-reject",
+		ExpectedTurnID:   "turn_1",
+		Input:            []appwire.InputItem{{Type: "text", Text: "reject"}},
+	}
+	var response appwire.TurnQueueResponse
+	err := client.Request(context.Background(), appwire.MethodTurnQueue, rejected, &response)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("TurnQueue rejection %T=%v, want WireError", err, err)
 	}
 	data, ok := wire.Data.(map[string]any)
 	if !ok ||
-		data["clientMutationId"] != params.ClientMutationID ||
+		data["clientMutationId"] != rejected.ClientMutationID ||
 		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
 		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
 		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)

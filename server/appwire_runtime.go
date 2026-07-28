@@ -453,10 +453,14 @@ func (s *Server) appTurnsFromTranscript() ([]appwire.Turn, error) {
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	text, images := inputFromItems("", params.Input)
-	if strings.TrimSpace(text) == "" && len(images) == 0 {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if !input.HasContent() {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
+	params.Input = input.Items
 	if strings.TrimSpace(params.ClientMutationID) == "" {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 	}
@@ -471,10 +475,14 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	text, images := inputFromItems("", params.Input)
-	if strings.TrimSpace(text) == "" && len(images) == 0 {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if !input.HasContent() {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
 	}
+	params.Input = input.Items
 	if strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
@@ -529,10 +537,14 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 }
 
 func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	text, images := inputFromItems("", params.Input)
-	if strings.TrimSpace(text) == "" && len(images) == 0 {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
+	params.Input = input.Items
 	if strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
@@ -550,6 +562,11 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 }
 
 func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}

@@ -177,6 +177,11 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 // accepted pending execution in the journal, and an identical retry returns
 // the same stable turn rather than creating another logical turn.
 func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	input, err := appwire.NormalizeMutationInput(params.Input)
+	if err != nil {
+		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	params.Input = input.Items
 	if err := s.ensureClientMutationStore(); err != nil {
 		return appwire.TurnStartResponse{}, err
 	}

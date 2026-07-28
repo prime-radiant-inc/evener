@@ -515,9 +515,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
-		if !threadActionAvailable(threadResp.Thread.Serf.Capabilities, "send") {
-			return appwire.TurnStartResponse{}, appwire.Unavailable("send is not available for this session")
-		}
 		if err := startRelay(ctx, source, readParams, threadResp.Thread); err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
