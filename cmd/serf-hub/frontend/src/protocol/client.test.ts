@@ -117,15 +117,17 @@ describe("AppwireClient", () => {
     });
 
     client.close();
-    const connecting = client.connect();
-    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
+    const firstConnect = client.connect();
+    const firstRejection = expect(firstConnect).rejects.toBeInstanceOf(ConnectionClosedError);
+    const secondConnect = client.connect();
+    const secondRejection = expect(secondConnect).rejects.toBeInstanceOf(ConnectionClosedError);
     const socketsCreated = sockets.length;
 
     // A second close makes a socket-producing mutation settle its connect
     // promise; socketsCreated preserves the dial count from before cleanup.
     client.close();
 
-    await rejection;
+    await Promise.all([firstRejection, secondRejection]);
     expect(socketsCreated).toBe(0);
     expect(sockets).toHaveLength(0);
   });
