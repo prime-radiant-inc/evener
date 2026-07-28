@@ -253,6 +253,23 @@ test("a job-notification steer expands the notification before asserting card bo
   expect(screen.getByText("Job completed")).toBeTruthy();
 });
 
+test("a completed shell job renders its ANSI excerpt as styled text instead of escape fragments", () => {
+  const text = `<job-notification job_id="job_shell" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="80" exit_code="0">
+Job job_shell completed.
+excerpt:
+\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[31m1 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[1m\u001b[32m283 passed\u001b[39m\u001b[22m
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  const excerpt = screen.getByTestId("notification-field-excerpt");
+  expect(excerpt.textContent).toBe(" Test Files  1 failed | 283 passed");
+  expect(screen.getByText("1 failed").closest('[data-ansi-fg="red"]')).toBeTruthy();
+  expect(screen.getByText("283 passed").closest('[data-ansi-fg="green"]')).toBeTruthy();
+  expect(excerpt.querySelector("[data-ansi-dim]")?.textContent).toBe(" Test Files ");
+});
+
 test("a notification restores its owning session to main before opening the child beside it", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();

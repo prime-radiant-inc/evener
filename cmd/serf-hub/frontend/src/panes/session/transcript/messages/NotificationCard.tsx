@@ -13,8 +13,10 @@
 // the message (markdown) and concerns carry the signal; the plumbing facts stay
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Card, Chip, Markdown } from "../../../../widgets";
+import { parseAnsiLines } from "../../../../widgets/codeblock/ansi";
+import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
@@ -62,21 +64,26 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-function Excerpt({ text }: { text: string }) {
+function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
+  if (!ansi) return text;
+  return parseAnsiLines(text).map((line, index) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: index is the stable source line number
+    <Fragment key={index}>
+      {index > 0 ? "\n" : null}
+      <AnsiLineContent line={line} />
+    </Fragment>
+  ));
+}
+
+function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
   const decoded = decodeEntities(text.trim());
   if (decoded === "") return null;
-  if (decoded.length <= EXCERPT_PREVIEW) {
-    return (
-      <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-        {decoded}
-      </div>
-    );
-  }
+  const preview = decoded.length <= EXCERPT_PREVIEW ? decoded : `${decoded.slice(0, EXCERPT_PREVIEW)}…`;
   // Keep unstructured output bounded in the primary card. The complete
   // diagnostic payload remains available in the card's one raw disclosure.
   return (
     <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-      {`${decoded.slice(0, EXCERPT_PREVIEW)}…`}
+      <ExcerptText text={preview} ansi={ansi} />
     </div>
   );
 }
@@ -153,7 +160,7 @@ export function NotificationCard({
                 <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
               </div>
             ) : (
-              <Excerpt text={notification.excerpt} />
+              <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
             )}
             {notification.concerns.length > 0 && (
               <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
