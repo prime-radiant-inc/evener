@@ -213,6 +213,28 @@ test("a settled shell tail restores styling that began before the retained outpu
   expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe(`${"x".repeat(7_992)}KEPT`);
 });
 
+test("a retained tail preserves inverse semantics for later color changes", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `\u001b[7m${"x".repeat(8_100)}\u001b[31mAFTER`;
+  render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(screen.getByText("AFTER").closest('[data-ansi-bg="red"]')).toBeTruthy();
+});
+
+test("display and copy share the same raw boundary across a large OSC payload", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  const output = `OLD\u001b]${"p".repeat(9_000)}\u0007NEW`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(container.querySelector("code")?.textContent).toBe(
+    "earlier output not retained — showing the last 8,000 chars\nNEW",
+  );
+  await user.click(screen.getByRole("button", { name: "Copy output" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(output.slice(-8_000));
+});
+
 test("copying a bounded shell result preserves the original retained bytes", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
@@ -240,8 +262,24 @@ test("a live shell tail carries an incomplete terminal control across output del
 
   const completedOutput = `${firstOutput}tle\u0007after`;
   view.rerender(<Body item={withCommand("long-run", { output: completedOutput })} live />);
-  expect(view.container.querySelector("code")?.textContent).toBe(`${"x".repeat(7_995)}after`);
+  expect(view.container.querySelector("code")?.textContent).toBe(`${"x".repeat(7_981)}after`);
   expect(view.container.textContent).not.toContain("title");
+});
+
+test("unterminated control payloads remain bounded across many live deltas", () => {
+  const Body = toolRendererFor("shell").body!;
+  let output = `${"x".repeat(8_100)}\u001b]`;
+  const view = render(<Body item={withCommand("long-run", { output })} live />);
+
+  for (let index = 0; index < 64; index += 1) {
+    output += "payload".repeat(80);
+    view.rerender(<Body item={withCommand("long-run", { output })} live />);
+  }
+  expect(view.container.querySelector("code")?.textContent).toBe("");
+
+  output += "\u0007done";
+  view.rerender(<Body item={withCommand("long-run", { output })} live />);
+  expect(view.container.querySelector("code")?.textContent).toBe("done");
 });
 
 test("body renders nothing for a command with no output at all", () => {

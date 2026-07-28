@@ -64,25 +64,6 @@ const NAMED_COLORS = new Set<AnsiNamedColor>([
 
 const RGB_CHANNELS = /^\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*$/;
 
-const NAMED_FOREGROUND_CODES: Record<AnsiNamedColor, number> = {
-  black: 30,
-  red: 31,
-  green: 32,
-  yellow: 33,
-  blue: 34,
-  magenta: 35,
-  cyan: 36,
-  white: 37,
-  "bright-black": 90,
-  "bright-red": 91,
-  "bright-green": 92,
-  "bright-yellow": 93,
-  "bright-blue": 94,
-  "bright-magenta": 95,
-  "bright-cyan": 96,
-  "bright-white": 97,
-};
-
 const DECORATION_RESET = new Map([
   [23, 3],
   [24, 4],
@@ -90,6 +71,24 @@ const DECORATION_RESET = new Map([
   [28, 8],
   [29, 9],
 ]);
+
+interface SgrState {
+  decorations: Set<number>;
+  foreground?: number[];
+  background?: number[];
+}
+
+function defaultSgrState(): SgrState {
+  return { decorations: new Set() };
+}
+
+function cloneSgrState(state: SgrState): SgrState {
+  return {
+    decorations: new Set(state.decorations),
+    foreground: state.foreground?.slice(),
+    background: state.background?.slice(),
+  };
+}
 
 function isSgrSequence(sequence: string): boolean {
   if (!sequence.startsWith("\u001b[") || !sequence.endsWith("m")) return false;
@@ -112,7 +111,7 @@ function escapeSequenceEnd(text: string, start: number): number {
   return start - 1;
 }
 
-function normalizedSgr(sequence: string, decorations: Set<number>): string {
+function normalizedSgr(sequence: string, state: SgrState): string {
   const parameters = sequence
     .slice(2, -1)
     .split(";")
@@ -123,30 +122,55 @@ function normalizedSgr(sequence: string, decorations: Set<number>): string {
     const code = parameters[index] ?? 0;
     if ((code === 38 || code === 48) && (parameters[index + 1] === 2 || parameters[index + 1] === 5)) {
       const colorLength = parameters[index + 1] === 2 ? 5 : 3;
-      normalized.push(...parameters.slice(index, index + colorLength));
+      const color = parameters.slice(index, index + colorLength);
+      if (code === 38) state.foreground = color;
+      else state.background = color;
+      normalized.push(...color);
       index += colorLength - 1;
       continue;
     }
     if (code === 0) {
-      decorations.clear();
+      state.decorations.clear();
+      state.foreground = undefined;
+      state.background = undefined;
+      normalized.push(code);
+      continue;
+    }
+    if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+      state.foreground = [code];
+      normalized.push(code);
+      continue;
+    }
+    if (code === 39) {
+      state.foreground = undefined;
+      normalized.push(code);
+      continue;
+    }
+    if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
+      state.background = [code];
+      normalized.push(code);
+      continue;
+    }
+    if (code === 49) {
+      state.background = undefined;
       normalized.push(code);
       continue;
     }
     if (code === 22) {
-      decorations.delete(1);
-      decorations.delete(2);
+      state.decorations.delete(1);
+      state.decorations.delete(2);
       normalized.push(code);
       continue;
     }
     const resetEnable = DECORATION_RESET.get(code);
     if (resetEnable !== undefined) {
-      decorations.delete(resetEnable);
+      state.decorations.delete(resetEnable);
       normalized.push(code);
       continue;
     }
     if (code === 1 || code === 2 || code === 3 || code === 4 || code === 7 || code === 8 || code === 9) {
-      if (!decorations.has(code)) {
-        decorations.add(code);
+      if (!state.decorations.has(code)) {
+        state.decorations.add(code);
         normalized.push(code);
       }
       continue;
@@ -194,7 +218,7 @@ interface PresentationScan {
 
 function presentationSequences(text: string): PresentationScan {
   let result = "";
-  const decorations = new Set<number>();
+  const sgr = defaultSgrState();
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index] ?? "";
     const code = character.charCodeAt(0);
@@ -205,7 +229,7 @@ function presentationSequences(text: string): PresentationScan {
         const end = csiEnd(text, index + 2);
         if (end === text.length) return { text: result, pending: text.slice(index) };
         const sequence = text.slice(index, end + 1);
-        if (isSgrSequence(sequence)) result += normalizedSgr(sequence, decorations);
+        if (isSgrSequence(sequence)) result += normalizedSgr(sequence, sgr);
         index = end;
         continue;
       }
@@ -234,7 +258,7 @@ function presentationSequences(text: string): PresentationScan {
       const end = csiEnd(text, index + 1);
       if (end === text.length) return { text: result, pending: text.slice(index) };
       const sequence = `\u001b[${text.slice(index + 1, end + 1)}`;
-      if (isSgrSequence(sequence)) result += normalizedSgr(sequence, decorations);
+      if (isSgrSequence(sequence)) result += normalizedSgr(sequence, sgr);
       index = end;
       continue;
     }
@@ -314,81 +338,107 @@ function runFromBundle(bundle: ParsedAnsiBundle, text: string): AnsiRun {
   };
 }
 
-function colorCodes(color: AnsiColor, background: boolean): number[] {
-  if (color.kind === "named") {
-    const foreground = NAMED_FOREGROUND_CODES[color.name];
-    return [background ? foreground + 10 : foreground];
-  }
-  const channels = color.value.split(", ").map(Number);
-  return [background ? 48 : 38, 2, ...channels];
-}
-
-function presentationSequence(run: AnsiRun): string {
-  const codes = [
-    run.bold ? 1 : undefined,
-    run.dim ? 2 : undefined,
-    run.italic ? 3 : undefined,
-    run.underline ? 4 : undefined,
-    run.hidden ? 8 : undefined,
-    run.strikethrough ? 9 : undefined,
-    ...(run.foreground === undefined ? [] : colorCodes(run.foreground, false)),
-    ...(run.background === undefined ? [] : colorCodes(run.background, true)),
-  ].filter((code): code is number => code !== undefined);
+function sgrSequence(state: SgrState): string {
+  const decorations = [1, 2, 3, 4, 7, 8, 9].filter((code) => state.decorations.has(code));
+  const codes = [...decorations, ...(state.foreground ?? []), ...(state.background ?? [])];
   return codes.length === 0 ? "" : `\u001b[${codes.join(";")}m`;
 }
 
-function presentationAt(text: string, cut: number): string {
-  const parsed = new Anser().ansiToJson(`${text.slice(0, cut)}x`, {
-    use_classes: true,
-    remove_empty: true,
-  }) as ParsedAnsiBundle[];
-  const bundle = parsed[parsed.length - 1];
-  return bundle === undefined ? "" : presentationSequence(runFromBundle(bundle, ""));
+type ControlState =
+  | { kind: "text" }
+  | { kind: "escape" }
+  | { kind: "csi"; sequence: string; overflow: boolean }
+  | { kind: "osc"; escape: boolean }
+  | { kind: "string"; escape: boolean };
+
+interface TerminalState {
+  sgr: SgrState;
+  control: ControlState;
 }
 
-function ansiSafeCut(text: string, max: number): number {
-  let cut = text.length - max;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "\u001b" || text[index + 1] !== "[") continue;
-    const end = csiEnd(text, index + 2);
-    if (end === text.length) break;
-    if (index < cut && cut <= end) {
-      cut = end + 1;
-      break;
+const MAX_CSI_SEQUENCE = 128;
+
+function defaultTerminalState(): TerminalState {
+  return { sgr: defaultSgrState(), control: { kind: "text" } };
+}
+
+function cloneTerminalState(state: TerminalState): TerminalState {
+  return { sgr: cloneSgrState(state.sgr), control: { ...state.control } };
+}
+
+function scanTerminalText(text: string, state: TerminalState, emit: (text: string) => void) {
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index] ?? "";
+    const code = character.charCodeAt(0);
+
+    if (state.control.kind === "osc" || state.control.kind === "string") {
+      if ((state.control.kind === "osc" && character === "\u0007") || character === "\u009c") {
+        state.control = { kind: "text" };
+      } else if (state.control.escape && character === "\\") {
+        state.control = { kind: "text" };
+      } else if (character === "\u001b") {
+        state.control.escape = true;
+      } else {
+        state.control.escape = false;
+      }
+      index += 1;
+      continue;
     }
-    index = end;
+
+    if (state.control.kind === "escape") {
+      if (character === "[") state.control = { kind: "csi", sequence: "\u001b[", overflow: false };
+      else if (character === "]") state.control = { kind: "osc", escape: false };
+      else if (character === "P" || character === "X" || character === "^" || character === "_") {
+        state.control = { kind: "string", escape: false };
+      } else if (code >= 0x20 && code <= 0x2f) {
+        index += 1;
+        continue;
+      } else if (code >= 0x30 && code <= 0x7e) state.control = { kind: "text" };
+      else {
+        state.control = { kind: "text" };
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (state.control.kind === "csi") {
+      if (character === "\u001b") {
+        state.control = { kind: "escape" };
+        index += 1;
+        continue;
+      }
+      if (code === 0x18 || code === 0x1a) {
+        state.control = { kind: "text" };
+        index += 1;
+        continue;
+      }
+      if (code >= 0x40 && code <= 0x7e) {
+        const sequence = `${state.control.sequence}${character}`;
+        if (!state.control.overflow && character === "m" && isSgrSequence(sequence)) {
+          emit(normalizedSgr(sequence, state.sgr));
+        }
+        state.control = { kind: "text" };
+        index += 1;
+        continue;
+      }
+      if (!isNonTextControl(code)) {
+        if (state.control.sequence.length < MAX_CSI_SEQUENCE) state.control.sequence += character;
+        else state.control.overflow = true;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (character === "\u001b") state.control = { kind: "escape" };
+    else if (character === "\u009b") state.control = { kind: "csi", sequence: "\u001b[", overflow: false };
+    else if (character === "\u009d") state.control = { kind: "osc", escape: false };
+    else if (character === "\u0090" || character === "\u0098" || character === "\u009e" || character === "\u009f") {
+      state.control = { kind: "string", escape: false };
+    } else if (!isNonTextControl(code)) emit(character);
+    index += 1;
   }
-  const code = text.charCodeAt(cut);
-  return code >= 0xdc00 && code <= 0xdfff ? cut + 1 : cut;
-}
-
-interface BoundedAnsiTail {
-  text: string;
-  pending: string;
-  truncated: boolean;
-}
-
-function boundedAnsiTail(text: string, max: number): BoundedAnsiTail {
-  if (text.length <= max) return { text, pending: "", truncated: false };
-
-  const presentation = presentationSequences(text);
-  const safeText = presentation.text;
-  if (safeText.length <= max) return { text: safeText, pending: presentation.pending, truncated: false };
-
-  const cut = ansiSafeCut(safeText, max);
-  return {
-    text: `${presentationAt(safeText, cut)}${safeText.slice(cut)}`,
-    pending: presentation.pending,
-    truncated: true,
-  };
-}
-
-function rawTailSlice(text: string, max: number): string {
-  if (text.length <= max) return text;
-  let cut = text.length - max;
-  const code = text.charCodeAt(cut);
-  if (code >= 0xdc00 && code <= 0xdfff) cut += 1;
-  return text.slice(cut);
 }
 
 export interface AnsiTailSnapshot {
@@ -406,7 +456,7 @@ export class AnsiTailBuffer {
   private sourceLength = 0;
   private renderedText = "";
   private copyText = "";
-  private pending = "";
+  private boundary = defaultTerminalState();
   private truncated = false;
 
   constructor(private readonly max: number) {}
@@ -415,11 +465,20 @@ export class AnsiTailBuffer {
     if (source.length < this.sourceLength) this.reset();
     const delta = source.slice(this.sourceLength);
     if (delta !== "") {
-      const tail = boundedAnsiTail(`${this.renderedText}${this.pending}${delta}`, this.max);
-      this.renderedText = tail.text;
-      this.copyText = rawTailSlice(`${this.copyText}${delta}`, this.max);
-      this.pending = tail.pending;
-      this.truncated = this.truncated || tail.truncated;
+      const raw = `${this.copyText}${delta}`;
+      let cut = Math.max(0, raw.length - this.max);
+      const code = raw.charCodeAt(cut);
+      if (code >= 0xdc00 && code <= 0xdfff) cut += 1;
+
+      const boundary = cloneTerminalState(this.boundary);
+      scanTerminalText(raw.slice(0, cut), boundary, () => undefined);
+      this.boundary = boundary;
+      this.copyText = raw.slice(cut);
+      this.truncated = this.truncated || cut > 0;
+
+      const rendered: string[] = [sgrSequence(boundary.sgr)];
+      scanTerminalText(this.copyText, cloneTerminalState(boundary), (part) => rendered.push(part));
+      this.renderedText = rendered.join("");
       this.sourceLength = source.length;
     }
     return {
@@ -433,7 +492,7 @@ export class AnsiTailBuffer {
     this.sourceLength = 0;
     this.renderedText = "";
     this.copyText = "";
-    this.pending = "";
+    this.boundary = defaultTerminalState();
     this.truncated = false;
   }
 }

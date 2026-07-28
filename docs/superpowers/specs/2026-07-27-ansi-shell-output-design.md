@@ -58,13 +58,14 @@ Enable ANSI mode only in the descriptor shared by `shell`, `exec_command`, and
 `run_shell_command`. Other `CodeBlock` consumers and the generic raw-tool
 fallback retain their existing plain-text contract.
 
-Long shell output uses an ANSI-aware 8,000-character tail. It never cuts inside
-an SGR sequence and synthesizes the presentation state active at the retained
-boundary, while clipboard data remains the original raw retained tail. Live
-output keeps a bounded rolling parser state, so each append processes only the
-previous tail and the new delta rather than rescanning the complete command
-history. `CodeBlock` continues to fold the resulting logical lines to its
-visible tail.
+Long shell output uses one 8,000-character boundary in the raw source for both
+display and copying. A compact parser state at that boundary carries active SGR
+semantics and any partial terminal control into the retained tail, so a cut
+inside a sequence neither exposes protocol bytes nor loses styling. Live output
+keeps that bounded rolling state, so each append processes only the previous
+tail and the new delta rather than rescanning the complete command history or
+retaining an unterminated control payload. `CodeBlock` continues to fold the
+resulting logical lines to its visible tail.
 
 ## Testing
 
