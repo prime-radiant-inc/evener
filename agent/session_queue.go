@@ -516,6 +516,7 @@ func (s *Session) popQueueHead() queuedInput {
 		snapshot.QueueRevision++
 		delete(snapshot.BudgetReservations, entry.ClientMutationID)
 		snapshot.AcceptedTurns++
+		snapshot.ActiveTurnID = record.StableTurnID
 		queued = queuedInputFromClientMutation(entry)
 		queued.ClientMutationID = entry.ClientMutationID
 		queued.StableTurnID = record.StableTurnID

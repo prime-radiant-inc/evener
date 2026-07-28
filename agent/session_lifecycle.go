@@ -604,7 +604,20 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// no-progress streak and iteration count) or a user/follow-up turn (which
 		// does not — /par #4).
 		ranKind := nextKind
+		ranClientMutation := queuedClientMutationFromContext(processCtx)
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		if ranClientMutation.ClientMutationID != "" {
+			terminalState := "terminal"
+			if err != nil {
+				terminalState = "failed"
+			}
+			if completeErr := s.completeClientMutationTurnWithState(
+				ranClientMutation.ClientMutationID,
+				terminalState,
+			); completeErr != nil {
+				err = errors.Join(err, fmt.Errorf("complete client mutation turn: %w", completeErr))
+			}
+		}
 		processCtx = context.WithValue(processCtx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{})
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
@@ -1211,6 +1224,12 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	s.queueTurnBudgetWarning()
 
+	if queuedIdentity.ClientMutationID != "" &&
+		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
+		s.injectDrainedSteering()
+		return nil
+	}
+
 	s.mu.Lock()
 	s.turns++
 	userInputTurn := len(s.history) + 1
@@ -1232,25 +1251,51 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
+		if pending.Method == clientMutationMethodStart && s.clientMutationPreAppendFailure != nil {
+			if failure := s.clientMutationPreAppendFailure(turn); failure != nil {
+				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
+					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
+				}
+				if err := s.recoverClientMutationFailures(); err != nil {
+					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
+				}
+				s.emit(events.EventUserInput, events.UserInputData{
+					Text:             input,
+					Images:           userInputImagesFromAttachments(images),
+					ClientMutationID: queuedIdentity.ClientMutationID,
+					StableTurnID:     queuedIdentity.StableTurnID,
+					Turn:             userInputTurn,
+				})
+				s.emit(events.EventError, errorDataFromError(failure))
+				return failure
+			}
+		}
 		if err := s.appendClientMutationTranscript(turn); err != nil {
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
-			s.pushQueueHead(queuedInput{
-				ID:               queuedIdentity.QueueEntryID,
-				ClientMutationID: queuedIdentity.ClientMutationID,
-				StableTurnID:     queuedIdentity.StableTurnID,
-				Text:             input,
-				Images:           append([]ImageAttachment(nil), images...),
-				Provenance:       provenance.Clone(inputProvenance),
-			})
-			return fmt.Errorf("append claimed queued input: %w", err)
+			if pending.Method == clientMutationMethodStart {
+				if returnErr := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); returnErr != nil {
+					return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+				}
+			} else {
+				s.pushQueueHead(queuedInput{
+					ID:               queuedIdentity.QueueEntryID,
+					ClientMutationID: queuedIdentity.ClientMutationID,
+					StableTurnID:     queuedIdentity.StableTurnID,
+					Text:             input,
+					Images:           append([]ImageAttachment(nil), images...),
+					Provenance:       provenance.Clone(inputProvenance),
+				})
+			}
+			return fmt.Errorf("append claimed user input: %w", err)
 		}
 		s.mu.Lock()
 		s.history = append(s.history, turn)
 		s.mu.Unlock()
-		if err := s.markClaimedQueueTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
-			return fmt.Errorf("incorporate claimed queued input: %w", err)
+		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
+			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
 	}
 	s.emit(events.EventUserInput, events.UserInputData{

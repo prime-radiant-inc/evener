@@ -476,9 +476,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		resumeHistory = []schema.Turn{}
 	}
 	restoredClientMutationTurns := make(map[string]string)
+	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
 		if entry.Turn.ClientMutationID != "" {
 			restoredClientMutationTurns[entry.Turn.ClientMutationID] = entry.Turn.StableTurnID
+			items := restoredClientMutationItems[entry.Turn.ClientMutationID]
+			items.StableTurnID = entry.Turn.StableTurnID
+			switch entry.Turn.Kind {
+			case schema.TurnUserInput:
+				items.User = true
+			case schema.TurnFailure:
+				items.Failure = true
+			}
+			restoredClientMutationItems[entry.Turn.ClientMutationID] = items
 		}
 	}
 
@@ -540,6 +550,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cancelFunc:                  sessCancel,
 		clientMutations:             clientMutations,
 		restoredClientMutationTurns: restoredClientMutationTurns,
+		restoredClientMutationItems: restoredClientMutationItems,
 	}
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
@@ -699,6 +710,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 	s.attachTranscript(tw)
+	if err := s.recoverClientMutationFailures(); err != nil {
+		return nil, fmt.Errorf("recover client mutation failures: %w", err)
+	}
+	if err := s.recoverClientMutationInterrupt(); err != nil {
+		return nil, fmt.Errorf("recover client mutation interrupt: %w", err)
+	}
 
 	if !restoreCfg.deferRestoreSideEffects {
 		if err := s.restoreSideEffect("retry_watch_sends", func() error { return s.retryRestoredPendingWatchSends(context.Background()) }); err != nil {

@@ -230,9 +230,24 @@ type Session struct {
 	// clientMutationTranscriptAppend is a deterministic test seam for the
 	// durable append boundary. Nil in production.
 	clientMutationTranscriptAppend func(schema.Turn) error
+	// clientMutationPreAppendFailure injects a deterministic lifecycle failure
+	// after a start is claimed but before its user item can be incorporated.
+	clientMutationPreAppendFailure func(schema.Turn) error
+	// clientMutationFailureRecoveryFault is a deterministic crash seam around
+	// the two transcript appends used to materialize a failed accepted start.
+	clientMutationFailureRecoveryFault func(string) error
+	// clientMutationInterruptJoined observes a same-ID interrupt owner join in
+	// deterministic concurrency tests. Nil in production.
+	clientMutationInterruptJoined func()
 	// restoredClientMutationTurns is the complete transcript identity index
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
+	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// clientMutationStartWake is installed by the lifecycle runner. Start
+	// acceptance invokes it only after the durable mutation commit; setting it
+	// after restore immediately wakes any accepted start already owned by the
+	// journal. Guarded by mu.
+	clientMutationStartWake func()
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult

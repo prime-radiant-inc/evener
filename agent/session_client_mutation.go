@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,11 @@ import (
 var (
 	errClientMutationMismatch = errors.New("client mutation ID reused with a different method or payload")
 	errClientMutationOwner    = errors.New("client mutation owner is no longer active")
+)
+
+const (
+	clientMutationMethodStart     = "turn/start"
+	clientMutationMethodInterrupt = "turn/interrupt"
 )
 
 type clientMutationOperationState string
@@ -60,7 +66,12 @@ type clientMutationRecord struct {
 	ProjectionState     appwire.MutationProjectionState `json:"projectionState"`
 	Result              json.RawMessage                 `json:"result,omitempty"`
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
+	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attemptGeneration"`
+}
+
+type clientMutationFailure struct {
+	Message string `json:"message"`
 }
 
 type clientMutationQueueEntry struct {
@@ -130,6 +141,402 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 		Payload:          canonical,
 		PayloadHash:      hex.EncodeToString(sum[:]),
 	}, nil
+}
+
+// AcceptClientMutationStart durably owns a complete start intent before
+// notifying the lifecycle runner. A lost response or refused wake leaves the
+// accepted pending execution in the journal, and an identical retry returns
+// the same stable turn rather than creating another logical turn.
+func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	if err := s.ensureClientMutationStore(); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	request, err := newClientMutationRequest(clientMutationMethodStart, params.ClientMutationID, params)
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+
+	var response appwire.TurnStartResponse
+	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
+		if len(params.Input) == 0 {
+			rejectClientMutation(record, appwire.InvalidParams("input is required"))
+			return nil
+		}
+		if snapshot.ActiveTurnID != "" {
+			rejectClientMutation(record, appwire.Conflict("turn is already active"))
+			return nil
+		}
+		if s.cfg.MaxTurns > 0 && snapshot.AcceptedTurns+reservedClientMutationTurns(snapshot) >= uint64(s.cfg.MaxTurns) {
+			rejectClientMutation(record, appwire.Conflict((&budgetExhaustionError{
+				Budget: exhaustedBudgetTurns, Limit: s.cfg.MaxTurns, Resumable: true,
+			}).Error()))
+			return nil
+		}
+		reserveClientMutationTurnID(snapshot, record)
+		record.ExecutionState = "accepted"
+		snapshot.BudgetReservations[record.ClientMutationID] = clientMutationBudgetReservation{
+			TurnID: record.StableTurnID,
+			Slots:  1,
+		}
+		return nil
+	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		response = appwire.TurnStartResponse{
+			Turn: appwire.Turn{
+				ID:     record.StableTurnID,
+				Status: appwire.TurnStatusInProgress,
+			},
+			Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied),
+		}
+		result, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		snapshot.ActiveTurnID = record.StableTurnID
+		snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
+			ClientMutationID: record.ClientMutationID,
+			Method:           record.Method,
+			Input:            cloneClientMutationInput(params.Input),
+			ExecutionState:   "accepted",
+			TurnID:           record.StableTurnID,
+			ProjectionState:  appwire.MutationProjectionReflected,
+		}
+		applyClientMutationRecord(record, result)
+		return nil
+	})
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	if lookup.Record.OperationState == clientMutationOperationRejected {
+		return appwire.TurnStartResponse{}, clientMutationRejectionError(lookup.Record)
+	}
+	if lookup.Disposition == clientMutationDispositionReplayed {
+		if err := replayClientMutationResult(lookup.Record, &response); err != nil {
+			return appwire.TurnStartResponse{}, err
+		}
+		response.Receipt.Disposition = appwire.MutationDispositionReplayed
+		response.Receipt.ProjectionState = lookup.Record.ProjectionState
+	}
+	if pending, ok := s.clientMutations.snapshot().PendingExecutions[params.ClientMutationID]; ok && pending.ExecutionState == "accepted" {
+		s.wakeClientMutationStart()
+	}
+	return response, nil
+}
+
+// ClaimClientMutationStart returns the next user turn owned by the durable
+// start lifecycle. In addition to accepted starts, restore may expose a queued
+// turn that crashed after claim under the same stable turn identity.
+func (s *Session) ClaimClientMutationStart() (queuedInput, bool, error) {
+	if err := s.ensureClientMutationStore(); err != nil {
+		return queuedInput{}, false, err
+	}
+	var claimed queuedInput
+	claimedQueue := false
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		for id, pending := range snapshot.PendingExecutions {
+			if pending.Method != clientMutationMethodStart ||
+				(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
+				continue
+			}
+			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+				continue
+			}
+			record, ok := snapshot.Journal[id]
+			if !ok {
+				return fmt.Errorf("accepted client start %q has no journal record", id)
+			}
+			if pending.ExecutionState == "accepted" {
+				record.ExecutionState = "claimed"
+				pending.ExecutionState = "claimed"
+				delete(snapshot.BudgetReservations, id)
+				snapshot.AcceptedTurns++
+			}
+			record.ProjectionState = appwire.MutationProjectionReflected
+			pending.ProjectionState = appwire.MutationProjectionReflected
+			snapshot.Journal[id] = record
+			snapshot.PendingExecutions[id] = pending
+			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+			claimed.ClientMutationID = id
+			claimed.StableTurnID = pending.TurnID
+			return nil
+		}
+		for id, pending := range snapshot.PendingExecutions {
+			if pending.Method != clientMutationMethodQueue ||
+				pending.ExecutionState != "incorporated" ||
+				pending.TurnID == "" ||
+				snapshot.ActiveTurnID != pending.TurnID {
+				continue
+			}
+			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+			if len(pending.QueueEntryIDs) == 1 {
+				claimed.ID = pending.QueueEntryIDs[0]
+			}
+			claimed.ClientMutationID = id
+			claimed.StableTurnID = pending.TurnID
+			return nil
+		}
+		if len(snapshot.InputQueue) == 0 {
+			return nil
+		}
+		entry := snapshot.InputQueue[0]
+		record, ok := snapshot.Journal[entry.ClientMutationID]
+		if !ok ||
+			record.Method != clientMutationMethodQueue ||
+			record.StableTurnID == "" ||
+			snapshot.ActiveTurnID != record.StableTurnID {
+			return nil
+		}
+		record.ExecutionState = "claimed"
+		record.ProjectionState = appwire.MutationProjectionReflected
+		snapshot.Journal[entry.ClientMutationID] = record
+		snapshot.PendingExecutions[entry.ClientMutationID] = appwire.PendingMutation{
+			ClientMutationID: entry.ClientMutationID,
+			Method:           record.Method,
+			Input:            cloneClientMutationInput(entry.Input),
+			ExecutionState:   "claimed",
+			TurnID:           record.StableTurnID,
+			QueueEntryIDs:    []string{entry.ID},
+			ProjectionState:  appwire.MutationProjectionReflected,
+		}
+		snapshot.InputQueue = snapshot.InputQueue[1:]
+		snapshot.QueueRevision++
+		delete(snapshot.BudgetReservations, entry.ClientMutationID)
+		snapshot.AcceptedTurns++
+		claimed = queuedInputFromClientMutation(entry)
+		claimed.ClientMutationID = entry.ClientMutationID
+		claimed.StableTurnID = record.StableTurnID
+		claimedQueue = true
+		return nil
+	})
+	if err != nil {
+		return queuedInput{}, false, err
+	}
+	if claimedQueue {
+		s.reflectDurableInputQueue()
+	}
+	return claimed, claimed.ClientMutationID != "", nil
+}
+
+// InterruptClientMutation persists an interrupt fence under the lifecycle
+// serializer, then releases it before cancellation and runner waiting. The
+// runner may finalize the fence from completeClientMutationTurnWithState; if it
+// does not, recovery finalizes it after the wait returns.
+func (s *Session) InterruptClientMutation(
+	ctx context.Context,
+	params appwire.TurnInterruptParams,
+	cancelAndWait func(),
+) (appwire.TurnInterruptResponse, error) {
+	if err := s.ensureClientMutationStore(); err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
+	request, err := newClientMutationRequest(clientMutationMethodInterrupt, params.ClientMutationID, params)
+	if err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
+	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
+	lookup, err := s.clientMutations.reservePrepared(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if params.ExpectedTurnID == "" {
+			rejectClientMutation(record, appwire.InvalidParams("expectedTurnId is required"))
+			return nil
+		}
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is already pending"))
+			return nil
+		}
+		if snapshot.ActiveTurnID != params.ExpectedTurnID {
+			rejectClientMutation(record, appwire.Conflict("turn is not active"))
+			return nil
+		}
+		record.StableTurnID = params.ExpectedTurnID
+		record.ExecutionState = "interruptRequested"
+		snapshot.InterruptFence = &clientMutationInterruptFence{
+			ClientMutationID: params.ClientMutationID,
+			ExpectedTurnID:   params.ExpectedTurnID,
+		}
+		return nil
+	})
+	if err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
+	if lookup.Record.OperationState == clientMutationOperationRejected {
+		return appwire.TurnInterruptResponse{}, clientMutationRejectionError(lookup.Record)
+	}
+	if lookup.Disposition == clientMutationDispositionReplayed {
+		return interruptResponseFromRecord(lookup.Record, appwire.MutationDispositionReplayed)
+	}
+	if lookup.Disposition == clientMutationDispositionJoined {
+		if s.clientMutationInterruptJoined != nil {
+			s.clientMutationInterruptJoined()
+		}
+		select {
+		case <-lookup.OwnerDone:
+			return s.InterruptClientMutation(ctx, params, cancelAndWait)
+		case <-ctx.Done():
+			return appwire.TurnInterruptResponse{}, ctx.Err()
+		}
+	}
+	if lookup.Lease == nil {
+		return appwire.TurnInterruptResponse{}, appwire.InternalError("interrupt mutation owner is missing")
+	}
+	defer lookup.Lease.Release()
+
+	if cancelAndWait != nil {
+		cancelAndWait()
+	}
+	current := s.clientMutations.snapshot().Journal[params.ClientMutationID]
+	if current.OperationState == clientMutationOperationTerminal {
+		return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
+	}
+	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, _ *clientMutationRecord) error {
+		return finalizeClientMutationInterrupt(snapshot, s.ID())
+	}); err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
+	return interruptResponseFromRecord(
+		s.clientMutations.snapshot().Journal[params.ClientMutationID],
+		appwire.MutationDispositionApplied,
+	)
+}
+
+func interruptResponseFromRecord(
+	record clientMutationRecord,
+	disposition appwire.MutationDisposition,
+) (appwire.TurnInterruptResponse, error) {
+	var response appwire.TurnInterruptResponse
+	if err := replayClientMutationResult(record, &response); err != nil {
+		return response, err
+	}
+	response.Receipt.Disposition = disposition
+	response.Receipt.ProjectionState = record.ProjectionState
+	return response, nil
+}
+
+func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string) error {
+	fence := snapshot.InterruptFence
+	if fence == nil {
+		return nil
+	}
+	record, ok := snapshot.Journal[fence.ClientMutationID]
+	if !ok {
+		return fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
+	}
+	record.StableTurnID = fence.ExpectedTurnID
+	response := appwire.TurnInterruptResponse{
+		Receipt: mutationReceipt(threadID, record, appwire.MutationDispositionApplied),
+	}
+	result, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	record.OperationState = clientMutationOperationTerminal
+	record.ExecutionState = "interrupted"
+	record.ProjectionState = appwire.MutationProjectionReflected
+	record.Payload = nil
+	record.Result = result
+	snapshot.Journal[fence.ClientMutationID] = record
+	snapshot.ActiveTurnID = ""
+	snapshot.InterruptFence = nil
+	return nil
+}
+
+func (s *Session) recoverClientMutationInterrupt() error {
+	if s == nil || s.clientMutations == nil {
+		return nil
+	}
+	if s.clientMutations.snapshot().InterruptFence == nil {
+		return nil
+	}
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		fence := snapshot.InterruptFence
+		for id, pending := range snapshot.PendingExecutions {
+			if pending.TurnID != fence.ExpectedTurnID {
+				continue
+			}
+			record := snapshot.Journal[id]
+			record.OperationState = clientMutationOperationTerminal
+			record.ExecutionState = "interrupted"
+			record.ProjectionState = appwire.MutationProjectionReflected
+			record.Payload = nil
+			snapshot.Journal[id] = record
+			delete(snapshot.PendingExecutions, id)
+		}
+		return finalizeClientMutationInterrupt(snapshot, s.ID())
+	})
+}
+
+func (s *Session) returnClaimedClientMutationStart(clientMutationID string) error {
+	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		pending, ok := snapshot.PendingExecutions[clientMutationID]
+		if !ok || pending.Method != clientMutationMethodStart || pending.ExecutionState != "claimed" {
+			return nil
+		}
+		record := snapshot.Journal[clientMutationID]
+		record.ExecutionState = "accepted"
+		pending.ExecutionState = "accepted"
+		snapshot.Journal[clientMutationID] = record
+		snapshot.PendingExecutions[clientMutationID] = pending
+		if snapshot.AcceptedTurns > 0 {
+			snapshot.AcceptedTurns--
+		}
+		snapshot.BudgetReservations[clientMutationID] = clientMutationBudgetReservation{
+			TurnID: pending.TurnID,
+			Slots:  1,
+		}
+		return nil
+	})
+	if err == nil {
+		s.wakeClientMutationStart()
+	}
+	return err
+}
+
+// SetClientMutationStartWakeFunc installs the runner wake seam. Accepted work
+// restored before the runner exists is woken immediately after installation.
+func (s *Session) SetClientMutationStartWakeFunc(wake func()) {
+	s.mu.Lock()
+	s.clientMutationStartWake = wake
+	s.mu.Unlock()
+	if wake != nil && s.hasRunnableClientMutationStart() {
+		wake()
+	}
+}
+
+func (s *Session) wakeClientMutationStart() {
+	s.mu.Lock()
+	wake := s.clientMutationStartWake
+	s.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+}
+
+func (s *Session) hasRunnableClientMutationStart() bool {
+	if s == nil || s.clientMutations == nil {
+		return false
+	}
+	snapshot := s.clientMutations.snapshot()
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.Method == clientMutationMethodStart &&
+			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
+			return true
+		}
+		if pending.Method == clientMutationMethodQueue &&
+			pending.ExecutionState == "incorporated" &&
+			pending.TurnID != "" &&
+			snapshot.ActiveTurnID == pending.TurnID {
+			return true
+		}
+	}
+	if len(snapshot.InputQueue) > 0 {
+		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
+		return record.Method == clientMutationMethodQueue &&
+			record.StableTurnID != "" &&
+			snapshot.ActiveTurnID == record.StableTurnID
+	}
+	return false
 }
 
 type clientMutationFaults struct {
@@ -559,6 +966,10 @@ func cloneClientMutationRecord(src clientMutationRecord) clientMutationRecord {
 	if src.Rejection != nil {
 		rejection := *src.Rejection
 		dst.Rejection = &rejection
+	}
+	if src.Failure != nil {
+		failure := *src.Failure
+		dst.Failure = &failure
 	}
 	return dst
 }

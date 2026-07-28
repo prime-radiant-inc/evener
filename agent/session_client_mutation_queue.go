@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm"
 )
 
 const clientMutationMethodQueue = "turn/queue"
@@ -18,6 +19,12 @@ const (
 	clientMutationMethodPromote = "turn/promoteQueuedAsSteer"
 	clientMutationMethodCancel  = "turn/cancelQueued"
 )
+
+type clientMutationTranscriptItems struct {
+	StableTurnID string
+	User         bool
+	Failure      bool
+}
 
 func (s *Session) ensureClientMutationStore() error {
 	s.clientMutationsInitMu.Lock()
@@ -45,6 +52,10 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 
 	var response appwire.TurnQueueResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
 		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
 			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
@@ -232,6 +243,10 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 	request.Preconditions.ExpectedTurnID = params.ExpectedTurnID
 	var response appwire.TurnSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
 		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
 			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
@@ -284,6 +299,10 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
 	var response appwire.TurnDrainAsSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
 		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
 			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
@@ -379,6 +398,10 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	request.Preconditions.ExpectedEntryID = params.ExpectedEntryID
 	var response appwire.TurnPromoteQueuedAsSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
+		if snapshot.InterruptFence != nil {
+			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
+			return nil
+		}
 		if params.ExpectedTurnID != "" && snapshot.ActiveTurnID != params.ExpectedTurnID {
 			rejectClientMutation(record, appwire.Conflict("turn is not active"))
 			return nil
@@ -679,10 +702,13 @@ func (s *Session) restoreDurableClientMutationQueues() {
 		}
 		for id, pending := range snapshot.PendingExecutions {
 			record := snapshot.Journal[id]
+			if pending.ExecutionState == "failureRecording" {
+				continue
+			}
 			if stableTurnID, ok := incorporated[id]; ok && stableTurnID == pending.TurnID {
 				record.ExecutionState = "incorporated"
 				record.ProjectionState = appwire.MutationProjectionReflected
-				if pending.Method == clientMutationMethodQueue {
+				if pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart {
 					pending.ExecutionState = "incorporated"
 					pending.ProjectionState = appwire.MutationProjectionReflected
 					snapshot.PendingExecutions[id] = pending
@@ -717,6 +743,15 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			} else {
 				pending.ExecutionState = "accepted"
 				snapshot.PendingExecutions[id] = pending
+				if pending.Method == clientMutationMethodStart {
+					if snapshot.AcceptedTurns > 0 {
+						snapshot.AcceptedTurns--
+					}
+					snapshot.BudgetReservations[id] = clientMutationBudgetReservation{
+						TurnID: pending.TurnID,
+						Slots:  1,
+					}
+				}
 			}
 			record.ExecutionState = "accepted"
 			snapshot.Journal[id] = record
@@ -735,7 +770,7 @@ func (s *Session) restoreDurableClientMutationQueues() {
 	s.steeringQueue = append(s.steeringQueue, clientSteeringFromSnapshot(snapshot)...)
 }
 
-func (s *Session) markClaimedQueueTranscriptIncorporated(clientMutationID string) error {
+func (s *Session) markClaimedUserTranscriptIncorporated(clientMutationID string) error {
 	if clientMutationID == "" {
 		return nil
 	}
@@ -744,8 +779,8 @@ func (s *Session) markClaimedQueueTranscriptIncorporated(clientMutationID string
 		if !ok {
 			return nil
 		}
-		if pending.Method != clientMutationMethodQueue {
-			return fmt.Errorf("client mutation %q is %q, want queued input", clientMutationID, pending.Method)
+		if pending.Method != clientMutationMethodQueue && pending.Method != clientMutationMethodStart {
+			return fmt.Errorf("client mutation %q is %q, want user input", clientMutationID, pending.Method)
 		}
 		record, ok := snapshot.Journal[clientMutationID]
 		if !ok {
@@ -759,6 +794,143 @@ func (s *Session) markClaimedQueueTranscriptIncorporated(clientMutationID string
 		snapshot.PendingExecutions[clientMutationID] = pending
 		return nil
 	})
+}
+
+func (s *Session) clientMutationUserTranscriptIncorporated(clientMutationID, stableTurnID string) bool {
+	if clientMutationID == "" || s.clientMutations == nil {
+		return false
+	}
+	pending, ok := s.clientMutations.snapshot().PendingExecutions[clientMutationID]
+	return ok &&
+		(pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart) &&
+		pending.ExecutionState == "incorporated" &&
+		pending.TurnID == stableTurnID
+}
+
+func (s *Session) beginClientMutationFailure(clientMutationID string, cause error) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		pending, ok := snapshot.PendingExecutions[clientMutationID]
+		if !ok || pending.Method != clientMutationMethodStart {
+			return fmt.Errorf("client start %q is not pending", clientMutationID)
+		}
+		record := snapshot.Journal[clientMutationID]
+		record.ExecutionState = "failureRecording"
+		record.Failure = &clientMutationFailure{Message: cause.Error()}
+		pending.ExecutionState = "failureRecording"
+		snapshot.Journal[clientMutationID] = record
+		snapshot.PendingExecutions[clientMutationID] = pending
+		return nil
+	})
+}
+
+func (s *Session) recoverClientMutationFailures() error {
+	if s == nil || s.clientMutations == nil {
+		return nil
+	}
+	snapshot := s.clientMutations.snapshot()
+	for id, pending := range snapshot.PendingExecutions {
+		record := snapshot.Journal[id]
+		if pending.Method != clientMutationMethodStart ||
+			pending.ExecutionState != "failureRecording" ||
+			record.Failure == nil {
+			continue
+		}
+		if err := s.recordClientMutationFailure(id, pending, *record.Failure); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Session) recordClientMutationFailure(
+	clientMutationID string,
+	pending appwire.PendingMutation,
+	failure clientMutationFailure,
+) error {
+	items := s.clientMutationTranscriptItems(clientMutationID, pending.TurnID)
+	queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+	if !items.User {
+		if err := s.clientMutationFailureFault("before_user"); err != nil {
+			return err
+		}
+		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
+		turn.ClientMutationID = clientMutationID
+		turn.StableTurnID = pending.TurnID
+		if err := s.writeTranscriptDurable(turn); err != nil {
+			return fmt.Errorf("append failed client start input: %w", err)
+		}
+		s.mu.Lock()
+		s.history = append(s.history, turn)
+		s.mu.Unlock()
+		if err := s.clientMutationFailureFault("after_user"); err != nil {
+			return err
+		}
+	}
+	if !items.Failure {
+		if err := s.clientMutationFailureFault("before_failure"); err != nil {
+			return err
+		}
+		info := &schema.TurnFailureInfo{Message: failure.Message}
+		turn := schema.NewTurn(schema.TurnFailure, llm.System(failure.Message))
+		turn.ClientMutationID = clientMutationID
+		turn.StableTurnID = pending.TurnID
+		turn.Error = info
+		if err := s.writeTranscriptDurable(turn); err != nil {
+			return fmt.Errorf("append failed client start diagnostic: %w", err)
+		}
+		s.mu.Lock()
+		s.history = append(s.history, turn)
+		s.mu.Unlock()
+		if err := s.clientMutationFailureFault("after_failure"); err != nil {
+			return err
+		}
+	}
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		pending, ok := snapshot.PendingExecutions[clientMutationID]
+		if !ok {
+			return nil
+		}
+		record := snapshot.Journal[clientMutationID]
+		record.OperationState = clientMutationOperationTerminal
+		record.ExecutionState = "failed"
+		record.ProjectionState = appwire.MutationProjectionReflected
+		record.Payload = nil
+		snapshot.Journal[clientMutationID] = record
+		delete(snapshot.PendingExecutions, clientMutationID)
+		if snapshot.ActiveTurnID == pending.TurnID {
+			snapshot.ActiveTurnID = ""
+		}
+		return nil
+	})
+}
+
+func (s *Session) clientMutationTranscriptItems(clientMutationID, stableTurnID string) clientMutationTranscriptItems {
+	items := s.restoredClientMutationItems[clientMutationID]
+	if items.StableTurnID != "" && items.StableTurnID != stableTurnID {
+		items = clientMutationTranscriptItems{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if turn.ClientMutationID != clientMutationID || turn.StableTurnID != stableTurnID {
+			continue
+		}
+		items.StableTurnID = stableTurnID
+		switch turn.Kind {
+		case schema.TurnUserInput:
+			items.User = true
+		case schema.TurnFailure:
+			items.Failure = true
+		}
+	}
+	return items
+}
+
+func (s *Session) clientMutationFailureFault(boundary string) error {
+	if s.clientMutationFailureRecoveryFault == nil {
+		return nil
+	}
+	return s.clientMutationFailureRecoveryFault(boundary)
 }
 
 func (s *Session) finalizeIncorporatedSteering(clientMutationID string) error {
@@ -789,21 +961,41 @@ func (s *Session) finalizeIncorporatedSteering(clientMutationID string) error {
 // Queue transcript incorporation retains the payload and stable turn identity;
 // only durable terminal completion may remove the runnable execution.
 func (s *Session) completeClientMutationTurn(clientMutationID string) error {
+	return s.completeClientMutationTurnWithState(clientMutationID, "terminal")
+}
+
+func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string) error {
+	return s.completeClientMutationTurnWithState(clientMutationID, "interrupted")
+}
+
+func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) error {
 	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
 			return nil
 		}
-		if pending.Method != clientMutationMethodQueue {
-			return fmt.Errorf("client mutation %q is not a queued turn", clientMutationID)
+		if pending.ExecutionState != "incorporated" {
+			return nil
+		}
+		if pending.Method != clientMutationMethodQueue && pending.Method != clientMutationMethodStart {
+			return fmt.Errorf("client mutation %q is not a user turn", clientMutationID)
 		}
 		record := snapshot.Journal[clientMutationID]
 		record.OperationState = clientMutationOperationTerminal
-		record.ExecutionState = "terminal"
+		record.ExecutionState = executionState
+		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+			record.ExecutionState = "interrupted"
+		}
 		record.ProjectionState = appwire.MutationProjectionReflected
 		record.Payload = nil
 		snapshot.Journal[clientMutationID] = record
 		delete(snapshot.PendingExecutions, clientMutationID)
+		if snapshot.ActiveTurnID == pending.TurnID {
+			snapshot.ActiveTurnID = ""
+		}
+		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
+			return finalizeClientMutationInterrupt(snapshot, s.ID())
+		}
 		return nil
 	})
 }

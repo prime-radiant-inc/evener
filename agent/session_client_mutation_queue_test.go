@@ -977,6 +977,39 @@ func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing
 	}
 }
 
+func TestClientMutation_SteeringClaimRestoreDoesNotConsumeTurnBudget(t *testing.T) {
+	sess := newTestSession(t)
+	params := appwire.TurnSteerParams{
+		ClientMutationID: "steer-claimed-budget-restore",
+		Input:            []appwire.InputItem{{Type: "text", Text: "restore steering"}},
+	}
+	if _, err := sess.clientMutationSteer(params); err != nil {
+		t.Fatalf("clientMutationSteer: %v", err)
+	}
+	if _, ok := sess.popSteeringHead(); !ok {
+		t.Fatal("popSteeringHead returned empty")
+	}
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.AcceptedTurns = 3
+		return nil
+	}); err != nil {
+		t.Fatalf("seed accepted turns: %v", err)
+	}
+
+	sess.restoreDurableClientMutationQueues()
+	snapshot := sess.clientMutations.snapshot()
+	pending := snapshot.PendingExecutions[params.ClientMutationID]
+	if pending.ExecutionState != "accepted" {
+		t.Fatalf("restored steering = %#v", pending)
+	}
+	if snapshot.AcceptedTurns != 3 {
+		t.Fatalf("accepted turns after steering restore = %d, want 3", snapshot.AcceptedTurns)
+	}
+	if _, reserved := snapshot.BudgetReservations[params.ClientMutationID]; reserved {
+		t.Fatal("restored steering acquired a user-turn budget reservation")
+	}
+}
+
 func TestClientMutation_CommunicateEndTurnDurablyConsumesClientSteering(t *testing.T) {
 	sess := newTestSession(t)
 	clientImage := appwire.InputItem{
@@ -1371,6 +1404,33 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 	}
 	if matches != 1 {
 		t.Fatalf("restored transcript identity count = %d, want 1", matches)
+	}
+	resumed, ok, err := restored.ClaimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim restored incorporated queue turn: resumed=%#v ok=%v err=%v", resumed, ok, err)
+	}
+	if resumed.ClientMutationID != params.ClientMutationID ||
+		resumed.StableTurnID != stableTurnID ||
+		resumed.Text != "resume work" {
+		t.Fatalf("restored queue lifecycle claim = %#v", resumed)
+	}
+	if err := restored.acceptUserInput(
+		withQueuedClientMutation(context.Background(), resumed),
+		resumed.Text,
+		resumed.Images,
+		nil,
+		false,
+	); err != nil {
+		t.Fatalf("resume incorporated queue turn: %v", err)
+	}
+	var afterResume int
+	for _, turn := range restored.history {
+		if turn.ClientMutationID == params.ClientMutationID {
+			afterResume++
+		}
+	}
+	if afterResume != 1 {
+		t.Fatalf("resumed incorporated queue duplicated transcript: count=%d", afterResume)
 	}
 }
 
