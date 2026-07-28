@@ -103,8 +103,8 @@ not correlation metadata alone.
 - Adding retry-safe receipts to thread creation, forking, clearing, compaction,
   goals, auth, provider configuration, marketplaces, or plugins in this
   implementation.
-- Preserving mutation support against an older daemon that does not advertise
-  this contract. Compatibility is discussed explicitly below.
+- Preserving interoperability with older browsers, Hubs, or daemons. This is a
+  flag-day protocol change.
 
 ## Protocol Laws
 
@@ -165,8 +165,7 @@ produce a mutation-failed UI state.
 
 ### Client mutation identity
 
-The in-scope methods gain required `clientMutationId` when the target thread
-advertises `retrySafeMutations`:
+The in-scope methods gain required `clientMutationId`:
 
 - `turn/start`
 - `turn/steer`
@@ -450,35 +449,42 @@ The `PendingConfirmationTimeoutError`, `PENDING_TIMEOUT_MS` confirmation
 behavior, and their Composer/QueueStrip warning branches are removed. Heartbeat
 and request deadlines remain transport mechanisms.
 
-## Compatibility
+## Flag-Day Cutover
 
-This is an end-to-end contract. A Hub cannot honestly advertise retry-safe
-mutations for a thread whose daemon does not implement durable receipts.
+This is an end-to-end protocol replacement, not a negotiated feature. The
+browser, Hub, and Serf daemon ship as one release unit. There is no
+`retrySafeMutations` capability, no legacy request shape, no mutation fallback,
+and no mixed-version UI.
 
-Add `retrySafeMutations` to per-thread capabilities. The new WebUI uses the
-outbox/retry path only when it is true.
+Set `appwire.ProtocolVersion` to `serf-appwire-v2` and add required
+`protocolVersion` to `InitializeParams`. Each AppWire client sends that exact
+version, each server rejects a mismatch before accepting any other request, and
+each client verifies the response version before sending `initialized`. The Hub
+likewise ignores or rejects rendezvous entries from a daemon with a different
+protocol version and never relays to them.
 
-Backward-compatible mutation forwarding to old daemons is intentionally not
-part of this design. During a mixed-version deployment, legacy threads remain
-readable and continue streaming, but the new WebUI does not expose mutation
-controls until that session is resumed under a compatible daemon. It presents
-one capability explanation in the disabled control:
+A protocol mismatch is a terminal deployment error for that connection, not a
+per-thread disabled control and not a reconnectable transport failure. The
+client must not enter an automatic reconnect loop against a known-incompatible
+peer.
 
-> Restart this session to send with the current control protocol.
+Deployment replaces the Hub and WebUI assets together and restarts active Serf
+daemons under the new binary. Persisted sessions remain resumable as data, but
+an old daemon process cannot remain attached to a new Hub and an old browser
+asset cannot operate a new Hub. Active pages running old assets must load the
+new application as part of the cutover.
 
-The implementation must not silently fall back to one-shot mutation semantics
-or content-based reconciliation. Approving this specification approves this
-explicit mixed-version behavior; any broader backward-compatibility shim
-requires a separate design and Jesse's approval.
-
-Codex-bridged and other read-only sources may leave the capability false. Their
-existing source-specific controls remain outside this Serf daemon contract.
+Existing source-specific method capabilities still describe whether a source
+supports operations such as start, steer, or queue. They are not protocol
+version negotiation. A source adapter that exposes an in-scope mutation must
+implement the receipt contract; otherwise it must not expose that method.
 
 ## Scope of the First Implementation
 
 The first implementation includes:
 
-- receipt types and per-thread capability;
+- the AppWire protocol-version bump and exact initialize/rendezvous validation;
+- receipt types;
 - daemon receipt persistence and idempotency for the seven turn/queue methods;
 - client mutation identity on queue, steering, and transcript projections;
 - queue revisions and required preconditions;
@@ -540,13 +546,17 @@ state write, in-memory publication, notification emission, and RPC response.
 Script the real Hub relay/request paths to prove:
 
 - receipt fields survive browser-to-Hub-to-daemon forwarding;
+- the browser sends `serf-appwire-v2` and rejects a different initialize
+  response version;
+- the Hub rejects an initialize request with a missing or different protocol
+  version;
+- the Hub rejects a mismatched daemon rendezvous entry or initialize handshake
+  before relay attachment;
 - `thread/read` subscribes before snapshot capture;
 - an event produced before, during, and after snapshot capture is represented
   by the final client model;
 - replacement subscription has no ownership gap;
-- relay recovery emits resync and the subsequent rejoin converges;
-- old daemon capabilities do not advertise retry-safe mutations; and
-- a compatible resumed daemon restores mutation controls.
+- relay recovery emits resync and the subsequent rejoin converges.
 
 ### Frontend
 
@@ -563,8 +573,7 @@ Composer/QueueStrip components with fake transports and IndexedDB:
 - two same-text messages reconcile only their matching IDs;
 - an explicit rejection restores editable input and clears its outbox record;
 - local outbox failure leaves composer content untouched and sends no RPC; and
-- mixed-version threads expose the documented disabled capability instead of
-  legacy mutation behavior.
+- the frontend never branches between legacy and retry-safe mutation paths.
 
 Tests use fake clocks only for heartbeat/backoff scheduling. No assertion uses
 elapsed time to decide whether a mutation succeeded.
@@ -587,6 +596,8 @@ behavior.
 - A rejoining client receives an authoritative snapshot plus every later
   notification with no gap.
 - Content equality is never used to reconcile user mutations.
-- Mixed-version behavior is explicit and cannot silently weaken the contract.
+- Browser, Hub, and daemon protocol mismatches fail before any mutation can be
+  submitted.
+- No compatibility path can silently weaken the receipt contract.
 - The WebUI contains no “didn't confirm,” “view did not update,” or
   “reload before retrying” mutation warning.
