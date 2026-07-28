@@ -73,10 +73,17 @@ function shellExitCode(item: ItemModel): number | undefined {
 // comment used to carry).
 function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
   const output = item.output ?? "";
-  const buffer = useRef<{ itemId: string; sessionRef?: string; tail: AnsiTailBuffer } | undefined>(undefined);
-  if (buffer.current?.itemId !== item.id || buffer.current.sessionRef !== sessionRef) {
-    buffer.current = { itemId: item.id, sessionRef, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
+  const buffer = useRef<{ itemId: string; sessionRef?: string; live: boolean; tail: AnsiTailBuffer } | undefined>(
+    undefined,
+  );
+  if (
+    buffer.current?.itemId !== item.id ||
+    buffer.current.sessionRef !== sessionRef ||
+    (!live && buffer.current.live)
+  ) {
+    buffer.current = { itemId: item.id, sessionRef, live, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
   }
+  buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
   if (output === "") return null;
   const body =

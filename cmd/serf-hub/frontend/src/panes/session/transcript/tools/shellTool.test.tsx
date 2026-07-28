@@ -229,6 +229,26 @@ test("rolling ANSI state is isolated when an item ID repeats in another session"
   expect(view.container.querySelector("code")?.textContent).toBe("TWO2");
 });
 
+test("authoritative completed output replaces a non-prefix live snapshot", () => {
+  const Body = toolRendererFor("shell").body!;
+  const view = render(<Body item={withCommand("run", { output: "live" })} live sessionRef="local:session-one" />);
+
+  view.rerender(
+    <Body item={withCommand("run", { output: "settled output" })} live={false} sessionRef="local:session-one" />,
+  );
+  expect(view.container.querySelector("code")?.textContent).toBe("settled output");
+});
+
+test("an ESC intermediate before the raw boundary makes a retained bracket a final byte", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `${"p".repeat(50)}\u001b(${"["}${"V".repeat(7_999)}`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(container.querySelector("code")?.textContent).toBe(
+    `earlier output not retained — showing the last 8,000 chars\n${"V".repeat(7_999)}`,
+  );
+});
+
 test("SGR 21 resets inherited bold without suppressing a later re-enable", () => {
   const Body = toolRendererFor("shell").body!;
   const output = `\u001b[1m${"x".repeat(8_100)}\u001b[21mplain\u001b[1mAFTER`;

@@ -358,7 +358,7 @@ function sgrSequence(state: SgrState): string {
 
 type ControlState =
   | { kind: "text" }
-  | { kind: "escape" }
+  | { kind: "escape"; intermediate: boolean }
   | { kind: "csi"; sequence: string; overflow: boolean }
   | { kind: "osc"; escape: boolean }
   | { kind: "string"; escape: boolean };
@@ -399,11 +399,16 @@ function scanTerminalText(text: string, state: TerminalState, emit: (text: strin
     }
 
     if (state.control.kind === "escape") {
-      if (character === "[") state.control = { kind: "csi", sequence: "\u001b[", overflow: false };
-      else if (character === "]") state.control = { kind: "osc", escape: false };
-      else if (character === "P" || character === "X" || character === "^" || character === "_") {
+      if (!state.control.intermediate && character === "[") {
+        state.control = { kind: "csi", sequence: "\u001b[", overflow: false };
+      } else if (!state.control.intermediate && character === "]") state.control = { kind: "osc", escape: false };
+      else if (
+        !state.control.intermediate &&
+        (character === "P" || character === "X" || character === "^" || character === "_")
+      ) {
         state.control = { kind: "string", escape: false };
       } else if (code >= 0x20 && code <= 0x2f) {
+        state.control.intermediate = true;
         index += 1;
         continue;
       } else if (code >= 0x30 && code <= 0x7e) state.control = { kind: "text" };
@@ -417,7 +422,7 @@ function scanTerminalText(text: string, state: TerminalState, emit: (text: strin
 
     if (state.control.kind === "csi") {
       if (character === "\u001b") {
-        state.control = { kind: "escape" };
+        state.control = { kind: "escape", intermediate: false };
         index += 1;
         continue;
       }
@@ -443,7 +448,7 @@ function scanTerminalText(text: string, state: TerminalState, emit: (text: strin
       continue;
     }
 
-    if (character === "\u001b") state.control = { kind: "escape" };
+    if (character === "\u001b") state.control = { kind: "escape", intermediate: false };
     else if (character === "\u009b") state.control = { kind: "csi", sequence: "\u001b[", overflow: false };
     else if (character === "\u009d") state.control = { kind: "osc", escape: false };
     else if (character === "\u0090" || character === "\u0098" || character === "\u009e" || character === "\u009f") {
