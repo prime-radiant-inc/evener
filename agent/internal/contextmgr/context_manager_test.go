@@ -1686,6 +1686,48 @@ func TestSafeCutoff_SkipsSteering(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_PreservesToolCallAcrossHookCompleted(t *testing.T) {
+	const callID = "call_with_hook"
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall(callID, "probe", `{}`)},
+		schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 2, nil, "communicate")
+
+	gotKinds := make([]string, len(result))
+	for i, turn := range result {
+		gotKinds[i] = string(turn.Kind)
+	}
+	if got, want := strings.Join(gotKinds, ","), "CHECKPOINT,ASSISTANT,HOOK_COMPLETED,TOOL_RESULTS,ASSISTANT"; got != want {
+		t.Fatalf("checkpoint kinds = %s, want %s", got, want)
+	}
+
+	foundCall := false
+	for _, part := range result[1].Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+			foundCall = true
+		}
+	}
+	if !foundCall {
+		t.Fatalf("preserved assistant is missing tool call %q", callID)
+	}
+
+	foundResult := false
+	for _, part := range result[3].Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("preserved result is missing tool call ID %q", callID)
+	}
+}
+
 func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	// When safeCutoff returns -1, checkpoint should return history unchanged.
 	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnTool

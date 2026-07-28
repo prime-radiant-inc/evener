@@ -1327,15 +1327,19 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 }
 
 // safeCutoff adjusts a cutoff index so the preserved turns don't start with a
-// TurnTool or TurnSteering, which would produce invalid message ordering.
-// TurnTool without a preceding assistant tool_call is invalid. TurnSteering
-// after a checkpoint/summary (both user-role) produces consecutive user messages
-// that some APIs reject.
+// TurnTool or TurnSteering, which would produce invalid message ordering. The
+// scan also crosses hook markers that may be persisted between an assistant
+// tool call and its result. TurnTool without a preceding assistant tool_call is
+// invalid. TurnSteering after a checkpoint/summary (both user-role) produces
+// consecutive user messages that some APIs reject.
 // Returns -1 if no safe position exists; callers should skip compaction.
 func safeCutoff(history []schema.Turn, cutoff int) int {
 	for cutoff > 0 && cutoff < len(history) {
 		k := history[cutoff].Kind
-		if k == schema.TurnTool || k == schema.TurnToolResults || k == schema.TurnSteering {
+		if k == schema.TurnTool ||
+			k == schema.TurnToolResults ||
+			k == schema.TurnSteering ||
+			k == schema.TurnHookCompleted {
 			cutoff--
 			continue
 		}
