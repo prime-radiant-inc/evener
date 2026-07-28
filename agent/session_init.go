@@ -136,6 +136,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("generate session ID: %w", err)
 	}
+	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load client mutation state: %w", err)
+	}
 	if cfg.AcquireSessionOwnership != nil {
 		if err := cfg.AcquireSessionOwnership(sessionID); err != nil {
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
@@ -163,6 +167,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		readFiles:                     map[string]bool{},
 		sessionCtx:                    sessCtx,
 		cancelFunc:                    sessCancel,
+		clientMutations:               clientMutations,
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
@@ -415,6 +420,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.testOnly = restoreCfg.testOnly
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
+	clientMutations, err := newClientMutationStore(cfg.StateDir, meta.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load client mutation state: %w", err)
+	}
 
 	// Validate and reserve the existing transcript before initialization can
 	// mutate any session artifacts. Missing transcripts are created later;
@@ -520,9 +529,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			updated: meta.NameUpdatedAt,
 			set:     strings.TrimSpace(meta.Name) != "",
 		},
-		readFiles:  map[string]bool{},
-		sessionCtx: sessCtx,
-		cancelFunc: sessCancel,
+		readFiles:       map[string]bool{},
+		sessionCtx:      sessCtx,
+		cancelFunc:      sessCancel,
+		clientMutations: clientMutations,
 	}
 	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager

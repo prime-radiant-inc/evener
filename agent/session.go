@@ -217,6 +217,11 @@ type Session struct {
 	// never the reverse, and never held across any other Session lock), so it
 	// cannot invert against queueEventsMu > mu or responseSideEffectsMu > mu.
 	queuePersistMu sync.Mutex
+	// clientMutations owns the durable retry-safe mutation journal and its
+	// materialized client-side queue projection. It has its own serializer;
+	// callers must not hold Session.mu while reserving or updating it because
+	// persistence performs filesystem I/O.
+	clientMutations *clientMutationStore
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
