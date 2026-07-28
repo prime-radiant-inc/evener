@@ -83,11 +83,78 @@ const NAMED_FOREGROUND_CODES: Record<AnsiNamedColor, number> = {
   "bright-white": 97,
 };
 
+const DECORATION_RESET = new Map([
+  [23, 3],
+  [24, 4],
+  [27, 7],
+  [28, 8],
+  [29, 9],
+]);
+
 function isSgrSequence(sequence: string): boolean {
   if (!sequence.startsWith("\u001b[") || !sequence.endsWith("m")) return false;
   return Array.from(sequence.slice(2, -1)).every(
     (character) => character === ";" || (character >= "0" && character <= "9"),
   );
+}
+
+function escapeSequenceEnd(text: string, start: number): number {
+  let index = start;
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code < 0x20 || code > 0x2f) break;
+    index += 1;
+  }
+  if (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code >= 0x30 && code <= 0x7e) return index;
+  }
+  return start - 1;
+}
+
+function normalizedSgr(sequence: string, decorations: Set<number>): string {
+  const parameters = sequence
+    .slice(2, -1)
+    .split(";")
+    .map((parameter) => (parameter === "" ? 0 : Number(parameter)));
+  const normalized: number[] = [];
+
+  for (let index = 0; index < parameters.length; index += 1) {
+    const code = parameters[index] ?? 0;
+    if ((code === 38 || code === 48) && (parameters[index + 1] === 2 || parameters[index + 1] === 5)) {
+      const colorLength = parameters[index + 1] === 2 ? 5 : 3;
+      normalized.push(...parameters.slice(index, index + colorLength));
+      index += colorLength - 1;
+      continue;
+    }
+    if (code === 0) {
+      decorations.clear();
+      normalized.push(code);
+      continue;
+    }
+    if (code === 22) {
+      decorations.delete(1);
+      decorations.delete(2);
+      normalized.push(code);
+      continue;
+    }
+    const resetEnable = DECORATION_RESET.get(code);
+    if (resetEnable !== undefined) {
+      decorations.delete(resetEnable);
+      normalized.push(code);
+      continue;
+    }
+    if (code === 1 || code === 2 || code === 3 || code === 4 || code === 7 || code === 8 || code === 9) {
+      if (!decorations.has(code)) {
+        decorations.add(code);
+        normalized.push(code);
+      }
+      continue;
+    }
+    normalized.push(code);
+  }
+
+  return normalized.length === 0 ? "" : `\u001b[${normalized.join(";")}m`;
 }
 
 function controlStringEnd(text: string, start: number, bellTerminated: boolean): number {
@@ -120,8 +187,14 @@ function isNonTextControl(code: number): boolean {
   );
 }
 
-function presentationSequencesOnly(text: string): string {
+interface PresentationScan {
+  text: string;
+  pending: string;
+}
+
+function presentationSequences(text: string): PresentationScan {
   let result = "";
+  const decorations = new Set<number>();
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index] ?? "";
     const code = character.charCodeAt(0);
@@ -130,44 +203,61 @@ function presentationSequencesOnly(text: string): string {
       const next = text[index + 1];
       if (next === "[") {
         const end = csiEnd(text, index + 2);
-        if (end === text.length) break;
+        if (end === text.length) return { text: result, pending: text.slice(index) };
         const sequence = text.slice(index, end + 1);
-        if (isSgrSequence(sequence)) result += sequence;
+        if (isSgrSequence(sequence)) result += normalizedSgr(sequence, decorations);
         index = end;
         continue;
       }
       if (next === "]") {
-        index = controlStringEnd(text, index + 2, true);
+        const end = controlStringEnd(text, index + 2, true);
+        if (end === text.length) return { text: result, pending: text.slice(index) };
+        index = end;
         continue;
       }
       if (next === "P" || next === "X" || next === "^" || next === "_") {
-        index = controlStringEnd(text, index + 2, false);
+        const end = controlStringEnd(text, index + 2, false);
+        if (end === text.length) return { text: result, pending: text.slice(index) };
+        index = end;
         continue;
       }
       if (next === "\\") index += 1;
+      else {
+        const end = escapeSequenceEnd(text, index + 1);
+        if (end === index) return { text: result, pending: text.slice(index) };
+        index = end;
+      }
       continue;
     }
 
     if (character === "\u009b") {
       const end = csiEnd(text, index + 1);
-      if (end === text.length) break;
+      if (end === text.length) return { text: result, pending: text.slice(index) };
       const sequence = `\u001b[${text.slice(index + 1, end + 1)}`;
-      if (isSgrSequence(sequence)) result += sequence;
+      if (isSgrSequence(sequence)) result += normalizedSgr(sequence, decorations);
       index = end;
       continue;
     }
     if (character === "\u009d") {
-      index = controlStringEnd(text, index + 1, true);
+      const end = controlStringEnd(text, index + 1, true);
+      if (end === text.length) return { text: result, pending: text.slice(index) };
+      index = end;
       continue;
     }
     if (character === "\u0090" || character === "\u0098" || character === "\u009e" || character === "\u009f") {
-      index = controlStringEnd(text, index + 1, false);
+      const end = controlStringEnd(text, index + 1, false);
+      if (end === text.length) return { text: result, pending: text.slice(index) };
+      index = end;
       continue;
     }
 
     if (!isNonTextControl(code)) result += character;
   }
-  return result;
+  return { text: result, pending: "" };
+}
+
+function presentationSequencesOnly(text: string): string {
+  return presentationSequences(text).text;
 }
 
 function rgbValue(value: string | null): string | undefined {
@@ -272,27 +362,80 @@ function ansiSafeCut(text: string, max: number): number {
   return code >= 0xdc00 && code <= 0xdfff ? cut + 1 : cut;
 }
 
-function boundedAnsiTail(text: string, max: number): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false };
+interface BoundedAnsiTail {
+  text: string;
+  pending: string;
+  truncated: boolean;
+}
 
-  const safeText = presentationSequencesOnly(text);
-  if (safeText.length <= max) return { text: safeText, truncated: false };
+function boundedAnsiTail(text: string, max: number): BoundedAnsiTail {
+  if (text.length <= max) return { text, pending: "", truncated: false };
+
+  const presentation = presentationSequences(text);
+  const safeText = presentation.text;
+  if (safeText.length <= max) return { text: safeText, pending: presentation.pending, truncated: false };
 
   const cut = ansiSafeCut(safeText, max);
   return {
     text: `${presentationAt(safeText, cut)}${safeText.slice(cut)}`,
+    pending: presentation.pending,
     truncated: true,
   };
 }
 
-export function ansiTailSlice(text: string, max: number): string {
-  return boundedAnsiTail(text, max).text;
+function rawTailSlice(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let cut = text.length - max;
+  const code = text.charCodeAt(cut);
+  if (code >= 0xdc00 && code <= 0xdfff) cut += 1;
+  return text.slice(cut);
 }
 
-export function ansiTailFold(text: string, max: number): string {
-  const tail = boundedAnsiTail(text, max);
-  if (!tail.truncated) return tail.text;
-  return `earlier output not retained — showing the last ${max.toLocaleString("en-US")} chars\n${tail.text}`;
+export interface AnsiTailSnapshot {
+  renderedText: string;
+  copyText: string;
+  truncated: boolean;
+}
+
+/**
+ * Maintains a bounded presentation tail for an append-only shell output
+ * stream. Once the first snapshot is read, each update parses only the
+ * previous bounded tail plus the appended delta.
+ */
+export class AnsiTailBuffer {
+  private sourceLength = 0;
+  private renderedText = "";
+  private copyText = "";
+  private pending = "";
+  private truncated = false;
+
+  constructor(private readonly max: number) {}
+
+  update(source: string): AnsiTailSnapshot {
+    if (source.length < this.sourceLength) this.reset();
+    const delta = source.slice(this.sourceLength);
+    if (delta !== "") {
+      const tail = boundedAnsiTail(`${this.renderedText}${this.pending}${delta}`, this.max);
+      this.renderedText = tail.text;
+      this.copyText = rawTailSlice(`${this.copyText}${delta}`, this.max);
+      this.pending = tail.pending;
+      this.truncated = this.truncated || tail.truncated;
+      this.sourceLength = source.length;
+    }
+    return {
+      renderedText: this.renderedText,
+      copyText: this.copyText,
+      truncated: this.truncated,
+    };
+  }
+
+  private reset() {
+    this.sourceLength = 0;
+    this.renderedText = "";
+    this.copyText = "";
+    this.pending = "";
+    this.truncated = false;
+  }
 }
 
 export function parseAnsiLines(text: string): AnsiLine[] {

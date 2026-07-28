@@ -19,9 +19,10 @@
 // heuristic looks only inside the FINAL bracketed segment (never the command's
 // own stdout/stderr body) to keep false positives unlikely.
 
+import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
-import { ansiTailFold, ansiTailSlice } from "../../../../widgets/codeblock/ansi";
+import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseArgs, str, trailingBracketFooter } from "./helpers";
@@ -72,9 +73,17 @@ function shellExitCode(item: ItemModel): number | undefined {
 // comment used to carry).
 function ShellBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
+  const buffer = useRef<{ itemId: string; tail: AnsiTailBuffer } | undefined>(undefined);
+  if (buffer.current?.itemId !== item.id) {
+    buffer.current = { itemId: item.id, tail: new AnsiTailBuffer(TAIL_MAX_CHARS) };
+  }
+  const tail = buffer.current.tail.update(output);
   if (output === "") return null;
-  const body = live ? ansiTailSlice(output, TAIL_MAX_CHARS) : ansiTailFold(output, TAIL_MAX_CHARS);
-  return <CodeBlock text={body} copyLabel="Copy output" ansi />;
+  const body =
+    live || !tail.truncated
+      ? tail.renderedText
+      : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${tail.renderedText}`;
+  return <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />;
 }
 
 // nonzeroExit is the "this command failed" predicate shared by failed() and

@@ -8,6 +8,9 @@ import styles from "./codeblock.module.css";
 
 export interface CodeBlockProps {
   text: string;
+  /** Text written by the copy control when display preparation changed the
+   * rendered source. Defaults to text. */
+  copyText?: string;
   language?: string;
   /** Interpret ANSI Select Graphic Rendition sequences as styled text. Other
    * terminal controls are consumed; this remains a log block, not a terminal. */
@@ -77,6 +80,7 @@ function CopiedIcon() {
  */
 export function CodeBlock({
   text,
+  copyText,
   language,
   ansi = false,
   showLineNumbers = false,
@@ -111,7 +115,7 @@ export function CodeBlock({
     // Always the FULL text, never `visibleLines` - folding is a display
     // convenience, not a truncation, and copy must give back exactly what
     // the tool actually produced.
-    await navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(copyText ?? text);
     setCopied(true);
   }
 

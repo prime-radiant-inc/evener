@@ -1,10 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./shellTool";
 import type { ItemModel } from "../../../../protocol/model";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -207,6 +211,37 @@ test("a settled shell tail restores styling that began before the retained outpu
     `earlier output not retained — showing the last 8,000 chars\n${"x".repeat(7_992)}KEPT`,
   );
   expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe(`${"x".repeat(7_992)}KEPT`);
+});
+
+test("copying a bounded shell result preserves the original retained bytes", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  const output = `plain\u001b[32m${"x".repeat(8_100)}KEPT\u001b[0m`;
+  render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy output" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(output.slice(-8_000));
+});
+
+test("a live shell tail carries presentation state forward using only appended output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const firstOutput = `plain\u001b[32m${"x".repeat(8_100)}`;
+  const view = render(<Body item={withCommand("long-run", { output: firstOutput })} live />);
+
+  view.rerender(<Body item={withCommand("long-run", { output: `${firstOutput}KEPT` })} live />);
+  expect(view.container.querySelector('[data-ansi-fg="green"]')?.textContent).toContain("KEPT");
+});
+
+test("a live shell tail carries an incomplete terminal control across output deltas", () => {
+  const Body = toolRendererFor("shell").body!;
+  const firstOutput = `${"x".repeat(8_100)}\u001b]split ti`;
+  const view = render(<Body item={withCommand("long-run", { output: firstOutput })} live />);
+
+  const completedOutput = `${firstOutput}tle\u0007after`;
+  view.rerender(<Body item={withCommand("long-run", { output: completedOutput })} live />);
+  expect(view.container.querySelector("code")?.textContent).toBe(`${"x".repeat(7_995)}after`);
+  expect(view.container.textContent).not.toContain("title");
 });
 
 test("body renders nothing for a command with no output at all", () => {

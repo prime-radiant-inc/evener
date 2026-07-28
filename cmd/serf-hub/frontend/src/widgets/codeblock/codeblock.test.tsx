@@ -92,6 +92,15 @@ test("clicking Copy writes the full text to the clipboard", async () => {
   expect(writeText).toHaveBeenCalledExactlyOnceWith("const x = 1;");
 });
 
+test("a caller can keep copied text byte-faithful when rendered text is transformed", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  render(<CodeBlock text="\u001b[32mretained" copyText="original retained bytes" ansi />);
+
+  await user.click(screen.getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("original retained bytes");
+});
+
 test("the copy button label flips to Copied after a click, then reverts", async () => {
   // @testing-library/user-event's click() hangs indefinitely once fake
   // timers are active in this environment (reproduced with a bare Button

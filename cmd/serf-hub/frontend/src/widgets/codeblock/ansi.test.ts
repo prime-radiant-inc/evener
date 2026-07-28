@@ -75,10 +75,10 @@ test("OSC hyperlinks and cursor controls are consumed without losing printable t
   expect(plainText(lines)).toBe("safelink after");
 });
 
-test("a malformed escape byte cannot leak into rendered text", () => {
+test("a two-byte escape sequence cannot leak into rendered text", () => {
   const lines = parseAnsiLines("safe\u001bbroken");
 
-  expect(plainText(lines)).toBe("safebroken");
+  expect(plainText(lines)).toBe("saferoken");
   expect(plainText(lines)).not.toContain("\u001b");
 });
 
@@ -102,4 +102,17 @@ test("C1 OSC consumes its payload through a C1 string terminator", () => {
 
 test("an unterminated control string consumes the rest of the input", () => {
   expect(plainText(parseAnsiLines("visible\u001b]unterminated protocol payload"))).toBe("visible");
+});
+
+test("non-CSI escape sequences consume their complete protocol bytes", () => {
+  expect(plainText(parseAnsiLines("a\u001b7b\u001b8c\u001b(Bd"))).toBe("abcd");
+});
+
+test("repeated decoration enables remain idempotent after a selective reset", () => {
+  const [line] = parseAnsiLines("\u001b[1m\u001b[1mbold\u001b[22mplain");
+
+  expect(line).toMatchObject([
+    { text: "bold", bold: true },
+    { text: "plain", bold: false },
+  ]);
 });

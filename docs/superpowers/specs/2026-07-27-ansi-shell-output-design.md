@@ -32,8 +32,10 @@ Approach 1 is the smallest reliable change for captured command output.
 ## Design
 
 Add an opt-in ANSI presentation mode to `CodeBlock`. Its `text` prop remains the
-single source for line folding and clipboard writes. ANSI mode changes only the
-React children rendered inside the existing `<pre><code>` structure.
+source for line folding, while an optional `copyText` lets a caller preserve
+original retained bytes when display preparation synthesizes presentation
+state. ANSI mode changes only the React children rendered inside the existing
+`<pre><code>` structure.
 
 The renderer parses the complete `text` value into styled logical lines before
 `CodeBlock` selects a folded tail. This preserves an SGR state that began on a
@@ -56,11 +58,13 @@ Enable ANSI mode only in the descriptor shared by `shell`, `exec_command`, and
 `run_shell_command`. Other `CodeBlock` consumers and the generic raw-tool
 fallback retain their existing plain-text contract.
 
-Long-output behavior remains unchanged. Shell output is first bounded by the
-existing character tail helper, and `CodeBlock` continues to fold long output
-to its visible tail. ANSI parsing operates on the complete bounded `text` prop
-before that line fold, while copy writes that same prop exactly, including its
-escape sequences.
+Long shell output uses an ANSI-aware 8,000-character tail. It never cuts inside
+an SGR sequence and synthesizes the presentation state active at the retained
+boundary, while clipboard data remains the original raw retained tail. Live
+output keeps a bounded rolling parser state, so each append processes only the
+previous tail and the new delta rather than rescanning the complete command
+history. `CodeBlock` continues to fold the resulting logical lines to its
+visible tail.
 
 ## Testing
 
