@@ -134,6 +134,9 @@ export class AppwireClient {
   // initialize+initialized handshake and its result.
   connect(): Promise<InitializeResponse> {
     if (!this.connectPromise) {
+      if (this.isClosed()) {
+        return Promise.reject(new ConnectionClosedError("AppwireClient: closed"));
+      }
       this.connectPromise = this.performHandshake();
     }
     return this.connectPromise;

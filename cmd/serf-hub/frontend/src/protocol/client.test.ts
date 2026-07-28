@@ -86,7 +86,14 @@ describe("AppwireClient", () => {
 
   test("connect is idempotent across concurrent callers", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    let socketsCreated = 0;
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        socketsCreated += 1;
+        return fake;
+      },
+    });
 
     const first = client.connect();
     const second = client.connect();
@@ -94,7 +101,33 @@ describe("AppwireClient", () => {
     await first;
 
     expect(second).toBe(first);
+    expect(socketsCreated).toBe(1);
     expect(sentFrames(fake).filter((f) => f.method === "initialize")).toHaveLength(1);
+  });
+
+  test("connect after close rejects as closed without creating a socket", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    client.close();
+    const connecting = client.connect();
+    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
+    const socketsCreated = sockets.length;
+
+    // A second close makes a socket-producing mutation settle its connect
+    // promise; socketsCreated preserves the dial count from before cleanup.
+    client.close();
+
+    await rejection;
+    expect(socketsCreated).toBe(0);
+    expect(sockets).toHaveLength(0);
   });
 
   test("connect sends a caller-provided clientInfo instead of the default", async () => {
