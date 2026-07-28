@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 // without changing process-wide environment variables.
 func LoadProviderConfigAt(path string, opts ...llm.EnvOption) (providercfg.Config, bool, error) {
 	if strings.TrimSpace(path) == "" {
-		return providercfg.Config{}, false, fmt.Errorf("providers config path is empty")
+		return providercfg.Config{}, false, errors.New("providers config path is empty")
 	}
 
 	cfg, exists, err := providercfg.LoadFile(path)

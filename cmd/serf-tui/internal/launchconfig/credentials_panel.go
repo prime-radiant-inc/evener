@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"maps"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -480,17 +481,13 @@ func (p CredentialsPanel) View() string {
 
 func cloneCredentialTestPending(current map[string]bool) map[string]bool {
 	next := make(map[string]bool, len(current)+1)
-	for name, pending := range current {
-		next[name] = pending
-	}
+	maps.Copy(next, current)
 	return next
 }
 
 func cloneCredentialTestResults(current map[string]appwire.AuthTestResponse) map[string]appwire.AuthTestResponse {
 	next := make(map[string]appwire.AuthTestResponse, len(current)+1)
-	for name, result := range current {
-		next[name] = result
-	}
+	maps.Copy(next, current)
 	return next
 }
 
