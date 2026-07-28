@@ -97,20 +97,6 @@ function isSgrSequence(sequence: string): boolean {
   );
 }
 
-function escapeSequenceEnd(text: string, start: number): number {
-  let index = start;
-  while (index < text.length) {
-    const code = text.charCodeAt(index);
-    if (code < 0x20 || code > 0x2f) break;
-    index += 1;
-  }
-  if (index < text.length) {
-    const code = text.charCodeAt(index);
-    if (code >= 0x30 && code <= 0x7e) return index;
-  }
-  return start - 1;
-}
-
 function normalizedSgr(sequence: string, state: SgrState): string {
   const parameters = sequence
     .slice(2, -1)
@@ -124,10 +110,13 @@ function normalizedSgr(sequence: string, state: SgrState): string {
       const truecolor = parameters[index + 1] === 2;
       const colorLength = truecolor ? 5 : 3;
       const color = parameters.slice(index, index + colorLength);
+      if (color.length < colorLength) {
+        normalized.push(code, parameters[index + 1] ?? 0);
+        index += 1;
+        continue;
+      }
       const channels = truecolor ? color.slice(2) : color.slice(2, 3);
-      const validColor =
-        color.length === colorLength &&
-        channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+      const validColor = channels.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
       if (validColor) {
         if (code === 38) state.foreground = color;
         else state.background = color;
@@ -193,24 +182,6 @@ function normalizedSgr(sequence: string, state: SgrState): string {
   return normalized.length === 0 ? "" : `\u001b[${normalized.join(";")}m`;
 }
 
-function controlStringEnd(text: string, start: number, bellTerminated: boolean): number {
-  for (let index = start; index < text.length; index += 1) {
-    const character = text[index];
-    if (bellTerminated && character === "\u0007") return index;
-    if (character === "\u009c") return index;
-    if (character === "\u001b" && text[index + 1] === "\\") return index + 1;
-  }
-  return text.length;
-}
-
-function csiEnd(text: string, start: number): number {
-  for (let index = start; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code >= 0x40 && code <= 0x7e) return index;
-  }
-  return text.length;
-}
-
 function isNonTextControl(code: number): boolean {
   return (
     (code >= 0x00 && code <= 0x08) ||
@@ -221,79 +192,6 @@ function isNonTextControl(code: number): boolean {
     (code >= 0x1c && code <= 0x1f) ||
     (code >= 0x7f && code <= 0x9f)
   );
-}
-
-interface PresentationScan {
-  text: string;
-  pending: string;
-}
-
-function presentationSequences(text: string): PresentationScan {
-  let result = "";
-  const sgr = defaultSgrState();
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index] ?? "";
-    const code = character.charCodeAt(0);
-
-    if (character === "\u001b") {
-      const next = text[index + 1];
-      if (next === "[") {
-        const end = csiEnd(text, index + 2);
-        if (end === text.length) return { text: result, pending: text.slice(index) };
-        const sequence = text.slice(index, end + 1);
-        if (isSgrSequence(sequence)) result += normalizedSgr(sequence, sgr);
-        index = end;
-        continue;
-      }
-      if (next === "]") {
-        const end = controlStringEnd(text, index + 2, true);
-        if (end === text.length) return { text: result, pending: text.slice(index) };
-        index = end;
-        continue;
-      }
-      if (next === "P" || next === "X" || next === "^" || next === "_") {
-        const end = controlStringEnd(text, index + 2, false);
-        if (end === text.length) return { text: result, pending: text.slice(index) };
-        index = end;
-        continue;
-      }
-      if (next === "\\") index += 1;
-      else {
-        const end = escapeSequenceEnd(text, index + 1);
-        if (end === index) return { text: result, pending: text.slice(index) };
-        index = end;
-      }
-      continue;
-    }
-
-    if (character === "\u009b") {
-      const end = csiEnd(text, index + 1);
-      if (end === text.length) return { text: result, pending: text.slice(index) };
-      const sequence = `\u001b[${text.slice(index + 1, end + 1)}`;
-      if (isSgrSequence(sequence)) result += normalizedSgr(sequence, sgr);
-      index = end;
-      continue;
-    }
-    if (character === "\u009d") {
-      const end = controlStringEnd(text, index + 1, true);
-      if (end === text.length) return { text: result, pending: text.slice(index) };
-      index = end;
-      continue;
-    }
-    if (character === "\u0090" || character === "\u0098" || character === "\u009e" || character === "\u009f") {
-      const end = controlStringEnd(text, index + 1, false);
-      if (end === text.length) return { text: result, pending: text.slice(index) };
-      index = end;
-      continue;
-    }
-
-    if (!isNonTextControl(code)) result += character;
-  }
-  return { text: result, pending: "" };
-}
-
-function presentationSequencesOnly(text: string): string {
-  return presentationSequences(text).text;
 }
 
 function rgbValue(value: string | null): string | undefined {
@@ -456,6 +354,12 @@ function scanTerminalText(text: string, state: TerminalState, emit: (text: strin
     } else if (!isNonTextControl(code)) emit(character);
     index += 1;
   }
+}
+
+function presentationSequencesOnly(text: string): string {
+  const presentation: string[] = [];
+  scanTerminalText(text, defaultTerminalState(), (part) => presentation.push(part));
+  return presentation.join("");
 }
 
 export interface AnsiTailSnapshot {

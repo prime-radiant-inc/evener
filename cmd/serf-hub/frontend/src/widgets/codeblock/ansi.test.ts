@@ -116,3 +116,10 @@ test("repeated decoration enables remain idempotent after a selective reset", ()
     { text: "plain", bold: false },
   ]);
 });
+
+test("an ESC interrupts an incomplete CSI sequence and starts the next style", () => {
+  const lines = parseAnsiLines("\u001b[31\u001b[32mPASS");
+
+  expect(plainText(lines)).toBe("PASS");
+  expect(lines[0]).toMatchObject([{ text: "PASS", foreground: { kind: "named", name: "green" } }]);
+});

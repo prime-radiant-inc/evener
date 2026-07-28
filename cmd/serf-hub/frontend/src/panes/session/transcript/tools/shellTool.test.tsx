@@ -269,6 +269,17 @@ test("a malformed extended color does not replace inherited valid color state", 
   ).toBe(true);
 });
 
+test("incomplete truecolor parameters retain Anser reset and bold semantics at the boundary", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `\u001b[31m\u001b[38;2;0;1m${"x".repeat(8_100)}AFTER`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(
+    Array.from(container.querySelectorAll("[data-ansi-bold]")).some((node) => node.textContent?.endsWith("AFTER")),
+  ).toBe(true);
+  expect(container.querySelector('[data-ansi-fg="red"]')).toBeNull();
+});
+
 test("display and copy share the same raw boundary across a large OSC payload", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
