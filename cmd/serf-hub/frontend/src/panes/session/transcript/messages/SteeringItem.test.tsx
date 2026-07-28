@@ -246,6 +246,13 @@ test("a job-notification steer renders a notification card (not a steering divid
   expect(screen.getByText("Job completed")).toBeTruthy();
 });
 
+test("a job-notification steer expands the notification before asserting card body content", () => {
+  render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-card-root")).toBeTruthy();
+  expect(screen.getByText("Job completed")).toBeTruthy();
+});
+
 test("a notification restores its owning session to main before opening the child beside it", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();
@@ -271,6 +278,7 @@ test("a notification restores its owning session to main before opening the chil
 
 test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
   expect(screen.getByTestId("notification-raw").textContent).toContain("job_7");
 });
 

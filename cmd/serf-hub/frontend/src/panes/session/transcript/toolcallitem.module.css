@@ -48,14 +48,11 @@ summary.row:focus-visible {
 /* The agent's stated reason for the call - the one part of the row written for
  * a human, so it gets the sans face and the full-contrast ink.
  *
- * flex-basis 0, not auto: the row wraps, and a wrapping flex container decides
- * where to break using each item's HYPOTHETICAL main size - which for basis
- * auto is the text's full unwrapped width. A long line therefore did not just
- * wrap inside itself; it pushed the whole item onto a flex line of its own,
- * stranding the leading chevron alone on the line above. Basis 0 makes this
- * item contribute nothing to that decision, so it shares the chevron's line at
- * every width and wraps internally instead. (grow: 1 still fills the leftover,
- * so nothing changes on a wide pane.) */
+ * Stacked rows keep overflow-wrap:anywhere so long machine text can still break.
+ * Collapsed one-line composition (tiered density): both spans stop growing,
+ * clamp to one line, and ellipsis — the em-dash separator between them owns
+ * the demotion boundary. The stacked two-line shape survives only on expanded
+ * rows. */
 .purpose {
   flex: 1 1 0;
   min-width: 0;
@@ -65,7 +62,9 @@ summary.row:focus-visible {
 }
 
 /* verb + target + meta, the descriptor's own summary() string: machine text,
- * so mono. flex-basis 0 for the same reason .purpose has it - see there. */
+ * so mono. flex-basis 0 for the same reason .purpose has it - see there.
+ * overflow-wrap:anywhere stays in the stacked/default case; the oneline override
+ * below replaces it with nowrap + ellipsis when the row collapses. */
 .summary {
   flex: 1 1 0;
   min-width: 0;
@@ -73,6 +72,25 @@ summary.row:focus-visible {
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   overflow-wrap: anywhere;
+}
+
+.row[data-oneline="true"] {
+  flex-wrap: nowrap;
+}
+
+.row[data-oneline="true"] .purpose,
+.row[data-oneline="true"] .summary {
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.separator {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-low);
 }
 
 .status {

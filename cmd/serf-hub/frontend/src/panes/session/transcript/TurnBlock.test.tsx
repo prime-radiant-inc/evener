@@ -8,7 +8,7 @@ import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
-import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
+import { type ItemRenderProps, ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
 import "./tools";
 
 // See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
@@ -266,6 +266,22 @@ test("passes the owning turn through to each item renderer", () => {
   const items = [item({ id: "a", type: "tb-turn-echo" })];
   render(<TurnBlock turn={turn(items, { id: "turn_owner" })} />);
   expect(screen.getByTestId("turn-echo").textContent).toBe("turn_owner");
+});
+
+test("passes opensExchange and agentLabel through ItemRenderProps", () => {
+  const seen: Array<{ opensExchange?: boolean; agentLabel?: string }> = [];
+  const originalAgentMessageRenderer = itemRendererFor("agentMessage");
+  try {
+    registerItemRenderer("agentMessage", (props) => {
+      seen.push({ opensExchange: props.opensExchange, agentLabel: props.agentLabel });
+      return null;
+    });
+    const agentItem = { id: "a1", turnId: "t1", type: "agentMessage", text: "hi", status: "completed" };
+    render(<TurnBlock turn={turn([agentItem])} exchangeOpeners={new Set(["a1"])} agentLabel="k3" />);
+    expect(seen).toEqual([{ opensExchange: true, agentLabel: "k3" }]);
+  } finally {
+    registerItemRenderer("agentMessage", originalAgentMessageRenderer);
+  }
 });
 
 // The exact mechanism wave-4 T5c wraps most registered item renderers with

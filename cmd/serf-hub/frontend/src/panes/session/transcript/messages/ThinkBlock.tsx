@@ -145,7 +145,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
             toggleDisclosure(disclosureKey, false);
           }}
         >
-          {thoughtLabel(durationMs, preview)}
+          {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
         </summary>
         <div className={CLASS.body}>
           {/* One document, not one per summaryIndex: a markdown parser needs

@@ -1,23 +1,9 @@
 /* Quiet, demoted treatment (design-system.md mockup #3: "the user knows
  * what they said" - the prompt never out-shouts the agent's own prose that
- * follows it). No bubble, no right-alignment: a small "You" tag, then the
- * text at reduced contrast (ink-mid, not ink-hi).
+ * follows it). No bubble, no right-alignment: the user speaker is a stacked
+ * eyebrow above the body, with actions anchored in the header row.
  *
- * The tag is a fixed-width LEFT COLUMN, baseline-aligned with the first line
- * of the message beside it - not a line of its own above the text (kata
- * 8v4n, matching the golden reference's own `.you`/`.tag` row: docs/web-ui/
- * history/examples/01-golden-live-session.html). Every labelled row in the
- * transcript reads down this same gutter shape instead of stacking as
- * label/content pairs whose vertical rhythm would otherwise carry no
- * information. */
-.message {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-}
-
-/* The exchange boundary, and the transcript's only structural break.
+ * The exchange boundary, and the transcript's only structural break.
  *
  * Space rather than a rule, for two measured reasons. The transcript's whole
  * vertical alphabet is 8/12/16px and every one of those values already appears
@@ -35,48 +21,32 @@
  * against 4 accepted inputs). Marking each would slice one continuous piece of
  * agent work into arbitrary slabs. This fires a handful of times per session,
  * at the boundaries a reader is actually looking for. */
-/* NO :first-child exemption, deliberately. An exchange opener gets its own
- * TurnBlock and is the only child of it, so `:first-child` matches every
- * opener rather than just the transcript's first - and at one specificity
- * point higher it cancelled this rule outright, measured as computed
- * margin-top: 0px on all three openers in a real session. The gap it was
- * guarding against is 32px of inset above the session's first line, which is
- * not worth a rule that can silently eat the feature. */
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+}
+
 .message[data-opens-exchange] {
   margin-top: var(--space-6);
 }
 
-/* The gallery and text share the gutter's content column - the same column
- * for both, so the tag's baseline lines up with whichever comes first.
- * min-width: 0 overrides a flex item's default auto minimum, which would
- * otherwise floor this column at its longest unbreakable run and push the
- * row wider than its container - exactly the failure overflowguard exists
- * to catch at a narrow pane width (kata 8v4n). */
-.body {
-  flex: 1 1 auto;
-  min-width: 0;
+.header {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  align-items: baseline;
+  gap: var(--space-2);
 }
 
-/* Hover/focus-revealed (webui-ux-transcript C3): invisible until the
- * message row is hovered, or a descendant has keyboard focus -
- * :focus-within covers Tab-only navigation so the action is reachable
- * without a mouse. opacity (not display/visibility) keeps the button in
- * the tab order at all times, and there's no transition - tokens.css's own
- * motion budget reserves animation for attention-onset and the 120ms
- * overlay fade alone, so this is an instant state swap like any other
- * :hover rule, not a fourth motion.
- *
- * flex: none, and a sibling of the tag/body row rather than a child of
- * either: the body's flex-grow already claims the row's leftover width, so
- * this reserves its own slot at the row's trailing edge (RailRow's leading
- * gutters reserve their width the same unconditional way - Rail.module.css) -
- * a corner action near the message's first line, without a header row of
- * its own above the text. */
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-low);
+}
+
 .actions {
-  flex: none;
+  margin-left: auto;
   display: flex;
   gap: var(--space-1);
   opacity: 0;
@@ -87,42 +57,10 @@
   opacity: 1;
 }
 
-/* --ink-hi, the strongest step, even though the words below it are --ink-mid.
- *
- * This fixes the LOCAL hierarchy - the label against its own message - and
- * nothing more. The boundary itself is drawn by the 32px above, measured; do
- * not read this rule as the landmark mechanism. --ink-hi is not a scarce ink
- * reserved for structure: tool-row-purpose uses it too, at 13px, dozens of
- * times per session, so the tag sits IN the transcript's ordinary heading tier
- * rather than above it.
- *
- * Measured against --surface-1: --ink-low, where this started, is 2.97:1 in
- * the dark theme and 3.64:1 in the light one - the faintest text on screen and
- * under the 4.5:1 AA floor in both. --ink-mid clears AA at 6.86/6.56 but is
- * the EXACT colour of the user text it labels, so colour separated the label
- * from its message not at all. --ink-hi is 14.33:1 and 17.3:1, a 2.09/2.64:1
- * step over the message beneath it. At 12px medium it marks without shouting -
- * checked in a browser at reading distance, both themes.
- *
- * The inversion is deliberate: a reader scans for the label and already wrote
- * the message. Known side effect - the user's own sentence now renders dimmer
- * than both the word "You" beside it and the agent's tool titles below it. That
- * falls out of the pre-existing --ink-mid body decision (see the file header),
- * but this rule is what makes it visible. */
-.tag {
-  /* flex: none holds this column at exactly one width regardless of how
-   * much room .body's content wants; --space-7 is the app's own 4px scale
-   * standing in for the golden's hand-measured 34px (kata 8v4n) - "You" sits
-   * comfortably inside it with room to spare, which matters because this is
-   * also the width Steering's own "You steered" tag will need to share once
-   * that gutter lands (docs/web-ui/decisions.md topic 03; SteeringItem is a
-   * different worktree's file, not touched here). */
-  flex: none;
-  width: var(--space-7);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-hi);
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 .text {

@@ -30,6 +30,11 @@ export interface TurnBlockProps {
   // diagnostic renders without it, only the recovery button is withheld until
   // Session.tsx passes it down.
   sessionRef?: string;
+  // The transcript-wide set of exchange-opening agent item ids, threaded from
+  // Session.tsx so item renderers can know whether to show an eyebrow.
+  exchangeOpeners?: ReadonlySet<string>;
+  // The session's short model/provider label, threaded from Session.tsx.
+  agentLabel?: string;
   // Renders the "you left off here" marker (SeenDivider, kata g2ez) above
   // this turn's content. Session.tsx sets this on whichever single turn
   // useSeenDivider.ts names as the boundary - defaults false so every
@@ -57,7 +62,7 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
-export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlockProps) {
+export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showSeenDivider = false }: TurnBlockProps) {
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
@@ -101,7 +106,15 @@ export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlo
           }
           const ItemRenderer = itemRendererFor(item.type);
           return (
-            <ItemRenderer key={item.id} item={item} turn={shownTurn} live={isItemLive(item)} sessionRef={sessionRef} />
+            <ItemRenderer
+              key={item.id}
+              item={item}
+              turn={shownTurn}
+              live={isItemLive(item)}
+              sessionRef={sessionRef}
+              opensExchange={exchangeOpeners?.has(item.id)}
+              agentLabel={agentLabel}
+            />
           );
         })}
         {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}

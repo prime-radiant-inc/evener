@@ -6,7 +6,6 @@ import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
-import rawStyles from "./agentmessageitem.module.css";
 
 afterEach(cleanup);
 
@@ -117,40 +116,20 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
 });
 
-// --- speaker mark (1fwc, revised by kata 8v4n) -------------------------
-// A short agent reply and a short user message must not read as one
-// undifferentiated voice - but the golden reference identifies the agent's
-// prose by giving it NO visible label at all (`grep -c "Agent"` over
-// docs/web-ui/history/examples/01-golden-live-session.html returns 0): the
-// hero is the thing that needs no introduction. A screen reader still
-// needs a way to tell the two speakers apart, so "Agent" survives as text
-// in the DOM - carried by the same visually-hidden recipe used elsewhere in
-// this codebase (ModelSwitch/StatusRow/RailRow/etc.), present for a screen
-// reader's linear reading order and absent from the screen.
-
-test('settled carries "Agent" for assistive tech only, via the visually-hidden recipe, not a visible tag', () => {
-  render(<AgentMessageItem item={item({ text: "You're welcome." })} turn={turn} live={false} />);
-  const label = screen.getByText("Agent");
-  expect(label.className).toBe(rawStyles.srOnly);
-  // Two separate nodes, not one merged string - proven the same way
-  // UserMessageItem.test.tsx proves its own "You" tag is a sibling.
-  expect(screen.getByText("You're welcome.")).toBeTruthy();
+test("exchange-opening agent message shows a visible eyebrow with the model label", () => {
+  render(
+    <AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />,
+  );
+  const root = screen.getByTestId("agent-message-item");
+  expect(root.dataset.opensExchange).toBe("true");
+  expect(root.firstElementChild!.textContent).toBe("Agent · k3");
 });
 
-test('live carries the same visually-hidden "Agent" mark while streaming - it does not wait for settle', () => {
-  render(<AgentMessageItem item={item({ pendingText: ["strea", "ming"] })} turn={turn} live={true} />);
-  expect(screen.getByText("Agent").className).toBe(rawStyles.srOnly);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("streaming");
-});
-
-// jsdom evaluates no cascade (this file's own --prose-font-size tests below
-// rely on the same fact), so proving the mark is actually invisible - not
-// merely differently classed - means reading the stylesheet's own source,
-// the same technique used there.
-test("the srOnly class actually applies the visually-hidden recipe, not just a differently-named visible one", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
-  expect(css).toContain("clip: rect(0, 0, 0, 0)");
+test("continuation fragments render no eyebrow", () => {
+  render(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} />);
+  const root = screen.getByTestId("agent-message-item");
+  expect(root.dataset.opensExchange).toBeUndefined();
+  expect(root.textContent).not.toContain("Agent");
 });
 
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------
@@ -164,13 +143,14 @@ test("the srOnly class actually applies the visually-hidden recipe, not just a d
 test("sets --prose-font-size once, on the .message ancestor the live and settled children share", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
-  expect(css).toContain("--prose-font-size: var(--font-size-pane-title)");
+  expect(css).not.toContain("--prose-font-size");
 });
 
 test("the agent message keeps the approved unlabelled hero surface without a card frame", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*--prose-font-size:\s*var\(--font-size-pane-title\)/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--space-2\)\s+0;/);
+  expect(css).not.toMatch(/\.message\s*\{[\s\S]*--prose-font-size:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
   expect(css).not.toMatch(/\.tag\s*\{/);

@@ -47,6 +47,41 @@ test("a non-expandable row renders the summary in the shared row element", () =>
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran ls");
 });
 
+test("collapsed row with purpose and summary composes one line", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      purpose="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.dataset.oneline).toBe("true");
+  expect(row.textContent).toBe("Running the foo tests — npm test -- src/foo");
+});
+
+test("expanded row keeps the stacked grammar", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      purpose="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+    />,
+  );
+  expect(screen.getByTestId("tool-row").dataset.oneline).toBeUndefined();
+});
+
+test("purpose-less rows are unaffected", () => {
+  render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
+  expect(screen.getByTestId("tool-row").dataset.oneline).toBeUndefined();
+});
+
 test("an expandable row renders as a <summary> so it is natively keyboard-operable", () => {
   render(<ToolRow summary="Ran ls" failed={false} expandable expanded={false} onToggle={() => {}} />);
   expect(screen.getByTestId("tool-row").tagName).toBe("SUMMARY");

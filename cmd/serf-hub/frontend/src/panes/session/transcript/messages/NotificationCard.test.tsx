@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
@@ -36,6 +36,23 @@ test("renders the title and tags the tone", () => {
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("success");
 });
 
+test("collapses to a single row by default; card chrome appears on expand", () => {
+  render(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
+  const row = screen.getByTestId("notification-card");
+  expect(row.textContent).toContain("explorer finished");
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
+  fireEvent.click(row);
+  expect(screen.getByTestId("notification-card-root")).not.toBeNull();
+  expect(screen.getByTestId("notification-raw-disclosure")).not.toBeNull();
+  fireEvent.click(row);
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
+});
+
+test("warning tone chip is visible even when collapsed", () => {
+  render(<NotificationCard notification={notif({ tone: "warning", title: "watcher reported" })} />);
+  expect(screen.getByTestId("notification-card").textContent).toContain("warning");
+});
+
 test("a success/neutral notification recedes: no tone chip (color spent only on warning/error)", () => {
   render(<NotificationCard notification={notif({ tone: "success" })} />);
   expect(screen.queryByText("error")).toBe(null);
@@ -52,7 +69,8 @@ test("the secondary line surfaces the demoted metadata", () => {
   expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
 });
 
-test("renders parsed job fields and excerpt as ordinary readable text", () => {
+test("renders parsed job fields and excerpt as ordinary readable text", async () => {
+  const user = userEvent.setup();
   render(
     <NotificationCard
       notification={notif({
@@ -66,6 +84,7 @@ test("renders parsed job fields and excerpt as ordinary readable text", () => {
       })}
     />,
   );
+  await user.click(screen.getByTestId("notification-card"));
   expect(screen.getByTestId("notification-field-status").textContent).toContain("completed");
   expect(screen.getByTestId("notification-field-job-type").textContent).toContain("delegate");
   expect(screen.getByTestId("notification-field-output").textContent).toContain("4");
@@ -139,32 +158,40 @@ test("missing and malformed refs have no dead open-subagent action", () => {
   }
 });
 
-test("the raw block is always kept inspectable", () => {
+test("the raw block is always kept inspectable", async () => {
+  const user = userEvent.setup();
   render(
     <NotificationCard
       notification={notif({ rawText: '<job-notification job_id="abc">the raw text</job-notification>' })}
     />,
   );
+  await user.click(screen.getByTestId("notification-card"));
   expect(screen.getByTestId("notification-raw").textContent).toContain("the raw text");
 });
 
-test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", () => {
+test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", async () => {
+  const user = userEvent.setup();
   render(<NotificationCard notification={notif({ excerpt: "&lt;script&gt;alert(1)&lt;/script&gt;" })} />);
+  await user.click(screen.getByTestId("notification-card"));
   // Decoded to <script>… but rendered as text, so it appears verbatim and no
   // script element is ever created.
   expect(screen.getByText("<script>alert(1)</script>")).toBeTruthy();
   expect(document.querySelector("script")).toBe(null);
 });
 
-test("a very long excerpt remains a bounded normal-text preview without adding a nested disclosure", () => {
+test("a very long excerpt remains a bounded normal-text preview without adding a nested disclosure", async () => {
+  const user = userEvent.setup();
   const long = "x".repeat(900);
   render(<NotificationCard notification={notif({ excerpt: long })} />);
+  await user.click(screen.getByTestId("notification-card"));
   expect(screen.getByText(/x{500}…/)).toBeTruthy();
   expect(screen.getByTestId("notification-card-root").querySelectorAll("details")).toHaveLength(1);
 });
 
-test("keeps raw notification as the one direct full-width disclosure row", () => {
+test("keeps raw notification as the one direct full-width disclosure row", async () => {
+  const user = userEvent.setup();
   render(<NotificationCard notification={notif({ excerpt: "useful output" })} />);
+  await user.click(screen.getByTestId("notification-card"));
   const root = screen.getByTestId("notification-card-root");
   const raw = screen.getByTestId("notification-raw-disclosure");
   expect(root.querySelectorAll("details")).toHaveLength(1);
@@ -173,8 +200,10 @@ test("keeps raw notification as the one direct full-width disclosure row", () =>
   expect(raw.querySelector("pre")?.textContent).toContain("<job-notification");
 });
 
-test("keeps the raw disclosure native and preserves its visible marker row", () => {
+test("keeps the raw disclosure native and preserves its visible marker row", async () => {
+  const user = userEvent.setup();
   render(<NotificationCard notification={notif()} />);
+  await user.click(screen.getByTestId("notification-card"));
   const raw = screen.getByTestId("notification-raw-disclosure") as HTMLDetailsElement;
   const summary = raw.querySelector("summary");
   expect(summary?.tagName).toBe("SUMMARY");
@@ -189,12 +218,16 @@ test("keeps the raw disclosure native and preserves its visible marker row", () 
   expect(summaryRule).toContain("min-width: 0");
 });
 
-test("a communicate message renders through markdown", () => {
-  const { container } = render(<NotificationCard notification={notif({ message: "**bold** result" })} />);
-  expect(container.querySelector("strong")?.textContent).toBe("bold");
+test("a communicate message renders through markdown", async () => {
+  const user = userEvent.setup();
+  render(<NotificationCard notification={notif({ message: "**bold** result" })} />);
+  await user.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-card-root").querySelector("strong")?.textContent).toBe("bold");
 });
 
-test("concerns surface as a quiet note", () => {
+test("concerns surface as a quiet note", async () => {
+  const user = userEvent.setup();
   render(<NotificationCard notification={notif({ concerns: ["edge case A", "edge case B"] })} />);
-  expect(screen.getByText(/edge case A; edge case B/)).toBeTruthy();
+  await user.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-card-root").textContent).toContain("edge case A; edge case B");
 });
