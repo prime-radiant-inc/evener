@@ -85,3 +85,21 @@ test("a malformed escape byte cannot leak into rendered text", () => {
 test("carriage return is consumed as a terminal control rather than retained in log text", () => {
   expect(plainText(parseAnsiLines("before\rafter"))).toBe("beforeafter");
 });
+
+test("DCS, APC, PM, and SOS control strings consume their payload through ST", () => {
+  const input =
+    "a\u001bPdevice payload\u001b\\b" +
+    "\u001b_application payload\u001b\\c" +
+    "\u001b^privacy payload\u001b\\d" +
+    "\u001bXservice payload\u001b\\e";
+
+  expect(plainText(parseAnsiLines(input))).toBe("abcde");
+});
+
+test("C1 OSC consumes its payload through a C1 string terminator", () => {
+  expect(plainText(parseAnsiLines("before\u009dtitle payload\u009cafter"))).toBe("beforeafter");
+});
+
+test("an unterminated control string consumes the rest of the input", () => {
+  expect(plainText(parseAnsiLines("visible\u001b]unterminated protocol payload"))).toBe("visible");
+});

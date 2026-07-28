@@ -187,6 +187,28 @@ test("all bash-family tool bodies render ANSI SGR output as styled text", () => 
   }
 });
 
+test("a live shell tail never starts inside an ANSI sequence", () => {
+  const Body = toolRendererFor("shell").body!;
+  // The naive 8,000-code-unit cut lands on the "3" in ESC[32m.
+  const output = `${"p".repeat(50)}\u001b[32m${"K".repeat(7_997)}`;
+  const { container } = render(<Body item={withCommand("long-running", { output })} live />);
+
+  expect(container.querySelector("code")?.textContent).toBe("K".repeat(7_997));
+  expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe("K".repeat(7_997));
+  expect(container.textContent).not.toContain("[32m");
+});
+
+test("a settled shell tail restores styling that began before the retained output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `plain\u001b[32m${"x".repeat(8_100)}KEPT\u001b[0m`;
+  const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
+
+  expect(container.querySelector("code")?.textContent).toBe(
+    `earlier output not retained — showing the last 8,000 chars\n${"x".repeat(7_992)}KEPT`,
+  );
+  expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe(`${"x".repeat(7_992)}KEPT`);
+});
+
 test("body renders nothing for a command with no output at all", () => {
   const d = toolRendererFor("shell");
   const Body = d.body!;

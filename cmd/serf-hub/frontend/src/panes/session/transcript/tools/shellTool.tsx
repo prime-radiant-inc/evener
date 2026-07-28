@@ -21,9 +21,10 @@
 
 import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
+import { ansiTailFold, ansiTailSlice } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
+import { parseArgs, str, trailingBracketFooter } from "./helpers";
 
 const TAIL_MAX_CHARS = 8000;
 
@@ -72,7 +73,7 @@ function shellExitCode(item: ItemModel): number | undefined {
 function ShellBody({ item, live }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  const body = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
+  const body = live ? ansiTailSlice(output, TAIL_MAX_CHARS) : ansiTailFold(output, TAIL_MAX_CHARS);
   return <CodeBlock text={body} copyLabel="Copy output" ansi />;
 }
 
