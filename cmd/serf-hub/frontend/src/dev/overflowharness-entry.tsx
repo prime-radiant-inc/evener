@@ -374,7 +374,18 @@ function dump(selector: string) {
 // painted frames plus a macrotask is the settle point, and it is awaited
 // rather than slept on.
 const settled = new Promise<true>((resolve) => {
-  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve(true), 0)));
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        // NotificationCard renders its body (and with it the raw-notification
+        // overflow fixture) only when expanded. Expand it the way a user would
+        // - through React's synthetic click - so the guard's two disclosure
+        // fixtures exist by the time measure() runs.
+        document.querySelector<HTMLElement>('[data-testid="notification-card"]')?.click();
+        requestAnimationFrame(() => setTimeout(() => resolve(true), 0));
+      }, 0),
+    ),
+  );
 });
 
 declare global {
