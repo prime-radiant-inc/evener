@@ -1,5 +1,11 @@
 # Pending Confirmation After RPC Design
 
+> **Superseded on 2026-07-28 by
+> `2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin-design.md`.**
+> The successor removes timeout-derived confirmation semantics and replaces
+> them with durable mutation receipts, identity-based reconciliation, and
+> automatic atomic rejoin.
+
 ## Problem
 
 The WebUI can report `Send failed: The server didn't confirm this message in
