@@ -76,3 +76,13 @@ No other structure in the file was changed.
 ## Concern
 - `npm run overflowguard` failed during the requested verification sequence.
 - I did not change code outside `docs/web-ui/decisions.md`, so I left that failure as a concern rather than trying to repair it in this documentation-only task.
+
+## Fix follow-up
+
+Changed `cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx` so the harness expands the notification card during the settle phase before `measure()` runs. The change chains a synthetic click on `[data-testid="notification-card"]` into the existing `settled` promise after two animation frames and a macrotask, which causes the notification body and its raw-notification disclosure fixture to exist in the DOM for the overflow scan.
+
+Commands and results:
+
+- `npm run overflowguard` — PASS at 390px, 700px, 1024px, and 1400px.
+- `npx vitest run src/dev 2>/dev/null; npm run typecheck` — PASS. Vitest ran the existing `src/dev` suites (`WidgetGallery`, `ThemeFlip`, `DevHarness`); no separate overflow-harness-specific test file exists, so this was the nearest harness-adjacent coverage.
+- Commit: `7fcf0faef` — `overflowguard: expand notification card at harness boot (task 11 fix)`
