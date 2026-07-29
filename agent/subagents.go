@@ -358,7 +358,17 @@ func (s *Session) collectLiveShellsUnderTree(target string, out *[]string) {
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
-	prepared, err := s.prepareSubagentRun(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort, parentTasks, grantTools)
+	selection, err := s.selectSubagentModel(ctx, model, agentType)
+	if err != nil {
+		return "", err
+	}
+	if selection.warning != nil {
+		s.emitDiagnosticWarning(*selection.warning)
+	}
+	prepared, err := s.prepareSubagentRunWithModelSelection(
+		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
+		parentTasks, grantTools, selection,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -380,47 +390,32 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 }
 
 func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (*preparedSubagentRun, error) {
+	selection, err := s.selectSubagentModel(ctx, model, agentType)
+	if err != nil {
+		return nil, err
+	}
+	return s.prepareSubagentRunWithModelSelection(
+		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
+		parentTasks, grantTools, selection,
+	)
+}
+
+func (s *Session) prepareSubagentRunWithModelSelection(
+	ctx context.Context,
+	task, workingDir string,
+	maxTurns int,
+	agentType, reasoningEffort string,
+	parentTasks []taskpkg.TaskTemplate,
+	grantTools []string,
+	selection subagentModelSelection,
+) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
 	allowance := s.delegationAllowance
 	s.mu.Unlock()
-	if allowance <= 0 {
-		return nil, errors.New("delegation not permitted: your delegation_allowance is 0")
-	}
-
-	// Look up plugin agent configuration when agent_type is specified.
-	var agent *plugin.Agent
-	if agentType = strings.TrimSpace(agentType); agentType != "" {
-		a, ok := s.pluginAgents[agentType]
-		if !ok {
-			return nil, fmt.Errorf("unknown plugin agent type: %s", agentType)
-		}
-		agent = &a
-	}
-
-	sp := s.currentProfile()
-	subProfile := sp
-	if model = strings.TrimSpace(model); model != "" {
-		resolved, crossProvider, err := s.resolveProfileForRef(sp, model)
-		if err != nil {
-			return nil, fmt.Errorf("model override %q: %w", model, err)
-		}
-		if crossProvider {
-			resolved = resolved.WithCommunicateOverridesFrom(sp)
-		}
-		subProfile = resolved
-	}
-	// Plugin agent model takes precedence (unless "inherit" or empty).
-	if agent != nil && agent.Model != "inherit" && agent.Model != "" {
-		resolved, crossProvider, err := s.resolveProfileForRef(sp, agent.Model)
-		if err != nil {
-			return nil, fmt.Errorf("agent model %q: %w", agent.Model, err)
-		}
-		if crossProvider {
-			resolved = resolved.WithCommunicateOverridesFrom(sp)
-		}
-		subProfile = resolved
-	}
+	agentType = strings.TrimSpace(agentType)
+	agent := selection.agent
+	subProfile := selection.profile
 
 	s.mu.Lock()
 	subCfg := s.cfg
@@ -782,7 +777,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		originItemID:       subCfg.spawn.parentItemID,
 		task:               task,
 		agentType:          agentType,
-		requestedModel:     model,
+		requestedModel:     selection.requestedModel,
 		resolvedAgentName:  agentName,
 		reasoningEffort:    reasoningEffort,
 		frozenRolePrompt:   rolePrompt,

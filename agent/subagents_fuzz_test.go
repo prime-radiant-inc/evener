@@ -26,9 +26,11 @@ import (
 //
 //   - prepareSubagentRun: assembles the frozen, internally-consistent descriptor
 //     of a to-be-launched child (role prompt, tool policy, skills, env, tree-slot
-//     reservation). It is pure plumbing over Session state with no model call and
-//     no goroutine, so it can be fuzzed directly with adversarial arguments +
-//     context values and asserted against three oracles below.
+//     reservation). It is pure plumbing over Session state; preparation may make
+//     one scripted model-list read for plugin membership, but it makes no
+//     completion and launches no goroutine. It can therefore be fuzzed directly
+//     with adversarial arguments + context values and asserted against three
+//     oracles below.
 //
 //   - driveSubagentNotificationTurn: the parent-side drive-down wake that launches
 //     ONE EntryNotification turn on a live, idle child. It is concurrency-heavy
@@ -54,6 +56,15 @@ import (
 
 var safzTasks = []string{"", "do the thing", "résumé task", "step 2"}
 var safzModels = []string{"", "gpt-5.3", "gpt-5", "  gpt-5.2  ", "no_such_model_zzz", "anthropic/claude-x", "anthropic/boom"}
+
+type safzEnumerableAdapter struct {
+	*agenttest.ScriptedAdapter
+	models []llm.ModelInfo
+}
+
+func (a *safzEnumerableAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+	return append([]llm.ModelInfo(nil), a.models...), nil
+}
 
 // safzResolveProfile is the parent's cross-provider resolver. A "prefix/model"
 // ref that the base profile treats as a provider switch reaches this; refs
@@ -128,9 +139,12 @@ func safzRegisterSkill(t *testing.T, sess *Session) {
 func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childScript []int, env execenv.ExecutionEnvironment) *Session {
 	t.Helper()
 	client := llm.NewClient()
-	client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return agenttest.FinalResponse("parent")
-	}})
+	client.Register(&safzEnumerableAdapter{
+		ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("parent")
+		}},
+		models: []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+	})
 	cfg := SessionConfig{
 		MaxSubagentDepth:      maxDepth,
 		clock:                 clk,
@@ -140,7 +154,10 @@ func safzNewParent(t *testing.T, clk *agenttest.FakeClock, maxDepth int, childSc
 	}
 	cfg.testOnly.childClientFactory = func() *llm.Client {
 		cc := llm.NewClient()
-		cc.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)})
+		cc.Register(&safzEnumerableAdapter{
+			ScriptedAdapter: &agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)},
+			models:          []llm.ModelInfo{{ID: "gpt-5"}, {ID: "gpt-5.2"}, {ID: "gpt-5.3"}},
+		})
 		return cc
 	}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)

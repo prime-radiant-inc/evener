@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
@@ -210,7 +211,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 			c := llm.NewClient()
 
 			var subagentModel string
-			adapter := &fakeAdapter{
+			adapter := fakeAdapter{
 				name: "openai",
 				steps: []func(req llm.Request) llm.Response{
 					func(req llm.Request) llm.Response {
@@ -219,7 +220,17 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 					},
 				},
 			}
-			c.Register(adapter)
+			if tc.name == "override" {
+				c.Register(&fakeEnumerableAdapter{
+					fakeAdapter: adapter,
+					models: []llm.ModelInfo{
+						{ID: "gpt-5.2"},
+						{ID: "gpt-4.1-nano"},
+					},
+				})
+			} else {
+				c.Register(&adapter)
+			}
 
 			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 				MaxSubagentDepth: 2,
@@ -257,6 +268,153 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 				t.Errorf("subagent model = %q, want %s%q", subagentModel, tc.wantPrefix, tc.wantModel)
 			}
 		})
+	}
+}
+
+func TestSpawnAgent_UnavailablePluginModelUsesExplicitFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeEnumerableAdapter{
+		fakeAdapter: fakeAdapter{name: "kimi-anthropic-api"},
+		models:      []llm.ModelInfo{{ID: "k3"}},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(
+		c,
+		WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic-api"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		SessionConfig{MaxSubagentDepth: 2},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	const agentType = "my-plugin:reviewer"
+	sess.pluginAgents = map[string]plugin.Agent{
+		agentType: {
+			Name:         "reviewer",
+			Model:        "sonnet",
+			SystemPrompt: "Review the code.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := sess.spawnAgent(ctx, "review this", "k3", "", 10, agentType, "", nil, nil)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+
+	var spawned struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+		t.Fatalf("parsing result: %v", err)
+	}
+	waitForRuntimeSubagent(t, sess, spawned.AgentID)
+
+	requests := adapter.Requests()
+	if len(requests) == 0 {
+		t.Fatal("child made no provider request")
+	}
+	for _, req := range requests {
+		if req.Provider != "kimi-anthropic-api" {
+			t.Errorf("child request provider = %q, want kimi-anthropic-api", req.Provider)
+		}
+		if req.Model != "k3" {
+			t.Errorf("child request model = %q, want k3", req.Model)
+		}
+		if req.Model == "sonnet" {
+			t.Error("child request must not send unavailable plugin model sonnet")
+		}
+	}
+
+	var warnings []events.WarningData
+	for {
+		select {
+		case ev := <-sess.Events():
+			if warning, ok := ev.Data.(events.WarningData); ok {
+				warnings = append(warnings, warning)
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if len(warnings) != 1 {
+		t.Fatalf("buffered warnings = %d, want 1: %+v", len(warnings), warnings)
+	}
+	for _, text := range []string{"my-plugin", agentType, "sonnet", "cross-provider", "kimi-anthropic-api"} {
+		if !strings.Contains(warnings[0].Message, text) {
+			t.Errorf("warning %q does not contain %q", warnings[0].Message, text)
+		}
+	}
+}
+
+func TestSpawnAgent_AvailablePluginAliasWins(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeEnumerableAdapter{
+		fakeAdapter: fakeAdapter{name: "anthropic"},
+		models: []llm.ModelInfo{
+			{ID: "claude-opus-4-6"},
+			{ID: "claude-sonnet-4-6"},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(
+		c,
+		newAnthropicProfile("claude-opus-4-6"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		SessionConfig{MaxSubagentDepth: 2},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	const agentType = "my-plugin:reviewer"
+	sess.pluginAgents = map[string]plugin.Agent{
+		agentType: {
+			Name:         "reviewer",
+			Model:        "sonnet",
+			SystemPrompt: "Review the code.",
+			PluginName:   "my-plugin",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := sess.spawnAgent(ctx, "review this", "claude-opus-4-6", "", 10, agentType, "", nil, nil)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+
+	var spawned struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+		t.Fatalf("parsing result: %v", err)
+	}
+	waitForRuntimeSubagent(t, sess, spawned.AgentID)
+
+	requests := adapter.Requests()
+	if len(requests) == 0 {
+		t.Fatal("child made no provider request")
+	}
+	for _, req := range requests {
+		if req.Provider != "anthropic" {
+			t.Errorf("child request provider = %q, want anthropic", req.Provider)
+		}
+		if req.Model != "claude-sonnet-4-6" {
+			t.Errorf("child request model = %q, want claude-sonnet-4-6", req.Model)
+		}
 	}
 }
 
