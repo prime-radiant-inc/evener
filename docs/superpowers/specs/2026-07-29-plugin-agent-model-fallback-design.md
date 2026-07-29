@@ -49,6 +49,8 @@ selection.
   host-runtime aliases as wire model IDs.
 - Verify plugin model availability against the active provider instance before
   creating any child or durable delegate state.
+- Apply one selection contract to every plugin-agent launch path, including
+  direct subagent spawns and durable delegates.
 - Surface the fallback without failing the delegation.
 - Persist and report the concrete model that the child actually runs.
 
@@ -111,6 +113,11 @@ aliases Serf intentionally supports. Initially:
 No Codex alias is added without an observed or documented source-runtime
 alias. Exact Codex model IDs continue through exact-ID validation.
 
+These catalog aliases are maintained like the catalog's other model metadata:
+when the intended concrete target changes, the catalog update changes the
+alias target. Provider discovery still decides whether that target is
+available to the configured instance.
+
 ## Model-source semantics
 
 There are three possible model sources:
@@ -165,7 +172,8 @@ Look up the candidate in the embedded model catalog:
   the candidate is an alias. Its canonical model is that `ID`.
 - If the candidate is already a real model ID, keep it unchanged.
 - If neither a real ID nor an alias is known, keep the exact candidate for
-  live membership matching. Do not guess its vendor or family.
+  live membership matching. An advertised custom model ID is valid even when
+  absent from the embedded catalog; do not guess its vendor or family.
 
 Catalog lookup translates names but never proves that the active provider
 serves the result.
@@ -181,6 +189,9 @@ A plugin preference is usable when:
 - for a catalog alias, an advertised wire ID exactly matches the alias's
   canonical model after applying only the current profile's established
   self-prefix/meta-provider normalization.
+
+Use the existing normalized live-ID comparison rules for surrounding
+whitespace and case. Do not use catalog family fallback to satisfy membership.
 
 Do not collapse an exact dated model into an undated family. An exact plugin
 pin is usable only when that exact model is advertised.
@@ -224,6 +235,17 @@ Persist the selected provider ID and concrete model in the delegate restore
 descriptor. Restore validates and reconstructs that frozen model; it does not
 re-read current plugin metadata or retry a previously rejected plugin model.
 
+`RequestedModel` records the model source that actually won selection:
+
+- the original plugin alias or exact ref when the plugin preference wins;
+- the explicit delegate ref when the plugin preference falls through; or
+- empty when the parent model is inherited.
+
+`ResolvedProfileID` and `ResolvedModel` always record the concrete frozen
+profile. This preserves the distinction between a requested alias and the wire
+model selected from it without persisting a rejected plugin preference as the
+child's requested model.
+
 The delegate result continues to echo the concrete
 `provider/model actually resolved` value.
 
@@ -248,7 +270,13 @@ which is unavailable from provider "kimi-anthropic-api"; using
 
 The warning must not contain credentials, endpoint URLs, or model-list
 response bodies. It is diagnostic only and does not trigger plugin
-notification hooks.
+notification hooks. Use the existing `emitDiagnosticWarning` path rather than
+the model-facing `emit(EventWarning, ...)` path.
+
+Emit the warning after a concrete fallback profile has been selected but
+before child or durable delegate state is created. If the explicit fallback
+itself cannot be resolved, return that error without claiming that a fallback
+model was selected.
 
 ## Data flow
 
@@ -332,6 +360,10 @@ Required deterministic cases:
 14. Exact dated model IDs are not satisfied by a different snapshot from the
     same family.
 15. Alias entries do not shadow concrete catalog model IDs.
+16. Direct plugin-agent spawn and durable delegation produce the same selected
+    concrete profile for the same parent, plugin model, and explicit fallback.
+17. An unknown catalog ID that is advertised exactly by the active provider is
+    accepted as a custom model rather than misclassified as an unknown alias.
 
 Assertions should inspect structured profiles, requests, warnings, and restore
 descriptors. They must not primarily regex-match rendered scripts or large
@@ -344,7 +376,7 @@ serialized payloads.
 - Document the resolution order:
   `available plugin model -> explicit delegate model -> parent model`.
 - Document that plugin metadata never triggers a provider switch.
-- Document the supported catalog aliases and that unknown aliases fall
+- Document the supported catalog aliases and that unadvertised values fall
   through.
 - Keep the plugin command override warning documentation unchanged.
 
@@ -386,6 +418,7 @@ gateway-, or instance-specific availability.
 The implementation should remain narrow:
 
 - centralize subagent model selection in one side-effect-free preflight;
+- route direct spawn and durable delegate creation through that same preflight;
 - reuse `ModelCatalog` alias lookup and `llm.Client.ListModels`;
 - avoid a second availability query during child construction;
 - do not add provider-family routing tables;
