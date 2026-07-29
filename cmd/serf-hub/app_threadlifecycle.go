@@ -266,12 +266,16 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		defer lock.Unlock()
 		// Double-check under the lock: a resume that completed while we waited
 		// has already put the session in the roster, so reuse it instead of
-		// spawning again. Refresh preserves a dead daemon as an errored
-		// tombstone for diagnostics; that entry is not a live racing resume and
-		// must fall through to spawning.
+		// spawning again. Only this Hub's exact flag-day protocol establishes
+		// ownership; an older daemon can be healthy while remaining unroutable
+		// through the current local source. Refresh also preserves a dead daemon
+		// as an errored tombstone for diagnostics. Both cases must fall through
+		// to spawning.
 		if cfg.Roster != nil {
 			hubRosterRefresh(cfg.Roster)
-			if le, ok := cfg.Roster.Find(sessionID); ok && le.Status != "errored" {
+			if le, ok := cfg.Roster.Find(sessionID); ok &&
+				le.Status != "errored" &&
+				le.Protocol == appwire.ProtocolVersion {
 				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
 			}
 		}
