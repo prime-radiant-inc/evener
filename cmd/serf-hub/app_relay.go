@@ -541,14 +541,23 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	}
 	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}
-		threadResp, err := source.ReadThread(ctx, readParams)
+		threadResp, err := withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.ThreadReadResponse, error) {
+			return source.ReadThread(ctx, readParams)
+		})
 		if err != nil {
 			return appwire.TurnStartResponse{}, err
 		}
 		if err := startRelay(ctx, source, readParams, threadResp.Thread); err != nil {
+			if isTargetDeletedError(err) {
+				if fenceErr := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); fenceErr != nil {
+					return appwire.TurnStartResponse{}, fenceErr
+				}
+			}
 			return appwire.TurnStartResponse{}, err
 		}
-		return source.StartTurn(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
+			return source.StartTurn(ctx, params)
+		})
 	}
 	startRelayForThread := func(ctx context.Context, thread appwire.Thread) error {
 		if thread.ID == "" {

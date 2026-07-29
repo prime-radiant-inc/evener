@@ -297,15 +297,14 @@ func registerThreadHandlers(
 		}
 		resolved := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
-			return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
-				ownedCtx := contextWithDeletionTargetOwnership(ctx, params.Ref, params.ThreadID)
-				source, err := resolveTurnStartSource(ownedCtx, cfg, sources, params.Ref, params.ThreadID)
-				if err != nil {
-					return appwire.TurnStartResponse{}, err
-				}
-				resolved = true
-				return startTurn(ownedCtx, source, params)
+			source, err := withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
+				return resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 			})
+			if err != nil {
+				return appwire.TurnStartResponse{}, err
+			}
+			resolved = true
+			return startTurn(ctx, source, params)
 		}
 		resp, err := attemptStart()
 		if err == nil {

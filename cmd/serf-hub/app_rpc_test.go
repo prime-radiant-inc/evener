@@ -441,6 +441,116 @@ func TestDeletionFenceKeepsRecoveryRelaySubscriptionInsideOwnership(t *testing.T
 	}
 }
 
+func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T) {
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	placeholderPublished := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	source := &inheritedDeletionOwnershipRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: ref},
+		}},
+		notifications: make(chan appwire.Notification),
+		subscribed:    make(chan struct{}, 1),
+	}
+	cfg := hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		ResumeLocks:  resumeLocks,
+		RelayHooks: hubcore.RelayLifecycleHooks{
+			AfterPlaceholder: func(gotThreadID string) {
+				if gotThreadID != threadID {
+					return
+				}
+				close(placeholderPublished)
+				<-releaseInitializer
+			},
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	var relays hubRelayFunctions
+	previousObserveFunctions := observeHubRelayFunctions
+	observeHubRelayFunctions = func(got hubRelayFunctions) {
+		relays = got
+	}
+	t.Cleanup(func() {
+		observeHubRelayFunctions = previousObserveFunctions
+	})
+	server := newHubAppServer(cfg, sources)
+	observeHubRelayFunctions = previousObserveFunctions
+	defer relays.stopRelay("local:" + threadID)
+
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() {
+		waiterJoined <- struct{}{}
+	}
+	t.Cleanup(func() {
+		observeHubRelayWait = previousObserveWait
+	})
+
+	initializerDone := make(chan error, 1)
+	go func() {
+		initializerDone <- relays.startRelay(
+			context.Background(),
+			source,
+			appwire.ThreadReadParams{Ref: ref},
+			source.thread,
+		)
+	}()
+	<-placeholderPublished
+
+	raw, err := json.Marshal(appwire.TurnStartParams{
+		ThreadID:         threadID,
+		Ref:              ref,
+		ClientMutationID: "turn-start-relay-ownership",
+		Input:            []appwire.InputItem{{Type: "text", Text: "continue"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnDone := make(chan error, 1)
+	go func() {
+		_, err := server.Router().Dispatch(context.Background(), appwire.Request{
+			ID:     appwire.NewIntID(1),
+			Method: appwire.MethodTurnStart,
+			Params: raw,
+		})
+		turnDone <- err
+	}()
+	<-waiterJoined
+
+	targetLock := resumeLocks.For(threadID)
+	targetWasFree := targetLock.TryLock()
+	if targetWasFree {
+		targetLock.Unlock()
+	} else {
+		relays.stopRelay("local:" + threadID)
+	}
+	close(releaseInitializer)
+	initializerErr := <-initializerDone
+	turnErr := <-turnDone
+
+	if !targetWasFree {
+		t.Fatal("turn/start waited for the relay initializer while owning the deletion target")
+	}
+	if initializerErr != nil {
+		t.Fatalf("initialize relay: %v", initializerErr)
+	}
+	if turnErr != nil {
+		t.Fatalf("turn/start: %v", turnErr)
+	}
+	select {
+	case <-source.subscribed:
+	default:
+		t.Fatal("relay initializer did not subscribe")
+	}
+}
+
 func TestDeletionFenceRejectsForkBeforeLaunchingChild(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -491,6 +601,31 @@ func (s *deletionFenceRelaySource) ID() string {
 func (s *deletionFenceRelaySource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	s.subscribeCalls++
 	return nil, errors.New("deleting relay reached source subscription")
+}
+
+type inheritedDeletionOwnershipRelaySource struct {
+	relayLifecycleSource
+	notifications <-chan appwire.Notification
+	subscribed    chan struct{}
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) ID() string {
+	return "local"
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) SubscribeThread(
+	context.Context,
+	appwire.ThreadReadParams,
+) (<-chan appwire.Notification, error) {
+	s.subscribed <- struct{}{}
+	return s.notifications, nil
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) StartTurn(
+	context.Context,
+	appwire.TurnStartParams,
+) (appwire.TurnStartResponse, error) {
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_started"}}, nil
 }
 
 type deletionOwnershipProbeResult struct {
