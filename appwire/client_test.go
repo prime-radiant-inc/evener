@@ -346,6 +346,43 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 }
 
+func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *testing.T) {
+	const burst = notificationBufferCap + 1
+	transport := &memoryTransport{
+		writes: make(chan Message, 1),
+		reads:  make(chan Message, burst+2),
+	}
+	client := NewClient(transport)
+	observed := make(chan Message, burst+1)
+	client.SetOrderedFrameHandler(func(message Message, err error) {
+		if err == nil {
+			observed <- message
+		}
+	})
+	client.Start(t.Context())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadList(t.Context(), ThreadListParams{Limit: 1})
+		done <- err
+	}()
+	request := <-transport.writes
+	for i := 0; i < burst; i++ {
+		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+	}
+	transport.reads <- ResponseMessage(request.Request.ID, ThreadListResponse{})
+
+	for i := 0; i < burst+1; i++ {
+		<-observed
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("request failed after ordered observer consumed %d notifications: %v", burst, err)
+	}
+	if got := len(client.notifications); got != 0 {
+		t.Fatalf("ordinary notification buffer length = %d, want 0 when ordered handler owns delivery", got)
+	}
+}
+
 func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(42)

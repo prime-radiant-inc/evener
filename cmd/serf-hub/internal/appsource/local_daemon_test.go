@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -17,6 +18,73 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://daemon",
+		SourceID:  "local",
+		ThreadID:  "thread-1",
+		SessionID: "thread-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var dialMu sync.Mutex
+	dialCount := 0
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		dialMu.Lock()
+		dialCount++
+		dialMu.Unlock()
+		return respondingTransport(func(method string) (any, error) {
+			switch method {
+			case appwire.MethodInitialize:
+				return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+			case appwire.MethodThreadRead:
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID:     "thread-1",
+					Source: "local",
+					Serf:   appwire.SerfThread{Ref: "local:thread-1"},
+				}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected method %q", method)
+			}
+		}), nil
+	}
+
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	lease, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatalf("AcquireRelaySession: %v", err)
+	}
+	defer lease.Close()
+	deliveries, err := lease.Listen(ctx)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	if deliveries == nil {
+		t.Fatal("Listen returned a nil delivery stream")
+	}
+	for i := 0; i < 2; i++ {
+		result, readErr := lease.Read(ctx, params)
+		if readErr != nil {
+			t.Fatalf("Read %d: %v", i+1, readErr)
+		}
+		if !result.Handoff.Commit() {
+			t.Fatalf("Read %d handoff did not commit", i+1)
+		}
+	}
+
+	dialMu.Lock()
+	got := dialCount
+	dialMu.Unlock()
+	if got != 1 {
+		t.Fatalf("AppWire connection count = %d, want one canonical connection for snapshot and live continuation", got)
+	}
+}
 
 // fakeTimeoutError implements net.Error with Timeout()==true so we can drive
 // localDaemonDialError without needing real socket timeouts.

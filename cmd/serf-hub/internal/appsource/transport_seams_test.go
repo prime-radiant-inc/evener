@@ -382,6 +382,7 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 	})
 
 	t.Run("notification source closes", func(t *testing.T) {
+		callCtx, cancel := context.WithCancel(ctx)
 		transport := respondingTransport(func(method string) (any, error) {
 			if method == appwire.MethodInitialize {
 				return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
@@ -390,12 +391,13 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 		})
 		s := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, nil)
 		s.dial = dialTransport(transport)
-		out, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "local:thread"})
+		out, err := s.SubscribeThread(callCtx, appwire.ThreadReadParams{Ref: "local:thread"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = transport.Close()
 		<-transport.recvDone
+		cancel()
 		if _, ok := <-out; ok {
 			t.Fatal("subscription remained open")
 		}
