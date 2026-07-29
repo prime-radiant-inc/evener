@@ -134,6 +134,78 @@ func TestNewForInstance_ResolvesPerModelCompat(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsBody_NormalizedModelConfigLookup(t *testing.T) {
+	original := providercfg.ModelConfig{
+		MaxOutputTokens: 1_111,
+		ThinkingLevels:  map[string]string{"high": "wire-high"},
+		Compat: &providercfg.CompatConfig{
+			MaxTokensField: "max_completion_tokens",
+		},
+	}
+	tests := []struct {
+		name       string
+		models     map[string]providercfg.ModelConfig
+		wantMaxKey string
+		wantMax    int
+		wantEffort string
+	}{
+		{
+			name: "normalized original config is fallback when exact is absent",
+			models: map[string]providercfg.ModelConfig{
+				"gpt-5.3": original,
+			},
+			wantMaxKey: "max_completion_tokens",
+			wantMax:    1_111,
+			wantEffort: "wire-high",
+		},
+		{
+			name: "partial exact advertised config wins",
+			models: map[string]providercfg.ModelConfig{
+				"gpt-5.3": original,
+				"GPT-5.3": {
+					MaxOutputTokens: 2_222,
+				},
+			},
+			wantMaxKey: "max_tokens",
+			wantMax:    2_222,
+			wantEffort: "high",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewForInstance(OpenAICompatInstanceParams{
+				Name:    "work",
+				BaseURL: "https://gw.example.com/v1",
+				Models:  tc.models,
+			})
+			req := plainReq("GPT-5.3")
+			req.ReasoningEffort = strp("high")
+
+			body, err := a.ChatCompletionsBody(req, false)
+			if err != nil {
+				t.Fatalf("ChatCompletionsBody: %v", err)
+			}
+			if body["model"] != "GPT-5.3" {
+				t.Errorf("body model = %v, want advertised wire ID GPT-5.3", body["model"])
+			}
+			if got := body[tc.wantMaxKey]; got != tc.wantMax {
+				t.Errorf("body[%q] = %v, want %d", tc.wantMaxKey, got, tc.wantMax)
+			}
+			otherMaxKey := "max_tokens"
+			if tc.wantMaxKey == otherMaxKey {
+				otherMaxKey = "max_completion_tokens"
+			}
+			if got, exists := body[otherMaxKey]; exists {
+				t.Errorf("body[%q] = %v, want absent", otherMaxKey, got)
+			}
+			if got := body["reasoning_effort"]; got != tc.wantEffort {
+				t.Errorf("reasoning_effort = %v, want %q", got, tc.wantEffort)
+			}
+		})
+	}
+}
+
 // TestCompatFor_CatalogFillsDefaults verifies that, for a model with no
 // providers.toml [instances.X.models] entry, compatFor fills the reasoning-effort
 // gate and output cap from the embedded catalog — positive-only for the gate.

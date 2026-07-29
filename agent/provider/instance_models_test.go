@@ -239,6 +239,49 @@ func TestWithAdvertisedModelInfo_PreservesConfiguredModelAndCommunicateOverrides
 	}
 }
 
+func TestWithAdvertisedModelInfo_ExactAdvertisedConfigWins(t *testing.T) {
+	reasoningOff := false
+	models := map[string]providercfg.ModelConfig{
+		"tiny-chat": {
+			ContextWindow: 31_000,
+			Reasoning:     &reasoningOff,
+		},
+		"TINY-CHAT": {
+			ContextWindow: 62_000,
+		},
+	}
+	p := newOpenAICompatProfile("openai-compatible", "tiny-chat", 0, models)
+	p = WithAllowedDecisions(p, []string{"keep_config"})
+	wantCommunicate := *findToolDef(p, "communicate")
+
+	advertised := p.WithAdvertisedModelInfo(llm.ModelInfo{
+		ID:                "TINY-CHAT",
+		ContextWindow:     124_000,
+		SupportsReasoning: false,
+	})
+	if advertised.Model() != "TINY-CHAT" {
+		t.Errorf("Model = %q, want advertised wire ID %q", advertised.Model(), "TINY-CHAT")
+	}
+	if advertised.ContextWindowSize() != 62_000 {
+		t.Errorf("ContextWindowSize = %d, want exact advertised-key config 62000", advertised.ContextWindowSize())
+	}
+	if !advertised.SupportsReasoning() {
+		t.Error("SupportsReasoning = false, want advertised entry's default rather than original reasoning=false")
+	}
+	if communicate := findToolDef(advertised, "communicate"); communicate == nil {
+		t.Fatal("communicate definition missing")
+	} else if !reflect.DeepEqual(*communicate, wantCommunicate) {
+		t.Error("communicate override changed")
+	}
+	if p.ContextWindowSize() != 31_000 || p.SupportsReasoning() {
+		t.Errorf(
+			"WithAdvertisedModelInfo mutated base shape: context=%d reasoning=%t",
+			p.ContextWindowSize(),
+			p.SupportsReasoning(),
+		)
+	}
+}
+
 func TestResolveProfileFromConfig_PassesInstanceModels(t *testing.T) {
 	cfg := providercfg.Config{
 		Default: "lunaroute",

@@ -202,7 +202,7 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 	// every field it sets, and the catalog fills the remaining gaps — so
 	// declaring only a context_window for glm-5.2 doesn't silently drop the
 	// catalog's effort-parameter support or output cap.
-	mc, ok := a.Models[model]
+	mc, ok := normalizedModelCompat(a.Models, model)
 	if !ok {
 		mc = ModelCompat{Quirks: a.Quirks}
 	}
@@ -212,6 +212,45 @@ func (a *Adapter) compatFor(model string) ModelCompat {
 		}
 	}
 	return mc
+}
+
+// normalizedModelCompat resolves per-model wire configuration with the same
+// exact, surrounding-whitespace, then case normalization used for live model
+// membership. Exact advertised-key configuration wins. A normalized fallback
+// is accepted only when it identifies one configured key; ambiguity falls back
+// to instance defaults instead of depending on map iteration order.
+func normalizedModelCompat(models map[string]ModelCompat, model string) (ModelCompat, bool) {
+	if mc, ok := models[model]; ok {
+		return mc, true
+	}
+	trimmedModel := strings.TrimSpace(model)
+	if mc, ok := uniqueNormalizedModelCompat(models, func(id string) bool {
+		return strings.TrimSpace(id) == trimmedModel
+	}); ok {
+		return mc, true
+	}
+	return uniqueNormalizedModelCompat(models, func(id string) bool {
+		return strings.EqualFold(strings.TrimSpace(id), trimmedModel)
+	})
+}
+
+func uniqueNormalizedModelCompat(
+	models map[string]ModelCompat,
+	matches func(string) bool,
+) (ModelCompat, bool) {
+	var matched ModelCompat
+	found := false
+	for id, mc := range models {
+		if !matches(id) {
+			continue
+		}
+		if found {
+			return ModelCompat{}, false
+		}
+		matched = mc
+		found = true
+	}
+	return matched, found
 }
 
 // fillFromCatalog seeds the two wire-behavior gaps a model's resolved compat
