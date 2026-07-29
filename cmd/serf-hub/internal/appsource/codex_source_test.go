@@ -1481,6 +1481,73 @@ func TestCodexDirtyFullStateRetriesFinalFailedReadWithoutAnotherEvent(t *testing
 	}
 }
 
+func TestCodexDirtyCacheIsNotAuthoritativeWhileRefreshRetries(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		switch call := readCount.Add(1); call {
+		case 1:
+			thread := codexThreadMap(params.ThreadID)
+			thread["preview"] = "committed generation 1"
+			return map[string]any{"thread": thread}, nil
+		case 2:
+			return nil, appwire.Unavailable("generation 2 refresh failed")
+		case 3:
+			return nil, appwire.Unavailable("authoritative caller read failed")
+		default:
+			t.Fatalf("unexpected thread/read call %d", call)
+			return nil, nil
+		}
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	retryWaiting := make(chan struct{}, 1)
+	source.waitReadRetry = func(ctx context.Context, _ time.Duration) error {
+		retryWaiting <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	subscriptionCtx, cancelSubscription := context.WithCancel(t.Context())
+	defer cancelSubscription()
+	notifications, err := source.SubscribeThread(subscriptionCtx, appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("generation 1 replacement method=%q", got.Method)
+	}
+
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		TurnID:   "turn_codex",
+		ItemID:   "item_codex",
+		Delta:    "generation 2",
+	})
+	<-retryWaiting
+
+	resp, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err == nil {
+		t.Fatalf("ReadThread returned cached preview %q while generation 2 refresh was retrying", resp.Thread.Preview)
+	}
+	if got := readCount.Load(); got != 3 {
+		t.Fatalf("thread/read calls=%d, want committed read, failed refresh, and authoritative caller read", got)
+	}
+}
+
 func TestCodexDirtyFullStateReconnectForcesReadWithWarmCache(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
