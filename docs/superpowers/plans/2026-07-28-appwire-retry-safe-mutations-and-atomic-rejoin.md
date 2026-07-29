@@ -414,11 +414,13 @@ Library.
 - Create: `cmd/serf-hub/internal/appsource/relay_session.go`
 - Modify: `cmd/serf-hub/internal/appsource/codex_source.go`
 - Modify: `cmd/serf-hub/internal/appsource/codex_live_thread.go`
+- Modify: `internal/appserver/server.go`
 - Test: `cmd/serf-hub/app_rpc_test.go`
 - Test: `cmd/serf-hub/app_relay_test.go`
 - Test: `cmd/serf-hub/internal/appsource/relay_session_test.go`
 - Test: `cmd/serf-hub/internal/appsource/codex_source_test.go`
 - Test: `cmd/serf-hub/internal/appsource/transport_seams_test.go`
+- Test: `internal/appserver/server_test.go`
 
 **Interfaces:**
 
@@ -432,9 +434,37 @@ Library.
   deduplicates a second upstream stream.
 - For an established healthy actor, rejoin issues
   `thread/read(subscribe: true)` on the actor's canonical connection. The actor
-  buffers that same canonical feed until the Hub installs the matching
-  downstream capture and queues the hydration response, then releases only
-  post-cut notifications in producer order.
+  buffers that same canonical feed and returns an already-materialized snapshot
+  with a one-shot, epoch-scoped, two-phase downstream hydration handoff token.
+  The token is bound to the source/thread, connection epoch, and serialized
+  snapshot command generation.
+- The actor holds its canonical feed while the handoff token is pending without
+  retaining a global, Hub, relay-map, deletion, appserver projection, or
+  appserver delivery lock. The Hub completes upstream snapshot I/O before it
+  begins downstream appserver capture.
+- The Hub installs the Task 6 downstream capture using only the materialized
+  actor snapshot; no source or network I/O may occur from the capture snapshot
+  callback while appserver projection or delivery locks are held.
+- Successful downstream response enqueue commits the handoff token exactly
+  once, releases only post-cut notifications in producer order, and resumes
+  direct fanout. Capture failure, response enqueue failure, downstream
+  cancellation, connection loss, or hydration supersession first withdraws or
+  invalidates the failed downstream capture and then aborts the token exactly
+  once, resuming the canonical feed for remaining downstream owners without
+  publishing into the failed hydration.
+- Token commit and abort are idempotent and race-safe: exactly one terminal
+  transition wins, the feed resumes or releases exactly once, and stale epoch
+  or superseded command tokens cannot publish. The appserver response finalizer
+  is the linearization point: a completed enqueue selects commit, while
+  failure, cancellation, or supersession that prevents enqueue selects abort;
+  a later competing signal cannot reverse the outcome.
+- Permit the smallest internal-only appserver API needed to register one
+  success-after-response-enqueue callback and one
+  failure/cancellation/supersession callback for the matching hydration
+  generation. Preserve current Task 6 `CaptureSubscription` behavior for
+  existing callers, resolve the callback pair exactly once from response
+  enqueue/unregister/supersession, and do not introduce a generic transaction
+  framework.
 - For a disconnected or recovering actor, rejoin establishes and initializes
   a new atomic connection and performs `thread/read(subscribe: true)` there.
   The connection becomes canonical as one epoch transition only when the
@@ -471,6 +501,13 @@ Library.
   - racing same-thread reads, serialized without overlapping subscriptions;
   - cancellation before the cut and after the cut, without stranding the actor
     or its buffered feed;
+  - response enqueue failure and downstream cancellation after capture,
+    proving the hydration capture is withdrawn before the actor handoff aborts,
+    remaining downstream owners resume, and the failed hydration receives no
+    held notification;
+  - a deterministic commit-versus-abort race, proving exactly one terminal
+    result and exactly-once feed release or resume even when either terminal
+    method is repeated;
   - a late event from a stale connection epoch, proving it cannot publish;
   - idle shutdown after the last downstream and command owner leave;
   - unrelated-thread progress while one actor's snapshot command is blocked;
@@ -492,10 +529,15 @@ Library.
   to define ownership; do not add a generic actor framework.
 
 - [ ] Change the Hub relay to install only downstream captures/fanout around
-  the actor result. Queue the `thread/read` response before releasing the
-  actor's post-cut buffer, retain the existing Task 6 appserver capture
-  semantics, and keep Task 8 deletion/ownership locks outside every network
-  operation.
+  the materialized actor result. Complete upstream snapshot I/O before calling
+  appserver capture; the capture callback must not perform source I/O. Add the
+  narrow internal appserver response-finalization seam and focused tests for
+  success after enqueue, enqueue failure, cancellation/unregister,
+  supersession, and commit-versus-abort races while preserving existing Task 6
+  `CaptureSubscription` behavior. Queue the `thread/read` response before
+  committing the actor token and releasing its post-cut buffer. On failure,
+  withdraw the failed capture before aborting the token. Keep Task 8
+  deletion/ownership locks outside every network operation.
 
 - [ ] Replace Codex notification mapping with the dirty full-state loop and
   cached qualified replacement/resync notification. Keep dirty set until a

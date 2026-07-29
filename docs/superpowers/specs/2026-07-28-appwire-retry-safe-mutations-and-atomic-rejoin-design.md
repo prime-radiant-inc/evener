@@ -616,11 +616,51 @@ The Hub relay is downstream fanout only. It never opens, merges, or
 deduplicates an additional upstream stream. On a healthy rejoin, the
 `RelaySession` issues `thread/read(subscribe: true)` on its existing canonical
 connection. The actor buffers notifications from that same canonical feed
-while the snapshot command is in flight and until the Hub has installed the
-matching downstream capture and queued the hydration response. It then releases
-only the post-cut notifications in producer order and resumes direct downstream
-fanout. This preserves the Task 6 appserver cut rather than attempting to infer
-one from two independently ordered streams.
+while the snapshot command is in flight and returns the materialized snapshot
+with a one-shot, epoch-scoped, two-phase downstream hydration handoff token.
+The token is bound to the source/thread, connection epoch, and serialized
+snapshot command generation. While it is pending, the actor continues to hold
+that canonical feed using only its own per-thread state; it does not retain a
+global, Hub, relay-map, deletion, appserver projection, or appserver delivery
+lock.
+
+The Hub completes all upstream network snapshot work before beginning the
+downstream appserver capture. It then installs the Task 6
+`CaptureSubscription` using only the already-materialized actor snapshot; the
+capture's snapshot callback performs no source or other network I/O while the
+appserver projection and delivery locks are held. The downstream response
+enqueue is the handoff decision:
+
+- after the matching response successfully enters the downstream connection's
+  send queue, appserver commits its hydration capture and invokes the actor
+  token's `Commit` exactly once; the actor releases only post-cut
+  notifications in producer order and resumes direct downstream fanout;
+- if capture installation fails, response enqueue fails, the downstream
+  request or connection is canceled, or a newer hydration supersedes it,
+  appserver first withdraws or invalidates that failed hydration capture and
+  then invokes the token's `Abort` exactly once; the actor resumes the canonical
+  feed for remaining downstream owners without publishing any held
+  notification into the failed hydration.
+
+`Commit` and `Abort` are idempotent and race-safe terminal operations on the
+same token: one pending-to-terminal transition wins, repeated or losing calls
+are no-ops, and the canonical feed is resumed or released exactly once. A token
+from a stale connection epoch or superseded snapshot command cannot publish.
+The one-shot appserver response finalizer is the outcome linearization point:
+a completed response enqueue selects commit, while failure, cancellation, or
+supersession that prevents enqueue selects abort; a later competing signal
+cannot reverse that decision. Epoch recovery owns continuation after a stale
+token is invalidated. This two-phase handoff preserves the Task 6 appserver cut
+rather than attempting to infer one from two independently ordered streams.
+
+Task 7 may add only the narrow internal appserver response-finalization seam
+needed for this handoff: a `CaptureSubscription` companion or extension can
+register one success-after-response-enqueue callback and one
+failure/cancellation/supersession callback, while the existing
+`CaptureSubscription` behavior remains available to its current callers.
+Response enqueue, connection unregister, and capture supersession resolve that
+one-shot finalizer after committing or withdrawing the matching hydration
+generation. This is not a reusable transaction API or generic actor framework.
 
 If the actor is disconnected or recovering, it establishes a new atomic
 AppWire connection, initializes it, and performs
@@ -1025,6 +1065,16 @@ Script the real Hub relay/request paths to prove:
 - `thread/read` subscribes before snapshot capture;
 - append-only deltas at or before the snapshot cut are discarded from the
   buffer, while deltas after the cut are delivered once;
+- Hub upstream snapshot I/O completes before downstream appserver capture, and
+  the capture installs an already-materialized snapshot without source I/O
+  under appserver projection or delivery locks;
+- response enqueue success commits an epoch-scoped actor handoff once, while
+  response enqueue failure or downstream cancellation after capture withdraws
+  that hydration and aborts the handoff once without stranding the canonical
+  feed;
+- a deterministic commit-versus-abort race has exactly one terminal winner,
+  repeated terminal calls do not duplicate release or resume, and a stale
+  epoch token cannot publish;
 - pausing before projector mutation, between projector mutation and sequence
   allocation, and before buffer insertion cannot create a snapshot/event gap or
   overlap;
