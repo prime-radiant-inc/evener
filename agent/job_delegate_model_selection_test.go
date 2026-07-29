@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 const durablePluginAgentType = "test-plugin:reviewer"
@@ -279,11 +280,19 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 		fakeAdapter: fakeAdapter{name: "openai"},
 		models:      []llm.ModelInfo{{ID: "gpt-5.2"}},
 	}
-	workAdapter := &fakeAdapter{
-		name: "work",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return communicateWithDefaultOutput("restored with frozen profile") },
+	workAdapter := &countingRestoreModelAdapter{
+		fakeAdapter: fakeAdapter{
+			name: "work",
+			steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return communicateWithDefaultOutput("restored with frozen profile") },
+			},
 		},
+		models: []llm.ModelInfo{{
+			ID:                    "GPT-5.3",
+			ContextWindow:         808_006,
+			SupportsReasoning:     true,
+			ReasoningEffortLevels: []string{"low", "high"},
+		}},
 	}
 	client := llm.NewClient()
 	client.Register(openAIAdapter)
@@ -295,7 +304,7 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 	rec.DelegateRestore.AgentType = durablePluginAgentType
 	rec.DelegateRestore.RequestedModel = "sonnet"
 	rec.DelegateRestore.ResolvedProfileID = "work"
-	rec.DelegateRestore.ResolvedModel = "descriptor-model"
+	rec.DelegateRestore.ResolvedModel = "GPT-5.3"
 	replaceStoredDelegateRecord(t, s, rec)
 	s.pluginAgents[durablePluginAgentType] = plugin.Agent{
 		Name:         "reviewer",
@@ -303,13 +312,28 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 		SystemPrompt: "Changed after the original delegate stopped.",
 		PluginName:   "test-plugin",
 	}
+	reasoningOff := false
+	configuredModels := map[string]providercfg.ModelConfig{
+		"gpt-5.3": {
+			ContextWindow: 654_321,
+			Reasoning:     &reasoningOff,
+		},
+	}
 	s.resolveProfile = func(ref string) (*provider.Profile, error) {
-		if ref != "work/descriptor-model" {
+		if ref != "work/GPT-5.3" {
 			return nil, fmt.Errorf("unexpected profile ref %q", ref)
 		}
-		return WithProviderID(NewOpenAIProfile("descriptor-model"), "work"), nil
+		return provider.ResolveProfileFromConfig(providercfg.Config{
+			Instances: []providercfg.InstanceConfig{{
+				Name:     "work",
+				Type:     "openai",
+				APIStyle: providercfg.StyleChatCompletions,
+				Models:   configuredModels,
+			}},
+		}, ref)
 	}
-	listModelsCallsBeforeRestore := openAIAdapter.ListModelsCallCount()
+	openAIListCallsBeforeRestore := openAIAdapter.ListModelsCallCount()
+	workListCallsBeforeRestore := workAdapter.ListModelsCallCount()
 
 	result := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
@@ -328,21 +352,33 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 		t.Fatal("restored child runtime is missing")
 	}
 	profile := child.sess.currentProfile()
-	if profile.ID() != "work" || profile.Model() != "descriptor-model" {
-		t.Errorf("restored child profile = %s/%s, want work/descriptor-model", profile.ID(), profile.Model())
+	if profile.ID() != "work" || profile.Model() != "GPT-5.3" {
+		t.Errorf("restored child profile = %s/%s, want work/GPT-5.3", profile.ID(), profile.Model())
+	}
+	if profile.ContextWindowSize() != 654_321 {
+		t.Errorf("restored context window = %d, want configured 654321", profile.ContextWindowSize())
+	}
+	if profile.SupportsReasoning() {
+		t.Error("restored SupportsReasoning = true, want configured reasoning=false")
+	}
+	if !profile.EffortLevelsConfigured() {
+		t.Error("restored EffortLevelsConfigured = false, want configured reasoning flag retained")
 	}
 	requests := workAdapter.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("work requests = %+v, want one restored request", requests)
 	}
-	if requests[0].Provider != "work" || requests[0].Model != "descriptor-model" {
-		t.Errorf("restored request provider/model = %s/%s, want work/descriptor-model", requests[0].Provider, requests[0].Model)
+	if requests[0].Provider != "work" || requests[0].Model != "GPT-5.3" {
+		t.Errorf("restored request provider/model = %s/%s, want work/GPT-5.3", requests[0].Provider, requests[0].Model)
 	}
 	if requests := openAIAdapter.Requests(); len(requests) != 0 {
 		t.Errorf("openai requests = %+v, want none", requests)
 	}
-	if got := openAIAdapter.ListModelsCallCount() - listModelsCallsBeforeRestore; got != 0 {
-		t.Errorf("openai ListModels calls during restore = %d, want zero", got)
+	if got := openAIAdapter.ListModelsCallCount() - openAIListCallsBeforeRestore; got != 0 {
+		t.Errorf("openai ListModels calls during restore = %d, want zero plugin-selection calls", got)
+	}
+	if got := workAdapter.ListModelsCallCount() - workListCallsBeforeRestore; got != 1 {
+		t.Errorf("work ListModels calls during restore = %d, want one ordinary live-metadata refresh", got)
 	}
 	var fallbackWarnings []events.WarningData
 drainWarnings:

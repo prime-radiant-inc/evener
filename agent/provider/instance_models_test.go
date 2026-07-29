@@ -2,6 +2,7 @@ package provider
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -62,6 +63,104 @@ func TestNewOpenAICompatProfile_UnknownModelKeepsDefaults(t *testing.T) {
 	}
 	if got, want := withModels.ContextWindowSize(), without.ContextWindowSize(); got != want {
 		t.Errorf("context with unrelated models table = %d, want %d", got, want)
+	}
+}
+
+func TestNewOpenAICompatProfile_NormalizedInstanceModelConfig(t *testing.T) {
+	reasoningOff := false
+	tests := []struct {
+		name           string
+		model          string
+		models         map[string]providercfg.ModelConfig
+		wantContext    int
+		wantReasoning  bool
+		wantConfigured bool
+	}{
+		{
+			name:  "reversed case",
+			model: "GPT-5.3",
+			models: map[string]providercfg.ModelConfig{
+				"gpt-5.3": {
+					ContextWindow: 61_000,
+					Reasoning:     &reasoningOff,
+				},
+			},
+			wantContext:    61_000,
+			wantConfigured: true,
+		},
+		{
+			name:  "surrounding whitespace",
+			model: "gpt-5.3",
+			models: map[string]providercfg.ModelConfig{
+				"  gpt-5.3  ": {
+					ContextWindow: 62_000,
+					Reasoning:     &reasoningOff,
+				},
+			},
+			wantContext:    62_000,
+			wantConfigured: true,
+		},
+		{
+			name:  "exact key precedes normalized key",
+			model: "GPT-5.3",
+			models: map[string]providercfg.ModelConfig{
+				"gpt-5.3": {
+					ContextWindow: 31_000,
+				},
+				"GPT-5.3": {
+					ContextWindow: 63_000,
+					Reasoning:     &reasoningOff,
+				},
+			},
+			wantContext:    63_000,
+			wantConfigured: true,
+		},
+		{
+			name:  "ambiguous normalized keys fail closed",
+			model: "GPT-5.3",
+			models: map[string]providercfg.ModelConfig{
+				"gpt-5.3": {
+					ContextWindow: 31_000,
+					Reasoning:     &reasoningOff,
+				},
+				"GpT-5.3": {
+					ContextWindow: 32_000,
+					Reasoning:     &reasoningOff,
+				},
+			},
+			wantContext:    64_000,
+			wantReasoning:  true,
+			wantConfigured: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			originalModelCount := len(tc.models)
+			p := newOpenAICompatProfile("openai-compatible", tc.model, 0, tc.models)
+			got := p.WithLiveModelInfo(llm.ModelInfo{
+				ID:                    tc.model,
+				ContextWindow:         64_000,
+				SupportsReasoning:     true,
+				ReasoningEffortLevels: []string{"minimal", "high"},
+			})
+
+			if got.Model() != strings.TrimSpace(tc.model) {
+				t.Errorf("Model = %q, want concrete wire ID %q", got.Model(), strings.TrimSpace(tc.model))
+			}
+			if got.ContextWindowSize() != tc.wantContext {
+				t.Errorf("ContextWindowSize = %d, want %d", got.ContextWindowSize(), tc.wantContext)
+			}
+			if got.SupportsReasoning() != tc.wantReasoning {
+				t.Errorf("SupportsReasoning = %t, want %t", got.SupportsReasoning(), tc.wantReasoning)
+			}
+			if got.EffortLevelsConfigured() != tc.wantConfigured {
+				t.Errorf("EffortLevelsConfigured = %t, want %t", got.EffortLevelsConfigured(), tc.wantConfigured)
+			}
+			if len(tc.models) != originalModelCount {
+				t.Errorf("constructor mutated input model map size to %d, want %d", len(tc.models), originalModelCount)
+			}
+		})
 	}
 }
 

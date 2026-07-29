@@ -410,7 +410,7 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 		nil,
 	)
 
-	got := sess.resolvePluginAgentModel(context.Background(), sess.currentProfile(), "gpt-5.3")
+	got := sess.resolvePluginAgentModel(context.Background(), sess.currentProfile(), "GPT-5.3")
 	if got.reason != "" {
 		t.Fatalf("reason = %q, want success", got.reason)
 	}

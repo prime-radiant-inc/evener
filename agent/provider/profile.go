@@ -457,10 +457,68 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	return &clone
 }
 
+// materializeInstanceModelConfig resolves explicit providers.toml model
+// configuration by exact key, then a unique surrounding-whitespace match,
+// then a unique case-insensitive match. A normalized match is copied under the
+// concrete wire model so every later profile operation sees the same explicit
+// configuration. Ambiguous normalized matches fail closed.
+func materializeInstanceModelConfig(
+	models map[string]providercfg.ModelConfig,
+	model string,
+) (map[string]providercfg.ModelConfig, providercfg.ModelConfig, bool) {
+	entry, ok := resolveInstanceModelConfig(models, model)
+	if !ok {
+		return models, providercfg.ModelConfig{}, false
+	}
+	if _, exact := models[model]; exact {
+		return models, entry, true
+	}
+	materialized := maps.Clone(models)
+	materialized[model] = entry
+	return materialized, entry, true
+}
+
+func resolveInstanceModelConfig(
+	models map[string]providercfg.ModelConfig,
+	model string,
+) (providercfg.ModelConfig, bool) {
+	if entry, ok := models[model]; ok {
+		return entry, true
+	}
+	trimmedModel := strings.TrimSpace(model)
+	if entry, ok := uniqueInstanceModelConfig(models, func(id string) bool {
+		return strings.TrimSpace(id) == trimmedModel
+	}); ok {
+		return entry, true
+	}
+	return uniqueInstanceModelConfig(models, func(id string) bool {
+		return strings.EqualFold(strings.TrimSpace(id), trimmedModel)
+	})
+}
+
+func uniqueInstanceModelConfig(
+	models map[string]providercfg.ModelConfig,
+	matches func(string) bool,
+) (providercfg.ModelConfig, bool) {
+	var matched providercfg.ModelConfig
+	found := false
+	for id, entry := range models {
+		if !matches(id) {
+			continue
+		}
+		if found {
+			return providercfg.ModelConfig{}, false
+		}
+		matched = entry
+		found = true
+	}
+	return matched, found
+}
+
 // WithAdvertisedModelInfo freezes the provider-advertised wire model ID and
 // applies its live metadata. An exact providers.toml entry for the advertised
-// spelling wins; otherwise the current entry is copied onto that spelling so
-// later live refreshes continue to honor the user's settings.
+// spelling wins; otherwise a unique normalized entry is copied onto that
+// spelling so later live refreshes continue to honor the user's settings.
 func (p *Profile) WithAdvertisedModelInfo(info llm.ModelInfo) *Profile {
 	if p == nil {
 		return nil
@@ -469,16 +527,15 @@ func (p *Profile) WithAdvertisedModelInfo(info llm.ModelInfo) *Profile {
 	if advertisedID == "" {
 		return p.WithLiveModelInfo(info)
 	}
-	if _, exists := p.instModels[advertisedID]; exists {
-		return p.WithModel(advertisedID).WithLiveModelInfo(info)
+	instModels, _, configured := materializeInstanceModelConfig(p.instModels, advertisedID)
+	if configured {
+		clone := *p
+		clone.instModels = instModels
+		return clone.WithModel(advertisedID).WithLiveModelInfo(info)
 	}
 
 	clone := *p
 	clone.model = advertisedID
-	if configured, ok := p.instModels[p.model]; ok {
-		clone.instModels = maps.Clone(p.instModels)
-		clone.instModels[advertisedID] = configured
-	}
 	return clone.WithLiveModelInfo(info)
 }
 
@@ -1148,7 +1205,7 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behavio
 // is broadened.
 func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[string]providercfg.ModelConfig) *Profile {
 	model = strings.TrimSpace(model)
-	entry, hasEntry := instModels[model]
+	instModels, entry, hasEntry := materializeInstanceModelConfig(instModels, model)
 	var catModel *llm.ModelInfo
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
 		catModel = resolveOpenAICompatCatalogModel(cat.GetModelInfo, id, model)
