@@ -420,7 +420,9 @@ The implementation should remain narrow:
 - centralize subagent model selection in one side-effect-free preflight;
 - route direct spawn and durable delegate creation through that same preflight;
 - reuse `ModelCatalog` alias lookup and `llm.Client.ListModels`;
-- avoid a second availability query during child construction;
+- make exactly one plugin-membership decision and do not rerun membership
+  validation during child construction; `NewSession`'s existing best-effort
+  live-metadata refresh remains unchanged and is not an availability decision;
 - do not add provider-family routing tables;
 - do not change request-builder tool-choice behavior;
 - do not modify unrelated plugin command handling.
