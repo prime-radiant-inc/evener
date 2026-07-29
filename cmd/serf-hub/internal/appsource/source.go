@@ -33,3 +33,31 @@ type Source interface {
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
+
+// RelaySessionSource is implemented by sources that can preserve one ordered
+// upstream snapshot-to-live stream. Codex deliberately does not implement this
+// interface because it converges through authoritative full-state replacement.
+type RelaySessionSource interface {
+	AcquireRelaySession(appwire.ThreadReadParams) (RelaySessionLease, error)
+}
+
+type RelaySessionLease interface {
+	Read(context.Context, appwire.ThreadReadParams) (RelayReadResult, error)
+	Listen(context.Context) (<-chan RelayDelivery, error)
+	Close()
+}
+
+type RelayReadResult struct {
+	Response appwire.ThreadReadResponse
+	Handoff  RelayHandoff
+}
+
+type RelayHandoff interface {
+	Commit() bool
+	Abort() bool
+}
+
+type RelayDelivery struct {
+	Notification appwire.Notification
+	Acknowledge  func()
+}
