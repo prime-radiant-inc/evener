@@ -1504,6 +1504,69 @@ func TestCodexDirtyFullStateReconnectForcesReadWithWarmCache(t *testing.T) {
 	}
 }
 
+func TestCodexNoRolloutReconnectInvalidatesWarmCache(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var resumeCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		if resumeCount.Add(1) == 1 {
+			appserver.Subscribe(ctx, params.ThreadID)
+			return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+		}
+		return nil, appwire.InvalidParams("no rollout found for thread id " + params.ThreadID)
+	})
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		call := readCount.Add(1)
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = fmt.Sprintf("snapshot-%d", call)
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	firstNotifications, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("first SubscribeThread: %v", err)
+	}
+	if got := <-firstNotifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("first replacement method=%q", got.Method)
+	}
+	firstLive := source.liveThread("th_codex")
+	if firstLive == nil {
+		t.Fatal("missing first live thread")
+	}
+	firstLive.retire()
+	<-firstLive.done
+
+	resp, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err != nil {
+		t.Fatalf("ReadThread after live source retired: %v", err)
+	}
+	if resp.Thread.Preview != "snapshot-2" {
+		t.Fatalf("preview after live source retired=%q, want authoritative snapshot-2", resp.Thread.Preview)
+	}
+	if got := readCount.Load(); got != 2 {
+		t.Fatalf("upstream reads=%d, want warm-cache read plus authoritative post-retirement read", got)
+	}
+
+	secondNotifications, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("second SubscribeThread: %v", err)
+	}
+	if _, ok := <-secondNotifications; ok {
+		t.Fatal("no-rollout reconnect returned a live notification channel")
+	}
+}
+
 func fuzzScenarioCodexSourceTurnCompletedNotificationIncludesCanonicalRef(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	handleCodexRead(server)
