@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { firstLine, formatDurationMs, formatTokenCount } from "./format";
+import { firstLine, formatClockTime, formatDurationMs, formatTokenCount } from "./format";
 
 // --- formatTokenCount -----------------------------------------------------
 // Parity: renderer-format.js:582-587. Below 1000 is a plain rounded
@@ -102,4 +102,38 @@ test("firstLine: clips a long line and appends an ellipsis", () => {
 test("firstLine: a line exactly at the max length is not clipped", () => {
   const exact = "a".repeat(10);
   expect(firstLine(exact, 10)).toBe(exact);
+});
+
+// --- formatClockTime --------------------------------------------------------
+// The slack-lean speaker header's time slot: local "HH:MM" from an
+// ItemModel.startedAt ISO timestamp. Expected values are computed through the
+// same Date parsing the helper uses, never hardcoded, so the suite is
+// timezone-independent (CI and dev machines differ).
+
+test("formatClockTime: renders a valid ISO timestamp as local HH:MM", () => {
+  const iso = "2026-07-29T12:41:00";
+  const parsed = new Date(iso);
+  const expected = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+  expect(formatClockTime(iso)).toBe(expected);
+});
+
+test("formatClockTime: a Zulu ISO with seconds projects to the correct local hour and minute", () => {
+  const iso = "2026-07-29T04:41:37Z";
+  const parsed = new Date(iso);
+  const expected = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+  expect(formatClockTime(iso)).toBe(expected);
+});
+
+test("formatClockTime: zero-pads single-digit hours and minutes", () => {
+  const iso = "2026-07-29T01:05:00Z";
+  expect(formatClockTime(iso)).toMatch(/^\d{2}:\d{2}$/);
+});
+
+test("formatClockTime: undefined input yields undefined, so a header with no time shows no time", () => {
+  expect(formatClockTime(undefined)).toBeUndefined();
+});
+
+test("formatClockTime: an unparseable string yields undefined rather than a guess", () => {
+  expect(formatClockTime("not a timestamp")).toBeUndefined();
+  expect(formatClockTime("")).toBeUndefined();
 });

@@ -1,6 +1,10 @@
 /* Quiet, collapsed-by-default divider for daemon-originated steering
  * (mockup #3: "neutral (not amber) steer tick" - steering is routine
- * bookkeeping, never an attention-worthy event on its own). */
+ * bookkeeping, never an attention-worthy event on its own). The quietness
+ * now comes from structure - collapsed-by-default disclosure, --ink-mid -
+ * not from size: per Jesse ("system Steering should probably be the same
+ * font size as other messages"), summary and body both sit at
+ * --font-size-body (slack-lean spec decision 6). */
 .details {
   padding: var(--space-1) 0;
 }
@@ -17,7 +21,7 @@
   cursor: pointer;
   list-style: none;
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-size: var(--font-size-body);
   color: var(--ink-mid);
 }
 
@@ -55,6 +59,6 @@
   white-space: pre-wrap;
   overflow-wrap: break-word;
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-body);
   color: var(--ink-mid);
 }

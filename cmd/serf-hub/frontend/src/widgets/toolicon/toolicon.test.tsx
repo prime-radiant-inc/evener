@@ -18,6 +18,7 @@ const ALL_KINDS: ToolIconKind[] = [
   "job",
   "send",
   "skill",
+  "person",
   "wrench",
   "thought",
 ];

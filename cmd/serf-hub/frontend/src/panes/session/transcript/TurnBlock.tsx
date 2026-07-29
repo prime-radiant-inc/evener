@@ -44,7 +44,18 @@ export interface TurnBlockProps {
 
 const CLASS = {
   turn: requireClass(styles.turn, "turnblock.module.css", "turn"),
+  agentContent: requireClass(styles.agentContent, "turnblock.module.css", "agentContent"),
 };
+
+// Gutter classification (slack-lean speaker treatments, spec
+// docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md decisions
+// 3-4): MARGIN items render full-width, exactly as before; everything else -
+// agent work is the common case, structural rows are the explicit exceptions
+// - is agent-side CONTENT and takes the indent. Unknown current-or-future
+// wire types default to content. Note the wire's own type name for a system
+// notice is "systemMessage" (SystemNoticeItem's registerItemRenderer call
+// site), not "systemNotice".
+const MARGIN_ITEM_TYPES: ReadonlySet<string> = new Set(["userMessage", "steering", "systemMessage", "warning"]);
 
 // isItemLive is the per-item liveness signal every item renderer receives
 // as `live` (ItemRenderProps.live): wire-accurate against the
@@ -95,26 +106,49 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
           const run = toolRunFor(shown, item.id);
           if (run && shouldGroup(run)) {
             if (!run.isFirst) return null;
+            // A ToolCallCluster renders a run of agent tool calls, so it is
+            // agent-side content and takes the indent too. The key moves to
+            // the wrapper so the cluster's identity is unchanged.
             return (
-              <ToolCallCluster
-                key={itemScopeKey(sessionRef, item.id)}
-                items={run.items}
-                turn={shownTurn}
-                sessionRef={sessionRef}
-              />
+              <div key={itemScopeKey(sessionRef, item.id)} className={CLASS.agentContent} data-testid="agent-content">
+                <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
+              </div>
             );
           }
           const ItemRenderer = itemRendererFor(item.type);
+          // Margin items (userMessage, steering, systemMessage, warning)
+          // render unwrapped, full width, exactly as before; the memoized
+          // renderers and their keys are untouched. Everything else is
+          // agent-side content and takes the gutter indent - EXCEPT an
+          // exchange-opening agentMessage: its own speaker header is the
+          // avatar row (spec classification: "avatar row"), and the avatar
+          // belongs IN the gutter at the margin, not indented into the
+          // content column it heads.
+          const isAvatarRow = item.type === "agentMessage" && exchangeOpeners?.has(item.id) === true;
+          if (MARGIN_ITEM_TYPES.has(item.type) || isAvatarRow) {
+            return (
+              <ItemRenderer
+                key={item.id}
+                item={item}
+                turn={shownTurn}
+                live={isItemLive(item)}
+                sessionRef={sessionRef}
+                opensExchange={exchangeOpeners?.has(item.id)}
+                agentLabel={agentLabel}
+              />
+            );
+          }
           return (
-            <ItemRenderer
-              key={item.id}
-              item={item}
-              turn={shownTurn}
-              live={isItemLive(item)}
-              sessionRef={sessionRef}
-              opensExchange={exchangeOpeners?.has(item.id)}
-              agentLabel={agentLabel}
-            />
+            <div key={item.id} className={CLASS.agentContent} data-testid="agent-content">
+              <ItemRenderer
+                item={item}
+                turn={shownTurn}
+                live={isItemLive(item)}
+                sessionRef={sessionRef}
+                opensExchange={exchangeOpeners?.has(item.id)}
+                agentLabel={agentLabel}
+              />
+            </div>
           );
         })}
         {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}

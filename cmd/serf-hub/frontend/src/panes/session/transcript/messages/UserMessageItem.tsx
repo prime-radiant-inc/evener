@@ -1,9 +1,16 @@
-// The userMessage item renderer: quiet, demoted treatment (design-system.md
-// mockup #3 - "the user knows what they said," so their own prompt never
-// out-shouts the agent's prose). Never streams (a user message always
-// arrives settled - see internal/appprojector's EventUserInput, which emits
-// straight to item/completed with no item/started leg), so unlike
-// agentMessage/reasoning there is no live/settled branch here at all.
+// The userMessage item renderer: the slack-lean speaker treatment
+// (docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md, decisions
+// 1, 2, 5). Speaker identity is a one-line header - avatar tile, then "You"
+// at body size, then the message's clock time at caption - replacing the old
+// stacked caption eyebrow, which was too faint to scan exchange boundaries
+// by. The whole message is one flex row (avatar + content column), so the
+// header and the text share the column the TurnBlock gutter aligns
+// agent-side items to; there is deliberately no breakpoint here - the avatar
+// stays inline at every width and TurnBlock owns the gutter media query.
+// Never streams (a user message always arrives settled - see
+// internal/appprojector's EventUserInput, which emits straight to
+// item/completed with no item/started leg), so unlike agentMessage/reasoning
+// there is no live/settled branch here at all.
 
 import { memo, type ReactNode, useState } from "react";
 import { sessionActionError } from "../../../../protocol/errors";
@@ -12,17 +19,24 @@ import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
 import { IconButton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+// Direct widget path, NOT the widgets barrel: the barrel is controller-owned
+// and does not re-export SpeakerAvatar yet.
+import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
 import { writeDraft } from "../../composer/draft";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
+import { formatClockTime } from "./format";
 import styles from "./usermessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "usermessageitem.module.css", "message"),
+  avatar: requireClass(styles.avatar, "usermessageitem.module.css", "avatar"),
+  content: requireClass(styles.content, "usermessageitem.module.css", "content"),
   header: requireClass(styles.header, "usermessageitem.module.css", "header"),
-  eyebrow: requireClass(styles.eyebrow, "usermessageitem.module.css", "eyebrow"),
-  body: requireClass(styles.body, "usermessageitem.module.css", "body"),
+  name: requireClass(styles.name, "usermessageitem.module.css", "name"),
+  time: requireClass(styles.time, "usermessageitem.module.css", "time"),
   actions: requireClass(styles.actions, "usermessageitem.module.css", "actions"),
+  body: requireClass(styles.body, "usermessageitem.module.css", "body"),
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
 };
 
@@ -87,19 +101,29 @@ export function UserMessageView({
   actions?: ReactNode;
   opensExchange?: boolean;
 }) {
+  // No placeholder when the wire carries no startedAt: a header with no time
+  // shows no time rather than a guess (formatClockTime returns undefined for
+  // a missing or unparseable timestamp).
+  const time = formatClockTime(item.startedAt);
   return (
     <div
       className={CLASS.message}
       data-testid="user-message-item"
       data-opens-exchange={opensExchange ? "true" : undefined}
     >
-      <div className={CLASS.header}>
-        <span className={CLASS.eyebrow}>You</span>
-        {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
-      </div>
-      <div className={CLASS.body}>
-        <ImageGallery images={item.images} />
-        <div className={CLASS.text}>{item.text}</div>
+      <span className={CLASS.avatar}>
+        <SpeakerAvatar speaker="user" />
+      </span>
+      <div className={CLASS.content}>
+        <div className={CLASS.header}>
+          <span className={CLASS.name}>You</span>
+          {time !== undefined && <span className={CLASS.time}>{time}</span>}
+          {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
+        </div>
+        <div className={CLASS.body}>
+          <div className={CLASS.text}>{item.text}</div>
+          <ImageGallery images={item.images} />
+        </div>
       </div>
     </div>
   );

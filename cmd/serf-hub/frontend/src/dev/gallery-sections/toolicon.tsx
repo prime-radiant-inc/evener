@@ -16,6 +16,7 @@ const KINDS: { kind: ToolIconKind; label: string }[] = [
   { kind: "job", label: "job (job_* family)" },
   { kind: "send", label: "send (delegate_send)" },
   { kind: "skill", label: "skill (use_skill)" },
+  { kind: "person", label: "person (user avatar)" },
   { kind: "wrench", label: "wrench (default/MCP)" },
   { kind: "thought", label: "thought (thinking row)" },
 ];

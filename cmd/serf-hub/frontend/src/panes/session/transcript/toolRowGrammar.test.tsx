@@ -363,7 +363,9 @@ test("a descriptor with an icon rides it INLINE at the start of the tool-use lin
 });
 
 test("a summary-less row (a delegate's purpose-only row) rides the icon on the purpose line instead", () => {
-  render(<ToolRow summary="" purpose="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />);
+  render(
+    <ToolRow summary="" purpose="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />,
+  );
   const purpose = screen.getByTestId("tool-row-purpose");
   const icon = screen.getByTestId("tool-row-icon");
   expect(purpose.contains(icon)).toBe(true);

@@ -35,6 +35,7 @@ export type ToolIconKind =
   | "job"
   | "send"
   | "skill"
+  | "person"
   | "wrench"
   | "thought";
 
@@ -73,6 +74,10 @@ const PATHS: Record<ToolIconKind, string> = {
   send: "M2.5 8 L13.5 2.5 L10 13.5 L7.8 9.7 Z M13.5 2.5 L7.8 9.7",
   // A four-point sparkle (use_skill).
   skill: "M8 2 L9.4 6.6 L14 8 L9.4 9.4 L8 14 L6.6 9.4 L2 8 L6.6 6.6 Z",
+  // A person: head circle over a shoulders arc (SpeakerAvatar's user tile -
+  // not a tool, but the transcript's speaker header draws both avatars from
+  // this same 16-grid line-art grammar so the two read as one family).
+  person: "M10.2 5 A2.2 2.2 0 1 1 5.8 5 A2.2 2.2 0 1 1 10.2 5 M3.5 13.5 C4.2 10.6 11.8 10.6 12.5 13.5",
   // The generic tool: an open-end wrench (the DEFAULT_DESCRIPTOR's glyph -
   // every unregistered tool, which includes every MCP tool, wears this one).
   // Lucide's wrench path scaled 24 -> 16 (x2/3), radii scaled with it.

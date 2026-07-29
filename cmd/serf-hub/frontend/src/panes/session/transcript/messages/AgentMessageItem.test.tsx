@@ -1,15 +1,19 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
+import { formatClockTime } from "./format";
 
 afterEach(cleanup);
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
+
+const STARTED_AT = "2026-07-29T12:41:00Z";
+const TIME = formatClockTime(STARTED_AT)!;
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "agentMessage", text: "", ...overrides };
@@ -116,20 +120,124 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
 });
 
-test("exchange-opening agent message shows a visible eyebrow with the model label", () => {
+// --- the speaker header (slack-lean spec, decisions 1-2) -------------------
+// Replaces the old caption eyebrow at exactly the same trigger: exchange
+// boundaries only (opensExchange), in BOTH the live and settled branches.
+
+test("exchange-opening agent message shows the speaker header: name, meta, and a decorative avatar", () => {
   render(
-    <AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />,
+    <AgentMessageItem
+      item={item({ text: "the reply", startedAt: STARTED_AT })}
+      turn={turn}
+      live={false}
+      opensExchange
+      agentLabel="k3"
+    />,
   );
   const root = screen.getByTestId("agent-message-item");
   expect(root.dataset.opensExchange).toBe("true");
-  expect(root.firstElementChild!.textContent).toBe("Agent · k3");
+  const header = screen.getByTestId("agent-speaker-header");
+  expect(within(header).getByText("Agent")).toBeTruthy();
+  expect(header.textContent).toBe(`Agentk3 · ${TIME}`);
+  // The avatar is decorative - the header names the speaker in words, so
+  // exposing the tile would announce the same fact twice.
+  const avatar = within(root).getByTestId("speaker-avatar");
+  expect(avatar.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("continuation fragments render no eyebrow", () => {
-  render(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} />);
+test("the speaker header renders in the LIVE branch too - the eyebrow appeared in both, and the header keeps that parity", () => {
+  render(
+    <AgentMessageItem
+      item={item({ pendingText: ["streaming"], startedAt: STARTED_AT })}
+      turn={turn}
+      live={true}
+      opensExchange
+      agentLabel="k3"
+    />,
+  );
+  const header = screen.getByTestId("agent-speaker-header");
+  expect(header.textContent).toBe(`Agentk3 · ${TIME}`);
+  expect(screen.getByTestId("streaming-text")).toBeTruthy();
+});
+
+test("the speaker header survives the live-to-settled transition on the same instance", () => {
+  const liveItem = item({ pendingText: ["Hi"], startedAt: STARTED_AT });
+  const { rerender } = render(
+    <AgentMessageItem item={liveItem} turn={turn} live={true} opensExchange agentLabel="k3" />,
+  );
+  expect(screen.getByTestId("agent-speaker-header")).toBeTruthy();
+  rerender(
+    <AgentMessageItem
+      item={{ ...liveItem, text: "Hi", pendingText: undefined }}
+      turn={{ ...turn, status: "completed" }}
+      live={false}
+      opensExchange
+      agentLabel="k3"
+    />,
+  );
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agentk3 · ${TIME}`);
+});
+
+// Meta composition: "{label} · {time}", each part only when defined - never
+// a dangling separator, and no meta element at all when both are absent.
+
+test("meta with label only (no startedAt): just the label, no dangling separator", () => {
+  render(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange agentLabel="k3" />);
+  const header = screen.getByTestId("agent-speaker-header");
+  expect(header.textContent).toBe("Agentk3");
+  expect(header.textContent).not.toContain("·");
+});
+
+test("meta with time only (no agentLabel): just the time, no dangling separator", () => {
+  render(<AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />);
+  const header = screen.getByTestId("agent-speaker-header");
+  expect(header.textContent).toBe(`Agent${TIME}`);
+  expect(header.textContent).not.toContain("·");
+});
+
+test("meta with neither label nor time: no meta element at all, just the name", () => {
+  render(<AgentMessageItem item={item({ text: "r" })} turn={turn} live={false} opensExchange />);
+  const header = screen.getByTestId("agent-speaker-header");
+  expect(header.textContent).toBe("Agent");
+  // One child: the name span only - an empty meta span would still carry
+  // the flex gap and reserve visual space.
+  expect(header.children.length).toBe(1);
+});
+
+test("meta with an unparseable startedAt drops the time rather than guessing", () => {
+  render(
+    <AgentMessageItem
+      item={item({ text: "r", startedAt: "not a timestamp" })}
+      turn={turn}
+      live={false}
+      opensExchange
+      agentLabel="k3"
+    />,
+  );
+  expect(screen.getByTestId("agent-speaker-header").textContent).toBe("Agentk3");
+});
+
+test("continuation fragments render no header, no avatar, no opens-exchange marker", () => {
+  render(
+    <AgentMessageItem
+      item={item({ text: "more work", startedAt: STARTED_AT })}
+      turn={turn}
+      live={false}
+      agentLabel="k3"
+    />,
+  );
   const root = screen.getByTestId("agent-message-item");
   expect(root.dataset.opensExchange).toBeUndefined();
+  expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
+  expect(screen.queryByTestId("speaker-avatar")).toBeNull();
   expect(root.textContent).not.toContain("Agent");
+});
+
+test("mid-exchange LIVE fragments render no header either - the trigger is opensExchange, not liveness", () => {
+  render(<AgentMessageItem item={item({ pendingText: ["work"] })} turn={turn} live={true} agentLabel="k3" />);
+  expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
+  expect(screen.queryByTestId("speaker-avatar")).toBeNull();
 });
 
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------

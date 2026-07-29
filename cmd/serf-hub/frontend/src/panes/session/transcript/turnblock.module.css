@@ -34,3 +34,19 @@
   padding-left: var(--space-3);
   border-left: 2px solid var(--edge);
 }
+
+/* Agent-side content column (slack-lean speaker treatments, spec
+ * docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md decisions
+ * 3-4): TurnBlock wraps every non-margin item in this row, and above the
+ * breakpoint it indents 34px = 24px speaker-avatar tile + 10px gap, aligning
+ * the content under the header's name. The indent is per-turn but reads
+ * continuous across turns because adjacent turns share it; below 700px the
+ * gutter collapses and every row goes full-width (the avatar moves inline
+ * into the header). The 700px breakpoint matches overflowguard's
+ * 390/700/1024/1400 sweep so the 390/700 legs exercise the collapsed
+ * variant and the 1024/1400 legs the guttered one. */
+@media (min-width: 700px) {
+  .agentContent {
+    padding-left: 34px;
+  }
+}

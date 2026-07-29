@@ -70,6 +70,8 @@ export type { SheetProps, SheetSide } from "./sheet";
 export { Sheet } from "./sheet";
 export type { SkeletonProps } from "./skeleton";
 export { Skeleton } from "./skeleton";
+export type { SpeakerAvatarProps, SpeakerAvatarSpeaker } from "./speakeravatar";
+export { SpeakerAvatar } from "./speakeravatar";
 export type { StatusDotProps } from "./statusdot";
 export { StatusDot } from "./statusdot";
 export { SteeringGlyph } from "./steeringglyph";

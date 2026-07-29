@@ -209,12 +209,7 @@ export function ToolRow({
 
   if (!expandable) {
     return (
-      <div
-        className={CLASS.row}
-        data-testid="tool-row"
-        data-purpose={hasPurpose ? "true" : undefined}
-        title={title}
-      >
+      <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
         {content}
       </div>
     );

@@ -1,7 +1,18 @@
-/* Quiet, demoted treatment (design-system.md mockup #3: "the user knows
- * what they said" - the prompt never out-shouts the agent's own prose that
- * follows it). No bubble, no right-alignment: the user speaker is a stacked
- * eyebrow above the body, with actions anchored in the header row.
+/* The slack-lean speaker treatment for the user's own messages
+ * (docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md, decisions
+ * 1, 2, 5). No bubble, no right-alignment: the whole message is one flex row
+ * - a 24px avatar tile beside a content column whose first line is the
+ * speaker header (avatar + "You" + clock time, actions right-anchored) - so
+ * speaker identity reads as structure, the way a chat app's avatar column
+ * does. There is deliberately NO breakpoint in this file: the avatar stays
+ * inline in the header row at every width; the responsive gutter media query
+ * belongs to turnblock.module.css (decision 4).
+ *
+ * Decision 5, recorded: the body text is --ink-hi, reversing the old
+ * tiered-density demotion ("the user knows what they said", which muted it
+ * to --ink-mid). The demotion was doing hierarchy work - keeping the
+ * exchange boundary scannable - that the new speaker header now does better;
+ * the boundary no longer needs the words themselves muted.
  *
  * The exchange boundary, and the transcript's only structural break.
  *
@@ -23,13 +34,31 @@
  * at the boundaries a reader is actually looking for. */
 .message {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  /* 24px avatar + 10px gap = the 34px content column the TurnBlock gutter
+   * indents agent-side items to (spec decision 3). 10px sits between
+   * --space-2 and --space-3 with no token of its own, so it is a literal. */
+  gap: 10px;
   padding: var(--space-2) 0;
 }
 
 .message[data-opens-exchange] {
   margin-top: var(--space-6);
+}
+
+/* flex: none - the tile keeps its 24px edge when the row is squeezed; the
+ * content column (which can wrap) is the row's only flexible member. */
+.avatar {
+  flex: none;
+}
+
+/* min-width: 0 - a flex item's automatic minimum size would otherwise pin the
+ * column to its longest unbreakable word and defeat the text's break-word
+ * wrapping. */
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
 .header {
@@ -38,10 +67,20 @@
   gap: var(--space-2);
 }
 
-.eyebrow {
+/* The speaker name at body size / medium weight / --ink-hi (spec decision
+ * 1): identity is a first-class header now, not a demoted caption eyebrow. */
+.name {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+/* The header's meta slot: caption size, --ink-low, and rendered only when
+ * the item carries a startedAt - never a placeholder. */
+.time {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
   color: var(--ink-low);
 }
 
@@ -69,5 +108,6 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
-  color: var(--ink-mid);
+  /* --ink-hi: spec decision 5 - see this file's header comment. */
+  color: var(--ink-hi);
 }

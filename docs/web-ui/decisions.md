@@ -177,6 +177,16 @@ being worked separately and is out of scope here, but `steeringitem.module.css`'
 divider still stacks its own summary above its body the same pre-fix way — it
 will need the identical eyebrow when that work lands.
 
+**Superseded again, 2026-07-29 (slack-lean speaker treatments, spec
+`docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md`).** The stacked
+caption eyebrow lasted two days: speaker identity is now a one-line header — a
+24px avatar tile beside `You` at body size plus the message's clock time — and
+the contrast demotion itself is reversed: `.text` is `--ink-hi` (spec decision
+5; the header does the boundary-scannability work the muting was doing). The
+steering divider did not get the eyebrow in the end; it got body-size text
+instead (Jesse: "system Steering should probably be the same font size as other
+messages" — `steeringitem.module.css` `.summary`/`.body`).
+
 **04 · Assistant hero & reading hierarchy** — chose A (size + space) + D
 (contrast), explicitly **not** C (first-sentence lede). Shipped in the React
 rewrite by `cd4663a99` and `bf1c7f318`.
@@ -188,6 +198,13 @@ rewrite by `cd4663a99` and `bf1c7f318`.
 | A — agent prose wins on **size and space** | CHANGED, **SUPERSEDED** | `agentmessageitem.module.css:.message` no longer sets `--prose-font-size: var(--font-size-pane-title)`; agent prose is body-size now. The surviving hierarchy is the contrast pair from `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 1: `--ink-hi` agent prose against `--ink-mid` user text (decisions.md:193). The size signal was applied per-fragment and cancelled itself. |
 | B — no visible agent label | **SUPERSEDED** | The SR-only `Agent` label is superseded by the visible exchange-boundary eyebrow `Agent · {model}` described in `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 2. The eyebrow is shown only at exchange boundaries, matching the measured 32px boundary mechanic (decisions.md:119-130). |
 | (all four alternatives agreed) inline code is a quiet underline, never a filled chip | LIVE | `markdown.module.css:.inlineCode` uses relative mono sizing and an `--edge` bottom rule with no background, padding, or radius. |
+
+Rows B and D superseded again, 2026-07-29 (slack-lean speaker treatments, spec
+`docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md`): the
+exchange-boundary eyebrow is now the speaker header — avatar tile + `Agent` +
+`model · time`, firing only at exchange openers (spec decisions 1-2) — and the
+user-text demotion in row D is reversed: user text is `--ink-hi` (spec decision
+5). Agent prose keeps its full-contrast body-size treatment unchanged.
 
 **05 · Thinking block** — chose A (reserved-slot collapse) + D
 (duration-weighted prominence + gist). Originally simplified by `44d04271f`.

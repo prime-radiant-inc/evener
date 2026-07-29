@@ -1,7 +1,10 @@
 /* Layout/spacing only - typography is owned entirely by Markdown's and
  * StreamingText's own stylesheets (both already source font-family/
  * line-height/color from the same tokens), so the live and settled paths
- * can never visually mismatch.
+ * can never visually mismatch. The one exception is the speaker header,
+ * whose words ARE this component's own chrome: "Agent" at body size /
+ * medium weight / ink-hi, meta at caption / ink-low (slack-lean spec,
+ * 2026-07-29-transcript-slack-lean-messages.md, decision 1).
  *
  * Agent prose is body-size like everything else (tiered-density spec,
  * 2026-07-27): the hierarchy against the user's ink-mid text is carried
@@ -12,12 +15,44 @@
   padding: var(--space-2) 0;
 }
 
-/* The agent's speaker eyebrow (tiered-density spec, 2026-07-27): same
- * sanctioned idiom as the user's - caption, medium, ink-low, sentence
- * case. Fires at exchange boundaries only. */
-.eyebrow {
+/* Exchange openers only: the item becomes a flex row [avatar][column]. The
+ * 10px gap with the 24px avatar makes the 34px content column TurnBlock's
+ * gutter indents to, so the opener's prose and every mid-exchange row
+ * share one vertical edge. Mid-exchange items never take this class - they
+ * render as a bare .message and the gutter aligns them. The header is a
+ * flex row at every width (spec decision 4): the avatar simply stays
+ * inline, so there is no breakpoint here. */
+.opener {
+  display: flex;
+  gap: 10px;
+}
+
+.column {
+  flex: 1 1 auto;
+  min-width: 0; /* let long prose/code shrink instead of overflowing the row */
+}
+
+/* The speaker header: avatar's row-mate, naming WHO is speaking. Replaces
+ * the old caption eyebrow ("Agent · label") at exactly the same trigger
+ * (exchange boundaries only) - the boundary signal is now scannable
+ * structure, not a faint caption. */
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.name {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+/* Meta is "{model label} · {clock time}", each part only when defined; the
+ * element itself only renders when at least one part exists. */
+.meta {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
   color: var(--ink-low);
 }

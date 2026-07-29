@@ -61,19 +61,53 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
   expect((UserMessageItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
-test("renders a stacked eyebrow, not an inline gutter tag", () => {
+test("renders the slack-lean speaker header: avatar tile + 'You', no stacked eyebrow or gutter tag", () => {
   render(<UserMessageView item={item({ text: "hello world" })} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.firstElementChild;
+  // One flex row: avatar wrapper first, content column second.
+  const avatar = root.children[0];
+  expect(avatar?.className).toBe(styles.avatar);
+  const content = root.children[1];
+  expect(content?.className).toBe(styles.content);
+  // The header is the content column's first line and names the speaker.
+  const header = content?.firstElementChild;
   expect(header).not.toBeNull();
   expect(header!.textContent).toBe("You");
   expect(root.querySelector("[class*=tag]")).toBeNull();
+  expect(root.querySelector("[class*=eyebrow]")).toBeNull();
 });
 
-test("actions live in the eyebrow header row", () => {
+test("the avatar tile is decorative (aria-hidden) - the header already names the speaker in words", () => {
+  render(<UserMessageView item={item({ text: "hello" })} />);
+  const avatar = screen.getByTestId("speaker-avatar");
+  expect(avatar.getAttribute("aria-hidden")).toBe("true");
+});
+
+test("the clock time renders in the header when startedAt is present", () => {
+  const startedAt = "2026-07-29T14:05:00.000Z";
+  render(<UserMessageView item={item({ text: "hello", startedAt })} />);
+  // Local HH:MM projection of the instant, matching formatClockTime.
+  const d = new Date(startedAt);
+  const expected = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const root = screen.getByTestId("user-message-item");
+  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  const time = header.querySelector(`.${styles.time}`);
+  expect(time).not.toBeNull();
+  expect(time!.textContent).toBe(expected);
+});
+
+test("no time node at all (no placeholder) when startedAt is absent", () => {
+  render(<UserMessageView item={item({ text: "hello" })} />);
+  const root = screen.getByTestId("user-message-item");
+  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  expect(header.querySelector(`.${styles.time}`)).toBeNull();
+  expect(header.textContent).toBe("You");
+});
+
+test("actions live in the speaker header row", () => {
   render(<UserMessageView item={item({ text: "hello" })} actions={<button type="button">act</button>} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.firstElementChild as HTMLElement;
+  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
   expect(header.contains(screen.getByRole("button", { name: "act" }))).toBe(true);
 });
 
@@ -92,25 +126,44 @@ test('carries a quiet "You" tag as a sibling of the text, not mixed into it', ()
   expect(container.querySelector('[data-testid="user-message-item"]')).toBeTruthy();
 });
 
-test("the approved You row keeps identity, attachments, and text in one baseline gutter hierarchy", () => {
+test("the approved You row keeps identity, text, and attachments in one avatar + content-column hierarchy", () => {
   const { container } = render(
     <UserMessageView item={item({ text: "hi", images: [{ src: "data:image/png;base64,x" }] })} />,
   );
   const message = container.querySelector('[data-testid="user-message-item"]');
-  expect(message?.children[0]?.textContent).toBe("You");
-  expect(message?.children[1]?.className).toBe(styles.body);
-  expect(message?.children[1]?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
-  expect(message?.children[1]?.textContent).toContain("hi");
+  expect(message?.children[0]?.className).toBe(styles.avatar);
+  const content = message?.children[1];
+  expect(content?.className).toBe(styles.content);
+  expect(content?.children[0]?.textContent).toBe("You");
+  const body = content?.children[1];
+  expect(body?.className).toBe(styles.body);
+  expect(body?.textContent).toContain("hi");
+  expect(body?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-test("the You row layout is token-backed and has no prose card treatment", () => {
+test("the slack-lean layout is token-backed and has no prose card treatment", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;/);
+  // One flex row: avatar (flex:none) + 10px gap, so the content column lands
+  // on the same 34px line the TurnBlock gutter uses for agent-side items.
+  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*10px;/);
+  expect(css).toMatch(/\.avatar\s*\{[\s\S]*flex:\s*none;/);
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
+  // Speaker name at body size / medium weight / --ink-hi (spec decision 1);
+  // clock time at caption / --ink-low.
   expect(css).toMatch(
-    /\.eyebrow\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-low\);/,
+    /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-hi\);/,
   );
+  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*color:\s*var\(--ink-low\);/);
+  // Text at --ink-hi (spec decision 5 - the header now carries the
+  // boundary-scannability the old --ink-mid demotion was buying).
+  expect(css).toMatch(/\.text\s*\{[\s\S]*color:\s*var\(--ink-hi\);/);
+  // Actions stay right-anchored with hover/focus-within reveal.
+  expect(css).toMatch(/\.actions\s*\{[\s\S]*margin-left:\s*auto;/);
+  expect(css).toMatch(/\.message:hover\s+\.actions/);
+  expect(css).toMatch(/\.message:focus-within\s+\.actions/);
+  // No breakpoint in this component - TurnBlock owns the gutter media query.
+  expect(css).not.toMatch(/@media/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });

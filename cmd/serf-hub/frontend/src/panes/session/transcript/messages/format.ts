@@ -51,3 +51,19 @@ export function formatCharCount(n: number): string {
   if (clamped < 1000) return `${clamped} chars`;
   return `${(clamped / 1000).toFixed(1).replace(/\.0$/, "")}k chars`;
 }
+
+// formatClockTime renders an item's wall-clock moment (ItemModel.startedAt)
+// for the slack-lean speaker header's meta slot ("You · 12:41"): the local
+// 24-hour "HH:MM", zero-padded so times align down the transcript. Local
+// time, not UTC - the header answers "when did this happen" for the person
+// reading their own session, and Date's getHours/getMinutes are the local
+// projection of the parsed instant. undefined for a missing or unparseable
+// timestamp: a header with no time shows no time rather than a guess.
+export function formatClockTime(iso: string | undefined): string | undefined {
+  if (iso === undefined) return undefined;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
