@@ -795,6 +795,56 @@ func TestCaptureSubscriptionHandoffRequiresResponseConnection(t *testing.T) {
 	}
 }
 
+func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-legacy-error")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/legacy-error", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, appwire.InvalidRequest("snapshot unavailable")
+	})
+
+	errorResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(24), "test/legacy-error", struct{}{}),
+	)
+	if errorResponse.Error == nil {
+		t.Fatalf("handler response = %+v, want error", errorResponse)
+	}
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+
+	if err := conn.enqueueResponse(context.Background(), errorResponse); err != nil {
+		t.Fatalf("enqueue error response: %v", err)
+	}
+	if got := len(conn.send); got != 2 {
+		t.Fatalf("messages after legacy error response = %d, want error then released post-cut delta", got)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Error == nil || first.IDString() != "24" {
+		t.Fatalf("first delivery = %+v, want matching error response", first)
+	}
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("second delivery = %+v, want released post-cut delta", second)
+	}
+}
+
 func TestCaptureSubscriptionHandoffAbortsMatchingErrorResponse(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-handoff-error")

@@ -276,7 +276,7 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
 		if finalizer != nil {
-			if responseSucceeded {
+			if responseSucceeded || finalizer.releaseOnErrorResponse {
 				finalizer.commit()
 			} else {
 				finalizer.abort()
@@ -428,14 +428,15 @@ type CaptureSubscriptionHandoff struct {
 }
 
 type hydrationResponseFinalizer struct {
-	server     *Server
-	conn       *Connection
-	responseID string
-	threadID   string
-	generation uint64
-	replace    bool
-	rollback   subscriptionCaptureRollback
-	handoff    CaptureSubscriptionHandoff
+	server                 *Server
+	conn                   *Connection
+	responseID             string
+	threadID               string
+	generation             uint64
+	replace                bool
+	rollback               subscriptionCaptureRollback
+	handoff                CaptureSubscriptionHandoff
+	releaseOnErrorResponse bool
 }
 
 func (f *hydrationResponseFinalizer) commit() {
@@ -512,13 +513,14 @@ func CaptureSubscription(
 	currentSequence func() uint64,
 	snapshot func() bool,
 ) bool {
-	return CaptureSubscriptionWithHandoff(
+	return captureSubscription(
 		ctx,
 		replace,
 		threadID,
 		currentSequence,
 		snapshot,
 		CaptureSubscriptionHandoff{},
+		true,
 	)
 }
 
@@ -533,6 +535,26 @@ func CaptureSubscriptionWithHandoff(
 	currentSequence func() uint64,
 	snapshot func() bool,
 	handoff CaptureSubscriptionHandoff,
+) bool {
+	return captureSubscription(
+		ctx,
+		replace,
+		threadID,
+		currentSequence,
+		snapshot,
+		handoff,
+		false,
+	)
+}
+
+func captureSubscription(
+	ctx context.Context,
+	replace bool,
+	threadID func() string,
+	currentSequence func() uint64,
+	snapshot func() bool,
+	handoff CaptureSubscriptionHandoff,
+	releaseOnErrorResponse bool,
 ) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
@@ -599,14 +621,15 @@ func CaptureSubscriptionWithHandoff(
 		return abortAfterUnlock()
 	}
 	conn.addHydration(&hydrationResponseFinalizer{
-		server:     server,
-		conn:       conn,
-		responseID: responseID,
-		threadID:   targetThreadID,
-		generation: generation,
-		replace:    replace,
-		rollback:   rollback,
-		handoff:    handoff,
+		server:                 server,
+		conn:                   conn,
+		responseID:             responseID,
+		threadID:               targetThreadID,
+		generation:             generation,
+		replace:                replace,
+		rollback:               rollback,
+		handoff:                handoff,
+		releaseOnErrorResponse: releaseOnErrorResponse,
 	})
 	server.deliveryMu.Unlock()
 	server.projectionMu.Unlock()
