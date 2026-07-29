@@ -327,6 +327,14 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
 
+	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
+	if err != nil {
+		return delegateStartFailed(err)
+	}
+	if selection.warning != nil {
+		s.emitDiagnosticWarning(*selection.warning)
+	}
+
 	delegateID := jobstore.NewDelegateID()
 	delegateGeneration := jobstore.NewDelegateGeneration()
 	jobID := jobstore.NewJobID()
@@ -351,7 +359,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if requestedSandbox != nil {
 		ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, requestedSandbox)
 	}
-	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, workingDir, 0, args.AgentType, args.ReasoningEffort, nil, nil)
+	prepared, err := s.prepareSubagentRunWithModelSelection(
+		ctx, task, workingDir, 0, args.AgentType, args.ReasoningEffort,
+		nil, nil, selection,
+	)
 	if err != nil {
 		if workingDir != "" {
 			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)
@@ -384,7 +395,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		// Close() from another goroutine), not reachable by shaping input or
 		// on-disk state in a single-threaded test the way the OTHER
 		// rollback call sites in this function are (see
-		// TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane
+		// TestDelegateIsolation_TreeAtCapacityAfterWorktreeCreateRollsBackLane
 		// and TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane
 		// in job_delegate_isolation_test.go for those). The rollback call
 		// itself is identical to, and already proven correct by, those two.

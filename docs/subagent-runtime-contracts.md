@@ -89,6 +89,13 @@ What validation actually runs when serf loads a plugin (`agent/plugin/plugin.go`
   accepts the scalar `all` or a list of strings; it rejects scalar `*`, list `all`, list
   `*`, and non-string entries. Claude tool names are mapped to serf canonical names at
   load (`toolname.ClaudeToSerf`). `model`/`color` default to `inherit`/`blue`.
+- **Agent `model` is a provider-local preference.** Serf selects the first usable
+  source in this order: an available plugin model, the delegate call's explicit
+  `model`, then the parent model. Plugin metadata never switches providers.
+  `sonnet`, `opus`, and `haiku` are catalog aliases that resolve to concrete models
+  before Serf checks the current provider instance's advertised model list. An exact
+  custom model ID works when that instance advertises it. An unadvertised model, or
+  one whose availability cannot be verified, falls through with a diagnostic warning.
 - **Namespacing.** Plugin agents are exposed as `plugin:agent`, except a
   `coordinator-workflow` plugin exposes its bundled agents by bare name
   (`exposedAgentCatalogKey`, `agent/coordinator_workflow_plugin.go`). Plugin MCP servers

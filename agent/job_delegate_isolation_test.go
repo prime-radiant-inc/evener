@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,22 +294,34 @@ func TestDelegateIsolation_UnsupportedValueRejected(t *testing.T) {
 	}
 }
 
-func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testing.T) {
+func TestDelegateIsolation_TreeAtCapacityAfterWorktreeCreateRollsBackLane(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	r := newScriptedWtDlgRepo(t, c)
 
-	// prepareSubagentRun fails fast on an unknown agent_type, AFTER
-	// createDelegate has already created the isolation lane (spec §9 step 1
-	// happens before the child spawns) — the lane must not leak.
+	if r.s.treeCounter == nil {
+		t.Fatal("root session has no tree counter; cannot saturate")
+	}
+	reserved := 0
+	for r.s.treeCounter.reserve(slotKindJob) {
+		reserved++
+	}
+	t.Cleanup(func() {
+		for range reserved {
+			r.s.treeCounter.releaseKind(slotKindJob)
+		}
+	})
+
+	// Model preflight succeeds before the lane is created. Child preparation
+	// then fails at the saturated tree counter, after lane creation, so this
+	// continues to prove the post-worktree rollback path.
 	res := r.s.createDelegate(context.Background(), delegateArgs{
-		Task:      "do isolated work",
-		AgentType: "no_such_agent_type_zzz",
+		Task:      "do isolated work at capacity",
 		Isolation: "worktree",
 	})
-	if res.Err == nil {
-		t.Fatal("expected createDelegate to fail on an unknown agent_type")
+	if !errors.Is(res.Err, errTreeAtCapacity) {
+		t.Fatalf("createDelegate error = %v, want errTreeAtCapacity", res.Err)
 	}
 	if res.DelegateID == "" {
 		t.Fatal("createDelegate did not report the delegate_id it minted before failing")
@@ -324,7 +337,7 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 
 // TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane covers
 // createDelegate's SECOND rollback call site: unlike
-// TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane above
+// TestDelegateIsolation_TreeAtCapacityAfterWorktreeCreateRollsBackLane above
 // (which fails at prepareSubagentRun, before a job record exists),
 // this fails one step later — prepareSubagentRun SUCCEEDS (the isolation
 // lane is created and the child env is rooted at it), but

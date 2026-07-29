@@ -581,9 +581,15 @@ the field):
   overrides via `preserveBaseOverrides`, and re-running provider-conditional tool
   registration via `reapplyProviderSpecificTools`, `:1307`); otherwise →
   `profile.WithModel(ref)` (within-instance).
-- `SetModel`, subagent model overrides, and `model_fallbacks` all route through
-  this. The cross-provider-fallback guard compares `BehaviorTag()` (a fallback to
-  a *different* tag errors; same-tag is allowed).
+- `SetModel`, explicit delegate model arguments, and `model_fallbacks` route
+  through this. Explicit delegate arguments retain the normal
+  `resolveProfileForRef` semantics, including intentional cross-provider
+  selection. Plugin-agent `model` metadata is different: it is advisory,
+  checked only against models advertised by the current provider instance, and
+  never switches providers. An unavailable plugin model falls through to the
+  explicit delegate model and then the parent model. The cross-provider-fallback
+  guard compares `BehaviorTag()` (a fallback to a *different* tag errors;
+  same-tag is allowed).
 
 ## Adapters and the registry (`llm/`)
 
