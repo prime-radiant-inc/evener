@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
@@ -14,6 +14,25 @@ import (
 )
 
 const durablePluginAgentType = "test-plugin:reviewer"
+
+type countingRestoreModelAdapter struct {
+	fakeAdapter
+	models          []llm.ModelInfo
+	listModelsCalls int
+}
+
+func (a *countingRestoreModelAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.listModelsCalls++
+	return append([]llm.ModelInfo(nil), a.models...), nil
+}
+
+func (a *countingRestoreModelAdapter) ListModelsCallCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.listModelsCalls
+}
 
 func newDurablePluginModelSession(
 	t *testing.T,
@@ -256,7 +275,10 @@ func TestCreateDelegate_PluginFallbackFailureHasNoSideEffects(t *testing.T) {
 
 func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 	t.Parallel()
-	openAIAdapter := &fakeAdapter{name: "openai"}
+	openAIAdapter := &countingRestoreModelAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models:      []llm.ModelInfo{{ID: "gpt-5.2"}},
+	}
 	workAdapter := &fakeAdapter{
 		name: "work",
 		steps: []func(llm.Request) llm.Response{
@@ -287,6 +309,7 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 		}
 		return WithProviderID(NewOpenAIProfile("descriptor-model"), "work"), nil
 	}
+	listModelsCallsBeforeRestore := openAIAdapter.ListModelsCallCount()
 
 	result := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
@@ -318,10 +341,24 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 	if requests := openAIAdapter.Requests(); len(requests) != 0 {
 		t.Errorf("openai requests = %+v, want none", requests)
 	}
-	for _, warning := range warningMessages(s) {
-		if strings.Contains(warning, "plugin agent model unavailable") {
-			t.Errorf("restore re-evaluated changed plugin model: warning %q", warning)
+	if got := openAIAdapter.ListModelsCallCount() - listModelsCallsBeforeRestore; got != 0 {
+		t.Errorf("openai ListModels calls during restore = %d, want zero", got)
+	}
+	var fallbackWarnings []events.WarningData
+drainWarnings:
+	for {
+		select {
+		case event := <-s.Events():
+			warning, ok := event.Data.(events.WarningData)
+			if ok && (warning.Source == "plugin" || warning.Title == "plugin agent model unavailable") {
+				fallbackWarnings = append(fallbackWarnings, warning)
+			}
+		default:
+			break drainWarnings
 		}
+	}
+	if len(fallbackWarnings) != 0 {
+		t.Errorf("restore re-evaluated changed plugin model: warnings %+v", fallbackWarnings)
 	}
 }
 
