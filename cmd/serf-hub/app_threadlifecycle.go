@@ -240,9 +240,6 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 			return source.ResumeThread(ctx, params)
 		}
 	}
-	if cfg.Spawner == nil {
-		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
-	}
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
 		// A non-empty ref was parsed at function entry, so this cannot fail.
@@ -259,6 +256,9 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	if err := deletionFenceError(cfg, params.Ref, sessionID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
+	}
+	if cfg.Spawner == nil {
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
 	if err != nil {

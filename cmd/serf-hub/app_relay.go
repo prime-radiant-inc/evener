@@ -147,17 +147,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if subscribeParams.Ref == "" {
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 		}
-		if contextOwnsDeletionTarget(ctx, subscribeParams.Ref, threadID) {
-			if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
-				return err
-			}
-		} else {
-			if _, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
-				return struct{}{}, nil
-			}); err != nil {
-				return err
-			}
-		}
 
 		var relayCtx context.Context
 		var relayHandle *hubRelayHandle
@@ -201,23 +190,37 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				return ctx.Err()
 			}
 
-			relayMu.Lock()
-			active := relayedThreads[relayKey] == existing
-			err := existing.err
-			if active && err == nil {
+			registerExisting := func() (bool, error) {
+				relayMu.Lock()
+				defer relayMu.Unlock()
+				active := relayedThreads[relayKey] == existing
+				err := existing.err
+				if !active || err != nil {
+					return false, err
+				}
 				if cfg.RelayHooks.BeforeExistingRegistration != nil {
 					cfg.RelayHooks.BeforeExistingRegistration(threadID)
 				}
 				if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
-					relayMu.Unlock()
-					return context.Canceled
+					return false, context.Canceled
 				}
-				relayMu.Unlock()
-				return nil
+				return true, nil
 			}
-			relayMu.Unlock()
+			var registered bool
+			var err error
+			if contextOwnsDeletionTarget(ctx, subscribeParams.Ref, threadID) {
+				if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
+					return err
+				}
+				registered, err = registerExisting()
+			} else {
+				registered, err = withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
+			}
 			if err != nil {
 				return err
+			}
+			if registered {
+				return nil
 			}
 		}
 		defer stopInitialCancellation()
@@ -239,14 +242,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
 				return err
 			}
+			notifications, err = source.SubscribeThread(relayCtx, subscribeParams)
 		} else {
-			if _, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
-				return struct{}{}, nil
-			}); err != nil {
-				return err
-			}
+			notifications, err = withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (<-chan appwire.Notification, error) {
+				return source.SubscribeThread(relayCtx, subscribeParams)
+			})
 		}
-		notifications, err = source.SubscribeThread(relayCtx, subscribeParams)
 		if err != nil {
 			cancelRelay()
 			relayMu.Lock()
@@ -448,14 +449,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			subscribeForRecovery := func() (hubRelaySubscriptionResult, bool) {
 				result := make(chan hubRelaySubscriptionResult, 1)
 				go func() {
-					_, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
-						return struct{}{}, nil
+					notifications, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (<-chan appwire.Notification, error) {
+						return subscribeRelayRecovery(relayCtx, source, subscribeParams)
 					})
-					if err != nil {
-						result <- hubRelaySubscriptionResult{err: err}
-						return
-					}
-					notifications, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
 					result <- hubRelaySubscriptionResult{notifications: notifications, err: err}
 				}()
 				for {

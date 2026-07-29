@@ -218,6 +218,30 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
 	}
 }
 
+func TestDeletionFenceRejectsResumeWithNilSpawner(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin("project-resume-nil-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+
+	_, err = hubThreadResume(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadResumeParams{Ref: ref})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting resume error with nil spawner = %T %v, want targetDeleted", err, err)
+	}
+}
+
 func TestDeletionFenceRejectsMutationWithTargetDeletedOutcome(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -335,6 +359,88 @@ func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
 	}
 }
 
+func TestDeletionFenceKeepsInitialRelaySubscriptionInsideOwnership(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	source := &deletionOwnershipProbeRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:   threadID,
+			Serf: appwire.SerfThread{Ref: ref},
+		}},
+		store:       store,
+		resumeLocks: resumeLocks,
+		projectID:   "project-relay-initial-0123456789",
+		ref:         ref,
+		threadID:    threadID,
+		probeOnCall: 1,
+		probed:      make(chan deletionOwnershipProbeResult, 1),
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   resumeLocks,
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	_ = relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
+	result := <-source.probed
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.deletedBeforeSubscribe {
+		t.Fatal("initial relay subscription ran after the deletion fence committed")
+	}
+}
+
+func TestDeletionFenceKeepsRecoveryRelaySubscriptionInsideOwnership(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	initialNotifications := make(chan appwire.Notification)
+	source := &deletionOwnershipProbeRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:   threadID,
+			Serf: appwire.SerfThread{Ref: ref},
+		}},
+		store:                store,
+		resumeLocks:          resumeLocks,
+		projectID:            "project-relay-recovery-0123456789",
+		ref:                  ref,
+		threadID:             threadID,
+		probeOnCall:          2,
+		initialNotifications: initialNotifications,
+		probed:               make(chan deletionOwnershipProbeResult, 1),
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   resumeLocks,
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	defer relays.stopRelay("local:" + threadID)
+
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread); err != nil {
+		t.Fatal(err)
+	}
+	close(initialNotifications)
+	result := <-source.probed
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.deletedBeforeSubscribe {
+		t.Fatal("recovery relay subscription ran after the deletion fence committed")
+	}
+}
+
 func TestDeletionFenceRejectsForkBeforeLaunchingChild(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -385,6 +491,60 @@ func (s *deletionFenceRelaySource) ID() string {
 func (s *deletionFenceRelaySource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	s.subscribeCalls++
 	return nil, errors.New("deleting relay reached source subscription")
+}
+
+type deletionOwnershipProbeResult struct {
+	deletedBeforeSubscribe bool
+	err                    error
+}
+
+type deletionOwnershipProbeRelaySource struct {
+	relayLifecycleSource
+	store                *hubcore.DeletionStore
+	resumeLocks          *hubcore.ResumeLocks
+	projectID            string
+	ref                  string
+	threadID             string
+	probeOnCall          int
+	initialNotifications <-chan appwire.Notification
+	probed               chan deletionOwnershipProbeResult
+	mu                   sync.Mutex
+	subscribeCalls       int
+}
+
+func (s *deletionOwnershipProbeRelaySource) ID() string {
+	return "local"
+}
+
+func (s *deletionOwnershipProbeRelaySource) SubscribeThread(
+	context.Context,
+	appwire.ThreadReadParams,
+) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.subscribeCalls++
+	call := s.subscribeCalls
+	s.mu.Unlock()
+	if call < s.probeOnCall {
+		return s.initialNotifications, nil
+	}
+
+	lock := s.resumeLocks.For(s.threadID)
+	if !lock.TryLock() {
+		s.probed <- deletionOwnershipProbeResult{}
+		return nil, errors.New("stop relay ownership probe")
+	}
+	_, err := s.store.Begin(s.projectID, []hubcore.DeletionTarget{{
+		Ref:      s.ref,
+		ThreadID: s.threadID,
+	}})
+	lock.Unlock()
+	if err != nil {
+		s.probed <- deletionOwnershipProbeResult{err: err}
+		return nil, err
+	}
+	_, deleted := s.store.TargetState(s.ref, s.threadID)
+	s.probed <- deletionOwnershipProbeResult{deletedBeforeSubscribe: deleted}
+	return nil, errors.New("stop relay ownership probe")
 }
 
 type deletionFenceMutationSource struct {
