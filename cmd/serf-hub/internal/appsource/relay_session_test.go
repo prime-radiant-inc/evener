@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -174,6 +175,105 @@ func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 		t.Fatalf("post-cut delivery = %q, want after", got)
 	}
 	after.Acknowledge()
+}
+
+func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatalf("AcquireRelaySession: %v", err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	listenCtx, stopListening := context.WithCancel(t.Context())
+	defer stopListening()
+	deliveries, err := lease.Listen(listenCtx)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	initial := readRelayAsync(t.Context(), lease, params)
+	initialCall := <-daemon.reads
+	initialCall.transport.recv <- appwire.ResponseMessage(
+		initialCall.request.ID,
+		relaySnapshot("thread-1", "initial"),
+	)
+	initialResult := <-initial
+	if initialResult.err != nil {
+		t.Fatalf("initial Read: %v", initialResult.err)
+	}
+	if !initialResult.result.Handoff.Commit() {
+		t.Fatal("initial handoff commit lost")
+	}
+
+	lease.session.mu.Lock()
+	epoch := lease.session.connection.epoch
+	lease.session.mu.Unlock()
+	lease.session.observe(epoch, appwire.Message{
+		Notification: notificationPointer(relayDelta("thread-1", "blocker")),
+	}, nil)
+	blocker := <-deliveries
+	defer blocker.Acknowledge()
+	if got := decodeRelayDelta(t, blocker.Notification); got != "blocker" {
+		t.Fatalf("blocking delivery = %q, want blocker", got)
+	}
+
+	// This notification is accepted while no capture exists and queues behind
+	// the unacknowledged delivery. The next snapshot already contains it.
+	lease.session.observe(epoch, appwire.Message{
+		Notification: notificationPointer(relayDelta("thread-1", "included")),
+	}, nil)
+	read := readRelayAsync(t.Context(), lease, params)
+	call := <-daemon.reads
+
+	lease.session.mu.Lock()
+	capture := lease.session.capture
+	lease.session.mu.Unlock()
+	if capture == nil {
+		t.Fatal("Read did not install a capture")
+	}
+	response := appwire.ResponseMessage(
+		call.request.ID,
+		relaySnapshot("thread-1", "snapshot includes included"),
+	)
+	// Drive the ordered cut synchronously so the assertion below is about actor
+	// queue ownership, not receive-loop scheduling.
+	lease.session.observe(epoch, response, nil)
+	select {
+	case <-capture.flushed:
+		t.Fatal("snapshot cut stopped waiting for a notification queued before capture")
+	default:
+	}
+	call.transport.recv <- response
+
+	blocker.Acknowledge()
+	included := <-deliveries
+	if got := decodeRelayDelta(t, included.Notification); got != "included" {
+		t.Fatalf("queued pre-capture delivery = %q, want included", got)
+	}
+	select {
+	case <-capture.flushed:
+		t.Fatal("Read flush completed before the queued pre-capture delivery was acknowledged")
+	default:
+	}
+	included.Acknowledge()
+
+	result := <-read
+	if result.err != nil {
+		t.Fatalf("Read: %v", result.err)
+	}
+	if result.result.Response.Thread.Preview != "snapshot includes included" {
+		t.Fatalf("snapshot = %+v", result.result.Response.Thread)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("handoff commit lost")
+	}
+	select {
+	case delivery := <-deliveries:
+		t.Fatalf("queued pre-capture notification duplicated after Read: %+v", delivery.Notification)
+	default:
+	}
 }
 
 func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
@@ -398,6 +498,97 @@ func TestRelaySessionDisconnectDuringReadCannotReturnSnapshot(t *testing.T) {
 	}
 	if got := daemon.dials.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want one replacement canonical connection", got)
+	}
+}
+
+func TestRelaySessionEOFBeforeConnectionInstallForcesNextReadToRedial(t *testing.T) {
+	var dials atomic.Int32
+	liveReads := make(chan relayReadCall, 1)
+	deadClientReused := make(chan struct{}, 1)
+
+	session := newRelaySession(
+		func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
+			dial := dials.Add(1)
+			eofObserved := make(chan struct{})
+			var eofOnce sync.Once
+			var deadReadAttempts atomic.Int32
+			var transport *scriptedAppwireTransport
+			transport = newScriptedAppwireTransport(func(_ context.Context, message appwire.Message) error {
+				if message.Request != nil {
+					switch message.Request.Method {
+					case appwire.MethodInitialize:
+						transport.recv <- appwire.ResponseMessage(message.Request.ID, appwire.InitializeResponse{
+							ProtocolVersion: appwire.ProtocolVersion,
+						})
+						return nil
+					case appwire.MethodThreadRead:
+						if dial == 1 {
+							if deadReadAttempts.Add(1) == 2 {
+								deadClientReused <- struct{}{}
+							}
+							return io.EOF
+						}
+						liveReads <- relayReadCall{request: *message.Request, transport: transport}
+						return nil
+					default:
+						return fmt.Errorf("unexpected request method %q", message.Request.Method)
+					}
+				}
+				if message.Notification != nil && message.Notification.Method == appwire.MethodInitialized && dial == 1 {
+					if err := transport.Close(); err != nil {
+						return err
+					}
+					<-eofObserved
+				}
+				return nil
+			})
+			client := appwire.NewClient(transport)
+			client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
+				observe(epoch, message, err)
+				if err != nil {
+					eofOnce.Do(func() { close(eofObserved) })
+				}
+			})
+			client.Start(ctx)
+			if _, err := client.Initialize(ctx, appwire.InitializeParams{
+				ClientInfo: appwire.ClientInfo{Name: "serf-hub"},
+			}); err != nil {
+				return nil, nil, err
+			}
+			return client, transport, nil
+		},
+		nil,
+	)
+	lease := session.acquire()
+	if lease == nil {
+		t.Fatal("relay session did not issue a lease")
+	}
+	defer lease.Close()
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+
+	if _, err := lease.Read(t.Context(), params); err == nil {
+		t.Fatal("Read on connection that reached EOF before installation succeeded")
+	}
+
+	retried := readRelayAsync(t.Context(), lease, params)
+	select {
+	case <-deadClientReused:
+		t.Fatalf("retried Read reused the dead client; dials = %d, want 2", dials.Load())
+	case call := <-liveReads:
+		call.transport.recv <- appwire.ResponseMessage(
+			call.request.ID,
+			relaySnapshot("thread-1", "redialed"),
+		)
+	}
+	result := <-retried
+	if result.err != nil {
+		t.Fatalf("retried Read: %v", result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("retried Read handoff commit lost")
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dial count = %d, want 2", got)
 	}
 }
 
