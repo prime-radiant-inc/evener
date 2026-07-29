@@ -170,3 +170,9 @@ func (live *codexLiveThread) isClosed() bool {
 	defer live.mu.Unlock()
 	return live.closed || live.retiring
 }
+
+func (live *codexLiveThread) hasCommittedSnapshot() bool {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.committed > 0 && !live.closed && !live.retiring
+}

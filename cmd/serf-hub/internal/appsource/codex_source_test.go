@@ -1137,6 +1137,7 @@ func TestCodexPartialReadDoesNotPopulateAuthoritativeCache(t *testing.T) {
 
 func TestCodexCachedThreadReadOwnsNestedState(t *testing.T) {
 	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	source.live["th_codex"] = &codexLiveThread{committed: 1}
 	source.cache["th_codex"] = appwire.Thread{
 		ID:     "th_codex",
 		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive, ActiveFlags: []string{"streaming"}},
@@ -1224,6 +1225,7 @@ func TestCodexCachedThreadReadOwnsNestedState(t *testing.T) {
 
 func TestCodexCachedThreadConcurrentReadersDoNotShareWritableItems(t *testing.T) {
 	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	source.live["th_codex"] = &codexLiveThread{committed: 1}
 	source.cache["th_codex"] = appwire.Thread{
 		ID: "th_codex",
 		Turns: []appwire.Turn{{
@@ -1271,6 +1273,40 @@ func TestCodexCachedThreadConcurrentReadersDoNotShareWritableItems(t *testing.T)
 
 	if got := read().Turns[0].Items[0].Text; got != "original" {
 		t.Fatalf("cached item text=%q after concurrent readers, want original", got)
+	}
+}
+
+func TestCodexNewLiveConnectionDoesNotQualifyPreviousCache(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		readCount.Add(1)
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = "fresh"
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	source.cache["th_codex"] = appwire.Thread{ID: "th_codex", Preview: "previous"}
+	source.live["th_codex"] = &codexLiveThread{}
+
+	resp, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err != nil {
+		t.Fatalf("ReadThread before new live snapshot commit: %v", err)
+	}
+	if resp.Thread.Preview != "fresh" {
+		t.Fatalf("preview before new live snapshot commit=%q, want fresh upstream state", resp.Thread.Preview)
+	}
+	if got := readCount.Load(); got != 1 {
+		t.Fatalf("upstream reads=%d, want one authoritative read", got)
 	}
 }
 

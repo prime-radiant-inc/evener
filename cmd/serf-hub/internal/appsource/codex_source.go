@@ -522,6 +522,10 @@ func (s *CodexSource) commitCodexFullRead(
 func (s *CodexSource) cachedThread(threadID string) (appwire.Thread, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	live := s.live[threadID]
+	if live == nil || !live.hasCommittedSnapshot() {
+		return appwire.Thread{}, false
+	}
 	thread, ok := s.cache[threadID]
 	return thread, ok
 }
