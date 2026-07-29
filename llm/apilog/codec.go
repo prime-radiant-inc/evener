@@ -13,12 +13,11 @@ import (
 var ErrPartialTail = errors.New("partial API-log tail")
 
 type Decoder struct {
-	reader             *bufio.Reader
-	maxLineBytes       int
-	line               int
-	offset             int64
-	lastCompleteOffset int64
-	done               bool
+	reader       *bufio.Reader
+	maxLineBytes int
+	line         int
+	offset       int64
+	done         bool
 }
 
 func NewDecoder(r io.Reader, maxLineBytes int) *Decoder {
@@ -53,7 +52,6 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
 	}
-	d.lastCompleteOffset = d.offset
 	return record, nil
 }
 
@@ -89,28 +87,111 @@ func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 	}
 }
 
-// ScanRecovery validates a current canonical API log from offset zero and
-// reports the byte offset after its last complete record. A final unterminated
-// fragment is reported separately so the file owner can truncate it without
-// treating corrupt or oversized complete records as recoverable.
+const recoveryScanBlockBytes = 64 << 10
+
+// ScanRecovery validates the canonical append boundary within a suffix bounded
+// by maxLineBytes and reports the byte offset after its last complete record. A
+// final unterminated fragment is reported separately so the file owner can
+// truncate it without treating a corrupt or oversized boundary as recoverable.
 func ScanRecovery(r io.ReadSeeker, maxLineBytes int) (lastCompleteOffset int64, partialTail bool, err error) {
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return 0, false, fmt.Errorf("seek API log for recovery: %w", err)
+	if maxLineBytes <= 0 {
+		return 0, false, errors.New("maximum line bytes must be positive")
 	}
-	decoder := NewDecoder(r, maxLineBytes)
-	for {
-		_, err := decoder.Next()
-		switch {
-		case err == nil:
-			continue
-		case errors.Is(err, io.EOF):
-			return decoder.lastCompleteOffset, false, nil
-		case errors.Is(err, ErrPartialTail):
-			return decoder.lastCompleteOffset, true, nil
-		default:
-			return decoder.lastCompleteOffset, false, err
+	size, err := r.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, false, fmt.Errorf("seek API log end for recovery: %w", err)
+	}
+	if size == 0 {
+		return 0, false, nil
+	}
+
+	finalByte, err := readRecoveryRange(r, size-1, 1)
+	if err != nil {
+		return 0, false, err
+	}
+	if finalByte[0] == '\n' {
+		lineStart, err := validateRecoveryBoundaryRecord(r, size-1, maxLineBytes)
+		if err != nil {
+			return lineStart, false, err
 		}
+		return size, false, nil
 	}
+
+	partialStart, err := findRecoveryLineStart(r, size, maxLineBytes)
+	if err != nil {
+		return 0, false, err
+	}
+	if size-partialStart > int64(maxLineBytes) {
+		return 0, false, fmt.Errorf("partial API-log tail at offset %d exceeds %d bytes", partialStart, maxLineBytes)
+	}
+	if partialStart == 0 {
+		return 0, true, nil
+	}
+	lineStart, err := validateRecoveryBoundaryRecord(r, partialStart-1, maxLineBytes)
+	if err != nil {
+		return lineStart, false, err
+	}
+	return partialStart, true, nil
+}
+
+func validateRecoveryBoundaryRecord(r io.ReadSeeker, lineEnd int64, maxLineBytes int) (int64, error) {
+	lineStart, err := findRecoveryLineStart(r, lineEnd, maxLineBytes)
+	if err != nil {
+		return lineStart, err
+	}
+	lineBytes := lineEnd - lineStart
+	if lineBytes > int64(maxLineBytes) {
+		return lineStart, fmt.Errorf("API-log boundary record at offset %d exceeds %d bytes", lineStart, maxLineBytes)
+	}
+	line, err := readRecoveryRange(r, lineStart, lineBytes)
+	if err != nil {
+		return lineStart, err
+	}
+	if _, err := DecodeRecord(line); err != nil {
+		return lineStart, fmt.Errorf("decode API-log boundary record at offset %d: %w", lineStart, err)
+	}
+	return lineStart, nil
+}
+
+func findRecoveryLineStart(r io.ReadSeeker, lineEnd int64, maxLineBytes int) (int64, error) {
+	cursor := lineEnd
+	remaining := int64(maxLineBytes) + 1
+	buffer := make([]byte, min(recoveryScanBlockBytes, maxLineBytes+1))
+	for cursor > 0 && remaining > 0 {
+		readBytes := min(cursor, remaining, int64(len(buffer)))
+		readOffset := cursor - readBytes
+		chunk := buffer[:int(readBytes)]
+		if err := readRecoveryRangeInto(r, readOffset, chunk); err != nil {
+			return 0, err
+		}
+		if newline := bytes.LastIndexByte(chunk, '\n'); newline >= 0 {
+			return readOffset + int64(newline) + 1, nil
+		}
+		cursor = readOffset
+		remaining -= readBytes
+	}
+	if cursor == 0 {
+		return 0, nil
+	}
+	return cursor, fmt.Errorf("API-log boundary ending at offset %d exceeds %d bytes", lineEnd, maxLineBytes)
+}
+
+func readRecoveryRange(r io.ReadSeeker, offset, length int64) ([]byte, error) {
+	data := make([]byte, int(length))
+	if err := readRecoveryRangeInto(r, offset, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func readRecoveryRangeInto(r io.ReadSeeker, offset int64, data []byte) error {
+	if _, err := r.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek API log recovery range at offset %d: %w", offset, err)
+	}
+	if _, err := io.ReadFull(r, data); err != nil {
+		return fmt.Errorf("read API log recovery range at offset %d: %w", offset, err)
+	}
+	return nil
 }
 
 func DecodeRecord(line []byte) (APILogRecord, error) {
