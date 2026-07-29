@@ -36,6 +36,7 @@ import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationIntent,
+  type MutationOptimisticRecord,
   MutationOutbox,
   type MutationOutboxOptions,
   type MutationOutboxRecord,
@@ -296,8 +297,17 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   if (!runtime.active || mutationRuntime !== runtime) return;
   for (const targetRef of targetRefs) {
     if (!runtime.active || mutationRuntime !== runtime) return;
-    if ((await runtime.storage.listOutbox(targetRef)).length > 0) {
+    const [outbox, optimistic] = await Promise.all([
+      runtime.storage.listOutbox(targetRef),
+      runtime.storage.listOptimistic(targetRef),
+    ]);
+    if (outbox.length > 0) {
       pinnedMutationRefs.add(targetRef);
+      continue;
+    }
+    if (optimistic.length > 0) {
+      pinnedMutationRefs.add(targetRef);
+      dispatchableMutationRefs.delete(targetRef);
       continue;
     }
     pinnedMutationRefs.delete(targetRef);
@@ -372,6 +382,7 @@ function requireMutationRuntime(): MutationRuntime {
 
 export interface MutationPersistenceSnapshot {
   outbox: MutationOutboxRecord[];
+  optimistic: MutationOptimisticRecord[];
   recovery: MutationRecoveryRecord[];
 }
 
@@ -382,13 +393,14 @@ export function subscribeMutationPersistence(listener: (targetRefs: string[]) =>
 
 export async function readMutationPersistence(targetRef?: string): Promise<MutationPersistenceSnapshot> {
   const runtime = getMutationRuntime();
-  if (!runtime) return { outbox: [], recovery: [] };
+  if (!runtime) return { outbox: [], optimistic: [], recovery: [] };
   await runtime.start;
-  const [outbox, recovery] = await Promise.all([
+  const [outbox, optimistic, recovery] = await Promise.all([
     runtime.storage.listOutbox(targetRef),
+    runtime.storage.listOptimistic(targetRef),
     runtime.storage.listRecovery(targetRef),
   ]);
-  return { outbox, recovery };
+  return { outbox, optimistic, recovery };
 }
 
 export async function retryBlockedMutation(clientMutationId: string): Promise<boolean> {

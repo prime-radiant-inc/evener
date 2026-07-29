@@ -28,12 +28,19 @@ export interface MutationIntent {
   optimisticDisplay: unknown;
 }
 
-export interface MutationOutboxRecord extends MutationIntent {
+export interface MutationRecord extends MutationIntent {
   version: 1;
   clientMutationId: string;
   intentSequence: number;
   createdAt: number;
+}
+
+export interface MutationOutboxRecord extends MutationRecord {
   state: MutationOutboxState;
+}
+
+export interface MutationOptimisticRecord extends MutationRecord {
+  state: "accepted";
 }
 
 export interface MutationRecoveryRecord extends MutationOutboxRecord {

@@ -162,6 +162,98 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.getRecovery(recoveredFirst.clientMutationId)).toBeUndefined();
   });
 
+  test("a pending receipt atomically hands input display from transport outbox to durable optimistic state", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const persisted = await store.enqueueIntent({
+      ...intent("pending incorporation"),
+      optimisticDisplay: {
+        method: "turn/queue",
+        input: [{ type: "text", text: "pending incorporation" }],
+      },
+    });
+
+    expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    expect(await store.getOptimistic(persisted.clientMutationId)).toMatchObject({
+      clientMutationId: persisted.clientMutationId,
+      targetRef: TARGET,
+      state: "accepted",
+      optimisticDisplay: {
+        method: "turn/queue",
+        input: [{ type: "text", text: "pending incorporation" }],
+      },
+    });
+
+    store.close();
+    const reloaded = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await reloaded.listTargetRefs()).toEqual([TARGET]);
+    expect(await reloaded.settleApplied(persisted.clientMutationId)).toBe(true);
+    expect(await reloaded.getOptimistic(persisted.clientMutationId)).toBeUndefined();
+    expect(await reloaded.settleReceipt(persisted.clientMutationId, "pending")).toBe(false);
+
+    const reflectedFirst = await reloaded.enqueueIntent({
+      ...intent("identity arrived first"),
+      optimisticDisplay: {
+        method: "turn/queue",
+        input: [{ type: "text", text: "identity arrived first" }],
+      },
+    });
+    expect(await reloaded.settleApplied(reflectedFirst.clientMutationId)).toBe(true);
+    expect(await reloaded.settleReceipt(reflectedFirst.clientMutationId, "pending")).toBe(false);
+    expect(await reloaded.getOptimistic(reflectedFirst.clientMutationId)).toBeUndefined();
+  });
+
+  test("a pending receipt settles a receipt-only control without creating optimistic display", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const persisted = await store.enqueueIntent({
+      targetRef: TARGET,
+      threadId: "thread-1",
+      method: "turn/interrupt",
+      payload: { ref: TARGET, expectedTurnId: "turn-1" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+
+    expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    expect(await store.getOptimistic(persisted.clientMutationId)).toBeUndefined();
+  });
+
+  test("an aborted pending receipt handoff retains the transport owner without an optimistic duplicate", async () => {
+    const crashingTab = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+      beforeCommit(operation) {
+        if (operation === "settleReceipt") throw new Error("tab crashed before receipt commit");
+      },
+    });
+    const persisted = await crashingTab.enqueueIntent({
+      ...intent("do not leave a display gap"),
+      optimisticDisplay: {
+        method: "turn/queue",
+        input: [{ type: "text", text: "do not leave a display gap" }],
+      },
+    });
+
+    await expect(crashingTab.settleReceipt(persisted.clientMutationId, "pending")).rejects.toThrow(
+      "tab crashed before receipt commit",
+    );
+    crashingTab.close();
+
+    const recoveredTab = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    expect(await recoveredTab.getOutbox(persisted.clientMutationId)).toBeDefined();
+    expect(await recoveredTab.getOptimistic(persisted.clientMutationId)).toBeUndefined();
+  });
+
   test("an aborted rejection transfer leaves the outbox record durable and creates no recovery gap", async () => {
     const crashingTab = new MutationOutboxIndexedDB({
       indexedDB,

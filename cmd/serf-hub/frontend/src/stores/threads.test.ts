@@ -3714,6 +3714,37 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
   });
 
+  test("hydrates a durable optimistic ref without redispatching its settled transport intent", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/start",
+      payload: {
+        ref: "ref_a",
+        input: [{ type: "text", text: "accepted, not reflected" }],
+      },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/start",
+        input: [{ type: "text", text: "accepted, not reflected" }],
+      },
+    });
+    await storage.settleReceipt(record.clientMutationId, "pending");
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
+
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read"]);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+    inspector.close();
+  });
+
   test("retries a failed pinned rejoin on a ready lifecycle discovery before replay", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
     await storage.enqueueIntent({

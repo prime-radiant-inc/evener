@@ -1,5 +1,6 @@
 import type {
   MutationIntent,
+  MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationOutboxState,
   MutationRecoveryKind,
@@ -7,7 +8,12 @@ import type {
   RecoveryResendTarget,
 } from "./mutationOutbox";
 
-type MutationOutboxOperation = "enqueueIntent" | "transferToRecovery" | "updateRecovery" | "resendRecovery";
+type MutationOutboxOperation =
+  | "enqueueIntent"
+  | "settleReceipt"
+  | "transferToRecovery"
+  | "updateRecovery"
+  | "resendRecovery";
 
 export interface MutationOutboxIndexedDBOptions {
   indexedDB?: IDBFactory;
@@ -20,8 +26,9 @@ export interface MutationOutboxIndexedDBOptions {
 }
 
 const DATABASE_NAME = "serf-mutation-outbox";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const OUTBOX_STORE = "outbox";
+const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
@@ -123,20 +130,86 @@ export class MutationOutboxIndexedDB {
   }
 
   async listTargetRefs(): Promise<string[]> {
-    const records = await this.listOutbox();
-    return [...new Set(records.map((record) => record.targetRef))].sort();
+    const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
+    return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
+  }
+
+  async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord | undefined> {
+    return this.#read(OPTIMISTIC_STORE, async (transaction) => {
+      return requestResult<MutationOptimisticRecord | undefined>(
+        transaction.objectStore(OPTIMISTIC_STORE).get(clientMutationId),
+      );
+    });
+  }
+
+  async listOptimistic(targetRef?: string): Promise<MutationOptimisticRecord[]> {
+    return this.#read(OPTIMISTIC_STORE, async (transaction) => {
+      const records = await requestResult<MutationOptimisticRecord[]>(
+        transaction.objectStore(OPTIMISTIC_STORE).getAll(),
+      );
+      return records
+        .filter((record) => targetRef === undefined || record.targetRef === targetRef)
+        .sort((left, right) => left.intentSequence - right.intentSequence);
+    });
+  }
+
+  async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], "settleReceipt", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+      const recovery = transaction.objectStore(RECOVERY_STORE);
+      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
+        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
+        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
+      ]);
+      const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
+      if (!source) return false;
+
+      const display = source.optimisticDisplay;
+      const retainsOptimisticDisplay =
+        projectionState === "pending" &&
+        display !== null &&
+        typeof display === "object" &&
+        "input" in display &&
+        Array.isArray(display.input);
+      if (retainsOptimisticDisplay) {
+        const accepted: MutationOptimisticRecord = {
+          version: source.version,
+          clientMutationId: source.clientMutationId,
+          intentSequence: source.intentSequence,
+          createdAt: source.createdAt,
+          targetRef: source.targetRef,
+          threadId: source.threadId,
+          method: source.method,
+          payload: source.payload,
+          attachments: source.attachments,
+          optimisticDisplay: source.optimisticDisplay,
+          state: "accepted",
+        };
+        await requestResult(optimistic.put(accepted));
+      } else if (optimisticRecord) {
+        await requestResult(optimistic.delete(clientMutationId));
+      }
+      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+      return true;
+    });
   }
 
   async settleApplied(clientMutationId: string): Promise<boolean> {
-    return this.#write([OUTBOX_STORE, RECOVERY_STORE], undefined, async (transaction) => {
+    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], undefined, async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
+      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
       const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, recoveryRecord] = await Promise.all([
+      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
         requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
         requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
       ]);
-      if (!outboxRecord && !recoveryRecord) return false;
+      if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
       if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+      if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
       if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
       return true;
     });
@@ -257,6 +330,10 @@ export class MutationOutboxIndexedDB {
           if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
             const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
             outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+          }
+          if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
+            const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
+            optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
           }
           if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
             const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });

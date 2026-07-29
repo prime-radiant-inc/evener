@@ -8,8 +8,8 @@ import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen"
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { useColdStartSkeleton } from "../../coldStart";
 import {
-  refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
   useAwaitingFirstFrameSend,
@@ -124,21 +124,68 @@ test("authoritative pendingMutations reconstruct accepted steering without a bro
   ]);
 });
 
-test("settling durable transport state removes its outbox projection without restoring composer state", async () => {
+test("an applied pending receipt settles transport without dropping optimistic send or cold-start state", async () => {
   const fake = await connect();
-  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "full" },
+  }));
   const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
   await act(() => threadsStore.getState().send("ref_a", "hello"));
-  await waitFor(() => expect(pending.result.current).toHaveLength(1));
 
   const storage = new MutationOutboxIndexedDB();
-  const [record] = await storage.listOutbox("ref_a");
-  expect(record).toBeDefined();
-  if (!record) throw new Error("expected one durable outbox record");
-  await storage.settleApplied(record.clientMutationId);
-  await act(() => refreshPendingTurnsProjection("ref_a"));
+  await waitFor(async () => expect(await storage.listOutbox("ref_a")).toEqual([]));
 
-  expect(pending.result.current).toEqual([]);
+  expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
+  expect(coldStart.result.current).toBe(true);
+});
+
+test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {
+  const fake = await connect();
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "replayed",
+      threadId: "thread_a",
+      projectionState: "pending",
+    },
+  }));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "steer"));
+
+  await act(() => threadsStore.getState().steer("ref_a", "patient steer"));
+
+  const storage = new MutationOutboxIndexedDB();
+  await waitFor(async () => expect(await storage.listOutbox("ref_a")).toEqual([]));
+  expect(pending.result.current).toEqual([
+    expect.objectContaining({
+      method: "steer",
+      state: "accepted",
+      text: "patient steer",
+      source: "optimistic",
+    }),
+  ]);
+
+  act(() => {
+    fake.emitNotification({
+      method: "serf/steering/injected",
+      params: {
+        threadId: "thread_a",
+        ref: "ref_a",
+        text: "patient steer",
+        source: "user",
+        clientMutationId: pending.result.current[0]?.id,
+      },
+    });
+  });
+
+  await waitFor(() => expect(pending.result.current).toEqual([]));
+  await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toEqual([]));
 });
 
 test("first-frame state derives from the identified active turn and needs no confirmation timer", async () => {

@@ -27,6 +27,7 @@ function receipt(clientMutationId: string, disposition = "applied", projectionSt
 }
 
 function queueIntent(targetRef = "ref-a", text = "hello"): MutationIntent {
+  const input = [{ type: "text", text }];
   return {
     targetRef,
     threadId: "thread-a",
@@ -34,10 +35,10 @@ function queueIntent(targetRef = "ref-a", text = "hello"): MutationIntent {
     payload: {
       ref: targetRef,
       expectedTurnId: "turn-a",
-      input: [{ type: "text", text }],
+      input,
     },
     attachments: [],
-    optimisticDisplay: { text },
+    optimisticDisplay: { method: "turn/queue", input },
   };
 }
 
@@ -98,6 +99,43 @@ describe("MutationDispatcher", () => {
 
     expect(queueCalls(reconnected)[0]?.clientMutationId).toBe(record.clientMutationId);
     expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
+  });
+
+  test("an applied pending receipt settles transport while preserving durable optimistic display", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "pending-receipt", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({
+      receipt: receipt(params.clientMutationId, "applied", "pending"),
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOptimistic(record.clientMutationId)).toMatchObject({
+      clientMutationId: record.clientMutationId,
+      state: "accepted",
+    });
+    expect(queueCalls(client)).toHaveLength(1);
+  });
+
+  test("an authoritative identity removes accepted optimistic display and reports its target", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "optimistic-identity", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    await outbox.settleReceipt(record.clientMutationId, "pending");
+    const onStorageChange = vi.fn();
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => null,
+      onStorageChange,
+    });
+
+    await dispatcher.reconcileIdentities([record.clientMutationId]);
+
+    expect(await outbox.getOptimistic(record.clientMutationId)).toBeUndefined();
+    expect(onStorageChange).toHaveBeenCalledWith(["ref-a"]);
   });
 
   test("serializes one target by durable intent sequence even when the first network response is delayed", async () => {

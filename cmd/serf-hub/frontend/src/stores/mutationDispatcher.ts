@@ -31,7 +31,9 @@ export class MutationDispatcher {
     await Promise.all(
       [...new Set(clientMutationIds)].map(async (clientMutationId) => {
         const record =
-          (await this.#storage.getOutbox(clientMutationId)) ?? (await this.#storage.getRecovery(clientMutationId));
+          (await this.#storage.getOutbox(clientMutationId)) ??
+          (await this.#storage.getOptimistic(clientMutationId)) ??
+          (await this.#storage.getRecovery(clientMutationId));
         if (await this.#storage.settleApplied(clientMutationId)) {
           if (record) targetRefs.add(record.targetRef);
         }
@@ -95,7 +97,7 @@ export class MutationDispatcher {
       ) {
         return "stop";
       }
-      await this.#storage.settleApplied(record.clientMutationId);
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {

@@ -2,7 +2,11 @@ import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputItem } from "../../../../protocol/types.gen";
-import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+import type {
+  MutationOptimisticRecord,
+  MutationOutboxRecord,
+  MutationRecoveryRecord,
+} from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import {
   readMutationPersistence,
@@ -19,11 +23,13 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 interface PendingTurnsStoreState {
   outbox: Map<string, MutationOutboxRecord>;
+  optimistic: Map<string, MutationOptimisticRecord>;
   recovery: Map<string, MutationRecoveryRecord>;
 }
 
 const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
   outbox: new Map(),
+  optimistic: new Map(),
   recovery: new Map(),
 }));
 
@@ -56,6 +62,7 @@ export async function refreshPendingTurnsProjection(ref?: string): Promise<void>
     appliedRefreshGenerations.set(key, generation);
     pendingTurnsStore.setState((state) => ({
       outbox: replaceTargetRecords(state.outbox, ref, snapshot.outbox),
+      optimistic: replaceTargetRecords(state.optimistic, ref, snapshot.optimistic),
       recovery: replaceTargetRecords(state.recovery, ref, snapshot.recovery),
     }));
   } catch {
@@ -102,16 +109,17 @@ const NO_BLOCKED: MutationOutboxRecord[] = [];
 
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
+  const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
   const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const matches = reconcilePendingEntries(ref, [...outbox.values()], model).filter(
+    const matches = reconcilePendingEntries(ref, [...outbox.values(), ...optimistic.values()], model).filter(
       (entry) => method === undefined || entry.method === method,
     );
     return matches.length > 0 ? matches : NO_ENTRIES;
-  }, [outbox, model, ref, method]);
+  }, [outbox, optimistic, model, ref, method]);
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {
@@ -191,7 +199,7 @@ export function resetPendingTurnsStoreForTests(): void {
   refreshEpoch += 1;
   refreshGenerations.clear();
   appliedRefreshGenerations.clear();
-  pendingTurnsStore.setState({ outbox: new Map(), recovery: new Map() });
+  pendingTurnsStore.setState({ outbox: new Map(), optimistic: new Map(), recovery: new Map() });
 }
 
 // Keep the singleton projection warm when an authoritative pendingMutations

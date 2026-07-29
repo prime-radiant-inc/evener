@@ -1,6 +1,6 @@
 import type { ThreadModel } from "../../../../protocol/model";
 import type { InputItem, PendingMutation } from "../../../../protocol/types.gen";
-import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
+import type { MutationOptimisticRecord, MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 
 export type PendingMethod = "send" | "steer" | "queue" | "drain";
 export type PendingTurnState = "submitting" | "blockedUnknown" | "accepted" | "claimed";
@@ -13,7 +13,7 @@ export interface PendingTurnEntry {
   imageCount: number;
   createdAt?: number;
   state: PendingTurnState;
-  source: "outbox" | "authoritative";
+  source: "outbox" | "optimistic" | "authoritative";
 }
 
 function pendingMethod(method: string): PendingMethod | undefined {
@@ -33,7 +33,9 @@ function inputPreview(input: InputItem[] | undefined): { text: string; imageCoun
   return { text: text ?? "", imageCount };
 }
 
-function outboxInput(record: MutationOutboxRecord): InputItem[] | undefined {
+type BrowserPendingRecord = MutationOutboxRecord | MutationOptimisticRecord;
+
+function outboxInput(record: BrowserPendingRecord): InputItem[] | undefined {
   const display = record.optimisticDisplay;
   if (display && typeof display === "object" && "input" in display && Array.isArray(display.input)) {
     return display.input as InputItem[];
@@ -52,7 +54,7 @@ function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   return ids;
 }
 
-function outboxEntry(record: MutationOutboxRecord): PendingTurnEntry | undefined {
+function outboxEntry(record: BrowserPendingRecord): PendingTurnEntry | undefined {
   const method = pendingMethod(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
@@ -63,7 +65,7 @@ function outboxEntry(record: MutationOutboxRecord): PendingTurnEntry | undefined
     ...preview,
     createdAt: record.createdAt,
     state: record.state,
-    source: "outbox",
+    source: record.state === "accepted" ? "optimistic" : "outbox",
   };
 }
 
@@ -80,12 +82,13 @@ function authoritativeEntry(ref: string, mutation: PendingMutation): PendingTurn
   };
 }
 
-// Pending presentation is identity based. The durable browser outbox owns an
-// intent until a receipt settles it; the daemon's pendingMutations projection
-// then owns accepted work until its transcript or queue identity is reflected.
+// Pending presentation is identity based. The durable browser outbox owns
+// transport ambiguity; a separate durable optimistic record owns accepted but
+// not-yet-reflected input until pendingMutations, queue, or transcript state
+// replaces it.
 export function reconcilePendingEntries(
   ref: string,
-  outbox: MutationOutboxRecord[],
+  outbox: BrowserPendingRecord[],
   model: ThreadModel | undefined,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
