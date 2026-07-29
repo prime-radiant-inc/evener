@@ -15,6 +15,12 @@ type connectionSubscriptionSnapshot struct {
 	subscriptions []subscription
 }
 
+type subscriptionCaptureRollback struct {
+	replace        bool
+	connection     connectionSubscriptionSnapshot
+	threadPrevious *subscription
+}
+
 type Subscriptions struct {
 	mu       sync.RWMutex
 	byConn   map[string]map[string]*subscription
@@ -43,13 +49,19 @@ func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) 
 	}
 }
 
-func (s *Subscriptions) BeginBuffered(connID, threadID string, replace bool, generation uint64) connectionSubscriptionSnapshot {
+func (s *Subscriptions) BeginBuffered(connID, threadID string, replace bool, generation uint64) subscriptionCaptureRollback {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	previous := s.connectionSnapshotLocked(connID)
+	rollback := subscriptionCaptureRollback{replace: replace}
 	if replace {
+		rollback.connection = s.connectionSnapshotLocked(connID)
 		s.removeConnectionLocked(connID)
 	} else {
+		if previous := s.byConn[connID][threadID]; previous != nil {
+			clone := *previous
+			clone.buffer = append([]SequencedNotification(nil), previous.buffer...)
+			rollback.threadPrevious = &clone
+		}
 		s.removeThreadLocked(connID, threadID)
 	}
 	s.subscribeLocked(&subscription{
@@ -58,17 +70,34 @@ func (s *Subscriptions) BeginBuffered(connID, threadID string, replace bool, gen
 		buffering:  true,
 		generation: generation,
 	})
-	return previous
+	return rollback
 }
 
-func (s *Subscriptions) RestoreConnection(connID string, previous connectionSubscriptionSnapshot) {
+func (s *Subscriptions) WithdrawBuffered(
+	connID, threadID string,
+	generation uint64,
+	rollback subscriptionCaptureRollback,
+) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.removeConnectionLocked(connID)
-	for i := range previous.subscriptions {
-		sub := previous.subscriptions[i]
-		s.subscribeLocked(&sub)
+	current := s.byConn[connID][threadID]
+	if current == nil || !current.buffering || current.generation != generation {
+		return false
 	}
+	if rollback.replace {
+		s.removeConnectionLocked(connID)
+		for i := range rollback.connection.subscriptions {
+			sub := rollback.connection.subscriptions[i]
+			s.subscribeLocked(&sub)
+		}
+		return true
+	}
+	s.removeThreadLocked(connID, threadID)
+	if rollback.threadPrevious != nil {
+		previous := *rollback.threadPrevious
+		s.subscribeLocked(&previous)
+	}
+	return true
 }
 
 func (s *Subscriptions) SetCut(connID, threadID string, generation, cut uint64) bool {

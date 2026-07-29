@@ -2,7 +2,9 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 
 	"primeradiant.com/serf/appwire"
@@ -81,15 +83,18 @@ func (s *Server) unregisterConnection(conn *Connection) {
 		return
 	}
 	s.projectionMu.Lock()
-	defer s.projectionMu.Unlock()
-	s.unregisterConnectionLocked(conn)
+	aborted := s.unregisterConnectionLocked(conn)
+	s.projectionMu.Unlock()
+	for _, finalizer := range aborted {
+		finalizer.abortAfterWithdrawal()
+	}
 }
 
-func (s *Server) unregisterConnectionLocked(conn *Connection) {
+func (s *Server) unregisterConnectionLocked(conn *Connection) []*hydrationResponseFinalizer {
 	s.mu.Lock()
 	if s.conns[conn.id] != conn {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	delete(s.conns, conn.id)
 	conn.cancelContext()
@@ -98,7 +103,9 @@ func (s *Server) unregisterConnectionLocked(conn *Connection) {
 		s.afterUnregisterDelete()
 	}
 	s.subs.RemoveConnection(conn.id)
+	aborted := conn.takeAllHydrations()
 	s.mu.Unlock()
+	return aborted
 }
 
 func (s *Server) Broadcast(threadID, method string, params any) {
@@ -194,16 +201,16 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 }
 
 type Connection struct {
-	id            string
-	server        *Server
-	send          chan appwire.Message
-	sendMu        sync.RWMutex
-	sendClosed    bool
-	mu            sync.RWMutex
-	initialized   bool
-	cancel        context.CancelFunc
-	responseMu    sync.Mutex
-	afterResponse []func()
+	id          string
+	server      *Server
+	send        chan appwire.Message
+	sendMu      sync.RWMutex
+	sendClosed  bool
+	mu          sync.RWMutex
+	initialized bool
+	cancel      context.CancelFunc
+	responseMu  sync.Mutex
+	hydrations  map[string]*hydrationResponseFinalizer
 }
 
 func (c *Connection) ID() string {
@@ -254,36 +261,96 @@ func (c *Connection) enqueue(msg appwire.Message) bool {
 }
 
 func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) error {
+	responseID := responseMessageID(msg)
 	c.sendMu.RLock()
 	if c.sendClosed {
+		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
+		if finalizer != nil {
+			finalizer.abort()
+		}
 		return context.Canceled
 	}
 	select {
 	case c.send <- msg:
+		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
-		c.runAfterResponse()
+		if finalizer != nil {
+			finalizer.commit()
+		}
 		return nil
 	case <-ctx.Done():
+		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
+		if finalizer != nil {
+			finalizer.abort()
+		}
 		return ctx.Err()
 	}
 }
 
-func (c *Connection) addAfterResponse(fn func()) {
+func (c *Connection) addHydration(finalizer *hydrationResponseFinalizer) {
 	c.responseMu.Lock()
-	c.afterResponse = append(c.afterResponse, fn)
+	if c.hydrations == nil {
+		c.hydrations = map[string]*hydrationResponseFinalizer{}
+	}
+	c.hydrations[finalizer.responseID] = finalizer
 	c.responseMu.Unlock()
 }
 
-func (c *Connection) runAfterResponse() {
+func (c *Connection) takeHydration(responseID string) *hydrationResponseFinalizer {
 	c.responseMu.Lock()
-	callbacks := c.afterResponse
-	c.afterResponse = nil
+	finalizer := c.hydrations[responseID]
+	delete(c.hydrations, responseID)
 	c.responseMu.Unlock()
-	for _, callback := range callbacks {
-		callback()
+	return finalizer
+}
+
+func (c *Connection) takeSupersededHydrations(
+	responseID, threadID string,
+	replace bool,
+) []*hydrationResponseFinalizer {
+	c.responseMu.Lock()
+	var superseded []*hydrationResponseFinalizer
+	for key, finalizer := range c.hydrations {
+		if key != responseID && !replace && !finalizer.replace && finalizer.threadID != threadID {
+			continue
+		}
+		superseded = append(superseded, finalizer)
+		delete(c.hydrations, key)
 	}
+	c.responseMu.Unlock()
+	sort.Slice(superseded, func(i, j int) bool {
+		return superseded[i].generation > superseded[j].generation
+	})
+	return superseded
+}
+
+func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
+	c.responseMu.Lock()
+	pending := make([]*hydrationResponseFinalizer, 0, len(c.hydrations))
+	for key, finalizer := range c.hydrations {
+		pending = append(pending, finalizer)
+		delete(c.hydrations, key)
+	}
+	c.responseMu.Unlock()
+	return pending
+}
+
+func responseMessageID(msg appwire.Message) string {
+	switch {
+	case msg.Response != nil:
+		return requestIDKey(msg.Response.ID)
+	case msg.Error != nil:
+		return requestIDKey(msg.Error.ID)
+	default:
+		return ""
+	}
+}
+
+func requestIDKey(id appwire.ID) string {
+	raw, _ := json.Marshal(id)
+	return string(raw)
 }
 
 func (c *Connection) closeSend() {
@@ -322,7 +389,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 			return appwire.ErrorMessage(req.ID, appwire.InvalidParams(err.Error()))
 		}
 	}
-	result, err := c.server.router.Dispatch(context.WithValue(ctx, connectionContextKey{}, c), req)
+	handlerCtx := context.WithValue(ctx, connectionContextKey{}, c)
+	handlerCtx = context.WithValue(handlerCtx, requestIDContextKey{}, requestIDKey(req.ID))
+	result, err := c.server.router.Dispatch(handlerCtx, req)
 	if err != nil {
 		return appwire.ErrorMessage(req.ID, WireError(err))
 	}
@@ -342,6 +411,46 @@ func (c *Connection) handleNotification(notification appwire.Notification) appwi
 }
 
 type connectionContextKey struct{}
+type requestIDContextKey struct{}
+
+// CaptureSubscriptionHandoff is the one-shot continuation paired with a
+// buffering subscription capture. Commit runs only after the matching response
+// enters the connection send queue. Abort runs after that capture has been
+// withdrawn because its response cannot be enqueued or a newer lifecycle
+// supersedes it.
+type CaptureSubscriptionHandoff struct {
+	Commit func()
+	Abort  func()
+}
+
+type hydrationResponseFinalizer struct {
+	server     *Server
+	conn       *Connection
+	responseID string
+	threadID   string
+	generation uint64
+	replace    bool
+	rollback   subscriptionCaptureRollback
+	handoff    CaptureSubscriptionHandoff
+}
+
+func (f *hydrationResponseFinalizer) commit() {
+	f.server.releaseHydration(f.conn, f.threadID, f.generation)
+	if f.handoff.Commit != nil {
+		f.handoff.Commit()
+	}
+}
+
+func (f *hydrationResponseFinalizer) abort() {
+	f.server.withdrawHydration(f.conn, f.threadID, f.generation, f.rollback)
+	f.abortAfterWithdrawal()
+}
+
+func (f *hydrationResponseFinalizer) abortAfterWithdrawal() {
+	if f.handoff.Abort != nil {
+		f.handoff.Abort()
+	}
+}
 
 func Subscribe(ctx context.Context, threadID string) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
@@ -399,43 +508,131 @@ func CaptureSubscription(
 	currentSequence func() uint64,
 	snapshot func() bool,
 ) bool {
+	return CaptureSubscriptionWithHandoff(
+		ctx,
+		replace,
+		threadID,
+		currentSequence,
+		snapshot,
+		CaptureSubscriptionHandoff{},
+	)
+}
+
+// CaptureSubscriptionWithHandoff extends CaptureSubscription with the narrow
+// downstream response boundary required by a materialized upstream handoff.
+// It is deliberately specific to hydration rather than a general response
+// transaction mechanism.
+func CaptureSubscriptionWithHandoff(
+	ctx context.Context,
+	replace bool,
+	threadID func() string,
+	currentSequence func() uint64,
+	snapshot func() bool,
+	handoff CaptureSubscriptionHandoff,
+) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
-		return snapshot()
+		captured := snapshot()
+		if captured {
+			if handoff.Commit != nil {
+				handoff.Commit()
+			}
+		} else if handoff.Abort != nil {
+			handoff.Abort()
+		}
+		return captured
 	}
 	server := conn.server
 	if server.beforeSubscriptionRegistration != nil {
 		server.beforeSubscriptionRegistration()
 	}
 	server.projectionMu.Lock()
-	defer server.projectionMu.Unlock()
 	server.deliveryMu.Lock()
-	defer server.deliveryMu.Unlock()
 
 	server.mu.RLock()
 	registered := server.conns[conn.id] == conn
 	server.mu.RUnlock()
 	if !registered {
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
 		return false
 	}
 	targetThreadID := threadID()
 	if targetThreadID == "" {
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
 		return false
+	}
+	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
+	superseded := conn.takeSupersededHydrations(responseID, targetThreadID, replace)
+	for _, finalizer := range superseded {
+		server.subs.WithdrawBuffered(
+			conn.id,
+			finalizer.threadID,
+			finalizer.generation,
+			finalizer.rollback,
+		)
 	}
 	server.nextHydrationGeneration++
 	generation := server.nextHydrationGeneration
-	previous := server.subs.BeginBuffered(conn.id, targetThreadID, replace, generation)
+	rollback := server.subs.BeginBuffered(conn.id, targetThreadID, replace, generation)
 	if !snapshot() {
-		server.subs.RestoreConnection(conn.id, previous)
+		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		for _, finalizer := range superseded {
+			finalizer.abortAfterWithdrawal()
+		}
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
 		return false
 	}
 	if !server.subs.SetCut(conn.id, targetThreadID, generation, currentSequence()) {
-		server.subs.RestoreConnection(conn.id, previous)
+		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		for _, finalizer := range superseded {
+			finalizer.abortAfterWithdrawal()
+		}
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
 		return false
 	}
-	conn.addAfterResponse(func() {
-		server.releaseHydration(conn, targetThreadID, generation)
+	if ctx.Err() != nil {
+		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		for _, finalizer := range superseded {
+			finalizer.abortAfterWithdrawal()
+		}
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
+		return false
+	}
+	conn.addHydration(&hydrationResponseFinalizer{
+		server:     server,
+		conn:       conn,
+		responseID: responseID,
+		threadID:   targetThreadID,
+		generation: generation,
+		replace:    replace,
+		rollback:   rollback,
+		handoff:    handoff,
 	})
+	server.deliveryMu.Unlock()
+	server.projectionMu.Unlock()
+	for _, finalizer := range superseded {
+		finalizer.abortAfterWithdrawal()
+	}
 	return true
 }
 
@@ -458,6 +655,19 @@ func (s *Server) releaseHydration(conn *Connection, threadID string, generation 
 	if disconnected {
 		s.unregisterConnection(conn)
 	}
+}
+
+func (s *Server) withdrawHydration(
+	conn *Connection,
+	threadID string,
+	generation uint64,
+	rollback subscriptionCaptureRollback,
+) {
+	s.projectionMu.Lock()
+	s.deliveryMu.Lock()
+	s.subs.WithdrawBuffered(conn.id, threadID, generation, rollback)
+	s.deliveryMu.Unlock()
+	s.projectionMu.Unlock()
 }
 
 func Notify(ctx context.Context, method string, params any) {

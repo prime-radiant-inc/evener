@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -487,6 +488,105 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 	}
 	if combined != "delta" {
 		t.Fatalf("snapshot plus released deltas = %q, want one append-only delta", combined)
+	}
+}
+
+func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-matching-response")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/matching-response", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	snapshotResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/matching-response", struct{}{}),
+	)
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+
+	unrelatedResponse := appwire.ResponseMessage(appwire.NewIntID(2), struct{}{})
+	if err := conn.enqueueResponse(context.Background(), unrelatedResponse); err != nil {
+		t.Fatalf("enqueue unrelated response: %v", err)
+	}
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after unrelated response = %d, want response only", got)
+	}
+	if unrelated := <-conn.send; unrelated.Response == nil || unrelated.IDString() != "2" {
+		t.Fatalf("unrelated delivery = %+v, want unrelated response", unrelated)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), snapshotResponse); err != nil {
+		t.Fatalf("enqueue snapshot response: %v", err)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Response == nil || first.IDString() != "1" {
+		t.Fatalf("first matching delivery = %+v, want snapshot response", first)
+	}
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("second matching delivery = %+v, want released post-cut delta", second)
+	}
+}
+
+func TestAtomicRejoinResponseEnqueueCancellationRestoresSubscription(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-canceled-response")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/canceled-response", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	snapshotResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/canceled-response", struct{}{}),
+	)
+	for i := 0; i < cap(conn.send); i++ {
+		if !conn.enqueue(appwire.NotificationMessage("fill", map[string]any{"i": i})) {
+			t.Fatal("fill enqueue failed")
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := conn.enqueueResponse(canceled, snapshotResponse); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enqueue canceled response = %v, want context canceled", err)
+	}
+	for len(conn.send) > 0 {
+		<-conn.send
+	}
+
+	server.Broadcast("th_1", "after-cancel", struct{}{})
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after canceled hydration = %d, want resumed live delivery", got)
 	}
 }
 
