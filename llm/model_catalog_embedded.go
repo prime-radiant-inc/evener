@@ -74,6 +74,7 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 	for i := range cat.Models {
 		m := &cat.Models[i]
 		entry, ok := raw[m.ID]
+		includeAliases := ok
 		key := m.ID
 		if !ok {
 			// Dated snapshots (claude-opus-4-5-20251101[-v1]) carry no override of
@@ -91,7 +92,7 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		if !ok {
 			continue
 		}
-		applyOverlayFields(m, ov)
+		applyOverlayFields(m, ov, includeAliases)
 		applied[key] = true
 	}
 
@@ -122,7 +123,7 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		if v, ok := ov["supports_tools"].(bool); ok {
 			m.SupportsTools = v
 		}
-		applyOverlayFields(&m, ov)
+		applyOverlayFields(&m, ov, true)
 		cat.Models = append(cat.Models, m)
 	}
 
@@ -130,9 +131,10 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 	// these override mutations land, so there is nothing to invalidate here.
 }
 
-// applyOverlayFields applies the Serf overlay fields (effort levels, capability
-// flags) from an override entry onto a model.
-func applyOverlayFields(m *ModelInfo, ov map[string]any) {
+// applyOverlayFields applies Serf overlay metadata onto a model. Aliases are
+// included only for exact matches and materialized entries so family overlays
+// cannot make dated snapshots claim the same alias.
+func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {
 	if levels, ok := ov["reasoning_effort_levels"].([]any); ok {
 		m.ReasoningEffortLevels = nil
 		for _, lvl := range levels {
@@ -185,7 +187,7 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any) {
 		c := v
 		m.CacheReadInputCostPerMillion = &c
 	}
-	if aliases, ok := ov["aliases"].([]any); ok {
+	if aliases, ok := ov["aliases"].([]any); ok && includeAliases {
 		m.Aliases = nil
 		for _, a := range aliases {
 			if s, ok := a.(string); ok {

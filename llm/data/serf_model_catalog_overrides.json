@@ -160,6 +160,9 @@
     "supports_web_search": true
   },
   "claude-sonnet-4-6": {
+    "aliases": [
+      "sonnet"
+    ],
     "reasoning_effort_levels": [
       "low",
       "medium",
@@ -169,6 +172,16 @@
     "supports_adaptive_thinking": true,
     "supports_effort_parameter": true,
     "supports_web_search": true
+  },
+  "claude-opus-4-7": {
+    "aliases": [
+      "opus"
+    ]
+  },
+  "claude-haiku-4-5": {
+    "aliases": [
+      "haiku"
+    ]
   },
   "claude-opus-4-5": {
     "reasoning_effort_levels": [

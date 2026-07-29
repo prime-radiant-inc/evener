@@ -73,6 +73,34 @@ func (c *ModelCatalog) GetModelInfo(modelID string) *ModelInfo {
 	return nil
 }
 
+// ResolveAlias returns the unique catalog model declaring alias. Exact model
+// IDs are not aliases. If multiple model IDs declare alias, it returns nil,
+// true so callers fail closed instead of depending on catalog order.
+func (c *ModelCatalog) ResolveAlias(alias string) (target *ModelInfo, ambiguous bool) {
+	if c == nil {
+		return nil, false
+	}
+	alias = strings.TrimSpace(alias)
+	for _, m := range c.Models {
+		if m.ID == alias {
+			return nil, false
+		}
+	}
+	for _, m := range c.Models {
+		for _, candidate := range m.Aliases {
+			if candidate != alias {
+				continue
+			}
+			if target != nil && target.ID != m.ID {
+				return nil, true
+			}
+			out := m
+			target = &out
+		}
+	}
+	return target, false
+}
+
 // LookupModelInfo resolves catalog metadata for a model ref that may carry an
 // Anthropic "[1m]" 1M-context suffix and/or a provider namespace (e.g.
 // "anthropic/claude-opus-4-5" served by an openrouter-anthropic instance). It

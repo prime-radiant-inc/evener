@@ -192,6 +192,29 @@ func TestModelCatalog_AliasLookup(t *testing.T) {
 	}
 }
 
+func TestModelCatalog_ResolveAliasRejectsAmbiguity(t *testing.T) {
+	cat := &ModelCatalog{Models: []ModelInfo{
+		{ID: "model-a", Provider: "openai", Aliases: []string{"fast"}},
+		{ID: "model-b", Provider: "openai", Aliases: []string{"fast", "model-a"}},
+		{ID: "model-c", Provider: "openai", Aliases: []string{"balanced"}},
+	}}
+
+	target, ambiguous := cat.ResolveAlias("fast")
+	if target != nil || !ambiguous {
+		t.Fatalf("ResolveAlias(fast) = (%v, %t), want (nil, true)", target, ambiguous)
+	}
+
+	target, ambiguous = cat.ResolveAlias("balanced")
+	if ambiguous || target == nil || target.ID != "model-c" {
+		t.Fatalf("ResolveAlias(balanced) = (%v, %t), want model-c", target, ambiguous)
+	}
+
+	target, ambiguous = cat.ResolveAlias("model-a")
+	if target != nil || ambiguous {
+		t.Fatalf("ResolveAlias(model-a) = (%v, %t), want (nil, false)", target, ambiguous)
+	}
+}
+
 func TestEmbeddedModelCatalog(t *testing.T) {
 	cat := EmbeddedModelCatalog()
 	if cat == nil {
@@ -207,6 +230,20 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 	}
 	if !strings.EqualFold(info.Provider, "openai") {
 		t.Fatalf("gpt-4o provider = %q", info.Provider)
+	}
+}
+
+func TestEmbeddedModelCatalog_ClaudeAliases(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	for alias, want := range map[string]string{
+		"sonnet": "claude-sonnet-4-6",
+		"opus":   "claude-opus-4-7",
+		"haiku":  "claude-haiku-4-5",
+	} {
+		got, ambiguous := cat.ResolveAlias(alias)
+		if ambiguous || got == nil || got.ID != want {
+			t.Errorf("ResolveAlias(%q) = (%v, %t), want %q", alias, got, ambiguous, want)
+		}
 	}
 }
 
@@ -729,6 +766,34 @@ func TestApplyOverrides_DatedVariantInheritsFamily(t *testing.T) {
 		if !mi.SupportsEffortParameter {
 			t.Errorf("%s: SupportsEffortParameter = false, want true (inherited from family)", id)
 		}
+	}
+}
+
+func TestApplyOverrides_AliasesDoNotInheritToDatedSnapshots(t *testing.T) {
+	cat := &ModelCatalog{Models: []ModelInfo{
+		{ID: "claude-sonnet-4-6", Provider: "anthropic"},
+		{ID: "claude-sonnet-4-6-20260205", Provider: "anthropic"},
+	}}
+
+	applyOverrides(cat, []byte(`{"claude-sonnet-4-6":{"aliases":["sonnet"]}}`))
+
+	bare := cat.GetModelInfo("claude-sonnet-4-6")
+	if bare == nil {
+		t.Fatal("bare model missing from catalog")
+	}
+	if len(bare.Aliases) != 1 || bare.Aliases[0] != "sonnet" {
+		t.Fatalf("bare aliases = %v, want [sonnet]", bare.Aliases)
+	}
+	dated := cat.GetModelInfo("claude-sonnet-4-6-20260205")
+	if dated == nil {
+		t.Fatal("dated snapshot missing from catalog")
+	}
+	if len(dated.Aliases) != 0 {
+		t.Errorf("dated aliases = %v, want none", dated.Aliases)
+	}
+	target, ambiguous := cat.ResolveAlias("sonnet")
+	if ambiguous || target == nil || target.ID != "claude-sonnet-4-6" {
+		t.Errorf("ResolveAlias(sonnet) = (%v, %t), want claude-sonnet-4-6", target, ambiguous)
 	}
 }
 
