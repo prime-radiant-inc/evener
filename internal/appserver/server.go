@@ -261,7 +261,7 @@ func (c *Connection) enqueue(msg appwire.Message) bool {
 }
 
 func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) error {
-	responseID := responseMessageID(msg)
+	responseID, responseSucceeded := responseHydrationOutcome(msg)
 	c.sendMu.RLock()
 	if c.sendClosed {
 		finalizer := c.takeHydration(responseID)
@@ -276,7 +276,11 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
 		if finalizer != nil {
-			finalizer.commit()
+			if responseSucceeded {
+				finalizer.commit()
+			} else {
+				finalizer.abort()
+			}
 		}
 		return nil
 	case <-ctx.Done():
@@ -337,14 +341,14 @@ func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
 	return pending
 }
 
-func responseMessageID(msg appwire.Message) string {
+func responseHydrationOutcome(msg appwire.Message) (string, bool) {
 	switch {
 	case msg.Response != nil:
-		return requestIDKey(msg.Response.ID)
+		return requestIDKey(msg.Response.ID), true
 	case msg.Error != nil:
-		return requestIDKey(msg.Error.ID)
+		return requestIDKey(msg.Error.ID), false
 	default:
-		return ""
+		return "", false
 	}
 }
 
@@ -532,15 +536,13 @@ func CaptureSubscriptionWithHandoff(
 ) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
-		captured := snapshot()
-		if captured {
-			if handoff.Commit != nil {
-				handoff.Commit()
-			}
-		} else if handoff.Abort != nil {
+		if handoff.Commit == nil && handoff.Abort == nil {
+			return snapshot()
+		}
+		if handoff.Abort != nil {
 			handoff.Abort()
 		}
-		return captured
+		return false
 	}
 	server := conn.server
 	if server.beforeSubscriptionRegistration != nil {
@@ -548,31 +550,33 @@ func CaptureSubscriptionWithHandoff(
 	}
 	server.projectionMu.Lock()
 	server.deliveryMu.Lock()
+	var superseded []*hydrationResponseFinalizer
+	abortAfterUnlock := func() bool {
+		server.deliveryMu.Unlock()
+		server.projectionMu.Unlock()
+		for _, finalizer := range superseded {
+			finalizer.abortAfterWithdrawal()
+		}
+		if handoff.Abort != nil {
+			handoff.Abort()
+		}
+		return false
+	}
 
 	server.mu.RLock()
 	registered := server.conns[conn.id] == conn
 	server.mu.RUnlock()
 	if !registered {
-		server.deliveryMu.Unlock()
-		server.projectionMu.Unlock()
-		if handoff.Abort != nil {
-			handoff.Abort()
-		}
-		return false
+		return abortAfterUnlock()
 	}
 	targetThreadID := threadID()
 	if targetThreadID == "" {
-		server.deliveryMu.Unlock()
-		server.projectionMu.Unlock()
-		if handoff.Abort != nil {
-			handoff.Abort()
-		}
-		return false
+		return abortAfterUnlock()
 	}
 	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
-	superseded := conn.takeSupersededHydrations(responseID, targetThreadID, replace)
+	superseded = conn.takeSupersededHydrations(responseID, targetThreadID, replace)
 	for _, finalizer := range superseded {
-		server.subs.WithdrawBuffered(
+		server.subs.withdrawBuffered(
 			conn.id,
 			finalizer.threadID,
 			finalizer.generation,
@@ -581,42 +585,18 @@ func CaptureSubscriptionWithHandoff(
 	}
 	server.nextHydrationGeneration++
 	generation := server.nextHydrationGeneration
-	rollback := server.subs.BeginBuffered(conn.id, targetThreadID, replace, generation)
+	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation)
 	if !snapshot() {
-		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
-		server.deliveryMu.Unlock()
-		server.projectionMu.Unlock()
-		for _, finalizer := range superseded {
-			finalizer.abortAfterWithdrawal()
-		}
-		if handoff.Abort != nil {
-			handoff.Abort()
-		}
-		return false
+		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		return abortAfterUnlock()
 	}
 	if !server.subs.SetCut(conn.id, targetThreadID, generation, currentSequence()) {
-		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
-		server.deliveryMu.Unlock()
-		server.projectionMu.Unlock()
-		for _, finalizer := range superseded {
-			finalizer.abortAfterWithdrawal()
-		}
-		if handoff.Abort != nil {
-			handoff.Abort()
-		}
-		return false
+		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		return abortAfterUnlock()
 	}
 	if ctx.Err() != nil {
-		server.subs.WithdrawBuffered(conn.id, targetThreadID, generation, rollback)
-		server.deliveryMu.Unlock()
-		server.projectionMu.Unlock()
-		for _, finalizer := range superseded {
-			finalizer.abortAfterWithdrawal()
-		}
-		if handoff.Abort != nil {
-			handoff.Abort()
-		}
-		return false
+		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
+		return abortAfterUnlock()
 	}
 	conn.addHydration(&hydrationResponseFinalizer{
 		server:     server,
@@ -665,7 +645,7 @@ func (s *Server) withdrawHydration(
 ) {
 	s.projectionMu.Lock()
 	s.deliveryMu.Lock()
-	s.subs.WithdrawBuffered(conn.id, threadID, generation, rollback)
+	s.subs.withdrawBuffered(conn.id, threadID, generation, rollback)
 	s.deliveryMu.Unlock()
 	s.projectionMu.Unlock()
 }

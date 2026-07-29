@@ -49,7 +49,7 @@ func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) 
 	}
 }
 
-func (s *Subscriptions) BeginBuffered(connID, threadID string, replace bool, generation uint64) subscriptionCaptureRollback {
+func (s *Subscriptions) beginBuffered(connID, threadID string, replace bool, generation uint64) subscriptionCaptureRollback {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rollback := subscriptionCaptureRollback{replace: replace}
@@ -73,7 +73,7 @@ func (s *Subscriptions) BeginBuffered(connID, threadID string, replace bool, gen
 	return rollback
 }
 
-func (s *Subscriptions) WithdrawBuffered(
+func (s *Subscriptions) withdrawBuffered(
 	connID, threadID string,
 	generation uint64,
 	rollback subscriptionCaptureRollback,

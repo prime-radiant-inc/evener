@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -553,13 +555,30 @@ func TestAtomicRejoinResponseEnqueueCancellationRestoresSubscription(t *testing.
 	conn.Subscribe("th_1")
 
 	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
 	HandleTyped(server.Router(), "test/canceled-response", func(ctx context.Context, _ struct{}) (struct{}, error) {
-		if !CaptureSubscription(
+		if !CaptureSubscriptionWithHandoff(
 			ctx,
 			false,
 			func() string { return "th_1" },
 			notifier.CurrentSequence,
 			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					resumed := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !resumed {
+						t.Error("abort ran before the previous live subscription was restored")
+					}
+					aborts.Add(1)
+				},
+			},
 		) {
 			t.Fatal("snapshot subscription was rejected")
 		}
@@ -587,6 +606,444 @@ func TestAtomicRejoinResponseEnqueueCancellationRestoresSubscription(t *testing.
 	server.Broadcast("th_1", "after-cancel", struct{}{})
 	if got := len(conn.send); got != 1 {
 		t.Fatalf("messages after canceled hydration = %d, want resumed live delivery", got)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), snapshotResponse); err != nil {
+		t.Fatalf("late enqueue response: %v", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after repeated terminal signal = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffCommitsAfterMatchingResponseEnqueue(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-commit")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-commit", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					released := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !released {
+						t.Error("commit ran before the hydration capture was released")
+					}
+					commits.Add(1)
+				},
+				Abort: func() {
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(11), "test/handoff-commit", struct{}{}),
+	)
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks before response enqueue = %d, want 0", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), appwire.ResponseMessage(appwire.NewIntID(12), struct{}{})); err != nil {
+		t.Fatalf("enqueue unrelated response: %v", err)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks after unrelated response = %d, want 0", got)
+	}
+	<-conn.send
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue matching response: %v", err)
+	}
+	if got := commits.Load(); got != 1 {
+		t.Fatalf("commit callbacks = %d, want 1", got)
+	}
+	if got := aborts.Load(); got != 0 {
+		t.Fatalf("abort callbacks = %d, want 0", got)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Response == nil || first.IDString() != "11" || second.Notification == nil {
+		t.Fatalf("matching delivery = [%+v, %+v], want response then released notification", first, second)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue repeated matching response: %v", err)
+	}
+	server.unregisterConnection(conn)
+	if got := commits.Load(); got != 1 {
+		t.Fatalf("commit callbacks after repeated terminal signals = %d, want 1", got)
+	}
+	if got := aborts.Load(); got != 0 {
+		t.Fatalf("abort callbacks after commit = %d, want 0", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffAbortsFailedCaptureAfterRestoringOwnership(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-capture-failure")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-capture-failure", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			func() uint64 { return 0 },
+			func() bool { return false },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					restored := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !restored {
+						t.Error("capture failure abort ran before ownership was restored")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("failed snapshot capture succeeded")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(21), "test/handoff-capture-failure", struct{}{}),
+	)
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response after capture failure: %v", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after response = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffRequiresResponseConnection(t *testing.T) {
+	var snapshotCalled atomic.Bool
+	var commits atomic.Int32
+	var aborts atomic.Int32
+
+	captured := CaptureSubscriptionWithHandoff(
+		context.Background(),
+		false,
+		func() string { return "th_1" },
+		func() uint64 { return 0 },
+		func() bool {
+			snapshotCalled.Store(true)
+			return true
+		},
+		CaptureSubscriptionHandoff{
+			Commit: func() { commits.Add(1) },
+			Abort:  func() { aborts.Add(1) },
+		},
+	)
+
+	if captured {
+		t.Fatal("handoff capture without a response connection succeeded")
+	}
+	if snapshotCalled.Load() {
+		t.Fatal("snapshot ran without a response connection")
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffAbortsMatchingErrorResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-error")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-error", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					restored := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !restored {
+						t.Error("error response abort ran before ownership was restored")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, appwire.InvalidRequest("snapshot unavailable")
+	})
+
+	errorResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(25), "test/handoff-error", struct{}{}),
+	)
+	if errorResponse.Error == nil {
+		t.Fatalf("handler response = %+v, want error", errorResponse)
+	}
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "held"}),
+		}
+	})
+
+	if err := conn.enqueueResponse(context.Background(), errorResponse); err != nil {
+		t.Fatalf("enqueue error response: %v", err)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after error response = %d, want error without held delta", got)
+	}
+	if msg := <-conn.send; msg.Error == nil || msg.IDString() != "25" {
+		t.Fatalf("error delivery = %+v, want matching error", msg)
+	}
+
+	server.Broadcast("th_1", "after-error", struct{}{})
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after error abort = %d, want resumed live delivery", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffUnregisterWithdrawsBeforeAbort(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-unregister")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-unregister", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			func() uint64 { return 0 },
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					if server.subs.IsSubscribed(conn.id, "th_1") {
+						t.Error("unregister abort ran before subscription withdrawal")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(31), "test/handoff-unregister", struct{}{}),
+	)
+	server.unregisterConnection(conn)
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), response); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enqueue after unregister = %v, want context canceled", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after repeated terminal signal = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffSupersessionFencesStaleResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-supersession")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	var firstCommits atomic.Int32
+	var firstAborts atomic.Int32
+	var secondCommits atomic.Int32
+	var firstGeneration uint64
+	install := func(method string, handoff CaptureSubscriptionHandoff) {
+		HandleTyped(server.Router(), method, func(ctx context.Context, _ struct{}) (struct{}, error) {
+			if !CaptureSubscriptionWithHandoff(
+				ctx,
+				false,
+				func() string { return "th_1" },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				handoff,
+			) {
+				t.Fatal("snapshot subscription was rejected")
+			}
+			return struct{}{}, nil
+		})
+	}
+	install("test/handoff-first", CaptureSubscriptionHandoff{
+		Commit: func() { firstCommits.Add(1) },
+		Abort: func() {
+			server.subs.mu.RLock()
+			sub := server.subs.byConn[conn.id]["th_1"]
+			firstWithdrawn := sub == nil || sub.generation != firstGeneration
+			server.subs.mu.RUnlock()
+			if !firstWithdrawn {
+				t.Error("superseded abort ran before the first generation was withdrawn")
+			}
+			firstAborts.Add(1)
+		},
+	})
+	install("test/handoff-second", CaptureSubscriptionHandoff{
+		Commit: func() { secondCommits.Add(1) },
+		Abort:  func() { t.Error("second handoff unexpectedly aborted") },
+	})
+
+	firstResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(41), "test/handoff-first", struct{}{}),
+	)
+	server.subs.mu.RLock()
+	firstGeneration = server.subs.byConn[conn.id]["th_1"].generation
+	server.subs.mu.RUnlock()
+	secondResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(42), "test/handoff-second", struct{}{}),
+	)
+	if got := firstAborts.Load(); got != 1 {
+		t.Fatalf("first abort callbacks after supersession = %d, want 1", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), firstResponse); err != nil {
+		t.Fatalf("enqueue stale first response: %v", err)
+	}
+	if got := firstCommits.Load(); got != 0 {
+		t.Fatalf("stale first commits = %d, want 0", got)
+	}
+	<-conn.send
+	if err := conn.enqueueResponse(context.Background(), secondResponse); err != nil {
+		t.Fatalf("enqueue second response: %v", err)
+	}
+	if got := secondCommits.Load(); got != 1 {
+		t.Fatalf("second commits = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffCommitAbortRaceHasOneWinner(t *testing.T) {
+	for i := range 100 {
+		server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+		conn := server.NewConnection(fmt.Sprintf("conn-handoff-race-%d", i))
+		server.registerConnection(conn)
+		conn.setInitialized()
+
+		var commits atomic.Int32
+		var aborts atomic.Int32
+		HandleTyped(server.Router(), "test/handoff-race", func(ctx context.Context, _ struct{}) (struct{}, error) {
+			if !CaptureSubscriptionWithHandoff(
+				ctx,
+				false,
+				func() string { return "th_1" },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				CaptureSubscriptionHandoff{
+					Commit: func() { commits.Add(1) },
+					Abort:  func() { aborts.Add(1) },
+				},
+			) {
+				t.Fatal("snapshot subscription was rejected")
+			}
+			return struct{}{}, nil
+		})
+		response := conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(51), "test/handoff-race", struct{}{}),
+		)
+
+		start := make(chan struct{})
+		var racers sync.WaitGroup
+		racers.Add(2)
+		go func() {
+			defer racers.Done()
+			<-start
+			_ = conn.enqueueResponse(context.Background(), response)
+		}()
+		go func() {
+			defer racers.Done()
+			<-start
+			server.unregisterConnection(conn)
+		}()
+		close(start)
+		racers.Wait()
+
+		if got := commits.Load() + aborts.Load(); got != 1 {
+			t.Fatalf("iteration %d terminal callbacks = %d (commit=%d abort=%d), want exactly 1", i, got, commits.Load(), aborts.Load())
+		}
+		if commits.Load() > 1 || aborts.Load() > 1 {
+			t.Fatalf("iteration %d repeated callback: commit=%d abort=%d", i, commits.Load(), aborts.Load())
+		}
 	}
 }
 
@@ -664,7 +1121,7 @@ func TestAtomicRejoinBeforeSubscriberInsertionIncludesDeltaOnceInSnapshot(t *tes
 
 func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
 	subscriptions := NewSubscriptions()
-	subscriptions.BeginBuffered("conn", "th_1", false, 7)
+	subscriptions.beginBuffered("conn", "th_1", false, 7)
 	for seq := uint64(1); seq <= 2; seq++ {
 		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
 	}
