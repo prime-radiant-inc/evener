@@ -565,15 +565,16 @@ identities.
 mount, WebSocket reconnect, relay resync, long-silence self-heal, and page
 reload.
 
-Each authoritative source has one projection-commit boundary. Applying a
-durable state change to the in-memory projector, allocating its internal source
-sequence, and inserting its notification into every subscriber buffer happen
-under that one boundary. Notifications are emitted only after their durable
-state is projectable. Snapshot capture clones the same projector and records
-its cut while holding that boundary. Internal sequence numbers are not exposed
-as a public replay cursor.
+At the daemon AppWire boundary, each authoritative source has one
+projection-commit boundary. Applying a durable state change to the in-memory
+projector, allocating its internal source sequence, and inserting its
+notification into every subscriber buffer happen under that one boundary.
+Notifications are emitted only after their durable state is projectable.
+Snapshot capture clones the same projector and records its cut while holding
+that boundary. Internal sequence numbers are not exposed as a public replay
+cursor.
 
-The server-side ordering is:
+The daemon-side ordering is:
 
 1. resolve the authoritative source and thread;
 2. under the projection-commit boundary, register the connection's
@@ -583,19 +584,69 @@ The server-side ordering is:
    record its source-sequence cut;
 4. discard buffered notifications at or before the cut because the snapshot
    already contains them;
-5. send the `thread/read` response; and
+5. queue the `thread/read` response before any post-cut notification on that
+   AppWire connection; and
 6. release buffered notifications after the cut in producer order, followed by
    live events.
 
-Events may arrive before the response on the physical socket. The frontend
-already has a hydration buffer and must keep buffering by hydration generation
-until the matching response is installed.
+This response-before-notification ordering is part of the appserver atomic
+capture contract. A client still associates hydration with its generation so a
+late response or notification from a superseded generation cannot publish over
+the current model.
 
 The snapshot and released buffer do not semantically overlap. This is
 load-bearing for append-only agent-message, reasoning, and tool-output deltas:
 stable item identity cannot make the same text delta idempotent. Full-state and
 terminal reducers remain idempotent by stable thread-scoped turn, item,
 queue-entry, escalation, job, and mutation identity.
+
+The Hub does not create a second upstream subscription to reproduce this cut.
+For each source/thread pair, the source layer owns exactly one canonical
+`RelaySession` actor and exactly one canonical upstream AppWire notification
+stream. The actor is deliberately narrow rather than a generic actor
+framework. It owns:
+
+- the canonical AppWire connection and its ordered notification feed;
+- connection recovery and monotonically increasing connection epochs;
+- serialized `thread/read(subscribe: true)` snapshot commands;
+- buffering while a downstream hydration capture is installed; and
+- idle shutdown and removal when no downstream relay or command still owns it.
+
+The Hub relay is downstream fanout only. It never opens, merges, or
+deduplicates an additional upstream stream. On a healthy rejoin, the
+`RelaySession` issues `thread/read(subscribe: true)` on its existing canonical
+connection. The actor buffers notifications from that same canonical feed
+while the snapshot command is in flight and until the Hub has installed the
+matching downstream capture and queued the hydration response. It then releases
+only the post-cut notifications in producer order and resumes direct downstream
+fanout. This preserves the Task 6 appserver cut rather than attempting to infer
+one from two independently ordered streams.
+
+If the actor is disconnected or recovering, it establishes a new atomic
+AppWire connection, initializes it, and performs
+`thread/read(subscribe: true)` there. That connection becomes canonical only as
+one epoch transition with a successful snapshot and a live continuation. A
+snapshot without a continuing subscribed connection is not a successful
+rejoin. The previous epoch is revoked before the new upstream stream may
+publish; any late read, response, or notification from a stale epoch is
+dropped at the actor boundary.
+
+There is never an established normal stream plus a temporary atomic stream,
+never overlapping upstream subscriptions for one source/thread, and no
+sequence-, identity-, or content-based merge/deduplication between streams.
+Concurrent same-thread reads are serialized by the actor. Cancellation at any
+point must leave the canonical feed publishable and must either complete or
+withdraw the downstream hydration capture without stranding buffered
+notifications. Actor shutdown closes its canonical connection only after the
+last downstream owner and in-flight command are gone.
+
+The actor may use its own per-thread state while performing network I/O. It
+must never hold the global Hub lock, relay-map lock, Task 8
+deletion/ownership lock, or another unrelated/global lock across connection,
+initialize, snapshot, recovery, or shutdown I/O. Independent thread actors
+must continue to accept notifications and complete snapshots while one actor's
+network operation is blocked. Target acquisition and publication still obey
+the irrevocable Task 8 deletion fence.
 
 Every v2 thread notification carries authoritative `threadId` and `ref`,
 including `turn/completed`. Turn and item identities are scoped to that thread;
@@ -607,8 +658,10 @@ contract.
 
 `replaceSubscription: true` performs the swap in the same serialized operation.
 There is no interval in which neither the old nor the new subscription owns
-events. A late response or notification from a superseded connection or
-hydration generation cannot publish over the current model.
+events. At the Hub, this replaces downstream relay ownership only; it does not
+replace the actor's canonical upstream stream. A late response or notification
+from a superseded connection epoch or hydration generation cannot publish over
+the current model.
 
 The existing `serf/thread/resync` hint continues to request this operation
 after a Hub-to-daemon relay recovers. A failed rejoin retries with reconnect
