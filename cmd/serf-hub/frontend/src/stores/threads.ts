@@ -43,6 +43,7 @@ import {
   type MutationRecoveryRecord,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { createSecureUUID } from "./secureUUID";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
@@ -586,7 +587,7 @@ function attachmentBlob(attachment: InputAttachment): Blob {
 
 function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
   return (attachments ?? []).map((attachment) => ({
-    presentationId: crypto.randomUUID(),
+    presentationId: createSecureUUID(),
     name: attachment.name ?? "attachment",
     mediaType: attachment.mediaType,
     blob: attachmentBlob(attachment),

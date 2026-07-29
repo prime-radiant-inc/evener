@@ -7,6 +7,7 @@ import type {
   MutationRecoveryRecord,
   RecoveryResendTarget,
 } from "./mutationOutbox";
+import { createSecureUUID } from "./secureUUID";
 
 type MutationOutboxOperation =
   | "enqueueIntent"
@@ -81,8 +82,8 @@ export class MutationOutboxIndexedDB {
     if (!factory) throw new Error("IndexedDB is unavailable");
     this.#indexedDB = factory;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
-    this.#createMutationId = options.createMutationId ?? (() => crypto.randomUUID());
-    this.#createPresentationId = options.createPresentationId ?? (() => crypto.randomUUID());
+    this.#createMutationId = options.createMutationId ?? createSecureUUID;
+    this.#createPresentationId = options.createPresentationId ?? createSecureUUID;
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
   }
