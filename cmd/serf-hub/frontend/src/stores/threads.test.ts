@@ -400,14 +400,75 @@ describe("useThreadsStore.ensureThread", () => {
       method: "item/agentMessage/delta" as const,
       params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "ha" },
     };
+    replacementRead.resolve?.({ thread: { ...snapshot.thread, name: "replacement" } });
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.name === "replacement");
     fake.emitNotification(delta);
     fake.emitNotification(delta);
-    replacementRead.resolve?.(snapshot);
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText !== undefined);
 
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.turns[0]?.items[0]?.pendingText?.join("")).toBe("haha");
     expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(2);
+  });
+
+  test("a targeted resync does not replay a pre-response delta already represented by its snapshot", async () => {
+    const fake = connectFakeClient();
+    const initial = readResponse("ref_a", {
+      status: { type: "active", activeFlags: ["streaming"] },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    });
+    const replacement = readResponse("ref_a", {
+      status: { type: "active", activeFlags: ["streaming"] },
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "included", status: "inProgress" }],
+        },
+      ],
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    });
+    let resolveReplacement: ((response: ThreadReadResponse) => void) | undefined;
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return initial;
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveReplacement = resolve;
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushUntil(() => resolveReplacement !== undefined);
+    fake.emitNotification({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        itemId: "item_1",
+        delta: "included",
+      },
+    });
+    resolveReplacement?.(replacement);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.text === "included");
+
+    const item = threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0];
+    expect(item?.text).toBe("included");
+    expect(item?.pendingText).toBeUndefined();
   });
 
   test("a thread resync supersedes an initial same-epoch open hydration", async () => {

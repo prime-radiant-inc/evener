@@ -502,9 +502,16 @@ interface ThreadHydration {
   response: ThreadReadResponse;
 }
 
-async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: number): Promise<ThreadHydration> {
+async function hydrateAndSubscribe(
+  client: AppwireClientLike,
+  ref: string,
+  now: number,
+  pending: PendingThreadHydration,
+): Promise<ThreadHydration> {
   const response: ThreadReadResponse = await client.request("thread/read", readParams(ref));
-  return { model: hydrateThread(response, ref, now), response };
+  const model = hydrateThread(response, ref, now);
+  applyHydrationResponseCut(pending, ref, model);
+  return { model, response };
 }
 
 // watchReadParams mirrors readParams but defaults includeTurns:false - a
@@ -528,10 +535,13 @@ async function hydrateAndSubscribeWatch(
   client: AppwireClientLike,
   ref: string,
   now: number,
+  pending: PendingThreadHydration,
   includeTurns = false,
 ): Promise<ThreadModel> {
   const resp: ThreadReadResponse = await client.request("thread/read", watchReadParams(ref, includeTurns));
-  return hydrateThread(resp, ref, now);
+  const model = hydrateThread(resp, ref, now);
+  applyHydrationResponseCut(pending, ref, model);
+  return model;
 }
 
 // Older-turn paging (loadOlderTurns): same 30-turn page size as the legacy
@@ -683,6 +693,24 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
       .filter((clientMutationId): clientMutationId is string => Boolean(clientMutationId));
   }
   return [];
+}
+
+function isAppendOnlyDelta(n: AnyNotification): boolean {
+  return (
+    n.method === "item/agentMessage/delta" ||
+    n.method === "item/reasoning/summaryTextDelta" ||
+    n.method === "item/toolOutput/delta"
+  );
+}
+
+function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
+  // AppWire orders the matching response at the authoritative snapshot cut.
+  // Append-only chunks observed before it are already represented by this
+  // model and cannot be replayed safely. Stable-identity/full-state records
+  // remain replayable so a defensive stale snapshot still converges.
+  pending.notifications = pending.notifications.filter((notification) => !isAppendOnlyDelta(notification));
+  pending.routing = pendingHydrationRouting(ref, model);
+  for (const notification of pending.notifications) advancePendingHydrationRouting(notification, pending);
 }
 
 function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydration): boolean {
@@ -1035,7 +1063,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
       if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
       const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
       transferPendingHydration(previous, pending);
-      const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((result) => {
+      const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
         if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
         return publishAndReconcileThreadHydration(ref, pending, result);
       });
@@ -1077,7 +1105,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
       const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
       transferPendingHydration(previous, pending);
       const includeTurns = watchIncludeTurns.get(ref) ?? false;
-      const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), includeTurns).then((model) => {
+      const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) => {
         if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
         return publishWatchedHydration(ref, pending, model, includeTurns, generation);
       });
@@ -1235,7 +1263,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         threadsStore.getState().threads.get(ref),
         hydrationEpoch,
       );
-      const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now())
+      const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now(), pending)
         .then((result) => publishAndReconcileThreadHydration(ref, pending, result))
         .finally(() => {
           if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
@@ -1386,7 +1414,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         threadsStore.getState().watchedThreads.get(ref),
         hydrationEpoch,
       );
-      const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), needTurns)
+      const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), pending, needTurns)
         .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
         .finally(() => {
           if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);

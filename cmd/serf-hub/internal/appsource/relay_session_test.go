@@ -860,6 +860,72 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 	}
 }
 
+func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	listenCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deliveries, err := lease.Listen(listenCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initial := readRelayAsync(context.Background(), lease, params)
+	initialCall := <-daemon.reads
+	initialCall.transport.recv <- appwire.ResponseMessage(initialCall.request.ID, relaySnapshot("thread-1", "initial"))
+	initialResult := <-initial
+	if initialResult.err != nil {
+		t.Fatal(initialResult.err)
+	}
+	if !initialResult.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+
+	if err := initialCall.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstRecovery := <-daemon.reads
+	firstRecovery.transport.recv <- appwire.ResponseMessage(
+		firstRecovery.request.ID,
+		relaySnapshot("thread-1", "first recovery"),
+	)
+	firstResync := <-deliveries
+	if firstResync.Notification.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("first recovery delivery method = %q, want %q", firstResync.Notification.Method, appwire.NotifySerfThreadResync)
+	}
+
+	lease.session.mu.Lock()
+	firstRecoveryEpoch := lease.session.connection.epoch
+	lease.session.mu.Unlock()
+	lease.session.disconnect(firstRecoveryEpoch)
+	firstResync.Acknowledge()
+
+	successor := <-daemon.reads
+	successor.transport.recv <- appwire.ResponseMessage(
+		successor.request.ID,
+		relaySnapshot("thread-1", "successor recovery"),
+	)
+	successorResync := <-deliveries
+	if successorResync.Notification.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("successor recovery delivery method = %q, want %q", successorResync.Notification.Method, appwire.NotifySerfThreadResync)
+	}
+	successorResync.Acknowledge()
+	successor.transport.recv <- appwire.Message{
+		Notification: notificationPointer(relayDelta("thread-1", "live after successor")),
+	}
+	live := <-deliveries
+	if got := decodeRelayDelta(t, live.Notification); got != "live after successor" {
+		t.Fatalf("successor live delta = %q", got)
+	}
+	live.Acknowledge()
+}
+
 func notificationPointer(notification appwire.Notification) *appwire.Notification {
 	return &notification
 }

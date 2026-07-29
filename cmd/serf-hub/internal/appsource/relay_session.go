@@ -407,11 +407,19 @@ func (s *relaySession) recoverCanonicalFeed() {
 				Ref:      result.Response.Thread.Serf.Ref,
 			}).Notification
 			if s.publishAndWait(resync) {
-				result.Handoff.Abort()
+				handoffResolved := result.Handoff.Abort()
 				s.mu.Lock()
-				s.recovering = false
+				live := handoffResolved &&
+					s.connection != nil &&
+					!s.connection.disconnected
+				if live {
+					s.recovering = false
+				}
 				s.mu.Unlock()
-				return
+				if live {
+					return
+				}
+				continue
 			}
 			result.Handoff.Abort()
 		}
