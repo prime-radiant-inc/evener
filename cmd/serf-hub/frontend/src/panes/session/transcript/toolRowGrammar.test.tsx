@@ -11,7 +11,7 @@ import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
-import { registerToolRenderer } from "./toolRenderers";
+import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
 // (its failed()/detail() hooks are the whole point of A2), so this file has to
 // register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
@@ -343,9 +343,9 @@ test("the exit code is reachable WITHOUT a mouse - via the raw output's own trai
   expect(screen.queryByTestId("tool-call-detail")).toBe(null);
 });
 
-// --- the kind icon: a per-family glyph leads the row ------------------------
+// --- the kind icon: a per-family glyph rides the tool-use line --------------
 
-test("a descriptor with an icon leads the row with the kind glyph, ahead of the purpose", () => {
+test("a descriptor with an icon rides it INLINE at the start of the tool-use line, not the rationale line", () => {
   registerToolRenderer({ match: "trg_icon", summary: () => "Ran ls", icon: "terminal" });
   render(
     <ToolCallItem
@@ -354,19 +354,26 @@ test("a descriptor with an icon leads the row with the kind glyph, ahead of the 
       live={false}
     />,
   );
-  const row = screen.getByTestId("tool-row");
-  const icon = screen.getByTestId("tool-row-icon");
   const purpose = screen.getByTestId("tool-row-purpose");
-  const children = Array.from(row.querySelectorAll("[data-testid]"));
-  expect(children.indexOf(icon)).toBeLessThan(children.indexOf(purpose));
-  expect(row.getAttribute("data-icon")).toBe("true");
+  const summary = screen.getByTestId("tool-row-summary");
+  const icon = screen.getByTestId("tool-row-icon");
+  expect(summary.contains(icon)).toBe(true);
+  expect(purpose.contains(icon)).toBe(false);
+  expect(summary.firstElementChild).toBe(icon);
 });
 
-test("a descriptor WITHOUT an icon renders no icon element and no gutter - the icon-less grammar is unchanged", () => {
+test("a summary-less row (a delegate's purpose-only row) rides the icon on the purpose line instead", () => {
+  render(<ToolRow summary="" purpose="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />);
+  const purpose = screen.getByTestId("tool-row-purpose");
+  const icon = screen.getByTestId("tool-row-icon");
+  expect(purpose.contains(icon)).toBe(true);
+  expect(purpose.firstElementChild).toBe(icon);
+});
+
+test("a descriptor WITHOUT an icon renders no icon element - the icon-less grammar is unchanged", () => {
   registerToolRenderer({ match: "trg_no_icon", summary: () => "Ran ls" });
   render(<ToolCallItem item={item({ toolName: "trg_no_icon" })} turn={turn} live={false} />);
   expect(screen.queryByTestId("tool-row-icon")).toBe(null);
-  expect(screen.getByTestId("tool-row").getAttribute("data-icon")).toBe(null);
 });
 
 test("an unregistered tool - every MCP tool - inherits the default descriptor's generic wrench", () => {
@@ -380,21 +387,38 @@ test("the kind icon is decorative - the row's text already names the action", ()
   expect(icon.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("the icon is pinned to the row's first line, not baseline-drifting with the wrap", () => {
+test("the icon is inline with the tool-use text - no outdented gutter, no reserved column", () => {
   const css = rowCss();
-  const iconRule = css.match(/\.icon\s*\{([^}]*)\}/);
+  const iconRule = css.match(/\.summaryIcon\s*\{([^}]*)\}/);
   expect(iconRule).not.toBe(null);
-  expect(iconRule?.[1]).toContain("align-self: flex-start");
-  expect(iconRule?.[1]).toContain("height: 1lh");
+  expect(iconRule?.[1]).toContain("display: inline-flex");
+  expect(iconRule?.[1]).toContain("vertical-align: middle");
+  // The retired gutter grammar (a data-icon row attribute driving an indent
+  // override) is gone entirely.
+  expect(css).not.toContain("data-icon");
 });
 
-test("with an icon leading, line 2 indents under line 1's TEXT - and the indent comes out of the flex basis", () => {
+// --- the summary face: sans by default, fixed-width for shell only ----------
+
+test("the summary face is proportional by default - fixed-width is reserved for shell commands", () => {
   const css = rowCss();
-  const indentRule = css.match(/\.row\[data-icon="true"\]\s+\.demoted\s*\{([^}]*)\}/);
-  expect(indentRule).not.toBe(null);
-  // margin-left alone would push basis-100% past the row's right edge.
-  expect(indentRule?.[1]).toContain("margin-left: calc(14px + var(--space-2))");
-  expect(indentRule?.[1]).toContain("flex-basis: calc(100% - 14px - var(--space-2))");
+  const summaryRule = css.match(/\.summary\s*\{([^}]*)\}/);
+  expect(summaryRule).not.toBe(null);
+  expect(summaryRule?.[1]).toContain("font-family: var(--font-sans)");
+  expect(summaryRule?.[1]).not.toContain("--font-mono");
+  const monoRule = css.match(/\.mono\s*\{([^}]*)\}/);
+  expect(monoRule).not.toBe(null);
+  expect(monoRule?.[1]).toContain("font-family: var(--font-mono)");
+});
+
+test("a descriptor's monoSummary flag puts its summary in fixed-width - shell's command line opts in", () => {
+  render(<ToolRow summary="Ran false" monoSummary failed={false} expandable={false} expanded={false} />);
+  const withMono = screen.getByTestId("tool-row-summary");
+  cleanup();
+  render(<ToolRow summary="Read src/app.ts" failed={false} expandable={false} expanded={false} />);
+  const withoutMono = screen.getByTestId("tool-row-summary");
+  expect(withMono.className).not.toBe(withoutMono.className);
+  expect(toolRendererFor("shell").monoSummary).toBe(true);
 });
 
 // --- A3: the row looks clickable ------------------------------------------

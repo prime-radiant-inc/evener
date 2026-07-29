@@ -26,13 +26,17 @@ export interface ToolRenderProps {
 export interface ToolRendererDescriptor {
   match: string | ((toolName: string) => boolean); // exact name or predicate (job_* family)
   summary(item: ItemModel): string; // one-line purpose-first summary
-  // The tool-FAMILY glyph the row leads with (widgets/toolicon), so the kind
-  // of work - shell vs file read vs edit vs web - is scannable down a run of
-  // calls without reading the summary text. Optional: a descriptor without
-  // one renders no icon (ToolRow's icon-less grammar), and every unregistered
-  // tool - including every MCP tool - inherits the DEFAULT_DESCRIPTOR's
-  // generic wrench.
+  // The tool-FAMILY glyph riding inline at the start of the row's tool-use
+  // line (widgets/toolicon), so the kind of work - shell vs file read vs
+  // edit vs web - is scannable down a run of calls without reading the
+  // summary text. Optional: a descriptor without one renders no icon, and
+  // every unregistered tool - including every MCP tool - inherits the
+  // DEFAULT_DESCRIPTOR's generic wrench.
   icon?: ToolIconKind;
+  // Fixed-width summary text. The summary face is sans by default (Jesse's
+  // review call: fixed-width everywhere made every tool read like a
+  // terminal); shell opts in because its summary IS a command.
+  monoSummary?: boolean;
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one

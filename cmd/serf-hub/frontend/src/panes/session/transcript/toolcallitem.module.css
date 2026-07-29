@@ -71,18 +71,27 @@ summary.row:focus-visible {
   overflow-wrap: anywhere;
 }
 
-/* verb + target + meta, the descriptor's own summary() string: machine text,
- * so mono. flex-basis 0 for the same reason .purpose has it - see there.
- * overflow-wrap:anywhere serves the purpose-less one-line case; with a
- * purpose present the .demoted override below replaces it with nowrap +
- * ellipsis on the second line. */
+/* verb + target + meta, the descriptor's own summary() string: the sans
+ * face (Jesse's review call - fixed-width everywhere made every tool read
+ * like a terminal; mono is now reserved for shell, whose summary IS a
+ * command - see .mono). flex-basis 0 for the same reason .purpose has it -
+ * see there. overflow-wrap:anywhere serves the purpose-less one-line case;
+ * with a purpose present the .demoted override below replaces it with
+ * nowrap + the middle-truncation split on the second line. */
 .summary {
   flex: 1 1 0;
   min-width: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   overflow-wrap: anywhere;
+}
+
+/* The one fixed-width summary: shell's own command line (the descriptor's
+ * monoSummary flag). A command IS machine text in a way "Read src/app.ts"
+ * is not, so shell alone keeps the mono face. */
+.mono {
+  font-family: var(--font-mono);
 }
 
 .status {
@@ -92,22 +101,20 @@ summary.row:focus-visible {
   gap: var(--space-1);
 }
 
-/* The tool-KIND glyph leading the row (ToolRow's icon prop). Unlike the
- * chevron - which rides inline because it belongs to the words it opens -
- * the icon belongs to the ROW, so it is a flex item pinned to the first
- * line: 1lh tall with the svg centred in that height, align-self flex-start
- * against the row's baseline alignment. The 1lh wrapper is safe here (no
- * rotation - contrast the chevron's own warning about turning a non-square
- * wrapper).
- *
- * --ink-mid: a scannability aid, not the row's headline, so it takes the
- * summary's ink rather than the purpose's full-contrast one. */
-.icon {
-  flex: none;
-  align-self: flex-start;
-  height: 1lh;
+/* The tool-KIND glyph, riding INLINE at the START of the tool-use line
+ * (ToolRow's icon prop - Jesse's review call: with the call, not the
+ * rationale, and inline rather than outdented). Same inline idiom as the
+ * chevron: an inline-level box in the text flow in the plain cases, and
+ * simply the first flex item in the collapsed middle-truncation line (which
+ * is a flex row of its own) - align-self/flex cover that context,
+ * vertical-align the inline one. --ink-mid: a scannability aid, not the
+ * row's headline, matching the summary text it precedes. */
+.summaryIcon {
   display: inline-flex;
-  align-items: center;
+  vertical-align: middle;
+  align-self: center;
+  flex: none;
+  margin-right: var(--space-2);
   color: var(--ink-mid);
 }
 
@@ -130,18 +137,6 @@ summary.row:focus-visible {
   order: 1;
   flex: 0 0 100%;
   color: var(--ink-mid);
-}
-
-/* With a kind icon leading, line 2's demoted summary indents to align under
- * line 1's TEXT rather than under the icon, so the two text columns share a
- * left edge. The indent comes OUT of the flex basis (margin + basis = 100%),
- * otherwise basis 100% plus a margin overflows the row. The 14px is
- * ToolIcon's default box edge (widgets/toolicon's DEFAULT_SIZE); if the icon
- * size ever changes, this goes with it. Placed AFTER the plain .demoted rule
- * so the file reads base-first, override-second. */
-.row[data-icon="true"] .demoted {
-  flex-basis: calc(100% - 14px - var(--space-2));
-  margin-left: calc(14px + var(--space-2));
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
@@ -203,8 +198,7 @@ summary.row:focus-visible {
  *
  * vertical-align splits the difference between the icon's 14px box and the
  * text line's height: `middle` seats it on the x-height centre rather than
- * the baseline, which reads level beside both the purpose's sans and the
- * summary's mono. */
+ * the baseline, which reads level beside either line's text. */
 .chevron {
   display: inline-flex;
   vertical-align: middle;

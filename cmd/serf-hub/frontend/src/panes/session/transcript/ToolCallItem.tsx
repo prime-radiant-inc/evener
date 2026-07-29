@@ -214,6 +214,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           summary={isDelegate ? "" : summary}
           purpose={purpose}
           icon={descriptor.icon}
+          monoSummary={descriptor.monoSummary}
           failed={false}
           status={delegateStatus}
           expandable={false}
@@ -242,6 +243,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         summary={isDelegate ? "" : summary}
         purpose={purpose}
         icon={descriptor.icon}
+        monoSummary={descriptor.monoSummary}
         failed={failed}
         status={delegateStatus}
         expandable

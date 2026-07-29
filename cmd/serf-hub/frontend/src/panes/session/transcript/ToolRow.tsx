@@ -5,19 +5,22 @@
 //
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
-//     line 1: [✗ failure glyph?] [kind icon?] [status?] purpose[chevron inline] [affordances]
-//     line 2: verb target [· meta]   (indented to align under line 1's text
-//                                     when a kind icon leads - see .icon in
-//                                     toolcallitem.module.css)
+//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline] [affordances]
+//     line 2: [kind icon inline] verb target [· meta]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
 //   being merged - and the full text on the hover title); EXPANDED it wraps
 //   in full, so an open row always shows the whole call.
 //
+//   - the kind icon rides INLINE at the START of the tool-use line (Jesse's
+//     review call: the icon belongs with the call, not with the rationale,
+//     and inline rather than outdented in a gutter). A row with no summary
+//     text at all (a delegate's purpose-only row) rides it inline at the
+//     start of the purpose line instead, so every row keeps its glyph;
 //   - a COLLAPSED row with both a purpose and a summary STACKS them: the
 //     purpose (the agent's stated rationale, italic) on the first line, the
-//     verb/target summary demoted to a quiet mono second line (truncation
+//     verb/target summary demoted to a quiet second line (truncation
 //     per above). Composing both onto one line was tried (tiered density)
 //     and reverted on review: two clamped, truncated fragments read worse
 //     than one full line plus one clamped one.
@@ -31,7 +34,9 @@
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the purpose is the agent's own stated reason for the call
 //     (ItemModel.description) and LEADS the text, because it is the one part
-//     written for a human; verb/target recede to a quiet mono line under it;
+//     written for a human; verb/target recede to a quiet line under it, in
+//     the same sans face - fixed-width is reserved for shell, whose summary
+//     IS a command (descriptor monoSummary);
 //   - verb/target/meta are one string the descriptor's summary() produced;
 //   - affordances are trailing controls (e.g. "Open beside").
 //
@@ -46,8 +51,9 @@ const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
+  mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
-  icon: requireClass(styles.icon, "toolcallitem.module.css", "icon"),
+  summaryIcon: requireClass(styles.summaryIcon, "toolcallitem.module.css", "summaryIcon"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
@@ -61,9 +67,14 @@ export interface ToolRowProps {
   /** The agent's stated reason for the call (ItemModel.description). Blank or
    * absent renders nothing at all — no placeholder, no empty separator. */
   purpose?: string;
-  /** The tool-FAMILY glyph leading the row (the descriptor's `icon` field).
-   * Absent renders no icon and no reserved gutter. */
+  /** The tool-FAMILY glyph, riding inline at the start of the tool-use line
+   * (the descriptor's `icon` field); a summary-less row rides it on the
+   * purpose line instead. Absent renders no icon. */
   icon?: ToolIconKind;
+  /** Fixed-width summary text (shell, whose summary IS a command). Default
+   * is the sans face - Jesse's review call: fixed-width everywhere made
+   * every tool read like a terminal. */
+  monoSummary?: boolean;
   failed: boolean;
   expandable: boolean;
   expanded: boolean;
@@ -105,6 +116,7 @@ export function ToolRow({
   summary,
   purpose,
   icon,
+  monoSummary,
   failed,
   expandable,
   expanded,
@@ -130,6 +142,18 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
+  // The kind icon rides INLINE at the START of the tool-use line (see the
+  // grammar above): the first child of the summary, the same inline idiom as
+  // the chevron - in the collapsed middle-truncation line (a flex row of its
+  // own) that makes it simply the first flex item, in every other case an
+  // inline box in the text flow. A row with no summary text at all rides it
+  // on the purpose line instead, so the glyph is never dropped.
+  const iconNode =
+    icon !== undefined ? (
+      <span className={CLASS.summaryIcon} data-testid="tool-row-icon" aria-hidden="true">
+        <ToolIcon kind={icon} />
+      </span>
+    ) : null;
   const content = (
     <>
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.
@@ -139,16 +163,6 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failed && <FailureGlyph />}
-      {icon !== undefined && (
-        // The kind glyph LEADS the row's text: a flex item pinned to the
-        // first line (1lh, align-self flex-start - see .icon in the css),
-        // unlike the chevron which rides inline because it belongs to the
-        // words it opens. The icon belongs to the ROW, not to any phrase in
-        // it, so it must not drift with the wrap.
-        <span className={CLASS.icon} data-testid="tool-row-icon" aria-hidden="true">
-          <ToolIcon kind={icon} />
-        </span>
-      )}
       {status !== undefined && (
         <span className={CLASS.status} data-testid="tool-row-status">
           {status}
@@ -156,20 +170,22 @@ export function ToolRow({
       )}
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
+          {!hasSummary && iconNode}
           {statedPurpose}
           {chevron}
         </span>
       )}
       {hasSummary && (
         <span
-          className={
-            hasPurpose ? `${CLASS.summary} ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : CLASS.summary
-          }
+          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
+            hasPurpose ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+          }`}
           data-testid="tool-row-summary"
           title={hasPurpose ? summary : undefined}
         >
           {hasPurpose && !expanded ? (
             <>
+              {iconNode}
               <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
                 {middleSplit(summary)[0]}
               </span>
@@ -178,7 +194,10 @@ export function ToolRow({
               </span>
             </>
           ) : (
-            summary
+            <>
+              {iconNode}
+              {summary}
+            </>
           )}
           {!hasPurpose && chevron}
         </span>
@@ -194,7 +213,6 @@ export function ToolRow({
         className={CLASS.row}
         data-testid="tool-row"
         data-purpose={hasPurpose ? "true" : undefined}
-        data-icon={icon !== undefined ? "true" : undefined}
         title={title}
       >
         {content}
@@ -218,7 +236,6 @@ export function ToolRow({
       className={CLASS.row}
       data-testid="tool-row"
       data-purpose={hasPurpose ? "true" : undefined}
-      data-icon={icon !== undefined ? "true" : undefined}
       title={title}
       aria-expanded={expanded}
       onClick={(e) => {
