@@ -23,7 +23,9 @@ deterministic sparse test readers, existing Unix target-file locking.
 
 - The API log is forensic evidence, not session replay state.
 - Open-time recovery validates the append boundary and possible torn tail, not
-  every historical record; explicit readers validate every record they consume.
+  every historical record. `serf doctor` owns explicit whole-history structural
+  validation under follow-up kata `7x84`; this slice does not implement it.
+- Other explicit API-log readers validate every record they consume.
 - Recovery work is bounded by the 128 MiB canonical record limit and is
   independent of total historical file size.
 - A corrupt, unsupported, oversized, or missing boundary fails closed without
