@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1131,6 +1132,145 @@ func TestCodexPartialReadDoesNotPopulateAuthoritativeCache(t *testing.T) {
 	}
 	if got := readCount.Load(); got != 2 {
 		t.Fatalf("upstream reads=%d, want partial and full reads", got)
+	}
+}
+
+func TestCodexCachedThreadReadOwnsNestedState(t *testing.T) {
+	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	source.cache["th_codex"] = appwire.Thread{
+		ID:     "th_codex",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive, ActiveFlags: []string{"streaming"}},
+		Turns: []appwire.Turn{{
+			ID:    "turn_codex",
+			Error: &appwire.TurnError{CodexErrorInfo: json.RawMessage(`{"kind":"provider"}`)},
+			Items: []appwire.ThreadItem{{
+				ID:   "message_1",
+				Type: "userMessage",
+				Text: "original",
+				Raw:  json.RawMessage(`{"type":"userMessage"}`),
+				Images: []appwire.InputItem{{
+					Type:     "input_image",
+					Data:     []byte("image"),
+					Metadata: map[string]string{"source": "codex"},
+				}},
+			}},
+		}},
+	}
+
+	first, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+	})
+	if err != nil {
+		t.Fatalf("first ReadThread: %v", err)
+	}
+	first.Thread.Status.ActiveFlags[0] = "mutated"
+	first.Thread.Turns[0].Error.CodexErrorInfo.(json.RawMessage)[0] = '['
+	first.Thread.Turns[0].Items[0].Text = "mutated"
+	first.Thread.Turns[0].Items[0].Raw[0] = '['
+	first.Thread.Turns[0].Items[0].Images[0].Data[0] = 'X'
+	first.Thread.Turns[0].Items[0].Images[0].Metadata["source"] = "mutated"
+	first.Thread.Turns[0].Items[0].OutputImages = append(
+		first.Thread.Turns[0].Items[0].OutputImages,
+		appwire.OutputImage{Source: "file", URL: "/api/output-image"},
+	)
+
+	second, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+	})
+	if err != nil {
+		t.Fatalf("second ReadThread: %v", err)
+	}
+	if got := second.Thread.Status.ActiveFlags[0]; got != "streaming" {
+		t.Errorf("cached active flag=%q, want streaming", got)
+	}
+	if got := string(second.Thread.Turns[0].Error.CodexErrorInfo.(json.RawMessage)); got != `{"kind":"provider"}` {
+		t.Errorf("cached Codex error info=%q", got)
+	}
+	item := second.Thread.Turns[0].Items[0]
+	if item.Text != "original" {
+		t.Errorf("cached item text=%q, want original", item.Text)
+	}
+	if got := string(item.Raw); got != `{"type":"userMessage"}` {
+		t.Errorf("cached item raw=%q", got)
+	}
+	if got := string(item.Images[0].Data); got != "image" {
+		t.Errorf("cached image data=%q, want image", got)
+	}
+	if got := item.Images[0].Metadata["source"]; got != "codex" {
+		t.Errorf("cached image metadata source=%q, want codex", got)
+	}
+	if len(item.OutputImages) != 0 {
+		t.Errorf("cached output images=%+v, want none", item.OutputImages)
+	}
+
+	withoutTurns, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ReadThread without turns: %v", err)
+	}
+	if withoutTurns.Thread.Turns != nil {
+		t.Fatalf("turns=%+v, want nil when IncludeTurns is false", withoutTurns.Thread.Turns)
+	}
+	withoutTurns.Thread.Status.ActiveFlags[0] = "mutated again"
+	final, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("final ReadThread: %v", err)
+	}
+	if got := final.Thread.Status.ActiveFlags[0]; got != "streaming" {
+		t.Errorf("cached active flag after turnless read=%q, want streaming", got)
+	}
+}
+
+func TestCodexCachedThreadConcurrentReadersDoNotShareWritableItems(t *testing.T) {
+	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	source.cache["th_codex"] = appwire.Thread{
+		ID: "th_codex",
+		Turns: []appwire.Turn{{
+			ID: "turn_codex",
+			Items: []appwire.ThreadItem{{
+				ID:   "message_1",
+				Type: "agentMessage",
+				Text: "original",
+			}},
+		}},
+	}
+
+	read := func() appwire.Thread {
+		t.Helper()
+		resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{
+			Ref:          "codex:th_codex",
+			IncludeTurns: true,
+		})
+		if err != nil {
+			t.Fatalf("ReadThread: %v", err)
+		}
+		return resp.Thread
+	}
+	first := read()
+	second := read()
+
+	start := make(chan struct{})
+	var writers sync.WaitGroup
+	for _, mutation := range []struct {
+		thread *appwire.Thread
+		text   string
+	}{
+		{thread: &first, text: "first"},
+		{thread: &second, text: "second"},
+	} {
+		writers.Go(func() {
+			<-start
+			for range 1_000 {
+				mutation.thread.Turns[0].Items[0].Text = mutation.text
+			}
+		})
+	}
+	close(start)
+	writers.Wait()
+
+	if got := read().Turns[0].Items[0].Text; got != "original" {
+		t.Fatalf("cached item text=%q after concurrent readers, want original", got)
 	}
 }
 

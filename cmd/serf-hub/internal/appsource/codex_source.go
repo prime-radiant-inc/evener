@@ -99,10 +99,9 @@ func (s *CodexSource) ReadThread(ctx context.Context, params appwire.ThreadReadP
 		return appwire.ThreadReadResponse{}, err
 	}
 	if thread, ok := s.cachedThread(threadID); ok {
-		if !params.IncludeTurns {
-			thread.Turns = nil
-		}
-		return appwire.ThreadReadResponse{Thread: thread}, nil
+		return appwire.ThreadReadResponse{
+			Thread: cloneCodexCachedThread(thread, params.IncludeTurns),
+		}, nil
 	}
 	thread, err := s.readMappedThread(ctx, threadID, params.IncludeTurns, params.ItemsView)
 	if err != nil {
