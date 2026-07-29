@@ -381,6 +381,70 @@ func TestWithAdvertisedModelInfo_ExactAdvertisedConfigWins(t *testing.T) {
 	}
 }
 
+func TestWithAdvertisedModelInfo_ThreeCasingChainPreservesConfig(t *testing.T) {
+	reasoningOff := false
+	models := map[string]providercfg.ModelConfig{
+		"gpt-5.3": {
+			ContextWindow: 65_432,
+			Reasoning:     &reasoningOff,
+		},
+	}
+	base := newOpenAICompatProfile("openai-compatible", "GPT-5.3", 0, models)
+	base = WithAllowedDecisions(base, []string{"keep_config"})
+	wantCommunicate := *findToolDef(base, "communicate")
+	conflictingLive := llm.ModelInfo{
+		ID:                    "GpT-5.3",
+		ContextWindow:         808_006,
+		SupportsReasoning:     true,
+		ReasoningEffortLevels: []string{"low", "high"},
+	}
+
+	advertised := base.WithAdvertisedModelInfo(conflictingLive)
+	switchedBack := advertised.WithModel("gpt-5.3").WithLiveModelInfo(conflictingLive)
+	for name, got := range map[string]*Profile{
+		"advertised":    advertised,
+		"switched back": switchedBack,
+	} {
+		if got.ContextWindowSize() != 65_432 {
+			t.Errorf("%s ContextWindowSize = %d, want configured 65432", name, got.ContextWindowSize())
+		}
+		if got.SupportsReasoning() {
+			t.Errorf("%s SupportsReasoning = true, want configured reasoning=false", name)
+		}
+		if !got.EffortLevelsConfigured() {
+			t.Errorf("%s EffortLevelsConfigured = false, want configured reasoning retained", name)
+		}
+		if communicate := findToolDef(got, "communicate"); communicate == nil {
+			t.Errorf("%s communicate definition missing", name)
+		} else if !reflect.DeepEqual(*communicate, wantCommunicate) {
+			t.Errorf("%s communicate override changed", name)
+		}
+	}
+	if advertised.Model() != "GpT-5.3" {
+		t.Errorf("advertised Model = %q, want concrete wire ID GpT-5.3", advertised.Model())
+	}
+	if switchedBack.Model() != "gpt-5.3" {
+		t.Errorf("switched-back Model = %q, want gpt-5.3", switchedBack.Model())
+	}
+	if base.Model() != "GPT-5.3" || base.ContextWindowSize() != 65_432 || base.SupportsReasoning() {
+		t.Errorf(
+			"WithAdvertisedModelInfo mutated base: model=%q context=%d reasoning=%t",
+			base.Model(),
+			base.ContextWindowSize(),
+			base.SupportsReasoning(),
+		)
+	}
+	if len(models) != 1 {
+		t.Errorf("input model map size = %d, want 1", len(models))
+	}
+	if _, exists := models["GPT-5.3"]; exists {
+		t.Error("constructor materialization mutated input map with GPT-5.3")
+	}
+	if _, exists := models["GpT-5.3"]; exists {
+		t.Error("advertised materialization mutated input map with GpT-5.3")
+	}
+}
+
 func TestResolveProfileFromConfig_PassesInstanceModels(t *testing.T) {
 	cfg := providercfg.Config{
 		Default: "lunaroute",

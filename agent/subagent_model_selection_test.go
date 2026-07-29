@@ -396,7 +396,7 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 	adapter := &pluginModelListAdapter{
 		fakeAdapter: fakeAdapter{name: "work"},
 		models: []llm.ModelInfo{{
-			ID:                    "GPT-5.3",
+			ID:                    "GpT-5.3",
 			ContextWindow:         808_006,
 			SupportsReasoning:     true,
 			ReasoningEffortLevels: []string{"low", "high"},
@@ -420,8 +420,8 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 	if got.profile.ID() != "work" {
 		t.Errorf("profile ID = %q, want provider-local work", got.profile.ID())
 	}
-	if got.profile.Model() != "GPT-5.3" {
-		t.Errorf("model = %q, want advertised wire ID %q", got.profile.Model(), "GPT-5.3")
+	if got.profile.Model() != "GpT-5.3" {
+		t.Errorf("model = %q, want advertised wire ID %q", got.profile.Model(), "GpT-5.3")
 	}
 	if got.profile.ContextWindowSize() != 654_321 {
 		t.Errorf(
