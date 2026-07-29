@@ -13,9 +13,14 @@ type codexLiveThread struct {
 	close       func() error
 	closeOnce   sync.Once
 	done        chan struct{}
+	refreshCtx  context.Context
+	cancelRead  context.CancelFunc
+	refreshWake chan struct{}
 	mu          sync.Mutex
 	subscribers map[chan appwire.Notification]struct{}
 	backlog     []appwire.Notification
+	dirty       uint64
+	committed   uint64
 	retiring    bool
 	closed      bool
 	hadSub      bool
@@ -25,6 +30,26 @@ const codexLiveSubscriberBuffer = 128
 const codexLiveBacklogLimit = 4096
 
 var codexLiveNoSubscriberTimeout = 30 * time.Second
+
+func (live *codexLiveThread) markDirty() {
+	live.mu.Lock()
+	if live.closed || live.retiring {
+		live.mu.Unlock()
+		return
+	}
+	live.dirty++
+	select {
+	case live.refreshWake <- struct{}{}:
+	default:
+	}
+	live.mu.Unlock()
+}
+
+func (live *codexLiveThread) dirtyGeneration() (uint64, bool) {
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	return live.dirty, live.dirty > live.committed && !live.closed && !live.retiring
+}
 
 func (live *codexLiveThread) publish(notification appwire.Notification) {
 	live.mu.Lock()
@@ -118,6 +143,9 @@ func (live *codexLiveThread) retireIfNoSubscriber(timeout time.Duration) {
 }
 
 func (live *codexLiveThread) finish() {
+	if live.cancelRead != nil {
+		live.cancelRead()
+	}
 	live.mu.Lock()
 	if !live.closed {
 		live.closed = true

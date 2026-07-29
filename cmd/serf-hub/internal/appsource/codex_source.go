@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/coder/websocket"
 	"primeradiant.com/serf/appwire"
@@ -33,6 +34,8 @@ type CodexSource struct {
 	dial            appwireDialFunc
 	mu              sync.Mutex
 	live            map[string]*codexLiveThread
+	cache           map[string]appwire.Thread
+	waitReadRetry   func(context.Context, time.Duration) error
 }
 
 type appwireDialFunc func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error)
@@ -54,6 +57,8 @@ func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
 		client:          client,
 		dial:            defaultAppwireDial,
 		live:            map[string]*codexLiveThread{},
+		cache:           map[string]appwire.Thread{},
+		waitReadRetry:   waitCodexFullReadRetry,
 	}
 }
 
@@ -93,14 +98,33 @@ func (s *CodexSource) ReadThread(ctx context.Context, params appwire.ThreadReadP
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
-	out, err := s.readThread(ctx, threadID, params.IncludeTurns, params.ItemsView)
-	if err != nil && params.IncludeTurns && codexTurnsUnavailableBeforeFirstMessage(err) {
-		out, err = s.readThread(ctx, threadID, false, params.ItemsView)
+	if thread, ok := s.cachedThread(threadID); ok {
+		if !params.IncludeTurns {
+			thread.Turns = nil
+		}
+		return appwire.ThreadReadResponse{Thread: thread}, nil
 	}
+	thread, err := s.readMappedThread(ctx, threadID, params.IncludeTurns, params.ItemsView)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
-	return appwire.ThreadReadResponse{Thread: s.mapThread(out.Thread)}, nil
+	return appwire.ThreadReadResponse{Thread: thread}, nil
+}
+
+func (s *CodexSource) readMappedThread(
+	ctx context.Context,
+	threadID string,
+	includeTurns bool,
+	itemsView string,
+) (appwire.Thread, error) {
+	out, err := s.readThread(ctx, threadID, includeTurns, itemsView)
+	if err != nil && includeTurns && codexTurnsUnavailableBeforeFirstMessage(err) {
+		out, err = s.readThread(ctx, threadID, false, itemsView)
+	}
+	if err != nil {
+		return appwire.Thread{}, err
+	}
+	return s.mapThread(out.Thread), nil
 }
 
 // ListTurns proxies to the Codex app-server's native thread/turns/list, which
@@ -367,7 +391,9 @@ func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.Thread
 	}
 	live := s.newLiveThread(threadID, client, closeClient)
 	s.setLiveThread(threadID, live)
-	return s.subscribeLiveThread(ctx, threadID, live), nil
+	notifications := s.subscribeLiveThread(ctx, threadID, live)
+	live.markDirty()
+	return notifications, nil
 }
 
 func codexThreadResume(ctx context.Context, client *appwire.Client, threadID string, out *codexThreadResumeResponse) error {
@@ -386,13 +412,18 @@ func (s *CodexSource) liveThread(threadID string) *codexLiveThread {
 }
 
 func (s *CodexSource) newLiveThread(threadID string, client *appwire.Client, closeClient func() error) *codexLiveThread {
+	refreshCtx, cancelRead := context.WithCancel(context.Background())
 	live := &codexLiveThread{
 		client:      client,
 		close:       closeClient,
 		done:        make(chan struct{}),
+		refreshCtx:  refreshCtx,
+		cancelRead:  cancelRead,
+		refreshWake: make(chan struct{}, 1),
 		subscribers: map[chan appwire.Notification]struct{}{},
 	}
 	go s.runLiveThread(threadID, live)
+	go s.runCodexFullReadLoop(threadID, live)
 	go live.retireIfNoSubscriber(codexLiveNoSubscriberTimeout)
 	return live
 }
@@ -426,8 +457,101 @@ func (s *CodexSource) runLiveThread(threadID string, live *codexLiveThread) {
 	defer s.removeLiveThread(threadID, live)
 	defer live.retire()
 	defer live.finish()
-	for notification := range live.client.Notifications() {
-		live.publish(s.mapNotification(threadID, notification))
+	for range live.client.Notifications() {
+		live.markDirty()
+	}
+}
+
+func (s *CodexSource) runCodexFullReadLoop(threadID string, live *codexLiveThread) {
+	for {
+		select {
+		case <-live.refreshCtx.Done():
+			return
+		case <-live.refreshWake:
+		}
+		retry := 0
+		for {
+			generation, dirty := live.dirtyGeneration()
+			if !dirty {
+				break
+			}
+			thread, err := s.readMappedThread(live.refreshCtx, threadID, true, "full")
+			if err != nil {
+				retry++
+				if s.waitReadRetry(live.refreshCtx, codexFullReadRetryDelay(retry)) != nil {
+					return
+				}
+				continue
+			}
+			retry = 0
+			committed, clean := s.commitCodexFullRead(threadID, live, generation, thread)
+			if !committed {
+				return
+			}
+			live.publish(notificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+				ThreadID: threadID,
+				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String(),
+			}))
+			if clean {
+				break
+			}
+		}
+	}
+}
+
+func (s *CodexSource) commitCodexFullRead(
+	threadID string,
+	live *codexLiveThread,
+	generation uint64,
+	thread appwire.Thread,
+) (committed bool, clean bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live[threadID] != live {
+		return false, false
+	}
+	live.mu.Lock()
+	defer live.mu.Unlock()
+	if live.closed || live.retiring || generation <= live.committed || generation > live.dirty {
+		return false, false
+	}
+	s.cache[threadID] = thread
+	live.committed = generation
+	return true, live.dirty == live.committed
+}
+
+func (s *CodexSource) cachedThread(threadID string) (appwire.Thread, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	thread, ok := s.cache[threadID]
+	return thread, ok
+}
+
+func codexFullReadRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := 100 * time.Millisecond
+	for range attempt - 1 {
+		if delay >= 5*time.Second {
+			return 5 * time.Second
+		}
+		delay *= 2
+	}
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
+
+func waitCodexFullReadRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

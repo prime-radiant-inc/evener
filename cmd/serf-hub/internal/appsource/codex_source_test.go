@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -320,6 +321,14 @@ func fuzzScenarioCodexSourceStartThreadAcceptsCodexNativeInputItems(t *testing.T
 	})
 }
 
+func handleCodexRead(server *appserver.Server) {
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+}
+
 func assertCodexInputItem(t *testing.T, raw any, want map[string]any) {
 	t.Helper()
 	got, ok := raw.(map[string]any)
@@ -560,6 +569,7 @@ func fuzzScenarioCodexSourceForkThreadRejectsEditAtTurnMetadata(t *testing.T) {
 
 func fuzzScenarioCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -585,21 +595,7 @@ func fuzzScenarioCodexSourceSubscribeReusesStartedThreadConnection(t *testing.T)
 		Delta:    "hello",
 	})
 
-	select {
-	case got := <-notifications:
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("method=%q", got.Method)
-		}
-		var params appwire.AgentMessageDeltaParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("params: %v", err)
-		}
-		if params.Ref != "codex:th_codex" || params.Delta != "hello" {
-			t.Fatalf("params=%+v", params)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for notification")
-	}
+	assertResync(t, notifications)
 }
 
 func fuzzScenarioCodexSourceSubscribeTreatsNoRolloutAsIdle(t *testing.T) {
@@ -622,6 +618,7 @@ func fuzzScenarioCodexSourceSubscribeTreatsNoRolloutAsIdle(t *testing.T) {
 
 func fuzzScenarioCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -655,24 +652,7 @@ func fuzzScenarioCodexSourceStartedThreadLiveConnectionSurvivesCallerCancel(t *t
 		Delta:    "survived",
 	})
 
-	select {
-	case got, ok := <-notifications:
-		if !ok {
-			t.Fatal("live notifications closed after caller context cancellation")
-		}
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("method=%q", got.Method)
-		}
-		var params appwire.AgentMessageDeltaParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("params: %v", err)
-		}
-		if params.Ref != "codex:th_codex" || params.Delta != "survived" {
-			t.Fatalf("params=%+v", params)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for live notification after caller context cancellation")
-	}
+	assertResync(t, notifications)
 }
 
 func fuzzScenarioCodexSourceStartThreadRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
@@ -695,6 +675,7 @@ func fuzzScenarioCodexSourceStartThreadRetiresLiveConnectionWithoutSubscriber(t 
 
 func fuzzScenarioCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, _ map[string]any) (map[string]any, error) {
 		appserver.Subscribe(ctx, "th_codex")
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
@@ -724,8 +705,8 @@ func fuzzScenarioCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T)
 		ThreadID: "th_codex",
 		Delta:    "fanout one",
 	})
-	assertDelta(t, sub1, "fanout one")
-	assertDelta(t, sub2, "fanout one")
+	assertResync(t, sub1)
+	assertResync(t, sub2)
 
 	cancel1()
 	// Wait for the unsubscribe goroutine to close sub1's channel.
@@ -749,7 +730,7 @@ func fuzzScenarioCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T)
 		ThreadID: "th_codex",
 		Delta:    "fanout two",
 	})
-	assertDelta(t, sub2, "fanout two")
+	assertResync(t, sub2)
 	assertNoNotification(t, sub1, "fanout two")
 }
 
@@ -794,6 +775,8 @@ func fuzzScenarioCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySub
 					"itemsView": "full",
 					"status":    "inProgress",
 				}}))
+			case appwire.MethodThreadRead:
+				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
 			default:
 				_ = transport.Send(context.Background(), appwire.ErrorMessage(req.ID, appwire.MethodNotFound(req.Method)))
 			}
@@ -816,8 +799,8 @@ func fuzzScenarioCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySub
 	if err != nil {
 		t.Fatalf("SubscribeThread 2: %v", err)
 	}
-	assertDelta(t, notifications1, "initial backlog")
-	assertDelta(t, notifications2, "initial backlog")
+	assertResync(t, notifications1)
+	assertResync(t, notifications2)
 }
 
 func fuzzScenarioCodexLiveThreadDoesNotReplayDeliveredLiveNotifications(t *testing.T) {
@@ -895,6 +878,7 @@ func fuzzScenarioCodexLiveThreadIsClosedAfterLastSubscriberRetires(t *testing.T)
 
 func fuzzScenarioCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveConnection(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
 	})
@@ -927,21 +911,7 @@ func fuzzScenarioCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveCon
 		t.Fatalf("SubscribeThread: %v", err)
 	}
 
-	select {
-	case got := <-notifications:
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("method=%q", got.Method)
-		}
-		var params appwire.AgentMessageDeltaParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("params: %v", err)
-		}
-		if params.Ref != "codex:th_codex" || params.Delta != "hello from initial turn" {
-			t.Fatalf("params=%+v", params)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for initial-turn notification")
-	}
+	assertResync(t, notifications)
 }
 
 func withCodexLiveNoSubscriberTimeout(t *testing.T, timeout time.Duration) {
@@ -999,6 +969,28 @@ func assertDelta(t *testing.T, notifications <-chan appwire.Notification, want s
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for delta %q", want)
+	}
+}
+
+func assertResync(t *testing.T, notifications <-chan appwire.Notification) {
+	t.Helper()
+	select {
+	case got, ok := <-notifications:
+		if !ok {
+			t.Fatal("notification channel closed before full-state replacement")
+		}
+		if got.Method != appwire.NotifySerfThreadResync {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfThreadResync)
+		}
+		var params appwire.ThreadResyncParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("params: %v", err)
+		}
+		if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" {
+			t.Fatalf("params=%+v", params)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for full-state replacement")
 	}
 }
 
@@ -1062,6 +1054,7 @@ func fuzzScenarioCodexSourceReadThreadRetriesWithoutTurnsBeforeFirstMessage(t *t
 
 func fuzzScenarioCodexSourceSubscribeTranslatesNotifications(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
 		ThreadID string `json:"threadId"`
 	}) (map[string]any, error) {
@@ -1084,31 +1077,296 @@ func fuzzScenarioCodexSourceSubscribeTranslatesNotifications(t *testing.T) {
 		"delta":    "stdout\n",
 	})
 
+	assertResync(t, notifications)
+}
+
+func TestCodexPartialReadDoesNotPopulateAuthoritativeCache(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID     string `json:"threadId"`
+		IncludeTurns bool   `json:"includeTurns"`
+		ItemsView    string `json:"itemsView"`
+	}) (map[string]any, error) {
+		call := readCount.Add(1)
+		thread := codexThreadMap(params.ThreadID)
+		switch call {
+		case 1:
+			if params.IncludeTurns {
+				t.Fatal("partial read unexpectedly requested turns")
+			}
+			thread["preview"] = "partial"
+		case 2:
+			if !params.IncludeTurns || params.ItemsView != "full" {
+				t.Fatalf("full read shape: includeTurns=%v itemsView=%q", params.IncludeTurns, params.ItemsView)
+			}
+			thread["preview"] = "full"
+		default:
+			t.Fatalf("unexpected read call %d", call)
+		}
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	partial, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("partial ReadThread: %v", err)
+	}
+	if partial.Thread.Preview != "partial" {
+		t.Fatalf("partial preview=%q", partial.Thread.Preview)
+	}
+
+	full, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{
+		Ref:          "codex:th_codex",
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err != nil {
+		t.Fatalf("full ReadThread: %v", err)
+	}
+	if full.Thread.Preview != "full" {
+		t.Fatalf("full preview=%q, want second upstream response", full.Thread.Preview)
+	}
+	if got := readCount.Load(); got != 2 {
+		t.Fatalf("upstream reads=%d, want partial and full reads", got)
+	}
+}
+
+func TestCodexDirtyFullStateSuppressesRawDelta(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	readStarted := make(chan struct{}, 1)
+	releaseRead := make(chan struct{})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		readStarted <- struct{}{}
+		<-releaseRead
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = "authoritative replacement"
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_codex",
+		TurnID:   "turn_codex",
+		ItemID:   "item_codex",
+		Delta:    "must not be forwarded",
+	})
+
 	select {
 	case got := <-notifications:
-		if got.Method != appwire.NotifyToolOutputDelta {
-			t.Fatalf("method=%q", got.Method)
+		if got.Method != appwire.NotifySerfThreadResync {
+			t.Fatalf("live event method=%q, want authoritative full-state resync", got.Method)
 		}
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Ref      string `json:"ref,omitempty"`
-			TurnID   string `json:"turnId"`
-			ItemID   string `json:"itemId"`
-			Delta    string `json:"delta"`
+	case <-readStarted:
+		close(releaseRead)
+		got := <-notifications
+		if got.Method != appwire.NotifySerfThreadResync {
+			t.Fatalf("post-read method=%q, want authoritative full-state resync", got.Method)
 		}
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("params: %v", err)
+	}
+}
+
+func TestCodexDirtyFullStateReadsAgainWhenEventRacesRead(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	readStarted := make(chan int, 2)
+	releaseRead := make(chan struct{}, 2)
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		call := int(readCount.Add(1))
+		readStarted <- call
+		<-releaseRead
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = fmt.Sprintf("snapshot-%d", call)
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if call := <-readStarted; call != 1 {
+		t.Fatalf("first read call=%d, want 1", call)
+	}
+
+	live := source.liveThread("th_codex")
+	if live == nil {
+		t.Fatal("missing live thread")
+	}
+	live.markDirty()
+	releaseRead <- struct{}{}
+	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("first replacement method=%q", got.Method)
+	}
+	if call := <-readStarted; call != 2 {
+		t.Fatalf("second read call=%d, want 2", call)
+	}
+	releaseRead <- struct{}{}
+	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("second replacement method=%q", got.Method)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp, err := source.ReadThread(canceled, appwire.ThreadReadParams{Ref: "codex:th_codex", IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("cached ReadThread: %v", err)
+	}
+	if resp.Thread.Preview != "snapshot-2" {
+		t.Fatalf("cached preview=%q, want latest committed snapshot", resp.Thread.Preview)
+	}
+	if got := readCount.Load(); got != 2 {
+		t.Fatalf("upstream reads after cached ReadThread=%d, want 2", got)
+	}
+}
+
+func TestCodexDirtyFullStateRetriesFinalFailedReadWithoutAnotherEvent(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		if readCount.Add(1) == 1 {
+			return nil, appwire.Unavailable("transient full read failure")
 		}
-		if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" || params.ItemID != "cmd_1" || params.Delta != "stdout\n" {
-			t.Fatalf("params=%+v", params)
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = "recovered without another event"
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	retryWaiting := make(chan time.Duration, 1)
+	releaseRetry := make(chan struct{})
+	source.waitReadRetry = func(ctx context.Context, delay time.Duration) error {
+		retryWaiting <- delay
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-releaseRetry:
+			return nil
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for translated notification")
+	}
+	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if delay := <-retryWaiting; delay != 100*time.Millisecond {
+		t.Fatalf("first retry delay=%v, want 100ms", delay)
+	}
+	close(releaseRetry)
+
+	if got := <-notifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("replacement method=%q", got.Method)
+	}
+	if got := readCount.Load(); got != 2 {
+		t.Fatalf("upstream reads=%d, want failed read plus automatic retry", got)
+	}
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex", IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("cached ReadThread: %v", err)
+	}
+	if resp.Thread.Preview != "recovered without another event" {
+		t.Fatalf("cached preview=%q", resp.Thread.Preview)
+	}
+}
+
+func TestCodexDirtyFullStateReconnectForcesReadWithWarmCache(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		appserver.Subscribe(ctx, params.ThreadID)
+		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
+	})
+	readStarted := make(chan int, 2)
+	var readCount atomic.Int32
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params struct {
+		ThreadID string `json:"threadId"`
+	}) (map[string]any, error) {
+		call := int(readCount.Add(1))
+		readStarted <- call
+		thread := codexThreadMap(params.ThreadID)
+		thread["preview"] = fmt.Sprintf("connection-%d", call)
+		return map[string]any{"thread": thread}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	firstNotifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("first SubscribeThread: %v", err)
+	}
+	if call := <-readStarted; call != 1 {
+		t.Fatalf("first connection read=%d, want 1", call)
+	}
+	if got := <-firstNotifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("first replacement method=%q", got.Method)
+	}
+	firstLive := source.liveThread("th_codex")
+	if firstLive == nil {
+		t.Fatal("missing first live thread")
+	}
+	firstLive.retire()
+	<-firstLive.done
+
+	secondNotifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("second SubscribeThread: %v", err)
+	}
+	if call := <-readStarted; call != 2 {
+		t.Fatalf("reconnect read=%d, want unconditional second read", call)
+	}
+	if got := <-secondNotifications; got.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("reconnect replacement method=%q", got.Method)
+	}
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex", IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("cached ReadThread: %v", err)
+	}
+	if resp.Thread.Preview != "connection-2" {
+		t.Fatalf("cached preview=%q, want reconnect snapshot", resp.Thread.Preview)
 	}
 }
 
 func fuzzScenarioCodexSourceTurnCompletedNotificationIncludesCanonicalRef(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	handleCodexRead(server)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
 		ThreadID string `json:"threadId"`
 	}) (map[string]any, error) {
@@ -1134,24 +1392,7 @@ func fuzzScenarioCodexSourceTurnCompletedNotificationIncludesCanonicalRef(t *tes
 		},
 	})
 
-	select {
-	case got := <-notifications:
-		if got.Method != appwire.NotifyTurnCompleted {
-			t.Fatalf("method=%q", got.Method)
-		}
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Ref      string `json:"ref"`
-		}
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("params: %v", err)
-		}
-		if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" {
-			t.Fatalf("params=%+v", params)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for turn/completed notification")
-	}
+	assertResync(t, notifications)
 }
 
 func codexThreadMap(id string) map[string]any {
