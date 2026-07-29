@@ -116,7 +116,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
 	}
-	registerThreadHandlers(server, cfg, sources, relayFunctions.startRelay, relayFunctions.startTurn, relayFunctions.startRelayForThread)
+	registerThreadHandlers(server, cfg, sources, relayFunctions)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
 	launchController := newHubLaunchController(hubStateRoot)
@@ -136,9 +136,7 @@ func registerThreadHandlers(
 	server *appserver.Server,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
-	startRelay func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error,
-	startTurn func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error),
-	startRelayForThread func(context.Context, appwire.Thread) error,
+	relays hubRelayFunctions,
 ) {
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -158,7 +156,7 @@ func registerThreadHandlers(
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp, err := source.ReadThread(ctx, params)
+		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
 			saved, ok, pastErr := pastThreadReadResponse(cfg, params)
 			if pastErr != nil {
@@ -169,8 +167,10 @@ func registerThreadHandlers(
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
+		resp := read.response
 		resp.Thread, err = mergePastThreadForRead(cfg, params, resp.Thread)
 		if err != nil {
+			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp.Thread = enrichThreadFileBackedOutputImages(resp.Thread)
@@ -181,8 +181,13 @@ func registerThreadHandlers(
 		if params.TurnLimit > 0 && resp.OlderCursor == "" {
 			resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
 		}
-		if params.Subscribe || relayOnThreadRead(source) {
-			if err := startRelay(ctx, source, params, resp.Thread); err != nil {
+		read.response = resp
+		if read.handoff != nil {
+			if !relays.captureThreadRead(ctx, params, read) {
+				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+			}
+		} else if params.Subscribe || relayOnThreadRead(source) {
+			if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
 			}
 		}
@@ -264,7 +269,7 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}
-		if err := startRelayForThread(ctx, resp.Thread); err != nil {
+		if err := relays.startRelayForThread(ctx, resp.Thread); err != nil {
 			appserver.Notify(ctx, appwire.NotifyWarning, appwire.WarningParams{
 				ThreadID: resp.Thread.ID,
 				Ref:      resp.Thread.Serf.Ref,
@@ -280,7 +285,7 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
-		if err := startRelayForThread(ctx, resp.Thread); err != nil {
+		if err := relays.startRelayForThread(ctx, resp.Thread); err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
 		return resp, nil
@@ -304,7 +309,7 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			resolved = true
-			return startTurn(ctx, source, params)
+			return relays.startTurn(ctx, source, params)
 		}
 		resp, err := attemptStart()
 		if err == nil {

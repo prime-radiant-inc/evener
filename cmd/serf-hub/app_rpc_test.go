@@ -359,7 +359,7 @@ func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
 	}
 }
 
-func TestDeletionFenceKeepsInitialRelaySubscriptionInsideOwnership(t *testing.T) {
+func TestDeletionFenceCanCommitDuringInitialRelayIOAndBlocksPublication(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -387,17 +387,20 @@ func TestDeletionFenceKeepsInitialRelaySubscriptionInsideOwnership(t *testing.T)
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
 	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
 
-	_ = relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
+	relayErr := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
 	result := <-source.probed
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if result.deletedBeforeSubscribe {
-		t.Fatal("initial relay subscription ran after the deletion fence committed")
+	if !result.deletedBeforeSubscribe {
+		t.Fatal("relay held deletion ownership across upstream I/O")
+	}
+	if !isTargetDeletedError(relayErr) {
+		t.Fatalf("relay error = %T %v, want targetDeleted after deletion won the I/O race", relayErr, relayErr)
 	}
 }
 
-func TestDeletionFenceKeepsRecoveryRelaySubscriptionInsideOwnership(t *testing.T) {
+func TestDeletionFenceCanCommitDuringRecoveryRelayIOAndStopsPublication(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -436,8 +439,8 @@ func TestDeletionFenceKeepsRecoveryRelaySubscriptionInsideOwnership(t *testing.T
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if result.deletedBeforeSubscribe {
-		t.Fatal("recovery relay subscription ran after the deletion fence committed")
+	if !result.deletedBeforeSubscribe {
+		t.Fatal("relay held deletion ownership across recovery I/O")
 	}
 }
 
