@@ -6214,6 +6214,82 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
+	const sessionID = "sess_old"
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       104,
+		Protocol:  "serf-appwire-v1",
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+	roster.Refresh()
+	if stale, ok := roster.Find(sessionID); !ok || stale.Status == "errored" {
+		t.Fatalf("stale roster entry = %+v, %v; want non-errored incompatible daemon", stale, ok)
+	}
+
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID {
+				t.Fatalf("resume session=%q", req.SessionID)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:       105,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			writeRendezvous(t, runDir, entry)
+			roster.Refresh()
+			return entry, nil
+		},
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        hubcore.NewPastIndex(""),
+		ResumeLocks: hubcore.NewResumeLocks(),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if resp.Thread.ID != sessionID || resp.Thread.Serf.Ref != "local:"+sessionID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
 func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var resumeCalled bool
