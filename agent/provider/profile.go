@@ -457,6 +457,30 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	return &clone
 }
 
+// WithAdvertisedModelInfo freezes the provider-advertised wire model ID and
+// applies its live metadata without losing an exact-key providers.toml model
+// declaration. The copied declaration remains associated with the advertised
+// spelling so later live refreshes continue to honor the user's settings.
+func (p *Profile) WithAdvertisedModelInfo(info llm.ModelInfo) *Profile {
+	if p == nil {
+		return nil
+	}
+	advertisedID := strings.TrimSpace(info.ID)
+	if advertisedID == "" {
+		return p.WithLiveModelInfo(info)
+	}
+
+	clone := *p
+	clone.model = advertisedID
+	if _, exists := p.instModels[advertisedID]; !exists {
+		if configured, ok := p.instModels[p.model]; ok {
+			clone.instModels = maps.Clone(p.instModels)
+			clone.instModels[advertisedID] = configured
+		}
+	}
+	return clone.WithLiveModelInfo(info)
+}
+
 // prefixAction is the resolution of a slash-prefixed model string
 // "X/Y" passed to WithModel. See decidePrefixAction.
 type prefixAction int

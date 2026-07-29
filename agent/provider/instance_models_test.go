@@ -200,6 +200,45 @@ func TestWithLiveModelInfo_DoesNotReenableReasoningOffModel(t *testing.T) {
 	}
 }
 
+func TestWithAdvertisedModelInfo_PreservesConfiguredModelAndCommunicateOverrides(t *testing.T) {
+	p := newOpenAICompatProfile("openai-compatible", "tiny-chat", 0, lunarouteModels())
+	p = WithAllowedDecisions(p, []string{"keep_config"})
+	wantCommunicate := *findToolDef(p, "communicate")
+	info := llm.ModelInfo{
+		ID:                    "TINY-CHAT",
+		ContextWindow:         262_144,
+		SupportsReasoning:     true,
+		ReasoningEffortLevels: []string{"low", "high"},
+	}
+
+	advertised := p.WithAdvertisedModelInfo(info)
+	if advertised.Model() != "TINY-CHAT" {
+		t.Errorf("Model = %q, want advertised wire ID %q", advertised.Model(), "TINY-CHAT")
+	}
+	for name, got := range map[string]*Profile{
+		"advertised": advertised,
+		"refreshed":  advertised.WithLiveModelInfo(info),
+	} {
+		if got.ContextWindowSize() != 32_000 {
+			t.Errorf("%s ContextWindowSize = %d, want configured 32000", name, got.ContextWindowSize())
+		}
+		if got.SupportsReasoning() {
+			t.Errorf("%s SupportsReasoning = true, want configured false", name)
+		}
+		if levels := got.ReasoningEffortLevels(); len(levels) != 0 {
+			t.Errorf("%s ReasoningEffortLevels = %v, want none", name, levels)
+		}
+		if communicate := findToolDef(got, "communicate"); communicate == nil {
+			t.Errorf("%s communicate definition missing", name)
+		} else if !reflect.DeepEqual(*communicate, wantCommunicate) {
+			t.Errorf("%s communicate override changed", name)
+		}
+	}
+	if p.Model() != "tiny-chat" {
+		t.Errorf("WithAdvertisedModelInfo mutated base model to %q", p.Model())
+	}
+}
+
 func TestResolveProfileFromConfig_PassesInstanceModels(t *testing.T) {
 	cfg := providercfg.Config{
 		Default: "lunaroute",

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 type pluginModelListAdapter struct {
@@ -377,16 +379,32 @@ func TestResolvePluginAgentModel_CustomAndExactMembership(t *testing.T) {
 func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testing.T) {
 	t.Parallel()
 
+	reasoningOff := false
+	base := resolveTestProfile(providercfg.InstanceConfig{
+		Name:     "work",
+		Type:     "openai",
+		APIStyle: providercfg.StyleChatCompletions,
+		Models: map[string]providercfg.ModelConfig{
+			"gpt-5.3": {
+				ContextWindow: 654_321,
+				Reasoning:     &reasoningOff,
+			},
+		},
+	}, "gpt-5.2")
+	base = WithAllowedDecisions(base, []string{"keep_config"})
+	wantCommunicate := subagentModelCommunicateDefinition(t, base)
 	adapter := &pluginModelListAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
+		fakeAdapter: fakeAdapter{name: "work"},
 		models: []llm.ModelInfo{{
-			ID:            "GPT-5.3",
-			ContextWindow: 808_006,
+			ID:                    "GPT-5.3",
+			ContextWindow:         808_006,
+			SupportsReasoning:     true,
+			ReasoningEffortLevels: []string{"low", "high"},
 		}},
 	}
 	sess := newPluginModelSelectionSession(
 		t,
-		NewOpenAIProfile("gpt-5.2"),
+		base,
 		adapter,
 		"",
 		nil,
@@ -399,17 +417,26 @@ func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testi
 	if got.profile == nil {
 		t.Fatal("profile = nil, want successful normalized match")
 	}
-	if got.profile.ID() != "openai" {
-		t.Errorf("profile ID = %q, want provider-local openai", got.profile.ID())
+	if got.profile.ID() != "work" {
+		t.Errorf("profile ID = %q, want provider-local work", got.profile.ID())
 	}
 	if got.profile.Model() != "GPT-5.3" {
 		t.Errorf("model = %q, want advertised wire ID %q", got.profile.Model(), "GPT-5.3")
 	}
-	if got.profile.ContextWindowSize() != 808_006 {
+	if got.profile.ContextWindowSize() != 654_321 {
 		t.Errorf(
-			"context window = %d, want advertised live metadata 808006",
+			"context window = %d, want configured value 654321",
 			got.profile.ContextWindowSize(),
 		)
+	}
+	if got.profile.SupportsReasoning() {
+		t.Error("SupportsReasoning = true, want configured reasoning=false")
+	}
+	if levels := got.profile.ReasoningEffortLevels(); len(levels) != 0 {
+		t.Errorf("reasoning effort levels = %v, want none for configured reasoning=false", levels)
+	}
+	if gotCommunicate := subagentModelCommunicateDefinition(t, got.profile); !reflect.DeepEqual(gotCommunicate, wantCommunicate) {
+		t.Errorf("communicate override changed after advertised-ID freeze")
 	}
 	if adapter.listCalls() != 1 {
 		t.Errorf("ListModels calls = %d, want 1", adapter.listCalls())
@@ -544,4 +571,15 @@ func assertPluginFallback(
 	if !strings.Contains(got.warning.Message, wantReason) {
 		t.Errorf("warning message = %q, want reason %q", got.warning.Message, wantReason)
 	}
+}
+
+func subagentModelCommunicateDefinition(t *testing.T, profile *provider.Profile) llm.ToolDefinition {
+	t.Helper()
+	for _, def := range profile.ToolDefinitions() {
+		if def.Name == "communicate" {
+			return def
+		}
+	}
+	t.Fatal("profile has no communicate definition")
+	return llm.ToolDefinition{}
 }
