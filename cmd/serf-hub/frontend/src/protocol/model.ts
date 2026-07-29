@@ -5,6 +5,7 @@
 
 import type {
   GoalState,
+  PendingMutation,
   QueueState,
   SandboxEscalationRequested,
   SerfUsage,
@@ -31,6 +32,7 @@ export interface ItemImage {
 export interface ItemModel {
   id: string;
   turnId: string;
+  clientMutationId?: string;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
   pendingText?: string[]; // in-flight delta chunks (join on complete)
@@ -137,6 +139,7 @@ export interface ThreadModel {
   turns: TurnModel[];
   activeTurnId?: string;
   queue: QueueState | null;
+  pendingMutations?: PendingMutation[];
   tasks: { total: number; done: number } | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input

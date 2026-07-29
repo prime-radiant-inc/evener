@@ -96,7 +96,7 @@ function wireThread(overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -230,7 +230,7 @@ test("Aside forks at the tip and opens the new session as a pane", async () => {
         id: "child_1",
         sessionId: "child_1",
         source: "local",
-        serf: { ref: "local/child_1", capabilities: FULL_CAPABILITIES, queue: {} },
+        serf: { ref: "local/child_1", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
       }),
     };
   });

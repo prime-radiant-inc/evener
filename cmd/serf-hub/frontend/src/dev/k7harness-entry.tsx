@@ -56,7 +56,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     serf: {
       ref,
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       cost: "~$0.42",
     },
     ...overrides,

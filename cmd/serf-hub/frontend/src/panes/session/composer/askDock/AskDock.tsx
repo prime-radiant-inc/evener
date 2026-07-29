@@ -10,14 +10,12 @@
 // Mount expectations for whoever wires this into Composer.tsx's tree (T2,
 // at merge - see that file's own header, "T3/T4 render inside Composer's
 // own tree"):
-//   - <AskDock ref={ref} onFallbackToComposer={(text) => ...} /> - `ref`
-//     matches Composer/SessionChrome's own established prop-name
-//     convention (a plain prop, not React's ref - fine under this
-//     project's React 19).
-//   - onFallbackToComposer is called exactly once per Conflict: the
-//     composed [answers] text the user was mid-answering, verbatim. The
-//     caller's job (T2) is to put that text into the plain Textarea and
-//     focus it - AskDock does not touch the composer's own surface at all.
+//   - <AskDock ref={ref} /> - `ref` matches Composer/SessionChrome's own
+//     established prop-name convention (a plain prop, not React's ref -
+//     fine under this project's React 19).
+//   - Answer text follows the same durable send path as the main composer.
+//     Network outcomes are owned by the outbox/recovery surfaces and never
+//     restore text into the main composer.
 //   - This component does NOT hide/inert the plain composer surface or
 //     own its mode-switch status announcement ("Message composer ready.")
 //     - that is the composer's own surface to show/hide, and T2 owns it.
@@ -25,9 +23,9 @@
 //     hide/inert the plain composer for a given ref; this component's own
 //     internal status region only announces ENTERING ask-response mode
 //     (there is content to hide FOR, once this returns non-null).
-//   - Failure feedback for a non-Conflict send error is a toast (the
-//     wave's decided convention, T1's loadOlder reference implementation)
-//     - no inline error banner of its own.
+//   - Failure feedback for a local durable-enqueue error is a toast (the
+//     wave's decided convention, T1's loadOlder reference implementation);
+//     network outcomes are rendered by recovery state, not an inline banner.
 import { useEffect, useRef } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -48,7 +46,6 @@ const CLASS = {
 
 export interface AskDockProps {
   ref: string;
-  onFallbackToComposer(text: string): void;
 }
 
 const NO_BATCHES: AskBatch[] = [];
@@ -107,7 +104,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   );
 }
 
-export function AskDock({ ref: sessionRef, onFallbackToComposer }: AskDockProps) {
+export function AskDock({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const toasts = useToasts();
@@ -139,9 +136,7 @@ export function AskDock({ ref: sessionRef, onFallbackToComposer }: AskDockProps)
 
   async function handleSend(batchId: string) {
     const outcome = await askDockStore.getState().sendBatch(sessionRef, batchId);
-    if (outcome.outcome === "conflict") {
-      onFallbackToComposer(outcome.text);
-    } else if (outcome.outcome === "error") {
+    if (outcome.outcome === "error") {
       // Already the finished sentence, labelled by the store - the one place
       // that can still tell a failed send from the failed session resume
       // behind it (askDockStore's SendBatchOutcome).

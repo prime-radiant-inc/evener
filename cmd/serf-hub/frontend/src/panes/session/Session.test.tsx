@@ -1,15 +1,17 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
-import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./composer/queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 
@@ -76,7 +78,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -105,6 +107,7 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 // and never renders a single row, which wouldn't exercise TurnBlock at all.
 const CONTAINER_HEIGHT = 500;
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
+let mutationStorage: MutationOutboxIndexedDB;
 
 // jsdom has no IntersectionObserver either, and LoadOlderRow's automatic paging
 // sentinel needs one. This stub reports the observed element as visible
@@ -131,8 +134,11 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  mutationStorage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
   localStorage.clear();
   vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
@@ -219,8 +225,17 @@ test("a session that has never run invites the first message", async () => {
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
 });
 
-async function seedPendingSend(ref = "ref_a"): Promise<void> {
-  await submitWithPendingTracking({ ref, method: "send", text: "hello", onFailure: () => {} }, () => Promise.resolve());
+async function seedPendingSend(ref = "ref_a"): Promise<string> {
+  const record = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await refreshPendingTurnsProjection(ref);
+  return record.clientMutationId;
 }
 
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
@@ -234,7 +249,10 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   );
 
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
-  await act(async () => seedPendingSend());
+  let clientMutationId = "";
+  await act(async () => {
+    clientMutationId = await seedPendingSend();
+  });
   expect(screen.getByTestId("pending-chips")).toBeTruthy();
   expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
@@ -258,7 +276,14 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
         threadId: "thr_ref_a",
         ref: "ref_a",
         turnId: "turn_1",
-        item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        item: {
+          id: "user_1",
+          turnId: "turn_1",
+          type: "userMessage",
+          text: "hello",
+          status: "completed",
+          clientMutationId,
+        },
       },
     } as AnyNotification);
   });
@@ -283,7 +308,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
 });
 
-test("cold-start skeleton stays through a user echo before a successful send resolves", async () => {
+test("cold-start skeleton stays through durable outbox settlement after an identified user echo", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -294,15 +319,7 @@ test("cold-start skeleton stays through a user echo before a successful send res
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  let resolveSend: (() => void) | undefined;
-  const send = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
-    () =>
-      new Promise<void>((resolve) => {
-        resolveSend = resolve;
-      }),
-  );
-  await waitFor(() => expect(resolveSend).toBeTruthy());
+  const clientMutationId = await seedPendingSend();
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -320,7 +337,14 @@ test("cold-start skeleton stays through a user echo before a successful send res
         threadId: "thr_ref_a",
         ref: "ref_a",
         turnId: "turn_1",
-        item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
+        item: {
+          id: "user_1",
+          turnId: "turn_1",
+          type: "userMessage",
+          text: "hello",
+          status: "completed",
+          clientMutationId,
+        },
       },
     } as AnyNotification);
   });
@@ -330,10 +354,8 @@ test("cold-start skeleton stays through a user echo before a successful send res
   expect(screen.queryByTestId("pending-chips")).toBeNull();
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-  await act(async () => {
-    resolveSend?.();
-    await send;
-  });
+  await mutationStorage.settleApplied(clientMutationId);
+  await refreshPendingTurnsProjection("ref_a");
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
@@ -370,6 +392,8 @@ test("cold-start skeleton clears when the first turn terminates without an autho
     fake.emitNotification({
       method: "turn/completed",
       params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
         turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
       },
@@ -379,7 +403,7 @@ test("cold-start skeleton clears when the first turn terminates without an autho
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
 });
 
-test("a rejected first send clears the skeleton after its retained user echo even when active state is stale", async () => {
+test("an explicitly rejected first send leaves cold-start state for durable recovery", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -390,44 +414,13 @@ test("a rejected first send clears the skeleton after its retained user echo eve
   );
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
-  let rejectSend: ((error: unknown) => void) | undefined;
-  const send = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "hello", onFailure: () => {} },
-    () =>
-      new Promise<void>((_resolve, reject) => {
-        rejectSend = reject;
-      }),
-  );
+  const clientMutationId = await seedPendingSend();
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
-  act(() => {
-    fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
-    } as AnyNotification);
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
-    fake.emitNotification({
-      method: "item/completed",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        turnId: "turn_1",
-        item: { id: "user_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" },
-      },
-    } as AnyNotification);
-  });
-  expect(screen.getByTestId("user-message-item").textContent).toContain("hello");
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
-  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
-
-  await act(async () => {
-    rejectSend?.(new Error("daemon rejected the send"));
-    await expect(send).rejects.toThrow("daemon rejected the send");
-  });
+  await mutationStorage.transferToRecovery(clientMutationId, "rejected");
+  await refreshPendingTurnsProjection("ref_a");
   await waitFor(() => expect(screen.queryByTestId("cold-start-skeleton")).toBeNull());
+  expect((await mutationStorage.getRecovery(clientMutationId))?.recoveryKind).toBe("rejected");
 });
 
 test.each(["failed", "error", "cancelled"])(
@@ -799,7 +792,7 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
           items: [{ id: "item_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     }),
   );
 
@@ -1033,6 +1026,8 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
     fake.emitNotification({
       method: "turn/completed",
       params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
         turnId: "turn_2",
         turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
       },

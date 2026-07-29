@@ -448,7 +448,13 @@ test("renders no now-minus-epoch clock for a zero-valued activeTurnStartedAt off
         cwd: "/tmp/project",
         cliVersion: "1.0.0",
         source: "serf",
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, workMillis: 45_000, activeTurnStartedAt: 0 },
+        serf: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          workMillis: 45_000,
+          activeTurnStartedAt: 0,
+        },
       },
     },
     "ref_a",
@@ -572,12 +578,12 @@ test("shows no cost when cost is absent (undefined) from the model", () => {
 // right of the strip is cheaper than a second row of chrome.
 
 test("shows the queue depth at the far right when messages are waiting", () => {
-  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { depth: 2 } })} now={1_000_000} />);
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { revision: 0, depth: 2 } })} now={1_000_000} />);
   expect(screen.getByTestId("status-row-queue").textContent).toBe("2 queued");
 });
 
 test("shows no queue readout when the queue is empty - the normal case is not news", () => {
-  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { depth: 0 } })} now={1_000_000} />);
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { revision: 0, depth: 0 } })} now={1_000_000} />);
   expect(screen.queryByTestId("status-row-queue")).toBeNull();
 });
 

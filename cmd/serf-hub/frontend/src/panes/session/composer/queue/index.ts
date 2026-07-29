@@ -5,7 +5,7 @@
 // integration-seam contract).
 
 export type { PendingMethod, PendingTurnEntry, SubmitWithPendingTrackingOptions } from "./pendingTurnsStore";
-export { PENDING_TIMEOUT_MS, submitWithPendingTracking, usePendingTurnEntries } from "./pendingTurnsStore";
+export { submitWithPendingTracking, usePendingTurnEntries } from "./pendingTurnsStore";
 export type { QueueStripProps } from "./QueueStrip";
 export { QueueStrip } from "./QueueStrip";
 // queueEntryPreviewText is this stream's own queue-row display helper -

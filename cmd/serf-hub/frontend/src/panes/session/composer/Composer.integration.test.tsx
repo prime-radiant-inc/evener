@@ -4,17 +4,18 @@
 // covers ITS component in isolation; these tests instead drive the REAL
 // assembled tree through the real stores with wire-true FakeClient
 // notifications, proving the seam props (getComposerText/
-// onRestoreToComposer/onDrainSuccess/onFallbackToComposer/
-// useAskDockPending) are wired correctly - not re-deriving QueueStrip's or
+// onRestoreToComposer/onDrainSuccess/useAskDockPending) are wired correctly
+// - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
@@ -36,6 +37,35 @@ class MemoryStorage {
   }
   clear(): void {
     this.store.clear();
+  }
+}
+
+class PausedCommitStorage extends MutationOutboxIndexedDB {
+  readonly commitStarted: Promise<void>;
+  private markCommitStarted: (() => void) | undefined;
+  private releaseCommit: (() => void) | undefined;
+  private readonly commitGate: Promise<void>;
+
+  constructor() {
+    super();
+    this.commitStarted = new Promise((resolve) => {
+      this.markCommitStarted = resolve;
+    });
+    this.commitGate = new Promise((resolve) => {
+      this.releaseCommit = resolve;
+    });
+  }
+
+  release(): void {
+    this.releaseCommit?.();
+  }
+
+  override async enqueueIntent(
+    intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
+  ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
+    this.markCommitStarted?.();
+    await this.commitGate;
+    return super.enqueueIntent(intent);
   }
 }
 
@@ -71,7 +101,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -101,6 +131,7 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
@@ -185,7 +216,7 @@ test("the queue strip renders inside the composer once the queue has entries", a
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
@@ -200,11 +231,18 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/drainAsSteer", () => ({}));
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea() as HTMLTextAreaElement, "steer this in live");
   await user.click(drainButton());
@@ -220,11 +258,18 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/drainAsSteer", () => ({}));
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea() as HTMLTextAreaElement, "drain me too");
   await user.click(drainButton());
@@ -247,16 +292,24 @@ test("text changed while a strip-triggered drain is in flight survives the drain
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
   let resolveDrain: (() => void) | undefined;
   fake.on(
     "turn/drainAsSteer",
-    () =>
-      new Promise<Record<string, never>>((resolve) => {
-        resolveDrain = () => resolve({});
+    (params) =>
+      new Promise((resolve) => {
+        resolveDrain = () =>
+          resolve({
+            receipt: {
+              clientMutationId: params.clientMutationId,
+              disposition: "applied",
+              threadId: "thread_a",
+              projectionState: "reflected",
+            },
+          });
       }),
   );
 
@@ -286,11 +339,19 @@ test("clicking a queued row's Edit button restores its full text into an empty c
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["the full queued text"], preview: ["the full queued text"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full queued text"], preview: ["the full queued text"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/cancelQueued", () => ({ removedText: "the full queued text" }));
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "the full queued text",
+  }));
 
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
@@ -304,11 +365,19 @@ test("clicking Edit appends the restored text after a blank line when the compos
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued copy"], preview: ["queued copy"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued copy"], preview: ["queued copy"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/cancelQueued", () => ({ removedText: "queued copy" }));
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "queued copy",
+  }));
 
   await user.type(textarea() as HTMLTextAreaElement, "my own draft");
   await user.click(screen.getByRole("button", { name: /edit message/i }));
@@ -322,11 +391,20 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/cancelQueued", () => ({ removedText: "queued hello", removedImages: 0 }));
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "queued hello",
+    removedImages: 0,
+  }));
 
   await user.click(screen.getByRole("button", { name: /remove from queue/i }));
 
@@ -343,73 +421,74 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 // neither button disabling the other.
 
 test("while a strip-triggered drain is in flight, the composer's own classic steer control is also disabled (shared busy gate)", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
-  let resolveDrain: (() => void) | undefined;
-  fake.on(
-    "turn/drainAsSteer",
-    () =>
-      new Promise<Record<string, never>>((resolve) => {
-        resolveDrain = () => resolve({});
-      }),
-  );
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.click(drainButton());
+  await storage.commitStarted;
+  expect(composerSteerButton().disabled).toBe(true);
 
-  await waitFor(() => {
-    expect(composerSteerButton().disabled).toBe(true);
-  });
-
-  resolveDrain?.();
+  storage.release();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
 });
 
 test("while the composer's own classic drain is in flight, the strip's Steer-now button is also disabled (shared busy gate)", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
       activeTurnId: "turn_1",
     },
   });
-  let resolveDrain: (() => void) | undefined;
-  fake.on(
-    "turn/drainAsSteer",
-    () =>
-      new Promise<Record<string, never>>((resolve) => {
-        resolveDrain = () => resolve({});
-      }),
-  );
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea() as HTMLTextAreaElement, "drain me");
   await user.click(composerSteerButton());
 
-  await waitFor(() => {
-    expect(drainButton().disabled).toBe(true);
-  });
+  await storage.commitStarted;
+  expect(drainButton().disabled).toBe(true);
 
-  resolveDrain?.();
+  storage.release();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
 });
 
 // --- pending-tracking uniformity (send/steer/queue/drain all register) ------
 
-test("a plain send registers an optimistic pending entry, visible until a wire echo confirms it", async () => {
+test("a plain send exposes its durable pending entry while the network remains unsettled", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
   await user.type(textarea() as HTMLTextAreaElement, "hello agent");
@@ -419,13 +498,13 @@ test("a plain send registers an optimistic pending entry, visible until a wire e
   expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
 });
 
-test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods, and it is actually visible in the composed UI", async () => {
+test("a queue submit also exposes its durable pending entry in the composed UI while the network remains unsettled", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
-  fake.on("turn/queue", () => ({}));
+  fake.on("turn/queue", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
 
   await user.type(textarea() as HTMLTextAreaElement, "queued message");
@@ -457,12 +536,19 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
       serf: {
         ref: "ref_a",
         capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
-        queue: {},
+        queue: { revision: 0 },
         activeTurnId: "turn_1",
       },
     });
   });
-  fake.on("turn/queue", () => ({}));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
   await threadsStore.getState().ensureThread("ref_a");
   render(
     <>
@@ -493,71 +579,6 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1));
 });
 
-// Both failure tests below defer their RPC's rejection via a manually-
-// resolved promise (matching Composer.test.tsx's own "text typed while a
-// send is still in flight" idiom) specifically so each can observe the
-// pending entry EXISTING while the request is in flight, before asserting
-// it's gone after the rejection - asserting only the end state (0 entries)
-// would pass just as well if no entry were ever registered at all, proving
-// nothing about removal-on-failure specifically.
-
-test("a send failure surfaces exactly one toast and removes the pending entry", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    status: { type: "idle" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
-  });
-  let rejectSend: ((err: unknown) => void) | undefined;
-  fake.on(
-    "turn/start",
-    () =>
-      new Promise((_resolve, reject) => {
-        rejectSend = reject;
-      }),
-  );
-  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
-
-  await user.type(textarea() as HTMLTextAreaElement, "hello");
-  await user.click(screen.getByRole("button", { name: /^send\b/i }));
-
-  await waitFor(() => expect(result.current).toHaveLength(1)); // registered while in flight
-  rejectSend?.(new Error("daemon unreachable"));
-
-  await waitFor(() => expect(screen.getAllByText(/send failed/i)).toHaveLength(1));
-  expect(result.current).toHaveLength(0); // removed on failure
-});
-
-test("a queuedDrainPartial failure clears the composer, removes the pending entry, and shows exactly one distinct toast", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    serf: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["already queued"], preview: ["already queued"] },
-      activeTurnId: "turn_1",
-    },
-  });
-  let rejectDrain: ((err: unknown) => void) | undefined;
-  fake.on(
-    "turn/drainAsSteer",
-    () =>
-      new Promise((_resolve, reject) => {
-        rejectDrain = reject;
-      }),
-  );
-  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "drain"));
-
-  await user.type(textarea() as HTMLTextAreaElement, "partial");
-  await user.click(composerSteerButton());
-
-  await waitFor(() => expect(result.current).toHaveLength(1)); // registered while in flight
-  rejectDrain?.(new WireError("already queued, drain failed", -32013, { serfErrorInfo: "queuedDrainPartial" }));
-
-  await waitFor(() => expect(screen.getAllByText(/drain failed after queueing/i)).toHaveLength(1));
-  expect((textarea() as HTMLTextAreaElement).value).toBe("");
-  expect(result.current).toHaveLength(0); // removed on failure
-});
-
 // --- T4: ask dock wiring ------------------------------------------------------
 
 // Ask-dock scenarios mount idle with NO pre-existing turn (unlike this
@@ -567,7 +588,11 @@ test("a queuedDrainPartial failure clears the composer, removes the pending entr
 // Reusing this file's default fixture and re-firing turn/started for the
 // SAME id it already pre-seeded would append a second, colliding turn_1.
 function idleNoTurnOverrides(): Partial<Thread> {
-  return { status: { type: "idle" }, serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} }, turns: [] };
+  return {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  };
 }
 
 test("the ask dock renders once a question is pending, and the composer's input row becomes hidden and inert", async () => {
@@ -589,7 +614,15 @@ test("the ask dock renders once a question is pending, and the composer's input 
 test("sending an answer submits through the normal send path and restores the composer once resolved", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
-  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
   await screen.findByText("Deploy?");
@@ -614,7 +647,15 @@ test("sending an answer submits through the normal send path and restores the co
 test("resolving the pending ask announces the composer's restoration via this component's own aria-live region", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
-  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
 
   // Never announced before any ask has ever happened - there is nothing
   // that just became ready (honest liveness, not a static claim).
@@ -630,27 +671,6 @@ test("resolving the pending ask announces the composer's restoration via this co
   expect(await screen.findByText("Message composer ready.")).toBeTruthy();
 });
 
-test("a Conflict on the ask-answers path falls back into the composer, preserving any draft typed before the question arrived", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
-
-  await user.type(textarea() as HTMLTextAreaElement, "my own note");
-
-  startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
-  await screen.findByText("Deploy?");
-  expect(textarea()).toBeNull(); // input row hidden while the question is pending
-
-  fake.on("turn/start", () => {
-    throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
-  });
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-
-  await waitFor(() => expect(screen.queryByText("Deploy?")).toBeNull());
-  const restored = await screen.findByRole("textbox", { name: /message/i });
-  expect((restored as HTMLTextAreaElement).value).toBe("my own note\n\n[answers]\n1. [Deploy?] → skipped (no answer)");
-});
-
 // --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
 
 test("the ask dock renders above the queue strip when both are visible at once", async () => {
@@ -659,7 +679,7 @@ test("the ask dock renders above the queue strip when both are visible at once",
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
     },
     turns: [],
   });
@@ -680,14 +700,24 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/queue", () => ({}));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea() as HTMLTextAreaElement, "first queued message");
   await user.click(screen.getByTestId("composer-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
   expect((textarea() as HTMLTextAreaElement).value).toBe(""); // clears optimistically like any other successful submit
+  const queueCall = fake.calls.find((c) => c.method === "turn/queue");
+  const clientMutationId = (queueCall?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
+  expect(clientMutationId).toBeTruthy();
 
   // The daemon's own wire echo is what actually reconciles the pending
   // entry AND is the strip's only source of queue rows (no local mutation)
@@ -699,7 +729,14 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        queue: { depth: 1, ids: ["q1"], texts: ["first queued message"], preview: ["first queued message"] },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          clientMutationIds: [clientMutationId!],
+          texts: ["first queued message"],
+          preview: ["first queued message"],
+        },
       },
     });
   });
@@ -707,7 +744,15 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   expect(await screen.findByText(/queued messages/i)).toBeTruthy();
   expect(screen.getByText("first queued message")).toBeTruthy();
 
-  fake.on("turn/cancelQueued", () => ({ removedText: "first queued message" }));
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "first queued message",
+  }));
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
   expect((textarea() as HTMLTextAreaElement).value).toBe("first queued message"); // restored into the (now empty) composer

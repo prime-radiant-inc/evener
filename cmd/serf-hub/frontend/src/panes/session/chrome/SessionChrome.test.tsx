@@ -35,7 +35,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -80,7 +80,12 @@ test("composes the status row, session actions, goal control, details panel, and
   // menu), so a goal is what proves GoalControl is actually composed here.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, goal: { status: "active", iterations: 2 } },
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        goal: { status: "active", iterations: 2 },
+      },
     }),
   );
   await threadsStore.getState().ensureThread("ref_a");
@@ -106,7 +111,7 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_d", {
-      serf: { ref: "ref_d", capabilities: CAPABILITIES, queue: {}, workMillis: 125_000 },
+      serf: { ref: "ref_d", capabilities: CAPABILITIES, queue: { revision: 0 }, workMillis: 125_000 },
     }),
   );
   await threadsStore.getState().ensureThread("ref_d");

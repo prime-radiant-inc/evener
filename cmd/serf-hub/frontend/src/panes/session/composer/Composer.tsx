@@ -28,7 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { errorText, sessionActionError, WireError } from "../../../protocol/errors";
+import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { openPalette } from "../../../shell/palette/paletteController";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -53,7 +53,7 @@ import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
-import { isPendingConfirmationTimeoutError } from "./queue/pendingTurnsStore";
+import { RecoveryTray } from "./recovery/RecoveryTray";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -97,18 +97,6 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // as terminal, so it is matched here too rather than leaving the two modules
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-// isQueuedDrainPartial mirrors appwire.QueuedDrainPartial's own
-// serfErrorInfo discriminator (code -32013, SAME code turn-CAS Conflict
-// uses - the discriminator is the string, never the code alone; see
-// stores/threads.ts's mapConflict for the sibling case). A drain that fails
-// with this specific error already queued the text before the drain step
-// itself failed, so the composer still clears (parity-m5-composer.md §A)
-// while every other drain failure leaves it untouched like any other
-// submit failure.
-function isQueuedDrainPartial(err: unknown): boolean {
-  return err instanceof WireError && err.serfErrorInfo === "queuedDrainPartial";
-}
 
 export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
@@ -354,7 +342,8 @@ export function Composer({ ref }: ComposerProps) {
   // handleDrainSuccess is QueueStrip's own onDrainSuccess seam (its "Steer
   // now" button, a SEPARATE trigger from this component's own classic
   // steer/drain path below): mirrors the legacy "the textarea clears" rule
-  // on a successful drain, gated the SAME way clearIfUnchanged gates this
+  // after the drain is durably recorded, gated the SAME way
+  // clearIfUnchanged gates this
   // component's own drain path - only if the text is unchanged since the
   // drain was TRIGGERED (lastDrainSnapshotRef, populated by getComposerText
   // below at the moment QueueStrip actually read it), not unconditionally.
@@ -386,29 +375,17 @@ export function Composer({ ref }: ComposerProps) {
   // parks the cursor at the very end, and the textarea is refocused - same
   // as legacy's own ta.focus() call.
   //
-  // Both wave-5 "restore to composer" seams share this exact behavior:
-  // QueueStrip's own onRestoreToComposer (a queued-entry edit) AND AskDock's
-  // onFallbackToComposer (a turn/start Conflict on the ask-answers path).
-  // Legacy's OWN two equivalent functions actually diverge here -
-  // dropComposedTextIntoComposer (renderer.js:6238-6245) unconditionally
-  // overwrites `ta.value = text`, dropping whatever was already typed -
-  // but legacy never had to contend with a hidden composer whose own React
-  // state survives underneath (this rewrite's AskDock only hides/inerts the
-  // input row via useAskDockPending below; it never clears Composer's own
-  // `text` state). Overwriting here would silently discard a draft the user
-  // started before an unrelated question ever arrived, so this wave's own
-  // integration deliberately reuses the queue-edit merge behavior for both
-  // seams rather than porting the overwrite - a considered choice, not a
-  // parity citation.
+  // QueueStrip uses this behavior when a queued entry is moved back into
+  // the composer for editing.
   //
   // Deliberately typed to accept only `restoredText`, not the second
   // `attachments` parameter QueueStripProps.onRestoreToComposer's own
   // signature allows for - a queued entry's edit is a text-only recompose
   // per parity (contracts-composer-queue-pending.md:70, parity-m5-
   // composer.md:102): dropped image attachments surface via QueueStrip's
-  // own reportRemovedImages warning toast, never restored here. Any
-  // attachments argument a caller passes is simply extra to a JS/TS call
-  // and never reaches this function's body.
+  // own durable queue state, never restored here. Any attachments argument a
+  // caller passes is simply extra to a JS/TS call and never reaches this
+  // function's body.
   function restoreTextToComposer(restoredText: string): void {
     const existing = textRef.current;
     const merged = existing.trim() === "" ? restoredText : `${existing.replace(/\s+$/, "")}\n\n${restoredText}`;
@@ -473,21 +450,8 @@ export function Composer({ ref }: ComposerProps) {
           text: submittedText,
           attachments: payload,
           onFailure: (err) => {
-            if (isPendingConfirmationTimeoutError(err)) {
-              const label =
-                kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-              toasts.push("warning", `${label} was accepted, but this view didn't update. Reload before retrying.`);
-            } else if (kind === "drain" && isQueuedDrainPartial(err)) {
-              // No sessionActionError here: this branch is QueuedDrainPartial
-              // by construction, never a launch failure, and the label
-              // records a step that already succeeded - the resume must not
-              // take it over and drop "after queueing".
-              toasts.push("error", `Drain failed after queueing: ${errorText(err)}`);
-            } else {
-              const label =
-                kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-              toasts.push("error", sessionActionError(`${label} failed`, err));
-            }
+            const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
+            toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
         () => {
@@ -499,15 +463,9 @@ export function Composer({ ref }: ComposerProps) {
       );
       clearIfUnchanged(submittedText);
       attachments.clearSubmitted(submittedMarkers);
-    } catch (err) {
-      // Already reported via onFailure above. A queuedDrainPartial failure
-      // still clears the composer (the text was already queued before the
-      // drain step itself failed) - every other failure leaves it untouched,
-      // same as before this method was wrapped.
-      if (kind === "drain" && isQueuedDrainPartial(err)) {
-        clearIfUnchanged(submittedText);
-        attachments.clearSubmitted(submittedMarkers);
-      }
+    } catch {
+      // The local durable write failed. The submitted composer payload stays
+      // untouched and no network request was eligible to start.
     } finally {
       setBusyAction(null);
     }
@@ -623,13 +581,10 @@ export function Composer({ ref }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
-      {/* T4: ask dock - renders above the queue strip; onFallbackToComposer
-          reuses the same restoreTextToComposer merge as QueueStrip's own
-          onRestoreToComposer above (see that function's own doc comment for
-          why both seams share it). useAskDockPending(ref) (askPending,
-          above) hides/inerts the input row below while a question is
-          pending - AskDock owns answering while questions pend. */}
-      <AskDock ref={ref} onFallbackToComposer={restoreTextToComposer} />
+      {/* T4: ask dock - renders above the queue strip.
+          useAskDockPending(ref) (askPending, above) hides/inerts the input
+          row below while a question is pending. */}
+      <AskDock ref={ref} />
       {/* Screen-reader-only: announces the OTHER half of parity-m5-
           composer.md line 118's status-region transition - AskDock's own
           anchor announces "Answer the agent's questions." on entry but
@@ -642,6 +597,7 @@ export function Composer({ ref }: ComposerProps) {
       <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
         {readyAnnouncement}
       </div>
+      <RecoveryTray sessionRef={ref} threadId={model?.threadId} />
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc

@@ -7,7 +7,7 @@ import type {
   RecoveryResendTarget,
 } from "./mutationOutbox";
 
-type MutationOutboxOperation = "enqueueIntent" | "transferToRecovery" | "resendRecovery";
+type MutationOutboxOperation = "enqueueIntent" | "transferToRecovery" | "updateRecovery" | "resendRecovery";
 
 export interface MutationOutboxIndexedDBOptions {
   indexedDB?: IDBFactory;
@@ -181,6 +181,24 @@ export class MutationOutboxIndexedDB {
       return records
         .filter((record) => targetRef === undefined || record.targetRef === targetRef)
         .sort((left, right) => left.intentSequence - right.intentSequence);
+    });
+  }
+
+  async updateRecovery(
+    clientMutationId: string,
+    update: Pick<MutationRecoveryRecord, "payload" | "optimisticDisplay">,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    return this.#write(RECOVERY_STORE, "updateRecovery", async (transaction) => {
+      const store = transaction.objectStore(RECOVERY_STORE);
+      const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
+      if (!record) return undefined;
+      const next: MutationRecoveryRecord = {
+        ...record,
+        payload: { ...update.payload },
+        optimisticDisplay: update.optimisticDisplay,
+      };
+      await requestResult(store.put(next));
+      return next;
     });
   }
 

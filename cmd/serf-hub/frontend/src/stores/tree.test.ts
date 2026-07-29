@@ -625,7 +625,7 @@ describe("notification-triggered refetch", () => {
 
     fake.emitNotification({
       method: "turn/started",
-      params: { threadId: "t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+      params: { threadId: "t", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
     });
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetchMock).not.toHaveBeenCalled();

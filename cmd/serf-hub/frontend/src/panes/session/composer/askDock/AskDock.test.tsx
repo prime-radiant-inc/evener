@@ -1,12 +1,12 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
-import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { readMutationPersistence, resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { AskDock } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
@@ -41,7 +41,7 @@ function testThread(ref: string): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
   };
 }
 
@@ -107,6 +107,7 @@ async function hydrateWithOneAsk(fake: FakeClient, ref = "ref_a"): Promise<void>
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
@@ -117,7 +118,7 @@ test("renders nothing when there is no pending ask for this ref", async () => {
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
 
-  const { container } = render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  const { container } = render(<AskDock ref="ref_a" />);
   expect(container.firstChild).toBeNull();
 });
 
@@ -125,7 +126,7 @@ test("renders the pending question's header and question text once acked", async
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
 
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
 
   expect(screen.getByText("Deploy?")).toBeTruthy();
   expect(screen.getByText("Ship now?")).toBeTruthy();
@@ -135,7 +136,7 @@ test("a question acked after the dock is already mounted appears without remount
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
   expect(screen.queryByText("Deploy?")).toBeNull();
 
   await act(async () => {
@@ -158,7 +159,7 @@ test("shows an N of M answered footer count that updates as questions are answer
   startTurn(fake, "ref_a", "turn_1");
   ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", twoQuestions);
 
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
 
   expect(screen.getByText(/0 of 2 questions answered/i)).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "a" }));
@@ -168,7 +169,7 @@ test("shows an N of M answered footer count that updates as questions are answer
 test("Send is enabled even with nothing answered - an unresolved question composes as skip", async () => {
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
 
   const sendBtn = screen.getByRole("button", { name: /send answers/i });
   expect(sendBtn).not.toHaveProperty("disabled", true);
@@ -178,100 +179,27 @@ test("clicking Send composes and submits through the plain send() path, then the
   const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
-  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
 
   await user.click(screen.getByRole("button", { name: /send answers/i }));
 
-  const call = fake.calls.find((c) => c.method === "turn/start");
-  expect(call?.params).toEqual({
-    ref: "ref_a",
-    input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
+  await waitFor(async () => {
+    const [record] = (await readMutationPersistence("ref_a")).outbox;
+    expect(record?.payload).toMatchObject({
+      ref: "ref_a",
+      input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
+    });
   });
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
   expect(screen.queryByText("Deploy?")).toBeNull();
-});
-
-test("the Send button disables the instant a send is in flight and re-enables on a retryable error", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  await hydrateWithOneAsk(fake);
-  fake.on("turn/start", () => {
-    throw new Error("network hiccup");
-  });
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
-
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-
-  const sendBtn = screen.getByRole("button", { name: /send answers/i });
-  expect(sendBtn.hasAttribute("disabled")).toBe(false);
-});
-
-test("a Conflict rejection hands the composed text to onFallbackToComposer and removes the dock", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  await hydrateWithOneAsk(fake);
-  fake.on("turn/start", () => {
-    throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
-  });
-  const onFallbackToComposer = vi.fn();
-  render(<AskDock ref="ref_a" onFallbackToComposer={onFallbackToComposer} />);
-
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-
-  expect(onFallbackToComposer).toHaveBeenCalledWith("[answers]\n1. [Deploy?] → skipped (no answer)");
-  expect(screen.queryByText("Deploy?")).toBeNull();
-});
-
-test("a non-Conflict rejection does NOT call onFallbackToComposer - the dock stays, retryable", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  await hydrateWithOneAsk(fake);
-  fake.on("turn/start", () => {
-    throw new Error("network hiccup");
-  });
-  const onFallbackToComposer = vi.fn();
-  render(<AskDock ref="ref_a" onFallbackToComposer={onFallbackToComposer} />);
-
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-
-  expect(onFallbackToComposer).not.toHaveBeenCalled();
-  expect(screen.getByText("Deploy?")).toBeTruthy();
-});
-
-test("two independent pending sets each get their own footer and Send button", async () => {
-  const fake = connectFakeClient();
-  await hydrateWithOneAsk(fake);
-  let resolveSend!: () => void;
-  fake.on(
-    "turn/start",
-    () =>
-      new Promise((resolve) => {
-        resolveSend = () => resolve({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } });
-      }),
-  );
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
-
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: /send answers/i }));
-  await act(async () => {
-    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", [
-      { header: "Second", question: "q2", options: [{ label: "x", detail: "y" }] },
-    ]);
-  });
-
-  expect(screen.getAllByRole("button", { name: /send answers/i })).toHaveLength(2);
-  const sendButtons = screen.getAllByRole("button", { name: /send answers/i });
-  expect(sendButtons.some((b) => b.hasAttribute("disabled"))).toBe(true);
-  expect(sendButtons.some((b) => !b.hasAttribute("disabled"))).toBe(true);
-
-  resolveSend();
 });
 
 test("Escape does not dismiss the dock or clear any in-progress selection", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
 
   await user.click(screen.getByRole("radio", { name: "Yes" }));
   await user.keyboard("{Escape}");
@@ -284,7 +212,7 @@ test("auto-focuses the first answer control when the dock first activates", asyn
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
 
   await act(async () => {
     startTurn(fake, "ref_a", "turn_1");
@@ -298,7 +226,7 @@ test("does not steal focus from an in-progress answer when a later ask_user call
   const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
-  render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  render(<AskDock ref="ref_a" />);
   await user.click(screen.getByRole("radio", { name: /something else/i }));
   const freeInput = screen.getByPlaceholderText(/type your answer/i);
   await user.type(freeInput, "partial");
@@ -337,10 +265,19 @@ test("has no residual askDockStore state for this ref after the batch settles an
   const user = userEvent.setup();
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
-  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
-  const { unmount } = render(<AskDock ref="ref_a" onFallbackToComposer={() => {}} />);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  const { unmount } = render(<AskDock ref="ref_a" />);
 
   await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
   unmount();
 
   expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);

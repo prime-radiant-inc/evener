@@ -140,7 +140,7 @@ function threadStartResponse(ref: string): ThreadStartResponse {
       cwd: "/tmp/project",
       cliVersion: "1.0.0",
       source: "local",
-      serf: { ref, capabilities: THREAD_CAPABILITIES, queue: {} },
+      serf: { ref, capabilities: THREAD_CAPABILITIES, queue: { revision: 0 } },
     },
     turn: { id: "turn_1", itemsView: "full", status: "idle" },
   };

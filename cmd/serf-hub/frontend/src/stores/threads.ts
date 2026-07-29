@@ -33,7 +33,14 @@ import type {
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
-import { type MutationAttachment, type MutationIntent, MutationOutbox } from "./mutationOutbox";
+import {
+  type MutationAttachment,
+  type MutationIntent,
+  MutationOutbox,
+  type MutationOutboxOptions,
+  type MutationOutboxRecord,
+  type MutationRecoveryRecord,
+} from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
@@ -258,6 +265,14 @@ interface MutationRuntime {
 }
 
 let mutationRuntime: MutationRuntime | null = null;
+let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
+let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
+const mutationPersistenceListeners = new Set<(targetRefs: string[]) => void>();
+
+function notifyMutationPersistence(targetRefs: Iterable<string>): void {
+  const refs = [...new Set(targetRefs)];
+  for (const listener of mutationPersistenceListeners) listener(refs);
+}
 
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
@@ -306,6 +321,7 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   const refs = [...new Set(targetRefs)];
   for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
+  notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
 
   const client = currentDispatchClient();
@@ -323,14 +339,18 @@ function getMutationRuntime(): MutationRuntime | null {
   if (mutationRuntime) return mutationRuntime;
   if (!globalThis.indexedDB) return null;
 
-  const storage = new MutationOutboxIndexedDB();
-  const dispatcher = new MutationDispatcher(storage, { getClient: currentDispatchClient });
+  const storage = mutationStorageForTests ?? new MutationOutboxIndexedDB();
+  const dispatcher = new MutationDispatcher(storage, {
+    getClient: currentDispatchClient,
+    onStorageChange: notifyMutationPersistence,
+  });
   let runtime: MutationRuntime;
   const outbox = new MutationOutbox(storage, {
     isReady: () => currentDispatchClient() !== null,
     onDiscover: (targetRefs) => {
       handleDiscoveredMutations(runtime, targetRefs);
     },
+    createBroadcastChannel: createMutationBroadcastChannelForTests,
   });
   runtime = {
     storage,
@@ -348,6 +368,71 @@ function requireMutationRuntime(): MutationRuntime {
   const runtime = getMutationRuntime();
   if (!runtime) throw new Error("threads store: IndexedDB is unavailable; mutation was not sent");
   return runtime;
+}
+
+export interface MutationPersistenceSnapshot {
+  outbox: MutationOutboxRecord[];
+  recovery: MutationRecoveryRecord[];
+}
+
+export function subscribeMutationPersistence(listener: (targetRefs: string[]) => void): () => void {
+  mutationPersistenceListeners.add(listener);
+  return () => mutationPersistenceListeners.delete(listener);
+}
+
+export async function readMutationPersistence(targetRef?: string): Promise<MutationPersistenceSnapshot> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return { outbox: [], recovery: [] };
+  await runtime.start;
+  const [outbox, recovery] = await Promise.all([
+    runtime.storage.listOutbox(targetRef),
+    runtime.storage.listRecovery(targetRef),
+  ]);
+  return { outbox, recovery };
+}
+
+export async function retryBlockedMutation(clientMutationId: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.getOutbox(clientMutationId);
+  if (record?.state !== "blockedUnknown") return false;
+  await runtime.storage.markUnknown(clientMutationId, "submitting");
+  notifyMutationPersistence([record.targetRef]);
+  handleDiscoveredMutations(runtime, [record.targetRef]);
+  return true;
+}
+
+export async function updateRecoveryMutation(
+  clientMutationId: string,
+  payload: Record<string, unknown>,
+  optimisticDisplay: unknown,
+): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.updateRecovery(clientMutationId, { payload, optimisticDisplay });
+  if (!record) return false;
+  notifyMutationPersistence([record.targetRef]);
+  return true;
+}
+
+export async function resendRecoveryMutation(
+  clientMutationId: string,
+  targetRef: string,
+  threadId?: string,
+): Promise<MutationOutboxRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.resendRecovery(clientMutationId, { targetRef, threadId });
+  if (!record) return undefined;
+  pinnedMutationRefs.add(targetRef);
+  notifyMutationPersistence([targetRef]);
+  handleDiscoveredMutations(runtime, [targetRef]);
+  return record;
+}
+
+export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
+  if (mutationRuntime) throw new Error("setMutationStorageForTests must run before the mutation runtime starts");
+  mutationStorageForTests = storage;
 }
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
@@ -520,6 +605,7 @@ async function enqueueMutation(
     attachments: durableAttachments(attachments),
     optimisticDisplay,
   });
+  notifyMutationPersistence([ref]);
 }
 
 // mapConflict recognizes the WireError shape the daemon uses for a lost turn
@@ -1671,6 +1757,14 @@ export function resetThreadsStoreForTests(): void {
     mutationRuntime.storage.close();
     mutationRuntime = null;
   }
+  mutationStorageForTests = null;
+  createMutationBroadcastChannelForTests = () => {
+    const channel = new EventTarget();
+    return Object.assign(channel, {
+      postMessage() {},
+      close() {},
+    });
+  };
   pinnedMutationRefs.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;

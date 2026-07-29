@@ -1,3 +1,4 @@
+import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
@@ -128,7 +129,7 @@ function wireThread(ref: string): Thread {
     cwd: "/tmp/p",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPS, queue: {} },
+    serf: { ref, capabilities: CAPS, queue: { revision: 0 } },
   };
 }
 
@@ -166,6 +167,7 @@ function cmd(id: string): Command {
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -318,12 +320,20 @@ test("/steer is blocked with the floor's message and makes no wire call when the
 
 test("/steer sends turn/steer when a turn is active", async () => {
   const fake = connectFake();
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const c = cmd("steer");
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
+  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
   const call = fake.calls.find((call) => call.method === "turn/steer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });

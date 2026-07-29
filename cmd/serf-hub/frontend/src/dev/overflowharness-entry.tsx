@@ -74,7 +74,7 @@ const snapshot: ThreadReadResponse = {
     cwd: "/Users/jesse/prime-radiant/toil-suite/serf",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref: REF, capabilities: CAPABILITIES, queue: {}, cost: "~$0.06" },
+    serf: { ref: REF, capabilities: CAPABILITIES, queue: { revision: 0 }, cost: "~$0.06" },
     turns: [
       {
         id: "turn_1",

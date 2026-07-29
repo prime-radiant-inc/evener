@@ -8,17 +8,12 @@
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
 import { type ReactNode, useState } from "react";
-import { errorText, sessionActionError, WireError } from "../../../../protocol/errors";
-import type { TurnCancelQueuedResponse } from "../../../../protocol/types.gen";
+import { errorText, sessionActionError } from "../../../../protocol/errors";
 import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import {
-  isPendingConfirmationTimeoutError,
-  submitWithPendingTracking,
-  usePendingTurnEntries,
-} from "./pendingTurnsStore";
+import { submitWithPendingTracking, usePendingTurnEntries } from "./pendingTurnsStore";
 import { queueEntryPreviewText, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
@@ -38,10 +33,6 @@ const CLASS = {
 // verbatim, per that file's own established per-file-duplication style
 // (sandboxEscalation.tsx carries an identical copy rather than a shared
 // util).
-function isQueuedDrainPartial(err: unknown): boolean {
-  return err instanceof WireError && err.serfErrorInfo === "queuedDrainPartial";
-}
-
 export interface QueueStripProps {
   ref: string;
   // Returns the composer's CURRENT text/attachments/hasPending at the moment
@@ -66,9 +57,8 @@ export interface QueueStripProps {
   // parameter is kept for signature symmetry with a general "restore to
   // composer" seam the integration may reuse for other callers.
   onRestoreToComposer(text: string, attachments?: InputAttachment[]): void;
-  // Called once a drain-as-steer request succeeds, so the integration can
-  // clear the composer's own text/attachment state (mirrors the legacy
-  // "the textarea clears" behavior on a successful drain).
+  // Called once a drain-as-steer intent commits to IndexedDB, so the
+  // integration can clear the unchanged composer text/attachment snapshot.
   onDrainSuccess(): void;
   // True while EITHER surface has an in-flight submit/steer/queue/drain -
   // the shared busy gate (Composer.tsx's own busyAction, extended with a
@@ -76,14 +66,13 @@ export interface QueueStripProps {
   // Steer-now button below the same way Composer's own busyAction disables
   // its classic Send/Steer/Stop controls, closing the race where both
   // surfaces' drain-capable buttons could fire concurrently - both
-  // ultimately call the SAME drainAsSteer RPC (w5-integration-wiring-
+  // ultimately enqueue the SAME drainAsSteer mutation (w5-integration-wiring-
   // report.md's "two Steer buttons" concern).
   busy: boolean;
   // Reports this component's OWN drain busy transitions upward so Composer
   // can fold them into its shared busyAction gate - called with true right
-  // before the drain RPC starts and false once it settles (success or
-  // failure), replacing what used to be a local, Composer-invisible
-  // `draining` state.
+  // before the durable enqueue starts and false once it commits or fails,
+  // replacing what used to be a local, Composer-invisible `draining` state.
   onDrainBusyChange(busy: boolean): void;
 }
 
@@ -153,17 +142,6 @@ export function QueueStrip({
     });
   }
 
-  // reportRemovedImages surfaces the shared "images weren't restored"
-  // warning both a plain cancel and an edit's own cancel step can produce -
-  // a contract row for both flows, not just edit's.
-  function reportRemovedImages(result: TurnCancelQueuedResponse): void {
-    const n = result.removedImages ?? 0;
-    if (n <= 0) return;
-    const noun = n === 1 ? "image attachment" : "image attachments";
-    const pronoun = n === 1 ? "it" : "them";
-    toasts.push("warning", `Removed from the queue, but ${n} ${noun} weren't restored - please re-attach ${pronoun}.`);
-  }
-
   async function handlePromote(index: number, entryId: string): Promise<void> {
     setRowBusy(entryId, true);
     try {
@@ -184,8 +162,7 @@ export function QueueStrip({
   async function handleCancel(index: number, entryId: string): Promise<void> {
     setRowBusy(entryId, true);
     try {
-      const result = await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
-      reportRemovedImages(result);
+      await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't remove this message from the queue", err));
     } finally {
@@ -199,8 +176,7 @@ export function QueueStrip({
     // regardless of whether the cancel below succeeds (contract row).
     onRestoreToComposer(fullText);
     try {
-      const result = await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
-      reportRemovedImages(result);
+      await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
     } catch (err) {
       toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
     } finally {
@@ -222,22 +198,8 @@ export function QueueStrip({
           method: "drain",
           text,
           attachments,
-          // Covers BOTH an immediate perform() rejection and - later,
-          // asynchronously - the 10s timeout reaper (there is no other way
-          // to observe that second case from this handler's own try/catch
-          // below, which only wraps the initial await).
-          // The partial branch keeps its own wording rather than deferring to
-          // sessionActionError: it is QueuedDrainPartial by construction,
-          // never a launch failure, and its label records a step that already
-          // succeeded - the resume must not take it over and drop "Queued".
           onFailure: (err) => {
-            if (isPendingConfirmationTimeoutError(err)) {
-              toasts.push("warning", "Drain was accepted, but this view didn't update. Reload before retrying.");
-            } else if (isQueuedDrainPartial(err)) {
-              toasts.push("error", `Queued, but drain failed: ${errorText(err)}`);
-            } else {
-              toasts.push("error", sessionActionError("Drain failed", err));
-            }
+            toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
         () => threadsStore.getState().drainAsSteer(sessionRef, text, attachments),

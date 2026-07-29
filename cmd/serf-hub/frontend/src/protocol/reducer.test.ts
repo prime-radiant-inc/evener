@@ -245,11 +245,11 @@ test("hydrate carries the thread's location facts (cwd, git branch, project path
 
 test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
   const zero = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 0 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 0 },
   });
   expect(zero.activeTurnStartedAt).toBeUndefined();
   const negative = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: -1 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: -1 },
   });
   expect(negative.activeTurnStartedAt).toBeUndefined();
 });
@@ -488,7 +488,10 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   // thread B. Applying A's completion notification to B's model (e.g. a
   // store-layer routing bug, or delivery before the store learns better)
   // must be a true no-op: same reference, B's content untouched.
-  const threadA = testThread({ id: "thr_a", serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {} } });
+  const threadA = testThread({
+    id: "thr_a",
+    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+  });
   let modelA = hydrateThread({ thread: threadA }, threadA.serf.ref, 1000);
   modelA = applyNotification(
     modelA,
@@ -520,7 +523,7 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
 
   const threadB = testThread({
     id: "thr_b",
-    serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: {} },
+    serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 } },
     turns: [
       {
         id: "turn_1",
@@ -1443,10 +1446,14 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
 // the reducer must NOT recompute this thread field from item lifecycle - doing
 // so clobbers the wire's authoritative value whenever items churn.
 test("askPending is wire-authoritative from the thread snapshot", () => {
-  const asking = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
+  const asking = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+  });
   expect(asking.askPending).toBe(true);
 
-  const notAsking = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: false } });
+  const notAsking = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: false },
+  });
   expect(notAsking.askPending).toBe(false);
 
   // Absent on the wire (omitempty) defaults to false.
@@ -1479,7 +1486,9 @@ test("item lifecycle never clobbers the wire's thread-level askPending", () => {
   // waiting across an ask_user call's whole open->settle lifecycle: the tool
   // call completing is NOT a wire signal that the thread-level ask was
   // answered (that arrives only via the next snapshot / HasPendingAsk).
-  let waiting = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
+  let waiting = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+  });
   waiting = applyNotification(waiting, turnStarted, 1001);
   waiting = applyNotification(waiting, askUser("item/started", "inProgress"), 1002);
   expect(waiting.askPending).toBe(true);
@@ -1862,7 +1871,7 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
     serf: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
     },
@@ -2472,7 +2481,7 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
 test("hydrateThread maps serf.pendingEscalations verbatim into pendingEscalations", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
   expect(model.pendingEscalations).toEqual([escalation]);
 });
@@ -2489,7 +2498,9 @@ test("hydrateThread defaults pendingEscalations to an empty array when serf.pend
 // or an uncataloged model) — an honest "unknown" the status row renders as no
 // chip, never a misleading ~$0.00.
 test("hydrateThread maps serf.cost into the model, null when absent", () => {
-  const withCost = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, cost: "~$1.23" } });
+  const withCost = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, cost: "~$1.23" },
+  });
   expect(withCost.cost).toBe("~$1.23");
 
   expect(testHydrate().cost).toBeNull();
@@ -2499,7 +2510,7 @@ test("hydrateThread preserves task aggregate through notification mutation and r
   const snapshot = {
     ref: "ref_t",
     capabilities: CAPABILITIES,
-    queue: {},
+    queue: { revision: 0 },
     tasks: { total: 7, done: 6 },
   };
   let model = testHydrate({ serf: snapshot });
@@ -2516,7 +2527,7 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     serf: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       tasks: { total: 7, done: 7 },
     },
   });
@@ -2527,7 +2538,7 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
   expect(testHydrate().tasks).toBeNull();
   expect(
     testHydrate({
-      serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, tasks: { total: 0, done: 0 } },
+      serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, tasks: { total: 0, done: 0 } },
     }).tasks,
   ).toEqual({ total: 0, done: 0 });
 });
@@ -2546,7 +2557,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
     serf: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       goal: { status: "active", iterations: 2 },
       contextUsed: 12_000,
       contextWindow: 200_000,
@@ -2608,7 +2619,7 @@ test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive li
     serf: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       goal: { status: "active", iterations: 1 },
       contextUsed: 500,
       contextWindow: 100_000,
@@ -2661,7 +2672,7 @@ test("thread/status/changed to a non-active status clears the live work-clock an
   // status {type} (types.gen.ts:963-972, reducer.ts:574-577).
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 1_700_000_000_000 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
   });
   expect(model.activeTurnStartedAt).toBe(new Date(1_700_000_000_000).toISOString());
 
@@ -2688,7 +2699,7 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
     serf: {
       ref: "ref_t",
       capabilities: CAPABILITIES,
-      queue: {},
+      queue: { revision: 0 },
       activeTurnId: "turn_1",
       activeTurnStartedAt: 1_700_000_000_000,
     },
@@ -2719,7 +2730,7 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 1_700_000_000_000 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnStartedAt: 1_700_000_000_000 },
   });
   const anchor = model.activeTurnStartedAt;
 
@@ -2738,7 +2749,7 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
 test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
@@ -2756,7 +2767,7 @@ test("pendingEscalations survives a turn/started notification — thread-level s
 test("pendingEscalations survives a turn/completed bare-stamp settle — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
   model = applyNotification(
     model,
@@ -2808,7 +2819,7 @@ test('"serf/sandbox/escalation/requested" with an already-present escalationId r
   const first = testEscalation({ escalationId: "esc_1", mode: "exempt_denied_path" });
   const second = testEscalation({ escalationId: "esc_2", mode: "exempt_command" });
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [first, second] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [first, second] },
   });
 
   const updatedFirst = testEscalation({ escalationId: "esc_1", mode: "exempt_path_prefix", partiallyRan: true });
@@ -2834,7 +2845,7 @@ test('"serf/sandbox/escalation/resolved" clears the matching card by id and stam
   // resolve path already uses (resolvePendingEscalation).
   const escalation = testEscalation();
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
@@ -2857,7 +2868,7 @@ test('"serf/sandbox/escalation/resolved" for an id this client never held leaves
   // notification, and leave the surviving cards untouched.
   const escalation = testEscalation({ escalationId: "esc_1" });
   let model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   model = applyNotification(
@@ -2876,7 +2887,7 @@ test('"serf/sandbox/escalation/resolved" for an id this client never held leaves
 test('"serf/sandbox/escalation/resolved" for a different thread is a same-reference no-op', () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = applyNotification(
@@ -2894,7 +2905,7 @@ test('"serf/sandbox/escalation/resolved" for a different thread is a same-refere
 test("resolvePendingEscalation removes the entry with a matching escalationId", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = resolvePendingEscalation(model, escalation.escalationId);
@@ -2905,7 +2916,7 @@ test("resolvePendingEscalation removes the entry with a matching escalationId", 
 test("resolvePendingEscalation on an unknown escalationId is a same-reference no-op", () => {
   const escalation = testEscalation();
   const model = testHydrate({
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, pendingEscalations: [escalation] },
   });
 
   const result = resolvePendingEscalation(model, "esc_does_not_exist");
@@ -3066,7 +3077,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
 test("thread/status/changed carries a fresher failure count onto the model", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   expect(model.failedToolCalls).toBe(0);
 
@@ -3089,7 +3100,7 @@ test("thread/status/changed carries a fresher failure count onto the model", () 
 test("thread/status/changed without a failure count leaves the hydrated one alone", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 4 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 4 },
   });
   expect(model.failedToolCalls).toBe(4);
 
@@ -3112,7 +3123,7 @@ test("thread/status/changed without a failure count leaves the hydrated one alon
 test("thread/status/changed can push a measured zero", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 2 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 2 },
   });
 
   model = applyNotification(
@@ -3137,7 +3148,7 @@ test("thread/status/changed can push a measured zero", () => {
 test("item/completed carries a fresher failure count onto the model (existing item)", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   model = applyNotification(
     model,
@@ -3183,7 +3194,7 @@ test("item/completed carries a fresher failure count onto the model (existing it
 test("item/completed inserting a new item can also carry a fresher failure count", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 0 },
   });
   model = applyNotification(
     model,
@@ -3220,7 +3231,7 @@ test("item/completed inserting a new item can also carry a fresher failure count
 test("item/completed without a failure count leaves the model's figure alone", () => {
   let model = testHydrate({
     status: { type: "active" },
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 3 },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, failedToolCalls: 3 },
   });
   model = applyNotification(
     model,

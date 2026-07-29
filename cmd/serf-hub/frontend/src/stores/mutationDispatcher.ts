@@ -6,17 +6,20 @@ import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 export interface MutationDispatcherOptions {
   getClient: (targetRef: string) => AppwireClientLike | null | undefined;
+  onStorageChange?: (targetRefs: string[]) => void;
 }
 
 export class MutationDispatcher {
   readonly #storage: MutationOutboxIndexedDB;
   readonly #getClient: MutationDispatcherOptions["getClient"];
+  readonly #onStorageChange: NonNullable<MutationDispatcherOptions["onStorageChange"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
     this.#getClient = options.getClient;
+    this.#onStorageChange = options.onStorageChange ?? (() => undefined);
   }
 
   async dispatchTargets(targetRefs: Iterable<string>): Promise<void> {
@@ -24,9 +27,17 @@ export class MutationDispatcher {
   }
 
   async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
+    const targetRefs = new Set<string>();
     await Promise.all(
-      [...new Set(clientMutationIds)].map((clientMutationId) => this.#storage.settleApplied(clientMutationId)),
+      [...new Set(clientMutationIds)].map(async (clientMutationId) => {
+        const record =
+          (await this.#storage.getOutbox(clientMutationId)) ?? (await this.#storage.getRecovery(clientMutationId));
+        if (await this.#storage.settleApplied(clientMutationId)) {
+          if (record) targetRefs.add(record.targetRef);
+        }
+      }),
     );
+    if (targetRefs.size > 0) this.#onStorageChange([...targetRefs]);
   }
 
   #dispatchTarget(targetRef: string): Promise<void> {
@@ -85,16 +96,19 @@ export class MutationDispatcher {
         return "stop";
       }
       await this.#storage.settleApplied(record.clientMutationId);
+      this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {
       const data = mutationErrorData(error);
       if (data?.clientMutationId !== record.clientMutationId) return "stop";
       if (data?.mutationOutcome === "notAccepted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
+        this.#onStorageChange([record.targetRef]);
         return "advance";
       }
       if (data?.mutationOutcome === "targetDeleted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "orphaned");
+        this.#onStorageChange([record.targetRef]);
         return "advance";
       }
       if (
@@ -102,6 +116,7 @@ export class MutationDispatcher {
         (data.cause === "persistenceUnavailable" || data.retryDisposition === "blocked")
       ) {
         await this.#storage.markUnknown(record.clientMutationId, "blockedUnknown");
+        this.#onStorageChange([record.targetRef]);
       }
       // Request timeouts, transport failures, and automatically retryable
       // unknown outcomes retain submitting. A later ready/discovery event

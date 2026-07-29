@@ -1,21 +1,23 @@
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { connectionStore } from "../../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
-import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
-import { PENDING_TIMEOUT_MS, usePendingTurnEntries } from "./queue/pendingTurnsStore";
+import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -67,7 +69,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -80,6 +82,35 @@ function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+class PausedCommitStorage extends MutationOutboxIndexedDB {
+  readonly commitStarted: Promise<void>;
+  private markCommitStarted: (() => void) | undefined;
+  private releaseCommit: (() => void) | undefined;
+  private readonly commitGate: Promise<void>;
+
+  constructor() {
+    super();
+    this.commitStarted = new Promise((resolve) => {
+      this.markCommitStarted = resolve;
+    });
+    this.commitGate = new Promise((resolve) => {
+      this.releaseCommit = resolve;
+    });
+  }
+
+  release(): void {
+    this.releaseCommit?.();
+  }
+
+  override async enqueueIntent(
+    intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
+  ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
+    this.markCommitStarted?.();
+    await this.commitGate;
+    return super.enqueueIntent(intent);
+  }
 }
 
 async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
@@ -143,10 +174,12 @@ function pendingAskTurns(): Pick<Thread, "turns"> {
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
   // outlives resetThreadsStoreForTests() the same way the toast store
@@ -168,7 +201,7 @@ afterEach(() => {
 });
 
 function textarea(): HTMLTextAreaElement {
-  return screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
+  return screen.getByRole("textbox", { name: /^message$/i }) as HTMLTextAreaElement;
 }
 
 // The composer's controls are addressed by their stable data-testid, not by
@@ -236,7 +269,7 @@ test("the composer's card IS the shared PromptCard widget, not a lookalike", asy
 test("each control's spoken name is its bare verb - no chord glyphs in the name or the label", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
   expect(screen.getByRole("button", { name: "Send" })).toBe(submitButton());
@@ -251,7 +284,7 @@ test("no button renders a chord hint inside itself; the chord lives in the butto
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
 
@@ -271,7 +304,7 @@ test("the Steer tooltip names the chord that fires it", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   await user.hover(steerButton());
   const tip = await screen.findByRole("tooltip");
@@ -284,7 +317,7 @@ test("the Steer tooltip names the chord that fires it", async () => {
 test("every control in the composer's button row is the xs (24px) size", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
 
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
@@ -301,7 +334,7 @@ test("every control in the composer's button row is the xs (24px) size", async (
 test("Stop renders as the word in the dangerQuiet variant, not as an icon", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(stopButton().textContent).toBe("Stop");
   expect(stopButton().querySelector("svg")).toBeNull();
@@ -326,7 +359,7 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
 test("the cluster order is Stop, Send, Steer left to right", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const card = screen.getByTestId("composer-input-card");
   const order = [...card.querySelectorAll("button")]
@@ -342,7 +375,7 @@ test("the cluster order is Stop, Send, Steer left to right", async () => {
 test("while a turn runs, Steer is primary and Send is quiet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(steerButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(submitButton().className.split(" ")).toContain(buttonStyles.quiet);
@@ -362,7 +395,7 @@ test("Send keeps its label while a turn runs, and its tooltip explains the queue
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(submitButton().textContent).toBe("Send");
   await user.hover(submitButton());
@@ -387,7 +420,7 @@ test("Send's tooltip says it sends now when nothing is running", async () => {
 test("an always-visible caption states Send's timing while a turn runs - no hover required", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(screen.getByText(/send queues until the agent stops/i)).toBeTruthy();
 });
@@ -413,7 +446,7 @@ test("the timing caption is absent when nothing is running", async () => {
 test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
 });
@@ -424,7 +457,7 @@ test("the timing caption is absent when busy but the source advertises no queue 
     serf: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, queue: false },
-      queue: {},
+      queue: { revision: 0 },
       activeTurnId: "turn_1",
     },
   });
@@ -444,7 +477,7 @@ test("the timing caption is absent when busy but the source advertises no queue 
 test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     ...pendingAskTurns(),
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
@@ -455,7 +488,15 @@ test("the timing caption is absent while an ask_user question is pending, even t
 test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   await user.type(textarea(), "hello agent");
   expect(submitButton().textContent).toMatch(/send/i);
@@ -468,10 +509,10 @@ test("idle session: submit button reads Send and posts turn/start with the compo
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "hello agent" }] });
 });
 
-test("a successful send clears the textarea and its draft", async () => {
+test("the unchanged submitted payload clears as soon as its local outbox commit succeeds", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
 
   await user.type(textarea(), "hello");
   await user.click(submitButton());
@@ -480,116 +521,72 @@ test("a successful send clears the textarea and its draft", async () => {
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
 });
 
-test("text typed while a send is still in flight survives (not cleared) - the asymmetric unchanged-since-submit condition", async () => {
+test("text edited while the local outbox commit is pending survives that commit", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  let resolveSend: (() => void) | undefined;
-  fake.on(
-    "turn/start",
-    () =>
-      new Promise<{ turn: { id: string; status: string; itemsView: string } }>((resolve) => {
-        resolveSend = () => resolve({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } });
-      }),
-  );
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
 
   await user.type(textarea(), "original");
-  await user.click(submitButton()); // fires the request; submitAction awaits the still-pending promise
+  fireEvent.click(submitButton());
+  await storage.commitStarted;
 
-  // The user keeps typing while the request is in flight - a real,
-  // synchronous DOM change event (not user.type, whose per-keystroke
-  // delays aren't the point here) landing between submit and settlement.
   fireEvent.change(textarea(), { target: { value: "original plus more" } });
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
 
-  resolveSend?.();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  storage.release();
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
 
-  // Give clearIfUnchanged (submitAction's own .then continuation) a chance
-  // to run and settle - if it were going to wrongly clear, it would have
-  // by the time this passes.
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  expect(textarea().value).toBe("original plus more"); // NOT cleared - text changed since submit
-  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more"); // draft untouched
+  expect(textarea().value).toBe("original plus more");
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
 });
 
-test("a failed send leaves the textarea text untouched and surfaces a toast", async () => {
+test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
+  // @ts-expect-error this test exercises the explicit unavailable-storage boundary
+  globalThis.indexedDB = undefined;
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => {
-    throw new Error("daemon unreachable");
-  });
 
   await user.type(textarea(), "hello");
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
   expect(textarea().value).toBe("hello");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-test("a cold send still awaiting turn/start after ten seconds remains optimistic and reports only its later exact rejection", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
-  let rejectStart: ((error: unknown) => void) | undefined;
+test("a lost response never restores submitted content over a newer composer draft", async () => {
+  const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on(
-    "turn/start",
-    () =>
-      new Promise((_resolve, reject) => {
-        rejectStart = reject;
-      }),
-  );
-  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  fake.on("turn/start", () => {
+    throw new Error("response lost");
+  });
 
-  await user.type(textarea(), "hello");
+  await user.type(textarea(), "submitted");
   await user.click(submitButton());
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
-  });
+  await waitFor(() => expect(textarea().value).toBe(""));
+  await user.type(textarea(), "new draft");
 
-  expect(result.current).toHaveLength(1);
-  expect(textarea().value).toBe("hello");
-  expect(getToasts()).toHaveLength(0);
-
-  const failure = new Error("resume rendezvous failed");
-  await act(async () => {
-    rejectStart?.(failure);
-    await vi.advanceTimersByTimeAsync(0);
-  });
-  expect(result.current).toHaveLength(0);
-  expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
-    { kind: "error", text: "Send failed: resume rendezvous failed" },
-  ]);
-});
-
-test("a successful send without an echo reports an accepted-but-stale warning after a full confirmation window", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
-  const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
-
-  await user.type(textarea(), "hello");
-  await user.click(submitButton());
-  expect(getToasts()).toHaveLength(0);
-
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
-  });
-  expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
-    {
-      kind: "warning",
-      text: "Send was accepted, but this view didn't update. Reload before retrying.",
-    },
-  ]);
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(textarea().value).toBe("new draft");
+  expect(screen.queryByText(/reload before retrying/i)).toBeNull();
 });
 
 test("active session with queue capability: Send routes to turn/queue", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
-  fake.on("turn/queue", () => ({}));
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "queued message");
   await user.click(submitButton());
@@ -600,7 +597,15 @@ test("active session with queue capability: Send routes to turn/queue", async ()
 test("submitting an empty composer fires no request", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
   expect(submitButton().disabled).toBe(true);
   await user.click(submitButton());
   // fake.calls already carries mountComposer's own thread/read hydration -
@@ -613,7 +618,15 @@ test("submitting an empty composer fires no request", async () => {
 test("Cmd+Enter always submits, regardless of the enterToSend preference", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   await user.type(textarea(), "quick send");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -624,7 +637,15 @@ test("Cmd+Enter always submits, regardless of the enterToSend preference", async
 test("bare Enter does not submit when enterToSend is off (default)", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   await user.type(textarea(), "line one{Enter}");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
@@ -635,7 +656,15 @@ test("bare Enter submits when enterToSend is on", async () => {
   prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   await user.type(textarea(), "go{Enter}");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
@@ -645,9 +674,16 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "steer this");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
@@ -662,9 +698,16 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "abc");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
@@ -702,7 +745,7 @@ test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter awa
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   await user.hover(steerButton());
   const tip = await screen.findByRole("tooltip");
@@ -716,10 +759,24 @@ test("clicking steer with an empty textarea and empty queue is a focus-only no-o
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/steer", () => ({}));
-  fake.on("turn/drainAsSteer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.click(steerButton());
 
@@ -731,9 +788,16 @@ test("a successful classic steer also clears the textarea and its draft (contrac
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "steer this");
   await user.click(steerButton());
@@ -749,11 +813,18 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
     serf: {
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
-      queue: { depth: 2, preview: ["a", "b"] },
+      queue: { revision: 0, depth: 2, preview: ["a", "b"] },
       activeTurnId: "turn_1",
     },
   });
-  fake.on("turn/drainAsSteer", () => ({}));
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "drain me");
   await user.click(steerButton());
@@ -770,9 +841,16 @@ test("neither steer nor stop renders during the window after status flips active
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} }, // no activeTurnId yet
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId yet
   });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "hi");
   expect(screen.queryByTestId("composer-steer")).toBeNull();
@@ -792,9 +870,16 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} }, // no activeTurnId
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } }, // no activeTurnId
   });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
@@ -806,7 +891,14 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
 test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  fake.on("turn/steer", () => ({}));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.type(textarea(), "hi");
   expect(screen.queryByTestId("composer-steer")).toBeNull(); // nothing to click; the keybinding is the only route
@@ -816,21 +908,53 @@ test("Shift+Enter on an idle session, where no Steer button renders at all, stil
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
-test("a queuedDrainPartial failure still clears the composer and shows a distinct toast", async () => {
+test("an indefinitely pending steer never emits a timeout warning or reload instruction", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { depth: 1 }, activeTurnId: "turn_1" },
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 1 },
+      activeTurnId: "turn_1",
+    },
   });
-  fake.on("turn/drainAsSteer", () => {
-    throw new WireError("already queued, drain failed", -32013, { serfErrorInfo: "queuedDrainPartial" });
-  });
+  fake.on("turn/steer", () => new Promise<never>(() => undefined));
 
-  await user.type(textarea(), "partial");
+  await user.type(textarea(), "patient steer");
   await user.click(steerButton());
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
 
-  await waitFor(() => expect(screen.getByText(/drain failed after queueing/i)).toBeTruthy());
-  expect(textarea().value).toBe("");
+  vi.useFakeTimers();
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+  expect(screen.queryByText(/accepted.*view didn't update/i)).toBeNull();
+  expect(screen.queryByText(/reload/i)).toBeNull();
+});
+
+test("an explicit rejection appears in the recovery tray without replacing a nonempty composer", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+  });
+  fake.on("turn/start", (params) => {
+    throw new WireError("validation failed", -32602, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "none",
+    });
+  });
+
+  await user.type(textarea(), "rejected draft");
+  await user.click(submitButton());
+  await waitFor(() => expect(textarea().value).toBe(""));
+  await user.type(textarea(), "current work");
+
+  await waitFor(() => expect(screen.getByRole("region", { name: "Recovery drafts" })).toBeTruthy());
+  expect((screen.getByRole("textbox", { name: "Recovered message" }) as HTMLTextAreaElement).value).toBe(
+    "rejected draft",
+  );
+  expect(textarea().value).toBe("current work");
 });
 
 // --- which controls the row shows ------------------------------------------
@@ -852,7 +976,7 @@ test("an idle session renders neither steer nor stop - only attach and submit", 
 test("a busy session renders both steer and stop, enabled", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(steerButton().disabled).toBe(false);
   expect(stopButton().disabled).toBe(false);
@@ -864,7 +988,7 @@ test("a busy session on a harness that can't interrupt renders steer but not sto
     serf: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, interrupt: false },
-      queue: {},
+      queue: { revision: 0 },
       activeTurnId: "turn_1",
     },
   });
@@ -878,7 +1002,7 @@ test("a busy session on a harness that can't steer renders stop but not steer", 
     serf: {
       ref: "ref_a",
       capabilities: { ...FULL_CAPABILITIES, steer: false },
-      queue: {},
+      queue: { revision: 0 },
       activeTurnId: "turn_1",
     },
   });
@@ -943,7 +1067,15 @@ test.each(ENDED_STATUSES)(
   async (type) => {
     const user = userEvent.setup();
     const fake = await mountComposer("ref_a", { status: { type } });
-    fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    }));
 
     await user.click(textarea());
     await user.type(textarea(), "wake up and finish the job");
@@ -996,7 +1128,15 @@ test("a live session's field keeps the widget's own default line floor", async (
 test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "notLoaded" } });
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   await user.type(textarea(), "one more thing");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -1010,7 +1150,7 @@ test("an ended session can still be typed into and submitted with the Mod+Enter 
 test("a session whose harness advertises no send at all renders NO card, not a dead one", async () => {
   await mountComposer("ref_a", {
     status: { type: "closed" },
-    serf: { ref: "ref_a", capabilities: { ...FULL_CAPABILITIES, send: false }, queue: {} },
+    serf: { ref: "ref_a", capabilities: { ...FULL_CAPABILITIES, send: false }, queue: { revision: 0 } },
   });
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
@@ -1022,28 +1162,20 @@ test("clicking Stop calls turn/interrupt", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  fake.on("turn/interrupt", () => ({}));
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 
   await user.click(stopButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
-});
-
-test("a failed interrupt surfaces a toast naming the action", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
-  });
-  fake.on("turn/interrupt", () => {
-    throw new Error("not interruptible right now");
-  });
-
-  await user.click(stopButton());
-
-  await waitFor(() => expect(screen.getByText(/interrupt failed/i)).toBeTruthy());
 });
 
 // --- attachments (paste -> chip -> submit) ----------------------------------
@@ -1108,7 +1240,15 @@ test("a successful submit includes the pasted image as a base64 InputAttachment"
   installCanvasStubs();
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   pastePngInto(textarea());
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
@@ -1142,7 +1282,15 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
 
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
 
   pastePngInto(textarea());
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
@@ -1161,7 +1309,7 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
 
   // Assert the thumbnail <img> renders with a data-URL
-  const thumbnail = screen.getByRole("img", { name: /image 1 of 1/i }) as HTMLImageElement;
+  const thumbnail = (await screen.findByRole("img", { name: /image 1 of 1/i })) as HTMLImageElement;
   expect(thumbnail).toBeTruthy();
   expect(thumbnail.src).toMatch(/^data:image\/png;base64,/);
 
@@ -1335,23 +1483,4 @@ test('"/" in a NON-empty composer is a literal slash, not a palette trigger', as
   fireEvent.keyDown(textarea(), { key: "/" });
 
   expect(paletteStore.getState().open).toBe(false);
-});
-
-// A cold session is resumed behind turn/start (cmd/serf-hub/app_session_resume.go).
-// When that resume is what died, "Send failed" would send the user looking at
-// their message rather than at the daemon that would not start.
-test("a send that fails because the session would not start names the start, not the send", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a");
-  fake.on("turn/start", () => {
-    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
-  });
-
-  await user.type(textarea(), "hello");
-  await user.click(submitButton());
-
-  await waitFor(() =>
-    expect(screen.getByText("Couldn't start this session: serf launch-check timed out")).toBeTruthy(),
-  );
-  expect(screen.queryByText(/send failed/i)).toBeNull();
 });

@@ -1,12 +1,12 @@
 // @vitest-environment node
 
+import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
-import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { readMutationPersistence, resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
@@ -38,7 +38,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -117,6 +117,7 @@ function ackAskUserCall(fake: FakeClient, ref: string, turnId: string, itemId: s
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
@@ -243,91 +244,49 @@ describe("sendBatch", () => {
     const fake = connectFakeClient();
     const batchId = await setupOneBatch(fake);
     askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["Yes"] });
-    fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+    fake.on("turn/start", () => new Promise(() => {}));
 
     const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
 
     expect(outcome).toEqual({ outcome: "sent" });
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({ ref: "ref_a", input: [{ type: "text", text: '[answers]\n1. [Deploy?] → "Yes"' }] });
+    const [record] = (await readMutationPersistence("ref_a")).outbox;
+    expect(record?.payload).toMatchObject({
+      ref: "ref_a",
+      input: [{ type: "text", text: '[answers]\n1. [Deploy?] → "Yes"' }],
+    });
   });
 
   test("an unresolved question composes as skipped, matching the ordinary composer's own send path", async () => {
     const fake = connectFakeClient();
     const batchId = await setupOneBatch(fake);
-    fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+    fake.on("turn/start", () => new Promise(() => {}));
 
     await askDockStore.getState().sendBatch("ref_a", batchId);
 
-    const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({
+    const [record] = (await readMutationPersistence("ref_a")).outbox;
+    expect(record?.payload).toMatchObject({
       ref: "ref_a",
       input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
     });
-  });
-
-  test("marks the batch sending for the duration of the request, then removes it on success", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    let resolveSend!: () => void;
-    fake.on(
-      "turn/start",
-      () =>
-        new Promise((resolve) => {
-          resolveSend = () => resolve({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } });
-        }),
-    );
-
-    const pending = askDockStore.getState().sendBatch("ref_a", batchId);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(askDockStore.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(true);
-
-    resolveSend();
-    await pending;
-    expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
   });
 
   test("clears that batch's answers once it settles successfully", async () => {
     const fake = connectFakeClient();
     const batchId = await setupOneBatch(fake);
     askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "skip" });
-    fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+    }));
 
     await askDockStore.getState().sendBatch("ref_a", batchId);
 
     expect(askDockStore.getState().byRef.get("ref_a")?.answers["call_1:0"]).toBeUndefined();
-  });
-
-  test("a Conflict rejection removes the batch (discarded, not settled) and returns the composed text for fallback", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "skip" });
-    fake.on("turn/start", () => {
-      throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
-    });
-
-    const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
-
-    expect(outcome).toEqual({ outcome: "conflict", text: "[answers]\n1. [Deploy?] → skipped (no answer)" });
-    expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
-  });
-
-  test("a later ask_user ack after a Conflict starts a completely fresh pending set, not merged into the discarded one", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    fake.on("turn/start", () => {
-      throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
-    });
-    await askDockStore.getState().sendBatch("ref_a", batchId);
-    expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
-
-    startTurn(fake, "ref_a", "turn_2");
-    ackAskUserCall(fake, "ref_a", "turn_2", "item_2", "call_2");
-
-    const refState = askDockStore.getState().byRef.get("ref_a");
-    expect(refState?.batches).toHaveLength(1);
-    expect(refState?.batches[0]?.questions.map((q) => q.key)).toEqual(["call_2:0"]);
   });
 
   test("a later ask_user ack after a SUCCESSFUL send also never resurrects the already-settled question", async () => {
@@ -338,7 +297,15 @@ describe("sendBatch", () => {
     // route through the same removeBatch.
     const fake = connectFakeClient();
     const batchId = await setupOneBatch(fake);
-    fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+    fake.on("turn/start", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+    }));
     await askDockStore.getState().sendBatch("ref_a", batchId);
     expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
 
@@ -348,43 +315,6 @@ describe("sendBatch", () => {
     const refState = askDockStore.getState().byRef.get("ref_a");
     expect(refState?.batches).toHaveLength(1);
     expect(refState?.batches[0]?.questions.map((q) => q.key)).toEqual(["call_3:0"]);
-  });
-
-  test("a non-Conflict rejection keeps the batch and flips sending back to false (retryable)", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    fake.on("turn/start", () => {
-      throw new Error("network hiccup");
-    });
-
-    const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
-
-    expect(outcome).toEqual({ outcome: "error", message: "Couldn't send answers: network hiccup" });
-    const batch = askDockStore.getState().byRef.get("ref_a")?.batches[0];
-    expect(batch?.id).toBe(batchId);
-    expect(batch?.sending).toBe(false);
-  });
-
-  // The hub resumes a cold session before the answers ever reach a turn
-  // (cmd/serf-hub/app_session_resume.go's withSessionResume). Nothing was
-  // sent when the resume is what died, so the whole message gives way to it -
-  // naming the send would leave the reader retrying answers that never left.
-  test("a failed auto-resume names the resume, not the send", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    fake.on("turn/start", () => {
-      throw new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" });
-    });
-
-    const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
-
-    expect(outcome).toEqual({
-      outcome: "error",
-      message: "Couldn't start this session: fork/exec serf: no such file",
-    });
-    // Still retryable: the resume failing leaves the batch exactly where a
-    // network failure does.
-    expect(askDockStore.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
   });
 
   test("is a no-op (never calls turn/start) when the batch no longer exists - already resolved elsewhere", async () => {
@@ -398,59 +328,5 @@ describe("sendBatch", () => {
 
     expect(outcome).toEqual({ outcome: "stale" });
     expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
-  });
-
-  test("a second concurrent sendBatch call on the same already-sending batch is a no-op", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    let resolveSend!: () => void;
-    fake.on(
-      "turn/start",
-      () =>
-        new Promise((resolve) => {
-          resolveSend = () => resolve({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } });
-        }),
-    );
-
-    const first = askDockStore.getState().sendBatch("ref_a", batchId);
-    await Promise.resolve();
-    await Promise.resolve();
-    const second = await askDockStore.getState().sendBatch("ref_a", batchId);
-
-    expect(second).toEqual({ outcome: "stale" });
-    resolveSend();
-    await first;
-    expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
-  });
-
-  test("a sibling ask_user call acked while this batch's send is in flight forms its own independent batch, never merged into the in-flight one", async () => {
-    const fake = connectFakeClient();
-    const batchId = await setupOneBatch(fake);
-    let resolveSend!: () => void;
-    fake.on(
-      "turn/start",
-      () =>
-        new Promise((resolve) => {
-          resolveSend = () => resolve({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } });
-        }),
-    );
-
-    const pending = askDockStore.getState().sendBatch("ref_a", batchId);
-    await Promise.resolve();
-    await Promise.resolve();
-    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2");
-
-    let refState = askDockStore.getState().byRef.get("ref_a");
-    expect(refState?.batches).toHaveLength(2);
-    const sibling = refState?.batches.find((b) => b.id !== batchId);
-    expect(sibling?.questions.map((q) => q.key)).toEqual(["call_2:0"]);
-    expect(sibling?.sending).toBe(false);
-
-    resolveSend();
-    await pending;
-
-    refState = askDockStore.getState().byRef.get("ref_a");
-    expect(refState?.batches).toHaveLength(1);
-    expect(refState?.batches[0]?.id).toBe(sibling?.id);
   });
 });

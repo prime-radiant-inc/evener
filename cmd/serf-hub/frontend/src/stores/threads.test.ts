@@ -93,7 +93,7 @@ function sameEpochReconnectFixture() {
         items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
       },
     ],
-    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const completion = {
     method: "item/completed" as const,
@@ -267,7 +267,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
     fake.on(
@@ -322,7 +322,7 @@ describe("useThreadsStore.ensureThread", () => {
       if (readCount === 1) {
         return readResponse("ref_a", {
           status: { type: "active" },
-          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
         });
       }
       return new Promise<ThreadReadResponse>((resolve) => {
@@ -354,7 +354,7 @@ describe("useThreadsStore.ensureThread", () => {
     replacementRead.resolve?.(
       readResponse("ref_a", {
         status: { type: "active" },
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.capabilities.queue === true);
@@ -377,7 +377,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
@@ -427,14 +427,14 @@ describe("useThreadsStore.ensureThread", () => {
     reads[1]?.(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
     reads[0]?.(
       readResponse("ref_a", {
         turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -479,7 +479,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[1]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -532,7 +532,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await ensuring;
@@ -572,7 +572,7 @@ describe("useThreadsStore.ensureThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_authoritative");
@@ -740,7 +740,7 @@ describe("useThreadsStore.ensureThread", () => {
             items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
           },
         ],
-        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
     );
     await ensuring;
@@ -876,7 +876,7 @@ describe("useThreadsStore.ensureThread", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const completion = {
       method: "item/completed" as const,
@@ -1258,12 +1258,12 @@ describe("notification routing", () => {
       if (ref === "ref_a") {
         return readResponse("ref_a", {
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         });
       }
       return readResponse("ref_b", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
-        serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+        serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       });
     });
 
@@ -1334,7 +1334,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const reconnectRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
@@ -1499,7 +1499,7 @@ describe("reconnect resubscribe", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     let aReadCount = 0;
     let resolveA: ((response: ThreadReadResponse) => void) | null = null;
@@ -2240,7 +2240,7 @@ describe("useThreadsStore.resolveEscalation", () => {
       serf: {
         ref,
         capabilities: CAPABILITIES,
-        queue: {},
+        queue: { revision: 0 },
         pendingEscalations: [
           {
             ref,
@@ -2785,7 +2785,7 @@ describe("useThreadsStore.watchThread", () => {
           items: [{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "", status: "inProgress" }],
         },
       ],
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     });
     const completion = {
       method: "item/completed" as const,
@@ -3047,7 +3047,7 @@ describe("useThreadsStore.watchThread", () => {
         return readResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_before", status: "completed", itemsView: "full", items: [] }],
-          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+          serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
         });
       }
       return new Promise<ThreadReadResponse>((resolve) => {
@@ -3079,7 +3079,7 @@ describe("useThreadsStore.watchThread", () => {
       readResponse("ref_a", {
         status: { type: "active" },
         turns: [{ id: "turn_after", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.capabilities.queue === true);
@@ -3122,20 +3122,20 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_newest", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_newest");
     reads[1]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_superseded", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     reads[0]?.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_initial", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: false }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -3182,7 +3182,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[1]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -3237,7 +3237,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await watching;
@@ -3279,7 +3279,7 @@ describe("useThreadsStore.watchThread", () => {
     reads[2]!.resolve(
       readResponse("ref_a", {
         turns: [{ id: "turn_authoritative", status: "completed", itemsView: "full", items: [] }],
-        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: {} },
+        serf: { ref: "ref_a", capabilities: { ...CAPABILITIES, queue: true }, queue: { revision: 0 } },
       }),
     );
     await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id === "turn_authoritative");

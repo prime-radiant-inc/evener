@@ -1,15 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
-import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { PENDING_TIMEOUT_MS, resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
+import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -39,7 +39,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
     ...overrides,
   };
@@ -107,6 +107,7 @@ function DrainBusyHarness(overrides: Partial<Parameters<typeof QueueStrip>[0]> =
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
@@ -132,7 +133,9 @@ describe("visibility", () => {
 
   test("renders nothing when the queue is empty and no pending entries exist", async () => {
     const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", { serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { depth: 0 } } });
+    await hydrate(fake, "ref_a", {
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+    });
     renderStrip(defaultProps());
     expect(screen.queryByText(/queued messages/i)).toBeNull();
   });
@@ -143,7 +146,7 @@ describe("visibility", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
       },
     });
     renderStrip(defaultProps());
@@ -158,6 +161,7 @@ describe("row rendering", () => {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
+          revision: 0,
           depth: 2,
           ids: ["q1", "q2"],
           texts: ["first queued message", "second queued message"],
@@ -185,7 +189,7 @@ describe("row rendering", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: [long], preview: [long] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: [long], preview: [long] },
       },
     });
     renderStrip(defaultProps());
@@ -215,10 +219,17 @@ describe("promote", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
       },
     });
-    fake.on("turn/promoteQueuedAsSteer", () => ({}));
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     renderStrip(defaultProps());
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
@@ -226,31 +237,10 @@ describe("promote", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
-  });
-
-  test("a failed promote shows an error toast and leaves the row in place", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
-      },
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
     });
-    fake.on("turn/promoteQueuedAsSteer", () => {
-      throw new Error("queue shifted");
-    });
-    renderStrip(defaultProps());
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
-    await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
-    });
-
-    await screen.findByText(/couldn't steer with this message now.*queue shifted/i);
-    expect(await screen.findAllByRole("listitem")).toHaveLength(1);
   });
 });
 
@@ -261,10 +251,18 @@ describe("cancel", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
       },
     });
-    fake.on("turn/cancelQueued", () => ({ removedText: "hello" }));
+    fake.on("turn/cancelQueued", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      removedText: "hello",
+    }));
     renderStrip(defaultProps());
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
@@ -272,51 +270,10 @@ describe("cancel", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
-  });
-
-  test("a successful cancel that removed images shows a warning toast about re-attaching", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
-      },
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
     });
-    fake.on("turn/cancelQueued", () => ({ removedText: "hello", removedImages: 2 }));
-    renderStrip(defaultProps());
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
-    await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
-    });
-
-    await screen.findByText(/2 image attachments weren't restored/i);
-  });
-
-  test("a failed cancel shows an error toast and the row stays", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
-      },
-    });
-    fake.on("turn/cancelQueued", () => {
-      throw new Error("already consumed");
-    });
-    renderStrip(defaultProps());
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
-    await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
-    });
-
-    await screen.findByText(/couldn't remove.*already consumed/i);
-    expect(await screen.findAllByRole("listitem")).toHaveLength(1);
   });
 });
 
@@ -327,13 +284,21 @@ describe("edit", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full untruncated message"], preview: ["the full…"] },
       },
     });
     const calls: string[] = [];
-    fake.on("turn/cancelQueued", () => {
+    fake.on("turn/cancelQueued", (params) => {
       calls.push("cancelQueued");
-      return { removedText: "the full untruncated message" };
+      return {
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread_a",
+          projectionState: "reflected",
+        },
+        removedText: "the full untruncated message",
+      };
     });
     const onRestoreToComposer = vi.fn(() => calls.push("restore"));
     renderStrip(defaultProps({ onRestoreToComposer }));
@@ -344,31 +309,7 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("the full untruncated message");
-    expect(calls).toEqual(["restore", "cancelQueued"]);
-  });
-
-  test("if the underlying cancel fails, the restored text stays (already applied) and the toast says so", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
-      },
-    });
-    fake.on("turn/cancelQueued", () => {
-      throw new Error("already consumed");
-    });
-    const onRestoreToComposer = vi.fn();
-    renderStrip(defaultProps({ onRestoreToComposer }));
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
-    await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
-    });
-
-    expect(onRestoreToComposer).toHaveBeenCalledWith("hello");
-    await screen.findByText(/moved to the composer.*couldn't remove.*already consumed/i);
+    await waitFor(() => expect(calls).toEqual(["restore", "cancelQueued"]));
   });
 
   test("edit is disabled for an image-only queued entry (blank text)", async () => {
@@ -377,7 +318,7 @@ describe("edit", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: [""], preview: ["[image]"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: [""], preview: ["[image]"] },
       },
     });
     renderStrip(defaultProps());
@@ -393,7 +334,7 @@ describe("edit", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], preview: ["hello"] },
       },
     });
     renderStrip(defaultProps());
@@ -420,6 +361,7 @@ describe("re-rendering after the queue shifts", () => {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
+          revision: 0,
           depth: 2,
           ids: ["q1", "q2"],
           texts: ["first queued message", "second queued message"],
@@ -427,7 +369,14 @@ describe("re-rendering after the queue shifts", () => {
         },
       },
     });
-    fake.on("turn/promoteQueuedAsSteer", () => ({}));
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     renderStrip(defaultProps());
 
     // The daemon confirms the FIRST entry (q1) was consumed elsewhere (e.g.
@@ -439,7 +388,13 @@ describe("re-rendering after the queue shifts", () => {
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          queue: { depth: 1, ids: ["q2"], texts: ["second queued message"], preview: ["second queued message"] },
+          queue: {
+            revision: 0,
+            depth: 1,
+            ids: ["q2"],
+            texts: ["second queued message"],
+            preview: ["second queued message"],
+          },
         },
       });
     });
@@ -450,8 +405,10 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+    });
   });
 
   test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
@@ -461,6 +418,7 @@ describe("re-rendering after the queue shifts", () => {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
+          revision: 0,
           depth: 2,
           ids: ["q1", "q2"],
           texts: ["first queued message", "second queued message"],
@@ -468,7 +426,15 @@ describe("re-rendering after the queue shifts", () => {
         },
       },
     });
-    fake.on("turn/cancelQueued", () => ({ removedText: "second queued message" }));
+    fake.on("turn/cancelQueued", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+      removedText: "second queued message",
+    }));
     renderStrip(defaultProps());
 
     act(() => {
@@ -477,7 +443,13 @@ describe("re-rendering after the queue shifts", () => {
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          queue: { depth: 1, ids: ["q2"], texts: ["second queued message"], preview: ["second queued message"] },
+          queue: {
+            revision: 0,
+            depth: 1,
+            ids: ["q2"],
+            texts: ["second queued message"],
+            preview: ["second queued message"],
+          },
         },
       });
     });
@@ -487,8 +459,10 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+    });
   });
 });
 
@@ -499,7 +473,7 @@ describe("degraded daemon: no entry ids", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, texts: ["hello"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, texts: ["hello"], preview: ["hello"] },
       },
     });
     renderStrip(defaultProps());
@@ -518,15 +492,24 @@ describe("in-flight row locking", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] },
       },
     });
     let resolveCancel: (() => void) | undefined;
     fake.on(
       "turn/cancelQueued",
-      () =>
+      (params) =>
         new Promise((resolve) => {
-          resolveCancel = () => resolve({ removedText: "hello" });
+          resolveCancel = () =>
+            resolve({
+              receipt: {
+                clientMutationId: params.clientMutationId,
+                disposition: "applied",
+                threadId: "thread_a",
+                projectionState: "reflected",
+              },
+              removedText: "hello",
+            });
         }),
     );
     renderStrip(defaultProps());
@@ -552,6 +535,7 @@ describe("in-flight row locking", () => {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: {
+          revision: 0,
           depth: 2,
           ids: ["q1", "q2"],
           texts: ["first queued message", "second queued message"],
@@ -576,9 +560,16 @@ describe("optimistic pending queue rows", () => {
   test("a pending queue-method entry from another submission renders as an extra, action-less row", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
-      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { depth: 0 } },
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
-    fake.on("turn/queue", () => ({}));
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     renderStrip(defaultProps());
 
     await act(async () => {
@@ -597,7 +588,9 @@ describe("optimistic pending queue rows", () => {
 describe("drain-as-steer affordance", () => {
   test("the drain button is absent when there is nothing queued", async () => {
     const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", { serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { depth: 0 } } });
+    await hydrate(fake, "ref_a", {
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+    });
     renderStrip(defaultProps());
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
@@ -608,10 +601,17 @@ describe("drain-as-steer affordance", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
-    fake.on("turn/drainAsSteer", () => ({}));
+    fake.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     const onDrainSuccess = vi.fn();
     renderStrip(
       defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
@@ -621,85 +621,32 @@ describe("drain-as-steer affordance", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
     });
 
-    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-    expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
+    });
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
   });
 
-  test("a queuedDrainPartial failure shows a distinct 'queued, but drain failed' message", async () => {
+  test("a lost drain response never produces a timeout warning or reload instruction", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
     fake.on("turn/drainAsSteer", () => {
-      // Same wire code as Conflict() but a different serfErrorInfo (parity
-      // §A) - the discriminator threads.ts's mapConflict uses is the
-      // serfErrorInfo string, not the numeric code alone (see
-      // stores/threads.test.ts's own identical construction).
-      throw new WireError("queue drained partially", -32013, { serfErrorInfo: "queuedDrainPartial" });
+      throw new Error("response lost");
     });
     renderStrip(defaultProps());
 
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
-    });
-
-    await screen.findByText(/queued.*drain failed/i);
-  });
-
-  test("a generic drain failure shows the plain 'drain failed' message", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    fake.on("turn/drainAsSteer", () => {
-      throw new Error("network unreachable");
-    });
-    renderStrip(defaultProps());
-
-    await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
-    });
-
-    await screen.findByText(/drain failed.*network unreachable/i);
-  });
-
-  test("a successful drain without an echo reports an accepted-but-stale warning after a full confirmation window", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      serf: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    fake.on("turn/drainAsSteer", () => ({}));
-    renderStrip(defaultProps());
-    vi.useFakeTimers();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
-      await vi.advanceTimersByTimeAsync(0);
     });
     expect(getToasts()).toHaveLength(0);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(PENDING_TIMEOUT_MS);
-    });
-    expect(getToasts().map(({ kind, text }) => ({ kind, text }))).toEqual([
-      {
-        kind: "warning",
-        text: "Drain was accepted, but this view didn't update. Reload before retrying.",
-      },
-    ]);
+    expect(screen.queryByText(/reload/i)).toBeNull();
   });
 
   // Mirrors Composer.tsx's own submit-time guard (handleFormSubmit/
@@ -715,10 +662,17 @@ describe("drain-as-steer affordance", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
-    fake.on("turn/drainAsSteer", () => ({}));
+    fake.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
     await act(async () => {
@@ -735,15 +689,23 @@ describe("drain-as-steer affordance", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
     let resolveDrain: (() => void) | undefined;
     fake.on(
       "turn/drainAsSteer",
-      () =>
+      (params) =>
         new Promise((resolve) => {
-          resolveDrain = () => resolve({});
+          resolveDrain = () =>
+            resolve({
+              receipt: {
+                clientMutationId: params.clientMutationId,
+                disposition: "applied",
+                threadId: "thread_a",
+                projectionState: "reflected",
+              },
+            });
         }),
     );
     render(<DrainBusyHarness />);
@@ -766,10 +728,17 @@ describe("drain-as-steer affordance", () => {
       serf: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
-        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
-    fake.on("turn/drainAsSteer", () => ({}));
+    fake.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
     renderStrip(defaultProps({ busy: true }));
 
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });

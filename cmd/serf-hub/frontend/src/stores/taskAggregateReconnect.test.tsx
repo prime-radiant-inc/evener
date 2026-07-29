@@ -33,7 +33,7 @@ function readResponse(ref: string, tasks: { total: number; done: number }): Thre
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {}, tasks },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, tasks },
   };
   return { thread };
 }

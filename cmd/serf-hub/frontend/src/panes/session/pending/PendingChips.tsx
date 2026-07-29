@@ -2,10 +2,9 @@
 // pendingTurnsStore (usePendingTurnEntries) and renders one compact chip per
 // pending entry whose method is send, steer, or drain - the "queue" method is
 // already chipped by QueueStrip, so it is filtered out here. Reconciliation
-// and the 10s timeout reaper are owned ENTIRELY by pendingTurnsStore (a
-// matching wire echo, or the reaper, removes an entry and this list re-renders
-// from the store); this component adds NO store state and imports the hook
-// read-only.
+// is owned entirely by pendingTurnsStore's durable outbox and authoritative
+// pending-mutation projection; this component adds no store state and imports
+// the hook read-only.
 //
 // Deliberately rendered here beside the composer, NOT injected into the
 // virtualized transcript: an optimistic item in the virtual list is beyond the

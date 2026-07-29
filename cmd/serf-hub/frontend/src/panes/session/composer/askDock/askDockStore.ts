@@ -12,14 +12,14 @@
 // batches immediately, and it mirrors threads.ts's own connectionStore.
 // subscribe wiring exactly. See reconcileBatches.ts's own header for why a
 // purely positional signal isn't enough on its own, and this file's
-// sendBatch for how the in-flight submission race is actually resolved
-// (freeze the batch, settle it directly off the request's own outcome -
-// never by waiting to observe its echo back in the transcript).
+// sendBatch for how the in-flight submission race is actually resolved:
+// freeze the batch until its durable outbox commit, then let the outbox and
+// recovery surfaces own later network outcomes.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
-import { ConflictError, threadsStore } from "../../../../stores/threads";
+import { threadsStore } from "../../../../stores/threads";
 import { type AskResolution, composeAskAnswers } from "./askCompose";
 import { liveAskQuestions } from "./deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
@@ -32,36 +32,22 @@ export interface AskAnswerState {
 export interface AskDockRefState {
   batches: AskBatch[];
   answers: Record<string, AskAnswerState>;
-  // Keys this client has permanently finished with (settled by our own
-  // successful send, or discarded by our own Conflict) - excluded from
-  // liveAskQuestions' result before it ever reaches reconcileBatches, for
-  // the lifetime of this ref's tracked state. Necessary because a
-  // Conflict-discarded call's own ask_user item never changes status in
-  // the transcript itself (only a REAL resolving reply - ours or another
-  // client's - would positionally exclude it via deriveAskQuestions, and
-  // that reply's own notification is not guaranteed to have landed yet by
-  // the time some unrelated model change next triggers reconciliation);
-  // without this, a later, unrelated ask_user ack could resurrect a
-  // just-discarded question into a fresh batch (contracts-composer-queue-
-  // pending.md: "a later acknowledged ask_user call starts a completely
-  // fresh pending set instead of merging into the stale conflicted one").
+  // Keys this client has permanently finished with after our own durable send
+  // commit. Excluding them from liveAskQuestions for this ref prevents the
+  // original ask_user item from resurfacing before the eventual resolving
+  // reply is reflected in the transcript.
   excludedKeys: Set<string>;
 }
 
 // sendBatch's outcome is a discriminated union rather than a thrown error:
 // every branch here is an expected, named outcome the caller (AskDock.tsx)
-// must handle differently (conflict hands composed text to
-// onFallbackToComposer; error is toast-worthy per the wave's failure-
+// must handle differently (error is toast-worthy per the wave's failure-
 // feedback convention; stale is a silent no-op - the dock re-checked and
 // found nothing left to send), not an exceptional condition.
 //
 // `message` is the finished sentence to show, not raw rejection text: the
 // caller adds no label of its own. See sendBatch's own error branch.
-export type SendBatchOutcome =
-  | { outcome: "sent" }
-  | { outcome: "conflict"; text: string }
-  | { outcome: "error"; message: string }
-  | { outcome: "stale" };
+export type SendBatchOutcome = { outcome: "sent" } | { outcome: "error"; message: string } | { outcome: "stale" };
 
 export interface AskDockState {
   byRef: Map<string, AskDockRefState>;
@@ -107,8 +93,8 @@ function setBatchSending(ref: string, batchId: string, sending: boolean): void {
   });
 }
 
-// removeBatch drops a settled/discarded batch's LIVE presence (no longer
-// rendered, no longer sendable) but keeps its keys on record in
+// removeBatch drops a durably submitted batch's live presence (no longer
+// rendered or sendable) but keeps its keys on record in
 // excludedKeys forever (see AskDockRefState's own doc comment) - the entry
 // itself is never deleted once created, unlike a batch, because that
 // permanent memory has to survive even once every batch is gone.
@@ -179,17 +165,12 @@ export const askDockStore = createStore<AskDockState>(() => ({
       removeBatch(ref, batchId);
       return { outcome: "sent" };
     } catch (err) {
-      if (err instanceof ConflictError) {
-        removeBatch(ref, batchId);
-        return { outcome: "conflict", text: composedText };
-      }
       setBatchSending(ref, batchId, false);
       // Composed here, not by the caller: this is the only side of the seam
-      // that still holds the rejection, so it is the only side that can tell
-      // a failed send from the failed session resume behind it
-      // (protocol/errors.ts's sessionActionError). Nothing was sent either
-      // way - the batch is intact and retryable above - so the resume is free
-      // to take the whole sentence.
+      // that still holds the local enqueue rejection, so it is the only side
+      // that can distinguish a failed send from a failed session resume
+      // (protocol/errors.ts's sessionActionError). No RPC was eligible to
+      // start, so the batch stays intact and retryable.
       return { outcome: "error", message: sessionActionError("Couldn't send answers", err) };
     }
   },
@@ -199,9 +180,9 @@ export const askDockStore = createStore<AskDockState>(() => ({
 // bookkeeping: recompute the live question set (minus anything this client
 // has permanently excluded - see AskDockRefState's own doc comment),
 // reconcile batches against it (reconcileBatches.ts owns the actual merge/
-// prune/protect rules), and prune any per-question answer draft whose key
-// no longer belongs to any batch (settled, discarded, or resolved by
-// someone else - there is nothing left for that draft to attach to).
+// prune/protect rules), and prune any per-question answer draft whose key no
+// longer belongs to any batch (durably submitted or resolved by someone else;
+// there is nothing left for that draft to attach to).
 function reconcileRef(ref: string, model: ThreadModel): void {
   const liveAll = liveAskQuestions(model);
   askDockStore.setState((s) => {

@@ -38,7 +38,7 @@ function threadWithRef(ref: string): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "local",
-    serf: { ref, capabilities: NO_CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: NO_CAPABILITIES, queue: { revision: 0 } },
   };
 }
 

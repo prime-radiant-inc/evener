@@ -1,12 +1,15 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import type { InputAttachment } from "../../../stores/threads";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import type { PendingMethod } from "../composer/queue/pendingReconcile";
-import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "../composer/queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
 import { PendingChips } from "./PendingChips";
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   // PendingChips reads the shared pendingTurnsStore, which subscribes to the
   // threads store for reconciliation - reset both so entries seeded here can't
   // be reaped by another test's thread snapshot, and vice versa.
@@ -20,7 +23,36 @@ afterEach(() => cleanup());
 // pendingTurnsStore's own contract), so a resolving perform leaves the chip
 // pending - exactly the optimistic in-flight state PendingChips renders.
 async function seedPending(method: PendingMethod, text: string, ref = "ref_a", attachments?: InputAttachment[]) {
-  await submitWithPendingTracking({ ref, method, text, attachments, onFailure: () => {} }, () => Promise.resolve());
+  const wireMethod = {
+    send: "turn/start",
+    steer: "turn/steer",
+    queue: "turn/queue",
+    drain: "turn/drainAsSteer",
+  }[method];
+  const input = [
+    ...(text ? [{ type: "text", text }] : []),
+    ...(attachments ?? []).map((attachment) => ({
+      type: "image",
+      mediaType: attachment.mediaType,
+      data: attachment.data,
+      name: attachment.name,
+    })),
+  ];
+  const storage = new MutationOutboxIndexedDB();
+  await storage.enqueueIntent({
+    targetRef: ref,
+    method: wireMethod,
+    payload: { ref, input },
+    attachments: (attachments ?? []).map((attachment, index) => ({
+      presentationId: `presentation_${index}`,
+      name: attachment.name ?? "attachment",
+      mediaType: attachment.mediaType,
+      blob: new Blob(),
+    })),
+    optimisticDisplay: { method: wireMethod, input },
+  });
+  storage.close();
+  await refreshPendingTurnsProjection(ref);
 }
 
 test("renders nothing when there are no pending entries", () => {

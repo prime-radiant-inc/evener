@@ -532,7 +532,7 @@ test("a running row with a transcriptRef watches the child and updates live stat
       cwd: "/tmp",
       cliVersion: "1.0.0",
       source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
     },
   }));
   connectionStore.getState().connect(fake);
@@ -791,7 +791,7 @@ function childThreadRead(params: unknown, childStatus: string) {
       cwd: "/tmp",
       cliVersion: "1.0.0",
       source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
       turns: includeTurns
         ? [
             {
@@ -903,7 +903,7 @@ function manyStepsThreadRead(params: unknown, stepCount: number) {
       cwd: "/tmp",
       cliVersion: "1.0.0",
       source: "serf",
-      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: { revision: 0 } },
       turns: includeTurns ? [{ id: "turn_c1", status: "completed", itemsView: "full", items }] : [],
     },
   };

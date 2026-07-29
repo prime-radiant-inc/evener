@@ -180,7 +180,7 @@ function floodThread(ref: string): Thread {
         ],
       },
     ],
-    serf: { ref, capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_flood_settled" },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_flood_settled" },
   };
 }
 
