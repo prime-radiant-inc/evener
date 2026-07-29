@@ -91,7 +91,9 @@ The canonical API log is one strict newline-delimited JSON file per session.
    canonical record bound, a missing boundary within that bound, or an unsafe
    target fails closed without mutation.
 
-The API log is forensic evidence, not session replay state. Explicit API-log
+The API log is forensic evidence, not session replay state. `serf doctor` owns
+explicit whole-history structural validation and reports corrupt complete or
+interior records; ordinary logger startup does not. Other explicit API-log
 readers remain responsible for strict validation of every record they consume.
 Open-time recovery protects the next append from a torn tail; it does not
 revalidate ancient records on every daemon start. Without previously trusted
