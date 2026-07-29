@@ -32,20 +32,22 @@ type hubThreadReadResult struct {
 	once     sync.Once
 }
 
-func (r *hubThreadReadResult) finish(commit bool) {
+func (r *hubThreadReadResult) finish(commit bool) bool {
 	if r == nil || r.handoff == nil {
-		return
+		return false
 	}
+	finished := false
 	r.once.Do(func() {
 		if commit {
-			r.handoff.Commit()
+			finished = r.handoff.Commit()
 		} else {
-			r.handoff.Abort()
+			finished = r.handoff.Abort()
 		}
 		if r.release != nil {
 			r.release()
 		}
 	})
+	return finished
 }
 
 type hubRelaySubscriptionResult struct {
@@ -412,10 +414,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if read == nil || read.handoff == nil {
 			return true
 		}
-		if !read.handoff.Prepare() {
-			read.finish(false)
-			return false
-		}
 		sourceID := strings.TrimSpace(read.response.Thread.Source)
 		if ref, err := appwire.ParseRef(params.Ref); err == nil {
 			sourceID = ref.SourceID
@@ -424,17 +422,33 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			sourceID = "local"
 		}
 		relayKey := sourceID + ":" + read.response.Thread.ID
-		return appserver.CaptureSubscriptionWithHandoff(
-			ctx,
-			params.ReplaceSubscription,
-			func() string { return relayKey },
-			func() uint64 { return 0 },
-			func() bool { return true },
-			appserver.CaptureSubscriptionHandoff{
-				Commit: func() { read.finish(true) },
-				Abort:  func() { read.finish(false) },
+		captured, err := withDeletionTargetOwnership(
+			cfg,
+			params.Ref,
+			read.response.Thread.ID,
+			"",
+			func() (bool, error) {
+				if !read.handoff.Prepare() {
+					return false, nil
+				}
+				return appserver.CaptureSubscriptionWithHandoff(
+					ctx,
+					params.ReplaceSubscription,
+					func() string { return relayKey },
+					func() uint64 { return 0 },
+					func() bool { return true },
+					appserver.CaptureSubscriptionHandoff{
+						Commit: func() { read.finish(true) },
+						Abort:  func() { read.finish(false) },
+					},
+				), nil
 			},
 		)
+		if err != nil || !captured {
+			read.finish(false)
+			return false
+		}
+		return true
 	}
 	var startRelay func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
 	prepareRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -461,7 +475,16 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			threadID,
 			"",
 			func() (bool, error) {
-				return registerSubscription(ctx, relayKey, params.ReplaceSubscription), nil
+				if !read.handoff.Prepare() {
+					return false, appwire.SessionUnavailable("relay handoff could not be prepared")
+				}
+				if !registerSubscription(ctx, relayKey, params.ReplaceSubscription) {
+					return false, nil
+				}
+				if !read.finish(true) {
+					return false, appwire.SessionUnavailable("relay handoff could not be committed")
+				}
+				return true, nil
 			},
 		)
 		if err != nil || !registered {
@@ -471,7 +494,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			return appwire.ThreadReadResponse{}, context.Canceled
 		}
-		read.finish(true)
 		return read.response, nil
 	}
 	startRelay = func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {

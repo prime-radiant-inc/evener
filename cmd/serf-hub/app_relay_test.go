@@ -369,7 +369,7 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 		Source: "local",
 		Serf:   appwire.SerfThread{Ref: "local:thread-turn-start"},
 	}
-	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
+	handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
 	lease := &scriptedRelaySessionLease{
 		readResult: appsource.RelayReadResult{
 			Response: appwire.ThreadReadResponse{Thread: thread},
@@ -383,7 +383,14 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 	}
 	relays := newHubRelayFunctions(
 		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
-		hubcore.WebConfig{},
+		hubcore.WebConfig{RelayHooks: hubcore.RelayLifecycleHooks{
+			RegisterSubscription: func(context.Context, string, bool) bool {
+				if !handoff.isPrepared() {
+					t.Error("downstream subscription registered before the live continuation was prepared")
+				}
+				return true
+			},
+		}},
 		appsource.NewRegistry(),
 	)
 
@@ -405,10 +412,88 @@ func TestHubTurnStartPreparesCanonicalRelaySession(t *testing.T) {
 	if lease.readCallCount() != 1 || lease.listenCallCount() != 1 {
 		t.Fatalf("RelaySession calls: Read=%d Listen=%d, want one canonical feed", lease.readCallCount(), lease.listenCallCount())
 	}
-	select {
-	case <-handoff.committed:
-	default:
-		t.Fatal("turn/start relay preparation did not commit its live continuation")
+	if prepareCalls, commitCalls, abortCalls := handoff.callCounts(); prepareCalls != 1 || commitCalls != 1 || abortCalls != 0 {
+		t.Fatalf(
+			"handoff calls: Prepare=%d Commit=%d Abort=%d, want Prepare=1 Commit=1 Abort=0",
+			prepareCalls,
+			commitCalls,
+			abortCalls,
+		)
+	}
+}
+
+func TestHubTurnStartStopsBeforeMutationWhenRelayHandoffCannotCommit(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		prepareAllowed bool
+		commitAllowed  bool
+		wantRegistered bool
+	}{
+		{name: "prepare fails", commitAllowed: true},
+		{name: "commit fails", prepareAllowed: true, wantRegistered: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			thread := appwire.Thread{
+				ID:     "thread-turn-start-failed-handoff",
+				Source: "local",
+				Serf:   appwire.SerfThread{Ref: "local:thread-turn-start-failed-handoff"},
+			}
+			handoff := &guardedRelayHandoff{
+				prepareAllowed: test.prepareAllowed,
+				commitAllowed:  test.commitAllowed,
+			}
+			lease := &scriptedRelaySessionLease{
+				readResult: appsource.RelayReadResult{
+					Response: appwire.ThreadReadResponse{Thread: thread},
+					Handoff:  handoff,
+				},
+				deliveries: make(chan appsource.RelayDelivery),
+			}
+			source := &relaySessionTestSource{
+				relayLifecycleSource: relayLifecycleSource{thread: thread},
+				lease:                lease,
+			}
+			registered := false
+			relays := newHubRelayFunctions(
+				appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+				hubcore.WebConfig{RelayHooks: hubcore.RelayLifecycleHooks{
+					RegisterSubscription: func(context.Context, string, bool) bool {
+						registered = true
+						return true
+					},
+				}},
+				appsource.NewRegistry(),
+			)
+
+			if _, err := relays.startTurn(context.Background(), source, appwire.TurnStartParams{
+				Ref:              thread.Serf.Ref,
+				ThreadID:         thread.ID,
+				ClientMutationID: "mutation-failed-handoff",
+				Input:            []appwire.InputItem{{Type: "text", Text: "must not run"}},
+			}); err == nil {
+				t.Fatal("turn/start succeeded without a committed live relay continuation")
+			}
+			if registered != test.wantRegistered {
+				t.Fatalf("downstream subscription registered = %t, want %t", registered, test.wantRegistered)
+			}
+			if got := source.startTurnCallCount(); got != 0 {
+				t.Fatalf("upstream turn/start calls = %d, want 0", got)
+			}
+			prepareCalls, commitCalls, abortCalls := handoff.callCounts()
+			if prepareCalls != 1 {
+				t.Fatalf("Prepare calls = %d, want 1", prepareCalls)
+			}
+			if test.prepareAllowed && commitCalls != 1 {
+				t.Fatalf("Commit calls = %d, want 1", commitCalls)
+			}
+			wantAbortCalls := 1
+			if test.prepareAllowed {
+				wantAbortCalls = 0
+			}
+			if abortCalls != wantAbortCalls {
+				t.Fatalf("Abort calls = %d, want %d after failed handoff", abortCalls, wantAbortCalls)
+			}
+		})
 	}
 }
 
@@ -418,7 +503,7 @@ func TestHubLifecycleRelaySetupUsesCanonicalRelaySession(t *testing.T) {
 		Source: "local",
 		Serf:   appwire.SerfThread{Ref: "local:thread-lifecycle"},
 	}
-	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
+	handoff := &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true}
 	lease := &scriptedRelaySessionLease{
 		readResult: appsource.RelayReadResult{
 			Response: appwire.ThreadReadResponse{Thread: thread},
@@ -450,6 +535,14 @@ func TestHubLifecycleRelaySetupUsesCanonicalRelaySession(t *testing.T) {
 	}
 	if lease.readCallCount() != 1 || lease.listenCallCount() != 1 {
 		t.Fatalf("RelaySession calls: Read=%d Listen=%d, want one canonical feed", lease.readCallCount(), lease.listenCallCount())
+	}
+	if prepareCalls, commitCalls, abortCalls := handoff.callCounts(); prepareCalls != 1 || commitCalls != 1 || abortCalls != 0 {
+		t.Fatalf(
+			"handoff calls: Prepare=%d Commit=%d Abort=%d, want Prepare=1 Commit=1 Abort=0",
+			prepareCalls,
+			commitCalls,
+			abortCalls,
+		)
 	}
 }
 
@@ -650,6 +743,79 @@ func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 	}
 }
 
+func TestHubAtomicRejoinExcludesDeletionAtHandoffPrepareBoundary(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	deletionCommitted := false
+	var deletionErr error
+	handoff := &guardedRelayHandoff{
+		prepareAllowed: true,
+		commitAllowed:  true,
+		onPrepare: func() {
+			targetLock := resumeLocks.For(threadID)
+			if !targetLock.TryLock() {
+				return
+			}
+			defer targetLock.Unlock()
+			_, deletionErr = store.Begin("project-prepare-race-0123456789", []hubcore.DeletionTarget{{
+				Ref:      ref,
+				ThreadID: threadID,
+			}})
+			deletionCommitted = deletionErr == nil
+		},
+	}
+	thread := appwire.Thread{
+		ID:        threadID,
+		SessionID: threadID,
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: ref},
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		lease: &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  handoff,
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot:  t.TempDir(),
+		Past:          hubcore.NewPastIndex(""),
+		DeletionStore: store,
+		ResumeLocks:   resumeLocks,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	_, readErr := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       ref,
+		Subscribe: true,
+	})
+	if deletionErr != nil {
+		t.Fatalf("commit deletion at handoff Prepare: %v", deletionErr)
+	}
+	if deletionCommitted && readErr == nil {
+		t.Fatal("thread/read succeeded after deletion committed between its post-read fence and handoff capture")
+	}
+	if !deletionCommitted && readErr != nil {
+		t.Fatalf("thread/read lost deletion ownership at its final capture boundary: %v", readErr)
+	}
+}
+
 func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -783,6 +949,12 @@ func (s *relaySessionTestSource) legacySubscribeCallCount() int {
 	return s.legacySubCalls
 }
 
+func (s *relaySessionTestSource) startTurnCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startTurnCalls
+}
+
 type scriptedRelaySessionLease struct {
 	mu sync.Mutex
 
@@ -838,6 +1010,59 @@ type recordingRelayHandoff struct {
 	aborted   chan struct{}
 	onCommit  func()
 	stale     bool
+}
+
+type guardedRelayHandoff struct {
+	mu sync.Mutex
+
+	prepareAllowed bool
+	commitAllowed  bool
+	onPrepare      func()
+	prepared       bool
+	prepareCalls   int
+	commitCalls    int
+	abortCalls     int
+}
+
+func (h *guardedRelayHandoff) Prepare() bool {
+	h.mu.Lock()
+	h.prepareCalls++
+	hook := h.onPrepare
+	allowed := h.prepareAllowed
+	if allowed {
+		h.prepared = true
+	}
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return allowed
+}
+
+func (h *guardedRelayHandoff) Commit() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.commitCalls++
+	return h.prepared && h.commitAllowed
+}
+
+func (h *guardedRelayHandoff) Abort() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.abortCalls++
+	return true
+}
+
+func (h *guardedRelayHandoff) isPrepared() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.prepared
+}
+
+func (h *guardedRelayHandoff) callCounts() (int, int, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.prepareCalls, h.commitCalls, h.abortCalls
 }
 
 func (h *recordingRelayHandoff) Prepare() bool {
