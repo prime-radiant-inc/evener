@@ -625,11 +625,18 @@ global, Hub, relay-map, deletion, appserver projection, or appserver delivery
 lock.
 
 The Hub completes all upstream network snapshot work before beginning the
-downstream appserver capture. It then installs the Task 6
-`CaptureSubscription` using only the already-materialized actor snapshot; the
-capture's snapshot callback performs no source or other network I/O while the
-appserver projection and delivery locks are held. The downstream response
-enqueue is the handoff decision:
+downstream appserver capture. Immediately before that capture, the Hub calls
+`Prepare` on the handoff token. `Prepare` atomically validates the token's
+connection epoch and snapshot-command generation and logically pins that actor
+state until the downstream response outcome. It retains no mutex or other lock
+across capture installation or response enqueue. If `Prepare` cannot establish
+that pin, the Hub aborts the token and fails the read before installing a
+capture or returning a successful response.
+
+The Hub then installs the Task 6 `CaptureSubscription` using only the
+already-materialized actor snapshot; the capture's snapshot callback performs
+no source or other network I/O while the appserver projection and delivery
+locks are held. The downstream response enqueue is the handoff decision:
 
 - after the matching response successfully enters the downstream connection's
   send queue, appserver commits its hydration capture and invokes the actor
@@ -646,6 +653,12 @@ enqueue is the handoff decision:
 same token: one pending-to-terminal transition wins, repeated or losing calls
 are no-ops, and the canonical feed is resumed or released exactly once. A token
 from a stale connection epoch or superseded snapshot command cannot publish.
+If the canonical transport disconnects after `Prepare`, the actor records the
+disconnect and closes the transport but defers token invalidation and the epoch
+transition until `Commit` or `Abort` resolves the pinned handoff. Resolution
+then applies the deferred transition and starts canonical recovery when
+downstream listeners remain. This pin is per actor and logical only; it cannot
+block another source/thread actor.
 The one-shot appserver response finalizer is the outcome linearization point:
 a completed response enqueue selects commit, while failure, cancellation, or
 supersession that prevents enqueue selects abort; a later competing signal

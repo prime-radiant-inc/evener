@@ -442,6 +442,15 @@ Library.
   retaining a global, Hub, relay-map, deletion, appserver projection, or
   appserver delivery lock. The Hub completes upstream snapshot I/O before it
   begins downstream appserver capture.
+- Immediately before downstream capture, the Hub calls `Prepare` on the token.
+  `Prepare` validates and logically pins the actor's current connection epoch
+  and snapshot-command generation until the response finalizer resolves. It
+  retains no mutex across capture or response enqueue. Failure to prepare
+  aborts the token and fails the read before a successful response is possible.
+- A transport disconnect after `Prepare` closes the transport and records a
+  deferred epoch transition without invalidating the pinned token. `Commit` or
+  `Abort` applies that transition and starts canonical recovery if listeners
+  remain. The logical pin is per actor and cannot block unrelated threads.
 - The Hub installs the Task 6 downstream capture using only the materialized
   actor snapshot; no source or network I/O may occur from the capture snapshot
   callback while appserver projection or delivery locks are held.

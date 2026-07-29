@@ -412,6 +412,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if read == nil || read.handoff == nil {
 			return true
 		}
+		if !read.handoff.Prepare() {
+			read.finish(false)
+			return false
+		}
 		sourceID := strings.TrimSpace(read.response.Thread.Source)
 		if ref, err := appwire.ParseRef(params.Ref); err == nil {
 			sourceID = ref.SourceID

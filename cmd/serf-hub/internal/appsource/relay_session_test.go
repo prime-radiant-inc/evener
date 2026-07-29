@@ -443,6 +443,116 @@ func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 	}
 }
 
+func TestRelaySessionPreparedHandoffPinsEpochUntilResponseOutcome(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Prepare() {
+		t.Fatal("current handoff could not pin its live continuation")
+	}
+	lease.session.mu.Lock()
+	epoch := lease.session.connection.epoch
+	lease.session.mu.Unlock()
+	lease.session.disconnect(epoch)
+	if !result.result.Handoff.Commit() {
+		t.Fatal("disconnect invalidated a prepared handoff before its response outcome")
+	}
+	lease.session.mu.Lock()
+	if lease.session.connection != nil {
+		t.Fatal("committed handoff did not apply its deferred disconnect")
+	}
+	lease.session.mu.Unlock()
+}
+
+func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversListener(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	listenCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	deliveries, err := lease.Listen(listenCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Prepare() {
+		t.Fatal("current handoff could not pin its live continuation")
+	}
+	lease.session.mu.Lock()
+	epoch := lease.session.connection.epoch
+	lease.session.mu.Unlock()
+	lease.session.disconnect(epoch)
+	if !result.result.Handoff.Abort() {
+		t.Fatal("disconnect invalidated a prepared abort before its response outcome")
+	}
+
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	resync := <-deliveries
+	if resync.Notification.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("recovery delivery method = %q, want %q", resync.Notification.Method, appwire.NotifySerfThreadResync)
+	}
+	resync.Acknowledge()
+}
+
+func TestRelaySessionHandoffCannotPrepareAfterEpochDisconnect(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	lease.session.mu.Lock()
+	epoch := lease.session.connection.epoch
+	lease.session.mu.Unlock()
+	lease.session.disconnect(epoch)
+
+	if result.result.Handoff.Prepare() {
+		t.Fatal("stale handoff pinned a disconnected epoch")
+	}
+	if result.result.Handoff.Commit() || result.result.Handoff.Abort() {
+		t.Fatal("stale handoff reported a terminal winner after disconnect")
+	}
+}
+
 func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
@@ -500,6 +610,42 @@ func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {
 	daemon.mu.Unlock()
 	if openAfterTerminal != 0 {
 		t.Fatalf("open connections after last owner = %d, want 0", openAfterTerminal)
+	}
+}
+
+func TestRelaySessionPreparedHandoffDefersIdleUntilResponseOutcome(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	lease, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Prepare() {
+		t.Fatal("current handoff could not pin its live continuation")
+	}
+
+	lease.Close()
+	daemon.mu.Lock()
+	openBeforeTerminal := daemon.open
+	daemon.mu.Unlock()
+	if openBeforeTerminal != 1 {
+		t.Fatalf("open connections before prepared handoff terminal = %d, want 1", openBeforeTerminal)
+	}
+	if !result.result.Handoff.Abort() {
+		t.Fatal("prepared abort lost")
+	}
+	daemon.mu.Lock()
+	openAfterTerminal := daemon.open
+	daemon.mu.Unlock()
+	if openAfterTerminal != 0 {
+		t.Fatalf("open connections after prepared handoff terminal = %d, want 0", openAfterTerminal)
 	}
 }
 
@@ -575,6 +721,47 @@ func TestRelaySessionUnrelatedActorProgressesWhileSnapshotBlocked(t *testing.T) 
 		t.Fatal(firstResult.err)
 	}
 	firstResult.result.Handoff.Commit()
+}
+
+func TestRelaySessionPreparedHandoffDoesNotBlockUnrelatedActor(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1"), relayEntry("thread-2")})
+	firstParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	secondParams := appwire.ThreadReadParams{Ref: "local:thread-2", Subscribe: true}
+	firstLease, err := source.AcquireRelaySession(firstParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstLease.Close()
+	secondLease, err := source.AcquireRelaySession(secondParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondLease.Close()
+
+	first := readRelayAsync(context.Background(), firstLease, firstParams)
+	firstCall := <-daemon.reads
+	firstCall.transport.recv <- appwire.ResponseMessage(firstCall.request.ID, relaySnapshot("thread-1", "first"))
+	firstResult := <-first
+	if firstResult.err != nil {
+		t.Fatal(firstResult.err)
+	}
+	if !firstResult.result.Handoff.Prepare() {
+		t.Fatal("first actor could not prepare its handoff")
+	}
+
+	second := readRelayAsync(context.Background(), secondLease, secondParams)
+	secondCall := <-daemon.reads
+	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-2", "second"))
+	secondResult := <-second
+	if secondResult.err != nil {
+		t.Fatal(secondResult.err)
+	}
+	if !secondResult.result.Handoff.Commit() {
+		t.Fatal("unrelated actor did not complete while first actor handoff remained prepared")
+	}
+	if !firstResult.result.Handoff.Abort() {
+		t.Fatal("first actor could not resolve its prepared handoff")
+	}
 }
 
 func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(t *testing.T) {

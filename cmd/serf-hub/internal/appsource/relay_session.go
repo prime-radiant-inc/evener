@@ -37,9 +37,10 @@ type relaySession struct {
 }
 
 type relayConnection struct {
-	epoch     uint64
-	client    *appwire.Client
-	transport appwire.Transport
+	epoch        uint64
+	client       *appwire.Client
+	transport    appwire.Transport
+	disconnected bool
 }
 
 // relayCapture classifies frames around the exact upstream response marker.
@@ -48,6 +49,7 @@ type relayConnection struct {
 type relayCapture struct {
 	epoch      uint64
 	generation uint64
+	prepared   bool
 	cutSeen    bool
 	beforeCut  []appwire.Notification
 	afterCut   []appwire.Notification
@@ -80,8 +82,9 @@ type relayHandoff struct {
 	session    *relaySession
 	epoch      uint64
 	generation uint64
-	terminal   sync.Once
-	committed  bool
+	mu         sync.Mutex
+	prepared   bool
+	terminal   bool
 }
 
 func newRelaySession(connect relaySessionConnect, onIdle func(*relaySession)) *relaySession {
@@ -271,7 +274,7 @@ func (s *relaySession) ensureConnection(ctx context.Context) (*relayConnection, 
 		return nil, err
 	}
 	s.mu.Lock()
-	if connection := s.connection; connection != nil {
+	if connection := s.connection; connection != nil && !connection.disconnected {
 		s.mu.Unlock()
 		return connection, nil
 	}
@@ -313,7 +316,7 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 	}
 
 	s.mu.Lock()
-	if s.closed || s.connection == nil || s.connection.epoch != epoch {
+	if s.closed || s.connection == nil || s.connection.epoch != epoch || s.connection.disconnected {
 		s.mu.Unlock()
 		return
 	}
@@ -351,9 +354,15 @@ func (s *relaySession) disconnect(epoch uint64) {
 		return
 	}
 	connection := s.connection
+	capture := s.capture
+	if capture != nil && capture.epoch == epoch && capture.prepared {
+		connection.disconnected = true
+		s.mu.Unlock()
+		_ = connection.transport.Close()
+		return
+	}
 	s.connection = nil
 	s.epoch++
-	capture := s.capture
 	if capture != nil && capture.epoch == epoch {
 		s.capture = nil
 		capture.release.Do(func() {
@@ -465,24 +474,58 @@ func (s *relaySession) cancelCapture(capture *relayCapture) {
 	s.maybeIdle()
 }
 
-func (h *relayHandoff) Commit() bool {
-	return h.finish(true)
-}
-
-func (h *relayHandoff) Abort() bool {
-	return h.finish(false)
-}
-
-func (h *relayHandoff) finish(commit bool) bool {
+func (h *relayHandoff) Prepare() bool {
 	if h == nil || h.session == nil {
 		return false
 	}
-	won := false
-	h.terminal.Do(func() {
-		won = h.session.finishHandoff(h.epoch, h.generation)
-		h.committed = commit && won
-	})
-	return won && h.committed == commit
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.terminal || h.prepared {
+		return false
+	}
+	h.session.mu.Lock()
+	capture := h.session.capture
+	valid := !h.session.closed &&
+		h.session.connection != nil &&
+		h.session.connection.epoch == h.epoch &&
+		!h.session.connection.disconnected &&
+		capture != nil &&
+		capture.epoch == h.epoch &&
+		capture.generation == h.generation
+	if !valid {
+		h.session.mu.Unlock()
+		return false
+	}
+	capture.prepared = true
+	h.session.mu.Unlock()
+	h.prepared = true
+	return true
+}
+
+func (h *relayHandoff) Commit() bool {
+	return h.finish()
+}
+
+func (h *relayHandoff) Abort() bool {
+	return h.finish()
+}
+
+func (h *relayHandoff) finish() bool {
+	if h == nil || h.session == nil {
+		return false
+	}
+	h.mu.Lock()
+	if h.terminal {
+		h.mu.Unlock()
+		return false
+	}
+	won := h.session.finishHandoff(h.epoch, h.generation)
+	h.terminal = true
+	h.mu.Unlock()
+	if won {
+		h.session.maybeIdle()
+	}
+	return won
 }
 
 func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
@@ -500,8 +543,19 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 		s.commandOwners--
 		s.commandGate <- struct{}{}
 	})
+	startRecovery := false
+	if s.connection != nil && s.connection.epoch == epoch && s.connection.disconnected {
+		s.connection = nil
+		s.epoch++
+		startRecovery = len(s.listeners) > 0 && !s.recovering
+		if startRecovery {
+			s.recovering = true
+		}
+	}
 	s.mu.Unlock()
-	s.maybeIdle()
+	if startRecovery {
+		go s.recoverCanonicalFeed()
+	}
 	return true
 }
 

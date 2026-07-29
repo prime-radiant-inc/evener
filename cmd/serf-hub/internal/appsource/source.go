@@ -53,6 +53,7 @@ type RelayReadResult struct {
 }
 
 type RelayHandoff interface {
+	Prepare() bool
 	Commit() bool
 	Abort() bool
 }
