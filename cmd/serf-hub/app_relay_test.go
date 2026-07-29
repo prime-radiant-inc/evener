@@ -152,6 +152,94 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	<-acknowledged
 }
 
+func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "thread-wire-order",
+		SessionID: "thread-wire-order",
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:thread-wire-order"},
+	}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	handoff := &recordingRelayHandoff{
+		committed: make(chan struct{}),
+		aborted:   make(chan struct{}),
+		onCommit: func() {
+			deliveries <- appsource.RelayDelivery{
+				Notification: appwire.Notification{
+					Method: appwire.NotifyAgentMessageDelta,
+					Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+						ThreadID: thread.ID,
+						Ref:      thread.Serf.Ref,
+						TurnID:   "turn-wire-order",
+						ItemID:   "item-wire-order",
+						Delta:    "after snapshot",
+					}),
+				},
+				Acknowledge: func() {},
+			}
+		},
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		lease: &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  handoff,
+			},
+			deliveries: deliveries,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+hub.URL[len("http"):]+"/rpc", hub.Client())
+	if err != nil {
+		t.Fatalf("dial hub rpc: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	type observedFrame struct {
+		message appwire.Message
+		err     error
+	}
+	frames := make(chan observedFrame, 3)
+	client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
+		frames <- observedFrame{message: message, err: err}
+	})
+	client.Start(context.Background())
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if frame := <-frames; frame.err != nil || frame.message.Response == nil {
+		t.Fatalf("initialize frame = %+v, want response", frame)
+	}
+
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       thread.Serf.Ref,
+		Subscribe: true,
+	}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	response := <-frames
+	if response.err != nil || response.message.Response == nil {
+		t.Fatalf("first hydration frame = %+v, want matching response", response)
+	}
+	notification := <-frames
+	if notification.err != nil || notification.message.Notification == nil {
+		t.Fatalf("second hydration frame = %+v, want post-cut notification", notification)
+	}
+	if notification.message.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("post-cut method = %q", notification.message.Notification.Method)
+	}
+}
+
 func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 	thread := appwire.Thread{
 		ID:     "thread-no-handoff",
@@ -180,6 +268,54 @@ func TestHubAtomicRejoinRejectsSnapshotWithoutLiveHandoff(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("atomic ThreadRead accepted a snapshot without a live subscribed continuation")
+	}
+}
+
+func TestHubAtomicRejoinDoesNotConfirmSnapshotWhenLiveHandoffCannotCommit(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "thread-stale-handoff",
+		SessionID: "thread-stale-handoff",
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:thread-stale-handoff"},
+	}
+	handoff := &recordingRelayHandoff{
+		committed:    make(chan struct{}),
+		aborted:      make(chan struct{}),
+		refuseCommit: true,
+	}
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: thread},
+			Handoff:  handoff,
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		lease:                lease,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       thread.Serf.Ref,
+		Subscribe: true,
+	}); err == nil {
+		t.Fatal("thread/read confirmed a snapshot after its live handoff refused to commit")
+	}
+	if got := appServer.SubscriberCount("local:" + thread.ID); got != 0 {
+		t.Fatalf("subscriber count after failed handoff = %d, want capture withdrawn", got)
 	}
 }
 
@@ -408,6 +544,68 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	}
 }
 
+func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
+	resumeLocks := hubcore.NewResumeLocks()
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        threadID,
+				SessionID: threadID,
+				Source:    "local",
+				Serf:      appwire.SerfThread{Ref: ref},
+			}},
+			Handoff: handoff,
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		readHook: func() {
+			targetLock := resumeLocks.For(threadID)
+			if !targetLock.TryLock() {
+				t.Fatal("atomic relay held deletion ownership across upstream read")
+			}
+			defer targetLock.Unlock()
+			if _, err := store.Begin("project-atomic-read-0123456789", []hubcore.DeletionTarget{{
+				Ref:      ref,
+				ThreadID: threadID,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: lease.readResult.Response.Thread},
+		lease:                lease,
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{DeletionStore: store, ResumeLocks: resumeLocks},
+		appsource.NewRegistry(),
+	)
+
+	if _, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{
+		Ref:       ref,
+		Subscribe: true,
+	}); !isTargetDeletedError(err) {
+		t.Fatalf("atomic read error = %T %v, want targetDeleted", err, err)
+	}
+	select {
+	case <-handoff.aborted:
+	default:
+		t.Fatal("deletion-winning atomic read did not abort its live handoff")
+	}
+	select {
+	case <-handoff.committed:
+		t.Fatal("deletion-winning atomic read committed its handoff")
+	default:
+	}
+}
+
 type relaySessionTestSource struct {
 	relayLifecycleSource
 	id    string
@@ -517,16 +715,17 @@ func (l *scriptedRelaySessionLease) listenCallCount() int {
 }
 
 type recordingRelayHandoff struct {
-	once      sync.Once
-	committed chan struct{}
-	aborted   chan struct{}
-	onCommit  func()
+	once         sync.Once
+	committed    chan struct{}
+	aborted      chan struct{}
+	onCommit     func()
+	refuseCommit bool
 }
 
 func (h *recordingRelayHandoff) Commit() bool {
 	won := false
 	h.once.Do(func() {
-		won = true
+		won = !h.refuseCommit
 		close(h.committed)
 		if h.onCommit != nil {
 			h.onCommit()
