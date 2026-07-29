@@ -1137,7 +1137,7 @@ func TestCodexPartialReadDoesNotPopulateAuthoritativeCache(t *testing.T) {
 
 func TestCodexCachedThreadReadOwnsNestedState(t *testing.T) {
 	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
-	source.live["th_codex"] = &codexLiveThread{committed: 1}
+	source.live["th_codex"] = &codexLiveThread{dirty: 1, committed: 1}
 	source.cache["th_codex"] = appwire.Thread{
 		ID:     "th_codex",
 		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive, ActiveFlags: []string{"streaming"}},
@@ -1225,7 +1225,7 @@ func TestCodexCachedThreadReadOwnsNestedState(t *testing.T) {
 
 func TestCodexCachedThreadConcurrentReadersDoNotShareWritableItems(t *testing.T) {
 	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
-	source.live["th_codex"] = &codexLiveThread{committed: 1}
+	source.live["th_codex"] = &codexLiveThread{dirty: 1, committed: 1}
 	source.cache["th_codex"] = appwire.Thread{
 		ID: "th_codex",
 		Turns: []appwire.Turn{{

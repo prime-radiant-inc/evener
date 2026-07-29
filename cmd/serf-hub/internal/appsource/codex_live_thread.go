@@ -171,8 +171,11 @@ func (live *codexLiveThread) isClosed() bool {
 	return live.closed || live.retiring
 }
 
-func (live *codexLiveThread) hasCommittedSnapshot() bool {
+func (live *codexLiveThread) hasAuthoritativeSnapshot() bool {
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	return live.committed > 0 && !live.closed && !live.retiring
+	return live.committed > 0 &&
+		live.dirty == live.committed &&
+		!live.closed &&
+		!live.retiring
 }
