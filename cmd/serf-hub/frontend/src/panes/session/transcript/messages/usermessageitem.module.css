@@ -36,8 +36,12 @@
   display: flex;
   /* 24px avatar + 10px gap = the 34px content column the TurnBlock gutter
    * indents agent-side items to (spec decision 3). 10px sits between
-   * --space-2 and --space-3 with no token of its own, so it is a literal. */
-  gap: 10px;
+   * --space-2 and --space-3 with no token of its own. The value inherits the
+   * transcript's one geometry definition, --speaker-gap, declared on .turn in
+   * turnblock.module.css - not a local literal that happens to match a
+   * constant elsewhere - so the 24+10=34 arithmetic can never silently drift
+   * between this avatar row and the gutter's indent rule. */
+  gap: var(--speaker-gap);
   padding: var(--space-2) 0;
 }
 

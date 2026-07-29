@@ -39,8 +39,13 @@ export interface SpeakerAvatarProps {
 }
 
 // 24px: the exchange-boundary header's tile edge (see docs/web-ui/specs/
-// 2026-07-29-transcript-slack-lean-messages.md, decision 2).
-const DEFAULT_SIZE = 24;
+// 2026-07-29-transcript-slack-lean-messages.md, decision 2). This is the
+// widget's API default and must work outside the transcript too; the
+// transcript's matching --speaker-avatar-size (declared on .turn in
+// turnblock.module.css) is pinned equal by this widget's own test - that
+// drift pin is what keeps the widget default and the transcript geometry
+// from drifting apart.
+export const DEFAULT_SIZE = 24;
 
 // The glyph scales with the tile so a resized avatar stays proportioned:
 // 24px -> 14px, the app's standard icon box (widgets/chevron's DEFAULT_SIZE).
