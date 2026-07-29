@@ -74,16 +74,27 @@ moves from caption to body size**, the same as other messages.
 
 ## Item-type classification (gutter contract)
 
+**Amended 2026-07-29 (layout-roles refactor, Jesse's consistency call):** the
+margin class below was wrong to exist. Steering, job notifications, system
+notices, and warnings sat at the margin while everything around them indented,
+and Jesse called the inconsistency out. The classification is now exactly two
+roles, defined in `src/panes/session/transcript/layoutRoles.ts` (the ONE place
+that answers "where does this row sit"): **speaker** (userMessage always,
+agentMessage at an exchange opener — renders its own avatar header, full
+width) and **run** (absolutely everything else, indented, no exception set —
+including unknown future wire types). Transcript chrome (TurnSeparator,
+SeenDivider, TurnFailureEndCap) is not items and stays outside the map. The
+refactor also single-sourced the gutter geometry: `--speaker-avatar-size: 24px
+/ --speaker-gap: 10px / --speaker-gutter: 34px` declared once on `.turn` and
+consumed via `var()` everywhere (the avatar tile default is pinned to it by a
+contract test in `widgets/speakeravatar/speakeravatar.test.tsx`).
+
 | Item / chrome | Class | Why |
 |---|---|---|
-| userMessage | avatar row | header = avatar + `You` + time; text in the content column of the same flex row |
-| agentMessage at exchange opener | avatar row | header = avatar + `Agent` + `model · time` |
-| agentMessage mid-exchange | content | prose under the run |
-| reasoning (thinking) | content | lightbulb row + body indent with the run |
-| commandExecution + ToolCallCluster | content | tool rows indent with the run |
-| steering (incl. notification cards) | margin | daemon bookkeeping spans full width, as in the approved mock |
-| systemNotice, warning | margin | structural/meta rows stay at the margin |
-| TurnSeparator, SeenDivider, TurnFailureEndCap | margin | transcript chrome, not speaker content |
+| userMessage | speaker | header = avatar + `You` + time; text in the content column of the same flex row |
+| agentMessage at exchange opener | speaker | header = avatar + `Agent` + `model · time` |
+| everything else in a turn — agentMessage mid-exchange, reasoning, commandExecution + clusters, steering (incl. notification cards), systemMessage, warning, unknown future types | run | one kind of row, indented with the run, no exceptions (the 2026-07-29 consistency fix) |
+| TurnSeparator, SeenDivider, TurnFailureEndCap | (not items) | transcript chrome, rendered by TurnBlock directly, outside the role map |
 
 ## Footprint
 

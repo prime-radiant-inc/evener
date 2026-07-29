@@ -16,15 +16,19 @@
 }
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The
- * 10px gap with the 24px avatar makes the 34px content column TurnBlock's
- * gutter indents to, so the opener's prose and every mid-exchange row
- * share one vertical edge. Mid-exchange items never take this class - they
+ * gap with the 24px avatar makes the 34px content column TurnBlock's gutter
+ * indents to, so the opener's prose and every mid-exchange row share one
+ * vertical edge. The gap inherits the transcript's one geometry definition,
+ * --speaker-gap, declared on .turn in turnblock.module.css - not a local
+ * literal that happens to match a constant elsewhere - so the 24+10=34
+ * arithmetic can never silently drift between this avatar row and the
+ * gutter's indent rule. Mid-exchange items never take this class - they
  * render as a bare .message and the gutter aligns them. The header is a
  * flex row at every width (spec decision 4): the avatar simply stays
  * inline, so there is no breakpoint here. */
 .opener {
   display: flex;
-  gap: 10px;
+  gap: var(--speaker-gap);
 }
 
 .column {

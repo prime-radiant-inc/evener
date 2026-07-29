@@ -144,9 +144,12 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
 test("the slack-lean layout is token-backed and has no prose card treatment", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  // One flex row: avatar (flex:none) + 10px gap, so the content column lands
-  // on the same 34px line the TurnBlock gutter uses for agent-side items.
-  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*10px;/);
+  // One flex row: avatar (flex:none) + the transcript's single-sourced
+  // --speaker-gap (10px, declared on .turn in turnblock.module.css), so the
+  // content column lands on the same 34px line the TurnBlock gutter uses for
+  // agent-side items. The 24+10=34 arithmetic itself is pinned by
+  // speakeravatar.test.tsx's drift-pin test.
+  expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--speaker-gap\);/);
   expect(css).toMatch(/\.avatar\s*\{[\s\S]*flex:\s*none;/);
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
   // Speaker name at body size / medium weight / --ink-hi (spec decision 1);

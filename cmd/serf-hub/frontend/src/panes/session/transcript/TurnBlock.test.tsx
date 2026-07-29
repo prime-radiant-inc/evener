@@ -410,64 +410,73 @@ test("items no toggle governs are untouched with every toggle off", () => {
   expect(text).toContain("Activated skill: x");
 });
 
-// --- Gutter classification (slack-lean speaker treatments) ---------------
-// Spec docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md
-// decisions 3-4: margin items render full-width outside any
-// [data-testid="agent-content"] wrapper; agent-side content (the common
-// case, including unknown future types) is wrapped and takes the indent.
+// --- Layout roles (layoutRoles.ts) ----------------------------------------
+// Two roles, no exception set: "speaker" rows (userMessage, exchange-opening
+// agentMessage) render full-width outside any [data-testid="run-content"]
+// wrapper; "run" rows - EVERYTHING else, including steering, system notices,
+// warnings, and unknown future types - render inside the wrapper and take
+// the gutter indent. The steering/notification indent is the consistency fix
+// (Jesse's review call); these tests pin it.
 
-function expectOutsideAgentContent(el: HTMLElement) {
-  expect(el.closest('[data-testid="agent-content"]')).toBeNull();
+function expectOutsideRunContent(el: HTMLElement) {
+  expect(el.closest('[data-testid="run-content"]')).toBeNull();
 }
 
-function expectInsideAgentContent(el: HTMLElement) {
-  expect(el.closest('[data-testid="agent-content"]')).not.toBeNull();
+function expectInsideRunContent(el: HTMLElement) {
+  expect(el.closest('[data-testid="run-content"]')).not.toBeNull();
 }
 
-test("margin items (userMessage, steering, systemMessage, warning) render outside any agent-content wrapper", () => {
+test("speaker rows render outside any run-content wrapper: userMessage always", () => {
+  render(<TurnBlock turn={turn([item({ id: "u", type: "userMessage", text: "hi there" })])} />);
+  expectOutsideRunContent(screen.getByTestId("user-message-item"));
+  expect(screen.queryByTestId("run-content")).toBeNull();
+});
+
+test("steering, systemMessage, and warning are run rows: they render INSIDE a run-content wrapper (the consistency fix)", () => {
   const items = [
-    item({ id: "u", type: "userMessage", text: "hi there" }),
     item({ id: "st", type: "steering", text: "keep going" }),
     systemItem("s", { eventKind: "skill_activated", text: "Activated skill: x" }),
     item({ id: "w", type: "warning", text: "context nearly full" }),
   ];
   render(<TurnBlock turn={turn(items)} />);
-  expectOutsideAgentContent(screen.getByTestId("user-message-item"));
-  expectOutsideAgentContent(screen.getByTestId("steering-item"));
-  expectOutsideAgentContent(screen.getByTestId("system-notice-line"));
-  expectOutsideAgentContent(screen.getByTestId("warning-item"));
-  expect(screen.queryByTestId("agent-content")).toBeNull();
+  expectInsideRunContent(screen.getByTestId("steering-item"));
+  expectInsideRunContent(screen.getByTestId("system-notice-line"));
+  expectInsideRunContent(screen.getByTestId("warning-item"));
+  expect(screen.getAllByTestId("run-content")).toHaveLength(3);
 });
 
-test("agentMessage and reasoning render inside an agent-content wrapper", () => {
+test("agentMessage and reasoning render inside a run-content wrapper", () => {
   const items = [
     item({ id: "a", type: "agentMessage", text: "reply" }),
     item({ id: "r", type: "reasoning", reasoningSummaries: [["hmm"]], status: "completed" }),
   ];
   render(<TurnBlock turn={turn(items)} />);
-  expectInsideAgentContent(screen.getByTestId("agent-message-item"));
-  expectInsideAgentContent(screen.getByTestId("think-block"));
+  expectInsideRunContent(screen.getByTestId("agent-message-item"));
+  expectInsideRunContent(screen.getByTestId("think-block"));
 });
 
 test("an exchange-OPENING agentMessage is the avatar row: it renders OUTSIDE the wrapper so its avatar sits in the gutter", () => {
   const opener = item({ id: "a-open", type: "agentMessage", text: "reply" });
   const { unmount } = render(<TurnBlock turn={turn([opener])} exchangeOpeners={new Set(["a-open"])} />);
-  expectOutsideAgentContent(screen.getByTestId("agent-message-item"));
+  expectOutsideRunContent(screen.getByTestId("agent-message-item"));
   unmount();
   // ...and a mid-exchange agentMessage in the same turn still takes the indent.
   render(
-    <TurnBlock turn={turn([item({ id: "a-mid", type: "agentMessage", text: "more" })])} exchangeOpeners={new Set(["a-open"])} />,
+    <TurnBlock
+      turn={turn([item({ id: "a-mid", type: "agentMessage", text: "more" })])}
+      exchangeOpeners={new Set(["a-open"])}
+    />,
   );
-  expectInsideAgentContent(screen.getByTestId("agent-message-item"));
+  expectInsideRunContent(screen.getByTestId("agent-message-item"));
 });
 
-test("a lone commandExecution renders inside an agent-content wrapper", () => {
+test("a lone commandExecution renders inside a run-content wrapper", () => {
   const items = [item({ id: "t", type: "commandExecution", toolName: "tb-tool-solo", output: "out" })];
   render(<TurnBlock turn={turn(items)} />);
-  expectInsideAgentContent(screen.getByTestId("tool-call-item"));
+  expectInsideRunContent(screen.getByTestId("tool-call-item"));
 });
 
-test("a ToolCallCluster is agent-side content: it renders inside an agent-content wrapper", () => {
+test("a ToolCallCluster is run content: it renders inside a run-content wrapper", () => {
   const items = [
     item({
       id: "c-a",
@@ -496,16 +505,16 @@ test("a ToolCallCluster is agent-side content: it renders inside an agent-conten
   ];
   render(<TurnBlock turn={turn(items)} />);
   const cluster = screen.getByTestId("tool-call-cluster");
-  expectInsideAgentContent(cluster);
+  expectInsideRunContent(cluster);
   // One wrapper for the cluster (keyed on the run's first item id) plus one
   // for the trailing agent message - the three clustered calls share one.
-  expect(screen.getAllByTestId("agent-content")).toHaveLength(2);
+  expect(screen.getAllByTestId("run-content")).toHaveLength(2);
 });
 
-test("an unknown future item type defaults to agent-side content", () => {
+test("an unknown future item type defaults to run content", () => {
   const items = [item({ id: "x", type: "someFutureWireType", text: "mystery" })];
   render(<TurnBlock turn={turn(items)} />);
-  expectInsideAgentContent(screen.getByTestId("raw-item"));
+  expectInsideRunContent(screen.getByTestId("raw-item"));
 });
 
 test("transcript chrome stays outside any wrapper: TurnSeparator and SeenDivider", () => {
@@ -514,12 +523,22 @@ test("transcript chrome stays outside any wrapper: TurnSeparator and SeenDivider
   // enable Round timings and give the turn a measured duration.
   act(() => prefsStore.getState().setTranscriptStatus("roundTimings", true));
   render(<TurnBlock turn={turn(items, { durationMs: 1500 })} showSeenDivider />);
-  expectOutsideAgentContent(screen.getByTestId("turn-separator"));
-  expectOutsideAgentContent(screen.getByTestId("seen-divider"));
+  expectOutsideRunContent(screen.getByTestId("turn-separator"));
+  expectOutsideRunContent(screen.getByTestId("seen-divider"));
 });
 
-test("the gutter indent is one media query at exactly 700px with padding-left: 34px", () => {
+test("the gutter indent is one media query at exactly 700px with padding-left: var(--speaker-gutter)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/@media\s*\(min-width:\s*700px\)\s*\{\s*\.agentContent\s*\{\s*padding-left:\s*34px;\s*\}\s*\}/);
+  expect(css).toMatch(
+    /@media\s*\(min-width:\s*700px\)\s*\{\s*\.runContent\s*\{\s*padding-left:\s*var\(--speaker-gutter\);\s*\}\s*\}/,
+  );
+});
+
+test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar + 10px gap", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(
+    /\.turn\s*\{[\s\S]*--speaker-avatar-size:\s*24px;[\s\S]*--speaker-gap:\s*10px;[\s\S]*--speaker-gutter:\s*34px;/,
+  );
 });

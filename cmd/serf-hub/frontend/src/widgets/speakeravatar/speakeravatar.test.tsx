@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { SpeakerAvatar } from ".";
+import { DEFAULT_SIZE, SpeakerAvatar } from ".";
 
 afterEach(cleanup);
 
@@ -20,6 +20,20 @@ function tileOf(container: HTMLElement): HTMLElement {
 function tileCss(): string {
   const path = join(dirname(fileURLToPath(import.meta.url)), "speakeravatar.module.css");
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+// Same declaration-level read for the transcript's geometry: the gutter
+// custom properties live on .turn in turnblock.module.css, one directory
+// over. Comments stripped first, same as tileCss().
+function turnCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "../../panes/session/transcript/turnblock.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+function geometryVar(css: string, name: string): number {
+  const match = new RegExp(`${name}:\\s*(\\d+)px`).exec(css);
+  if (!match) throw new Error(`turnblock.module.css declares no ${name}`);
+  return Number(match[1]!);
 }
 
 // The load-bearing property: each speaker draws a different glyph, so the
@@ -95,4 +109,24 @@ test("the tile uses the edge/surface/ink/radius tokens, not literals", () => {
   expect(declarations).toMatch(/background:\s*var\(--surface-2\)/);
   expect(declarations).toMatch(/color:\s*var\(--ink-mid\)/);
   expect(declarations).toMatch(/border-radius:\s*var\(--radius-control\)/);
+});
+
+// The drift pin. The transcript's gutter geometry is single-sourced on .turn
+// in turnblock.module.css: --speaker-avatar-size (the tile edge) +
+// --speaker-gap (the header row's gap) = --speaker-gutter (the content
+// column indent). This widget's DEFAULT_SIZE is the avatar half of that
+// arithmetic, so it is pinned equal to --speaker-avatar-size here: if anyone
+// changes the transcript's gutter geometry, the avatar tile default must
+// change with it (or the change must be deliberate enough to update this
+// pin).
+test("the transcript's gutter geometry matches the widget default", () => {
+  const css = turnCss();
+  const avatarSize = geometryVar(css, "--speaker-avatar-size");
+  const gap = geometryVar(css, "--speaker-gap");
+  const gutter = geometryVar(css, "--speaker-gutter");
+  expect(avatarSize).toBe(24);
+  expect(gap).toBe(10);
+  expect(gutter).toBe(34);
+  expect(avatarSize).toBe(DEFAULT_SIZE);
+  expect(avatarSize + gap).toBe(gutter);
 });

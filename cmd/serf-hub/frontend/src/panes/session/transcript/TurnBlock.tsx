@@ -13,6 +13,7 @@ import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { usePrefsStore } from "../../../stores/prefs";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SeenDivider } from "./flow/SeenDivider";
+import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
@@ -44,18 +45,8 @@ export interface TurnBlockProps {
 
 const CLASS = {
   turn: requireClass(styles.turn, "turnblock.module.css", "turn"),
-  agentContent: requireClass(styles.agentContent, "turnblock.module.css", "agentContent"),
+  runContent: requireClass(styles.runContent, "turnblock.module.css", "runContent"),
 };
-
-// Gutter classification (slack-lean speaker treatments, spec
-// docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md decisions
-// 3-4): MARGIN items render full-width, exactly as before; everything else -
-// agent work is the common case, structural rows are the explicit exceptions
-// - is agent-side CONTENT and takes the indent. Unknown current-or-future
-// wire types default to content. Note the wire's own type name for a system
-// notice is "systemMessage" (SystemNoticeItem's registerItemRenderer call
-// site), not "systemNotice".
-const MARGIN_ITEM_TYPES: ReadonlySet<string> = new Set(["userMessage", "steering", "systemMessage", "warning"]);
 
 // isItemLive is the per-item liveness signal every item renderer receives
 // as `live` (ItemRenderProps.live): wire-accurate against the
@@ -106,26 +97,26 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
           const run = toolRunFor(shown, item.id);
           if (run && shouldGroup(run)) {
             if (!run.isFirst) return null;
-            // A ToolCallCluster renders a run of agent tool calls, so it is
-            // agent-side content and takes the indent too. The key moves to
-            // the wrapper so the cluster's identity is unchanged.
+            // A ToolCallCluster renders a run of tool calls, so it is "run"
+            // content and takes the indent too. The key moves to the wrapper
+            // so the cluster's identity is unchanged.
             return (
-              <div key={itemScopeKey(sessionRef, item.id)} className={CLASS.agentContent} data-testid="agent-content">
+              <div key={itemScopeKey(sessionRef, item.id)} className={CLASS.runContent} data-testid="run-content">
                 <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
               </div>
             );
           }
           const ItemRenderer = itemRendererFor(item.type);
-          // Margin items (userMessage, steering, systemMessage, warning)
-          // render unwrapped, full width, exactly as before; the memoized
-          // renderers and their keys are untouched. Everything else is
-          // agent-side content and takes the gutter indent - EXCEPT an
-          // exchange-opening agentMessage: its own speaker header is the
-          // avatar row (spec classification: "avatar row"), and the avatar
-          // belongs IN the gutter at the margin, not indented into the
-          // content column it heads.
-          const isAvatarRow = item.type === "agentMessage" && exchangeOpeners?.has(item.id) === true;
-          if (MARGIN_ITEM_TYPES.has(item.type) || isAvatarRow) {
+          // Speaker rows (userMessage, exchange-opening agentMessage) render
+          // unwrapped, full width: their own speaker header is the avatar
+          // row, and the avatar belongs IN the gutter at the margin, not
+          // indented into the content column it heads. Everything else is a
+          // "run" row - including steering, system notices, and warnings,
+          // which indent with everything else (Jesse's consistency call) -
+          // and takes the gutter indent inside the wrapper. layoutRoles.ts
+          // owns this classification; there is no per-type exception set
+          // here.
+          if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
             return (
               <ItemRenderer
                 key={item.id}
@@ -139,7 +130,7 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
             );
           }
           return (
-            <div key={item.id} className={CLASS.agentContent} data-testid="agent-content">
+            <div key={item.id} className={CLASS.runContent} data-testid="run-content">
               <ItemRenderer
                 item={item}
                 turn={shownTurn}

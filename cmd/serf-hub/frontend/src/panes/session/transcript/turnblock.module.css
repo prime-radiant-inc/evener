@@ -11,6 +11,15 @@
    * wrap - a single ancestor declaration wouldn't reach it there.
    */
   --session-measure: 76rem;
+  /* Speaker geometry, declared ONCE on .turn: the gutter is 34px = 24px
+   * speaker-avatar tile + 10px gap. Custom properties (not a literal in the
+   * indent rule) so every consumer - the .runContent indent here,
+   * usermessageitem.module.css, agentmessageitem.module.css - inherits one
+   * definition: changing the gutter later is one number in one file.
+   */
+  --speaker-avatar-size: 24px;
+  --speaker-gap: 10px;
+  --speaker-gutter: 34px;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -35,18 +44,21 @@
   border-left: 2px solid var(--edge);
 }
 
-/* Agent-side content column (slack-lean speaker treatments, spec
- * docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md decisions
- * 3-4): TurnBlock wraps every non-margin item in this row, and above the
- * breakpoint it indents 34px = 24px speaker-avatar tile + 10px gap, aligning
- * the content under the header's name. The indent is per-turn but reads
- * continuous across turns because adjacent turns share it; below 700px the
- * gutter collapses and every row goes full-width (the avatar moves inline
- * into the header). The 700px breakpoint matches overflowguard's
- * 390/700/1024/1400 sweep so the 390/700 legs exercise the collapsed
- * variant and the 1024/1400 legs the guttered one. */
+/* Run content column (layout roles, layoutRoles.ts): TurnBlock wraps every
+ * "run"-role item in this per-item role wrapper, and above the breakpoint it
+ * indents by --speaker-gutter, aligning the content under the speaker
+ * header's name. Steering, system notices, and warnings are "run" rows now -
+ * they indent with everything else (Jesse's consistency call: notifications
+ * and steering must not sit at the margin while the rest of the turn
+ * indents). Only "speaker" rows (userMessage, exchange-opening agentMessage)
+ * stay full-width, because their avatar header manages the gutter itself.
+ * The indent is per-turn but reads continuous across turns because adjacent
+ * turns share it; below 700px the gutter collapses and every row goes
+ * full-width (the avatar moves inline into the header). The 700px breakpoint
+ * matches overflowguard's 390/700/1024/1400 sweep so the 390/700 legs
+ * exercise the collapsed variant and the 1024/1400 legs the guttered one. */
 @media (min-width: 700px) {
-  .agentContent {
-    padding-left: 34px;
+  .runContent {
+    padding-left: var(--speaker-gutter);
   }
 }
