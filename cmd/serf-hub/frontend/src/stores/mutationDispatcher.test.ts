@@ -1,5 +1,5 @@
 import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { RequestTimeoutError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { MutationReceipt, TurnQueueResponse } from "../protocol/types.gen";
@@ -58,6 +58,22 @@ function queueCalls(client: FakeClient): MutationOutboxRecord["payload"][] {
 }
 
 describe("MutationDispatcher", () => {
+  test("does not dispatch a persisted method outside the retry-safe mutation set", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "method-boundary", ["mutation-a"]);
+    const record = await outbox.enqueueIntent({
+      ...queueIntent(),
+      method: "thread/read",
+    });
+    const client = new FakeClient();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(client.calls).toEqual([]);
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
+  });
+
   test("lost responses retain submitting and reconnect retries the same clientMutationId", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "lost-response", ["mutation-a"]);
@@ -114,6 +130,26 @@ describe("MutationDispatcher", () => {
       second.clientMutationId,
     ]);
     expect(await outbox.listOutbox("ref-a")).toEqual([]);
+  });
+
+  test("rechecks the target gate after the extant-record read and before sending", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "gate-race", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    let gateOpen = true;
+    const getOutbox = outbox.getOutbox.bind(outbox);
+    vi.spyOn(outbox, "getOutbox").mockImplementation(async (clientMutationId) => {
+      const current = await getOutbox(clientMutationId);
+      gateOpen = false;
+      return current;
+    });
+    const client = new FakeClient();
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => (gateOpen ? client : null) });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(client.calls).toEqual([]);
+    expect(await getOutbox(record.clientMutationId)).toBeDefined();
   });
 
   test("allows duplicate multi-tab dispatch and converges after applied and late unknown responses", async () => {
@@ -209,6 +245,26 @@ describe("MutationDispatcher", () => {
 
     expect(await outbox.getRecovery(first.clientMutationId)).toMatchObject({ recoveryKind: "rejected" });
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
+  });
+
+  test("does not settle from a malformed outcome that omits the matching clientMutationId", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "unidentified-error", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient();
+    client.on("turn/queue", () => {
+      throw new WireError("turn changed", -32013, {
+        serfErrorInfo: "conflict",
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
+    expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
   });
 
   test("targetDeleted moves the unresolved intent to orphaned recovery", async () => {

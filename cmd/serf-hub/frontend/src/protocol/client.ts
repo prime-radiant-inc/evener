@@ -22,8 +22,16 @@ export interface AppwireClientOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+export const APPWIRE_PROTOCOL_VERSION = "serf-appwire-v2";
 const DEFAULT_CLIENT_INFO = { name: "serf-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
+
+class ProtocolVersionMismatchError extends Error {
+  constructor(received: string) {
+    super(`AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received ${received}`);
+    this.name = "ProtocolVersionMismatchError";
+  }
+}
 
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
@@ -285,9 +293,13 @@ export class AppwireClient {
     socket.onclose = (ev) => this.handleSocketLoss(socket, ev.code);
 
     const result = await this.request("initialize", {
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       clientInfo: this.clientInfo,
       capabilities: DEFAULT_CAPABILITIES,
     });
+    if (result.protocolVersion !== APPWIRE_PROTOCOL_VERSION) {
+      throw new ProtocolVersionMismatchError(result.protocolVersion);
+    }
     this.sendFrame({ method: "initialized", params: {} });
     this.setState("ready");
     // The handshake itself genuinely succeeded, so this still resolves with
@@ -349,12 +361,16 @@ export class AppwireClient {
     try {
       await this.dialAndHandshake();
       this.reconnectAttempts = 0;
-    } catch {
+    } catch (error) {
       // close() already moved to "closed" and disarmed reconnection (it ran
       // synchronously before this rejection could be observed here): honor
       // that instead of scheduling another attempt on a closed client.
       if (this.isClosed()) return;
       this.teardownFailedSocket();
+      if (error instanceof ProtocolVersionMismatchError) {
+        this.setState("closed");
+        return;
+      }
       this.scheduleReconnect();
     } finally {
       this.reconnectInFlight = false;

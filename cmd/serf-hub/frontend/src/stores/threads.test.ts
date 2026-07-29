@@ -1,3 +1,4 @@
+import "fake-indexeddb/auto";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -8,16 +9,20 @@ import {
   useSubagentRows,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
-import { ConnectionClosedError, WireError } from "../protocol/errors";
+import { RequestTimeoutError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   ModelListResponse,
+  QueueState,
   Thread,
   ThreadCapabilities,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  TurnQueueResponse,
+  TurnStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -50,7 +55,12 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
+type TestThreadOverrides = Omit<Partial<Thread>, "serf"> & {
+  serf?: Omit<Thread["serf"], "queue"> & { queue: Partial<QueueState> };
+};
+
+function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
+  const { serf, ...threadOverrides } = overrides;
   return {
     id: `thr_${ref}`,
     sessionId: `sess_${ref}`,
@@ -63,12 +73,12 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
-    ...overrides,
+    serf: { ref, capabilities: CAPABILITIES, ...serf, queue: { revision: 0, ...serf?.queue } },
+    ...threadOverrides,
   };
 }
 
-function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
+function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
 }
 
@@ -102,7 +112,12 @@ function sameEpochReconnectFixture() {
   };
   const turnCompleted = {
     method: "turn/completed" as const,
-    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      turnId: "turn_1",
+      turn: { id: "turn_1", status: "completed", itemsView: "" },
+    },
   };
   return { staleSnapshot, completion, turnCompleted };
 }
@@ -116,9 +131,61 @@ function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   return fake;
 }
 
-beforeEach(() => {
+function connectMutationClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    if (!params.ref) throw new Error("thread/read test request requires ref");
+    return readResponse(params.ref);
+  });
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+async function ensureActiveMutationTarget(fake: FakeClient, ref: string): Promise<void> {
+  fake.on("thread/read", (params) =>
+    readResponse(params.ref ?? ref, {
+      turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+      serf: {
+        ref: params.ref ?? ref,
+        capabilities: CAPABILITIES,
+        queue: { revision: 7 },
+        activeTurnId: "turn_1",
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+}
+
+async function deleteMutationDatabase(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase("serf-mutation-outbox");
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("mutation database deletion blocked")), {
+      once: true,
+    });
+  });
+}
+
+async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
+  const probe = new MutationOutboxIndexedDB();
+  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+  probe.close();
+}
+
+function mutationReceipt(clientMutationId: string, disposition = "applied") {
+  return {
+    clientMutationId,
+    disposition,
+    threadId: "thr_ref_a",
+    projectionState: "reflected",
+  };
+}
+
+beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  await deleteMutationDatabase();
 });
 
 afterEach(() => {
@@ -226,7 +293,12 @@ describe("useThreadsStore.ensureThread", () => {
     });
     fake.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     });
 
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
@@ -609,6 +681,7 @@ describe("useThreadsStore.ensureThread", () => {
       method: "item/completed",
       params: {
         threadId: "thr_ref_a",
+        ref: "ref_a",
         turnId: "turn_live",
         item: { type: "agentMessage", id: "item_live", turnId: "turn_live", text: "answer", status: "completed" },
       },
@@ -623,7 +696,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns[0]?.items[0]?.text).toBe("answer");
   });
 
-  test("replays threadId-only status and item completion after a ref-targeted event establishes the thread identity", async () => {
+  test("replays v2 status and item completion after a ref-targeted event establishes the thread identity", async () => {
     const fake = connectFakeClient();
     const box: { resolveRead: ((response: ThreadReadResponse) => void) | null } = { resolveRead: null };
     fake.on(
@@ -644,12 +717,13 @@ describe("useThreadsStore.ensureThread", () => {
     });
     fake.emitNotification({
       method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", status: { type: "active", activeFlags: ["streaming"] } },
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: ["streaming"] } },
     });
     fake.emitNotification({
       method: "item/completed",
       params: {
         threadId: "thr_ref_a",
+        ref: "ref_a",
         turnId: "turn_1",
         item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
       },
@@ -1188,23 +1262,15 @@ describe("notification routing", () => {
         });
       }
       return readResponse("ref_b", {
-        turns: [
-          {
-            id: "turn_1",
-            status: "completed",
-            itemsView: "full",
-            items: [
-              { type: "agentMessage", id: "item_b1", turnId: "turn_1", text: "B's own answer", status: "completed" },
-            ],
-          },
-        ],
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
+        serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
       });
     });
 
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().ensureThread("ref_b");
     expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
-    expect(threadsStore.getState().threads.get("ref_b")?.activeTurnId).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_b")?.activeTurnId).toBe("turn_1");
 
     const beforeB = threadsStore.getState().threads.get("ref_b");
 
@@ -1236,7 +1302,12 @@ describe("notification routing", () => {
 
     fake.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     });
 
     // The rightful owner (A, whose activeTurnId matched) settles...
@@ -1244,8 +1315,8 @@ describe("notification routing", () => {
     expect(modelA?.activeTurnId).toBeUndefined();
     expect(modelA?.turns[0]?.items[0]?.text).toBe("A's answer");
 
-    // ...while B, sharing the same numbered turn_1 but never active, is a
-    // same-reference no-op: the collision never crosses threads.
+    // ...while B, simultaneously active on the same numbered turn_1, is a
+    // same-reference no-op because v2's ref/thread identity is authoritative.
     expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
   });
 });
@@ -1298,7 +1369,12 @@ describe("reconnect resubscribe", () => {
     });
     fake.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     });
 
     expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
@@ -1346,7 +1422,12 @@ describe("reconnect resubscribe", () => {
     });
     fake.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_live", turn: { id: "turn_live", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_live",
+        turn: { id: "turn_live", status: "completed", itemsView: "" },
+      },
     });
 
     reconnectRead.resolve?.(staleSnapshot);
@@ -1458,7 +1539,12 @@ describe("reconnect resubscribe", () => {
     });
     b.emitNotification({
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     });
 
     // B wins publication first, with its buffered live completion replayed.
@@ -1585,16 +1671,21 @@ describe("client swap (manual retry) rewiring", () => {
 
 describe("useThreadsStore.send", () => {
   test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types.go:561-570)", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
 
     await threadsStore
       .getState()
       .send("ref_a", "hello", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
     expect(call?.params).toEqual({
       ref: "ref_a",
+      clientMutationId: expect.any(String),
       input: [
         { type: "text", text: "hello" },
         { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
@@ -1603,52 +1694,21 @@ describe("useThreadsStore.send", () => {
   });
 
   test("send with no attachments sends text-only input", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
 
     await threadsStore.getState().send("ref_a", "hello");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
-    expect(call?.params).toEqual({ ref: "ref_a", input: [{ type: "text", text: "hello" }] });
-  });
-
-  test("maps a Conflict wire rejection (serfErrorInfo === conflict) to ConflictError", async () => {
-    const fake = connectFakeClient();
-    // Mirrors appwire.Conflict() (appwire/errors.go): code -32013,
-    // data.serfErrorInfo "conflict" — the shape server/appwire_runtime.go's
-    // handleAppTurnStart returns when the turn CAS is lost (input buffer full).
-    fake.on("turn/start", () => {
-      throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [{ type: "text", text: "hello" }],
     });
-
-    const rejection = threadsStore.getState().send("ref_a", "hello");
-    await expect(rejection).rejects.toBeInstanceOf(ConflictError);
-    await expect(rejection).rejects.toThrow("input buffer full");
-  });
-
-  test("does not map a same-code, different-serfErrorInfo WireError to ConflictError", async () => {
-    const fake = connectFakeClient();
-    // Same wire code (-32013 / CodeConflict) as Conflict(), but a different
-    // serfErrorInfo (appwire.QueuedDrainPartial) — the discriminator must be
-    // the serfErrorInfo string, not the numeric code alone.
-    fake.on("turn/start", () => {
-      throw new WireError("queue drained partially", -32013, { serfErrorInfo: "queuedDrainPartial" });
-    });
-
-    const rejection = threadsStore.getState().send("ref_a", "hello");
-    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
-    await expect(rejection).rejects.toBeInstanceOf(WireError);
-  });
-
-  test("propagates ConnectionClosedError unchanged (terminal, never mapped to ConflictError)", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/start", () => {
-      throw new ConnectionClosedError("AppwireClient: closed");
-    });
-
-    const rejection = threadsStore.getState().send("ref_a", "hello");
-    await expect(rejection).rejects.toBeInstanceOf(ConnectionClosedError);
-    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
   });
 });
 
@@ -1657,37 +1717,46 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     fake.on("thread/read", (params) =>
       readResponse((params as { ref: string }).ref, {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-        serf: { ref: (params as { ref: string }).ref, capabilities: CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+        serf: {
+          ref: (params as { ref: string }).ref,
+          capabilities: CAPABILITIES,
+          queue: { revision: 7 },
+          activeTurnId: "turn_1",
+        },
       }),
     );
     await threadsStore.getState().ensureThread(ref);
   }
 
   test("steer sends the tracked model's activeTurnId as expectedTurnId", async () => {
-    const fake = connectFakeClient();
+    const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
-    fake.on("turn/steer", () => ({}));
+    fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().steer("ref_a", "steer text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
 
     const call = fake.calls.find((c) => c.method === "turn/steer");
     expect(call?.params).toEqual({
       ref: "ref_a",
+      clientMutationId: expect.any(String),
       expectedTurnId: "turn_1",
       input: [{ type: "text", text: "steer text" }],
     });
   });
 
   test("steer includes a base64 image attachment when provided", async () => {
-    const fake = connectFakeClient();
+    const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
-    fake.on("turn/steer", () => ({}));
+    fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().steer("ref_a", "steer text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
 
     const call = fake.calls.find((c) => c.method === "turn/steer");
     expect(call?.params).toEqual({
       ref: "ref_a",
+      clientMutationId: expect.any(String),
       expectedTurnId: "turn_1",
       input: [
         { type: "text", text: "steer text" },
@@ -1697,31 +1766,44 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
   });
 
   test("interrupt sends the tracked model's activeTurnId as expectedTurnId", async () => {
-    const fake = connectFakeClient();
+    const fake = connectMutationClient();
     await ensureActiveTurn(fake, "ref_a");
-    fake.on("turn/interrupt", () => ({}));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().interrupt("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
 
     const call = fake.calls.find((c) => c.method === "turn/interrupt");
-    expect(call?.params).toEqual({ ref: "ref_a", expectedTurnId: "turn_1" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedTurnId: "turn_1",
+    });
   });
 
-  test("queue sends turn/queue with text input and no expectedTurnId", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/queue", () => ({}));
+  test("queue sends turn/queue with the current expectedTurnId", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
 
     const call = fake.calls.find((c) => c.method === "turn/queue");
-    expect(call?.params).toEqual({ ref: "ref_a", input: [{ type: "text", text: "queued text" }] });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedTurnId: "turn_1",
+      input: [{ type: "text", text: "queued text" }],
+    });
   });
 
   test("queue includes a base64 image attachment when provided", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/queue", () => ({}));
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().queue("ref_a", "", [{ mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
 
     const call = fake.calls.find((c) => c.method === "turn/queue");
     // queueText allows empty text when attachments are present (parity
@@ -1729,25 +1811,10 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     // text.trim() guard means an empty string contributes no text item.
     expect(call?.params).toEqual({
       ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedTurnId: "",
       input: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }],
     });
-  });
-
-  test("steer/queue/interrupt also map a Conflict rejection to ConflictError", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/steer", () => {
-      throw new WireError("turn is not active", -32013, { serfErrorInfo: "conflict" });
-    });
-    fake.on("turn/queue", () => {
-      throw new WireError("no active turn to queue against", -32013, { serfErrorInfo: "conflict" });
-    });
-    fake.on("turn/interrupt", () => {
-      throw new WireError("turn is not active", -32013, { serfErrorInfo: "conflict" });
-    });
-
-    await expect(threadsStore.getState().steer("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
-    await expect(threadsStore.getState().queue("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
-    await expect(threadsStore.getState().interrupt("ref_a")).rejects.toBeInstanceOf(ConflictError);
   });
 });
 
@@ -1769,14 +1836,19 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
 // silent deviation.
 describe("useThreadsStore.drainAsSteer", () => {
   test("sends turn/drainAsSteer with the composer's text and attachments as input", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/drainAsSteer", () => ({}));
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().drainAsSteer("ref_a", "drain text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
     expect(call?.params).toEqual({
       ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedTurnId: "turn_1",
+      expectedQueueRevision: 7,
       input: [
         { type: "text", text: "drain text" },
         { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
@@ -1785,76 +1857,60 @@ describe("useThreadsStore.drainAsSteer", () => {
   });
 
   test("sends an empty input array when the composer was empty (draining the queue alone)", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/drainAsSteer", () => ({}));
+    const fake = connectMutationClient();
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().drainAsSteer("ref_a", "");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-    expect(call?.params).toEqual({ ref: "ref_a", input: [] });
-  });
-
-  test("maps a Conflict rejection to ConflictError", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/drainAsSteer", () => {
-      throw new WireError("turn is not active", -32013, { serfErrorInfo: "conflict" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedTurnId: "",
+      expectedQueueRevision: 0,
+      input: [],
     });
-
-    await expect(threadsStore.getState().drainAsSteer("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
-  });
-
-  test("does not map a queuedDrainPartial rejection to ConflictError (parity §A: distinct 'drained after queueing' outcome)", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/drainAsSteer", () => {
-      throw new WireError("queue drained partially", -32013, { serfErrorInfo: "queuedDrainPartial" });
-    });
-
-    const rejection = threadsStore.getState().drainAsSteer("ref_a", "x");
-    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
-    await expect(rejection).rejects.toBeInstanceOf(WireError);
   });
 });
 
 describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
   test("promoteQueuedAsSteer sends turn/promoteQueuedAsSteer with {ref, index, expectedEntryId}", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/promoteQueuedAsSteer", () => ({}));
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 1, expectedEntryId: "entry_2" });
-  });
-
-  test("promoteQueuedAsSteer maps a Conflict rejection (queue shifted under the snapshot) to ConflictError", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/promoteQueuedAsSteer", () => {
-      throw new WireError("entry id mismatch", -32013, { serfErrorInfo: "conflict" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      index: 1,
+      clientMutationId: expect.any(String),
+      expectedTurnId: "turn_1",
+      expectedEntryId: "entry_2",
     });
-
-    await expect(threadsStore.getState().promoteQueuedAsSteer("ref_a", 0, "entry_1")).rejects.toBeInstanceOf(
-      ConflictError,
-    );
   });
 
-  test("cancelQueued sends turn/cancelQueued with {ref, index, expectedEntryId} and returns {removedText, removedImages}", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/cancelQueued", () => ({ removedText: "queued message", removedImages: 2 }));
+  test("cancelQueued durably enqueues turn/cancelQueued with {ref, index, expectedEntryId}", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/cancelQueued", (params) => ({
+      removedText: "queued message",
+      removedImages: 2,
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
 
-    const result = await threadsStore.getState().cancelQueued("ref_a", 0, "entry_1");
+    await threadsStore.getState().cancelQueued("ref_a", 0, "entry_1");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/cancelQueued"));
 
     const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "entry_1" });
-    expect(result).toEqual({ removedText: "queued message", removedImages: 2 });
-  });
-
-  test("cancelQueued maps a Conflict rejection (already consumed) to ConflictError", async () => {
-    const fake = connectFakeClient();
-    fake.on("turn/cancelQueued", () => {
-      throw new WireError("entry id mismatch", -32013, { serfErrorInfo: "conflict" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      index: 0,
+      clientMutationId: expect.any(String),
+      expectedEntryId: "entry_1",
     });
-
-    await expect(threadsStore.getState().cancelQueued("ref_a", 0, "entry_1")).rejects.toBeInstanceOf(ConflictError);
   });
 });
 
@@ -3584,5 +3640,235 @@ describe("useThreadsStore.loadOlderTurns", () => {
     await loading;
 
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+});
+
+describe("retry-safe mutation outbox integration", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
+  test("send resolves from the local commit while a lost response leaves one durable intent", async () => {
+    const response = deferred<TurnStartResponse>();
+    const called = deferred<void>();
+    const fake = connectFakeClient();
+    fake.on("turn/start", () => {
+      called.resolve();
+      return response.promise;
+    });
+
+    const submitted = threadsStore.getState().send("ref_a", "hello");
+    void submitted.catch(() => undefined);
+    await called.promise;
+    let locallyCommitted = false;
+    void submitted.then(() => {
+      locallyCommitted = true;
+    });
+    await flushUntil(() => locallyCommitted);
+
+    const storage = new MutationOutboxIndexedDB();
+    const records = await storage.listOutbox("ref_a");
+    expect(locallyCommitted).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+      ref: "ref_a",
+      clientMutationId: records[0]?.clientMutationId,
+      input: [{ type: "text", text: "hello" }],
+    });
+
+    response.reject(new RequestTimeoutError("response lost"));
+  });
+
+  test("hydrates a pinned outbox ref before replaying it", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: {
+        ref: "ref_a",
+        expectedTurnId: "",
+        input: [{ type: "text", text: "queued" }],
+      },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+    const read = deferred<ThreadReadResponse>();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => read.promise);
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read"]);
+    read.resolve(readResponse("ref_a"));
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
+  });
+
+  test("retries a failed pinned rejoin on a ready lifecycle discovery before replay", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+    let readAttempts = 0;
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new Error("transient read failure");
+      return readResponse("ref_a");
+    });
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => readAttempts === 1);
+    await flushIndexedDBUntil(() => false, 2);
+    window.dispatchEvent(new Event("focus"));
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    expect(readAttempts).toBe(2);
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "thread/read", "turn/queue"]);
+  });
+
+  test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {
+    const responseLost = deferred<TurnQueueResponse>();
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => {
+      if (fake.calls.filter((call) => call.method === "turn/queue").length === 1) return responseLost.promise;
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/queue").length === 1);
+    responseLost.reject(new RequestTimeoutError("response lost"));
+    await flushIndexedDBUntil(() => false, 2);
+    const inspector = new MutationOutboxIndexedDB();
+    const [record] = await inspector.listOutbox("ref_a");
+    expect(record).toBeDefined();
+
+    const resyncRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => resyncRead.promise);
+    fake.emitNotification({
+      method: "serf/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a" },
+    });
+    await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "thread/read").length >= 1);
+    await threadsStore.getState().queue("ref_a", "enqueued during resync");
+    window.dispatchEvent(new Event("focus"));
+    await flushIndexedDBUntil(() => false, 3);
+
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+
+    resyncRead.resolve(
+      readResponse("ref_a", {
+        serf: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: [record!.clientMutationId] },
+          pendingMutations: [],
+        },
+      }),
+    );
+    for (let attempt = 0; attempt < 20 && (await inspector.getOutbox(record!.clientMutationId)); attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(await inspector.getOutbox(record!.clientMutationId)).toBeUndefined();
+    await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/queue").length === 2);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(2);
+    inspector.close();
+  });
+
+  test("snapshot identity settles a pinned intent before replay, including receipt-only controls", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", expectedTurnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        serf: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 4 },
+          pendingMutations: [
+            {
+              clientMutationId: "mutation-a",
+              method: "turn/interrupt",
+              executionState: "accepted",
+              projectionState: "removed",
+            },
+          ],
+        },
+      }),
+    );
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    fake.emitReady();
+    await flushUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+    const inspector = new MutationOutboxIndexedDB();
+    for (let attempt = 0; attempt < 20 && (await inspector.getOutbox("mutation-a")) !== undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    expect(await inspector.getOutbox("mutation-a")).toBeUndefined();
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(0);
+  });
+
+  test("a stale client hydration cannot settle an intent in a newer ready generation", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+    const staleRead = deferred<ThreadReadResponse>();
+    const currentRead = deferred<ThreadReadResponse>();
+    const stale = connectFakeClient("connecting");
+    stale.on("thread/read", () => staleRead.promise);
+    stale.emitReady();
+    await flushIndexedDBUntil(() => stale.calls.some((call) => call.method === "thread/read"));
+
+    const current = new FakeClient("ready");
+    current.on("thread/read", () => currentRead.promise);
+    current.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    connectionStore.getState().connect(current);
+    await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "thread/read"));
+
+    staleRead.resolve(
+      readResponse("ref_a", {
+        serf: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: ["mutation-a"] },
+        },
+      }),
+    );
+    await Promise.resolve();
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await inspector.getOutbox("mutation-a")).toBeDefined();
+
+    currentRead.resolve(readResponse("ref_a"));
+    await flushIndexedDBUntil(() => current.calls.some((call) => call.method === "turn/queue"));
+    expect(current.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   });
 });

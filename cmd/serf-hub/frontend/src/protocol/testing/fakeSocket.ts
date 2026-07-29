@@ -12,7 +12,7 @@ import type { InitializeResponse } from "../types.gen";
 // without duplicating the literal.
 export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
   serverInfo: { name: "fake-serf-hub", version: "0.0.0-test" },
-  protocolVersion: "test-1",
+  protocolVersion: "serf-appwire-v2",
   sourceId: "fake-source",
   features: {
     threadList: true,

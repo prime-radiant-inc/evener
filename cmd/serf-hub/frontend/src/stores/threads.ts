@@ -14,6 +14,7 @@ import { WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
   applyNotification,
+  collectAuthoritativeMutationIds,
   hydrateThread,
   notificationTargetsThread,
   prependOlderTurns,
@@ -29,9 +30,11 @@ import type {
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
-  TurnCancelQueuedResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
+import { MutationDispatcher } from "./mutationDispatcher";
+import { type MutationAttachment, type MutationIntent, MutationOutbox } from "./mutationOutbox";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
@@ -135,11 +138,10 @@ export interface ThreadsStoreState {
   promoteQueuedAsSteer(ref: string, index: number, expectedEntryId: string): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
-  // Same expectedEntryId Conflict semantics as promoteQueuedAsSteer. Returns
-  // the wire's own echo of what was removed (RemovedText/RemovedImages) so
-  // the caller can restore the full untruncated text and warn about any
-  // image attachments that were on the entry and are not restored.
-  cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<TurnCancelQueuedResponse>;
+  // Same expectedEntryId Conflict semantics as promoteQueuedAsSteer. The
+  // authoritative removal result is owned by the asynchronous dispatcher;
+  // this resolves once the intent itself is durably committed.
+  cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<void>;
   setModel(ref: string, modelProvider: string, model: string): Promise<void>;
   setReasoningEffort(ref: string, level: string): Promise<void>;
   // Sets or clears the session's /goal objective (an empty objective
@@ -242,6 +244,111 @@ let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 let resolveClientReadyOrRewired: (() => void) | null = null;
 let clientReadyOrRewired: Promise<void> = Promise.resolve();
+let dispatchReadyClient: AppwireClientLike | null = null;
+let dispatchReadyEpoch = -1;
+const pinnedMutationRefs = new Set<string>();
+const dispatchableMutationRefs = new Set<string>();
+
+interface MutationRuntime {
+  storage: MutationOutboxIndexedDB;
+  dispatcher: MutationDispatcher;
+  outbox: MutationOutbox;
+  start: Promise<void>;
+  active: boolean;
+}
+
+let mutationRuntime: MutationRuntime | null = null;
+
+function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
+  if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
+  if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  return wiredClient?.state === "ready" ? wiredClient : null;
+}
+
+function dropUnpinnedModel(ref: string): void {
+  if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
+  threadsStore.setState((state) => {
+    if (!state.threads.has(ref) && !state.frameTimes.has(ref)) return state;
+    const threads = new Map(state.threads);
+    threads.delete(ref);
+    const frameTimes = new Map(state.frameTimes);
+    frameTimes.delete(ref);
+    return { threads, frameTimes };
+  });
+}
+
+async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
+  if (!runtime.active || mutationRuntime !== runtime) return;
+  for (const targetRef of targetRefs) {
+    if (!runtime.active || mutationRuntime !== runtime) return;
+    if ((await runtime.storage.listOutbox(targetRef)).length > 0) {
+      pinnedMutationRefs.add(targetRef);
+      continue;
+    }
+    pinnedMutationRefs.delete(targetRef);
+    dispatchableMutationRefs.delete(targetRef);
+    dropUnpinnedModel(targetRef);
+  }
+}
+
+function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
+  if (!runtime.active) return;
+  const refs = [...new Set(targetRefs)].filter((targetRef) => dispatchableMutationRefs.has(targetRef));
+  if (refs.length === 0) return;
+  void runtime.dispatcher
+    .dispatchTargets(refs)
+    .then(() => refreshMutationPins(runtime, refs))
+    .catch(() => {
+      // Durable records remain discoverable by the next ready/lifecycle scan.
+    });
+}
+
+function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
+  const refs = [...new Set(targetRefs)];
+  for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
+  scheduleMutationDispatch(runtime, refs);
+
+  const client = currentDispatchClient();
+  if (!client) return;
+  const epoch = dispatchReadyEpoch;
+  for (const targetRef of refs) {
+    if (dispatchableMutationRefs.has(targetRef)) continue;
+    const pending = pendingThreadHydrations.get(targetRef);
+    if (pending?.client === client && pending.epoch === epoch) continue;
+    void handleReady(client, epoch, targetRef);
+  }
+}
+
+function getMutationRuntime(): MutationRuntime | null {
+  if (mutationRuntime) return mutationRuntime;
+  if (!globalThis.indexedDB) return null;
+
+  const storage = new MutationOutboxIndexedDB();
+  const dispatcher = new MutationDispatcher(storage, { getClient: currentDispatchClient });
+  let runtime: MutationRuntime;
+  const outbox = new MutationOutbox(storage, {
+    isReady: () => currentDispatchClient() !== null,
+    onDiscover: (targetRefs) => {
+      handleDiscoveredMutations(runtime, targetRefs);
+    },
+  });
+  runtime = {
+    storage,
+    dispatcher,
+    outbox,
+    start: Promise.resolve(),
+    active: true,
+  };
+  mutationRuntime = runtime;
+  runtime.start = outbox.start();
+  return runtime;
+}
+
+function requireMutationRuntime(): MutationRuntime {
+  const runtime = getMutationRuntime();
+  if (!runtime) throw new Error("threads store: IndexedDB is unavailable; mutation was not sent");
+  return runtime;
+}
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
 // is a single slot, not a Map): modelsCache holds the last successful
@@ -292,9 +399,14 @@ function readParams(ref: string) {
   } as const;
 }
 
-async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
-  const resp: ThreadReadResponse = await client.request("thread/read", readParams(ref));
-  return hydrateThread(resp, ref, now);
+interface ThreadHydration {
+  model: ThreadModel;
+  response: ThreadReadResponse;
+}
+
+async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: number): Promise<ThreadHydration> {
+  const response: ThreadReadResponse = await client.request("thread/read", readParams(ref));
+  return { model: hydrateThread(response, ref, now), response };
 }
 
 // watchReadParams mirrors readParams but defaults includeTurns:false - a
@@ -370,6 +482,46 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   return input;
 }
 
+function attachmentBlob(attachment: InputAttachment): Blob {
+  const bytes = Uint8Array.from(atob(attachment.data), (character) => character.charCodeAt(0));
+  return new Blob([bytes], { type: attachment.mediaType });
+}
+
+function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
+  return (attachments ?? []).map((attachment) => ({
+    presentationId: crypto.randomUUID(),
+    name: attachment.name ?? "attachment",
+    mediaType: attachment.mediaType,
+    blob: attachmentBlob(attachment),
+  }));
+}
+
+async function enqueueMutation(
+  ref: string,
+  method: MutationIntent["method"],
+  payload: Record<string, unknown>,
+  optimisticDisplay: unknown,
+  attachments?: InputAttachment[],
+): Promise<void> {
+  const client = requireClient();
+  if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  pinnedMutationRefs.add(ref);
+  const pending = pendingThreadHydrations.get(ref);
+  if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
+    dispatchableMutationRefs.add(ref);
+  }
+  await runtime.outbox.enqueueIntent({
+    targetRef: ref,
+    threadId: threadsStore.getState().threads.get(ref)?.threadId,
+    method,
+    payload,
+    attachments: durableAttachments(attachments),
+    optimisticDisplay,
+  });
+}
+
 // mapConflict recognizes the WireError shape the daemon uses for a lost turn
 // CAS (turn/start, turn/steer, turn/queue, turn/interrupt) or a stale/raced
 // escalation resolve: code -32013 with
@@ -387,19 +539,16 @@ function mapConflict(err: unknown): Error {
 }
 
 // targetsNotification decides whether one live notification belongs to
-// `model`. turn/completed is the one exception: its payload carries no
-// ref/threadId at all, and turn ids are per-thread sequential, so the same
-// turnId can legitimately be the active turn on at most one tracked model at
-// a time — activeTurnId match is therefore both necessary and (in practice)
-// sufficient to route it correctly. Every other notification carries
-// ref/threadId and is routed by notificationTargetsThread, same as the
-// reducer's own tests exercise it.
+// `model`. v2 carries authoritative ref/threadId on every thread-scoped
+// notification. turn/completed additionally requires the matching active turn
+// so a stale completion cannot settle a newer turn on the same thread.
 function targetsNotification(n: AnyNotification, model: ThreadModel): boolean {
+  if (!notificationTargetsThread(n, model)) return false;
   if (n.method === "turn/completed") {
     const turnId = n.params.turnId || n.params.turn.id;
     return model.activeTurnId === turnId;
   }
-  return notificationTargetsThread(n, model);
+  return true;
 }
 
 function notificationRef(n: AnyNotification): string | undefined {
@@ -419,6 +568,22 @@ function notificationTurnId(n: AnyNotification): string | undefined {
     return n.params.turnId || n.params.item.turnId;
   }
   return undefined;
+}
+
+function notificationMutationIdentities(n: AnyNotification): string[] {
+  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
+  if (n.method === "serf/steering/injected") {
+    return n.params.clientMutationId ? [n.params.clientMutationId] : [];
+  }
+  if (n.method === "item/started" || n.method === "item/completed") {
+    return n.params.item.clientMutationId ? [n.params.item.clientMutationId] : [];
+  }
+  if (n.method === "turn/started" || n.method === "turn/completed") {
+    return (n.params.turn.items ?? [])
+      .map((item) => item.clientMutationId)
+      .filter((clientMutationId): clientMutationId is string => Boolean(clientMutationId));
+  }
+  return [];
 }
 
 function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydration): boolean {
@@ -452,7 +617,7 @@ function advancePendingHydrationRouting(n: AnyNotification, pending: PendingThre
   ) {
     // Initial hydration can begin with an item frame whose turn/started frame
     // was already durable in the snapshot. Learn that active turn from the
-    // item so the following bare turn/completed frame remains in order.
+    // item so the following turn/completed frame remains in order.
     pending.routing.activeTurnId = notificationTurnId(n);
   }
 }
@@ -528,7 +693,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (wiredClient !== pending.client) return null;
   if (readyEpoch !== pending.epoch) return null;
-  if ((refCounts.get(ref) ?? 0) <= 0) {
+  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
     pendingThreadHydrations.delete(ref);
     return null;
   }
@@ -537,7 +702,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
 
   pendingThreadHydrations.delete(ref);
   threadsStore.setState((s) => {
-    if ((refCounts.get(ref) ?? 0) <= 0) return s;
+    if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return s;
     const nextThreads = new Map(s.threads);
     nextThreads.set(ref, hydrated);
     if (appliedAt.length === 0) return { threads: nextThreads };
@@ -548,6 +713,21 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     return { threads: nextThreads, frameTimes: nextFrameTimes };
   });
   return hydrated;
+}
+
+async function publishAndReconcileThreadHydration(
+  ref: string,
+  pending: PendingThreadHydration,
+  hydration: ThreadHydration,
+): Promise<ThreadModel | null> {
+  const published = publishThreadHydration(ref, pending, hydration.model);
+  if (!published) return null;
+  const runtime = getMutationRuntime();
+  if (runtime) {
+    await runtime.dispatcher.reconcileIdentities(collectAuthoritativeMutationIds(hydration.response));
+    await refreshMutationPins(runtime, [ref]);
+  }
+  return published;
 }
 
 function publishWatchedHydration(
@@ -630,6 +810,21 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "serf/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
+  }
+  const mutationIdentities = notificationMutationIdentities(n);
+  if (mutationIdentities.length > 0) {
+    const runtime = getMutationRuntime();
+    if (runtime) {
+      void runtime.dispatcher
+        .reconcileIdentities(mutationIdentities)
+        .then(() => {
+          const ref = notificationRef(n);
+          return ref ? refreshMutationPins(runtime, [ref]) : undefined;
+        })
+        .catch(() => {
+          // A later snapshot or receipt retries the same identity settlement.
+        });
+    }
   }
   applySubagentJobSignal(n);
   const now = Date.now();
@@ -722,22 +917,28 @@ function storeWatchedModel(
 // rewireClient's own comment).
 async function handleReady(client: AppwireClientLike, epoch: number, targetRef?: string): Promise<void> {
   const targetedResync = targetRef !== undefined;
+  if (targetRef) dispatchableMutationRefs.delete(targetRef);
+  const runtime = getMutationRuntime();
+  const discoveredPinnedRefs =
+    runtime && !targetedResync
+      ? runtime.start.then(() => runtime.storage.listTargetRefs()).catch(() => [] as string[])
+      : Promise.resolve<string[]>([]);
   const refs = targetRef
     ? new Set([targetRef])
-    : new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys()]);
+    : new Set([...threadsStore.getState().threads.keys(), ...pendingThreadHydrations.keys(), ...pinnedMutationRefs]);
   const watchRefs = targetRef
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
     ...Array.from(refs, async (ref) => {
-      if ((refCounts.get(ref) ?? 0) <= 0) return;
+      if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
       const previous = pendingThreadHydrations.get(ref);
       if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
       const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
       transferPendingHydration(previous, pending);
-      const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((model) => {
+      const hydration = hydrateAndSubscribe(client, ref, Date.now()).then((result) => {
         if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
-        return publishThreadHydration(ref, pending, model);
+        return publishAndReconcileThreadHydration(ref, pending, result);
       });
       const hasPublishedModel = threadsStore.getState().threads.has(ref);
       // A failed targeted predecessor may already have removed `previous`.
@@ -759,7 +960,8 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
           .catch(() => {});
       }
       try {
-        await hydration;
+        const model = await hydration;
+        if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
       } catch {
         // Best-effort: a failed re-subscribe leaves the stale model in place
         // rather than losing it; the next onReady (another reconnect) or a
@@ -812,6 +1014,24 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
       }
     }),
   ]);
+
+  if (!runtime || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+  if (!targetedResync) {
+    const alreadyHydrated = new Set(refs);
+    const discovered = await discoveredPinnedRefs;
+    for (const ref of discovered) pinnedMutationRefs.add(ref);
+    await Promise.all(
+      discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
+    );
+    if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+  }
+  if (!targetedResync) {
+    dispatchReadyClient = client;
+    dispatchReadyEpoch = epoch;
+    await runtime.outbox.connectionReady();
+  } else if (targetRef && dispatchableMutationRefs.has(targetRef)) {
+    scheduleMutationDispatch(runtime, [targetRef]);
+  }
 }
 
 // rewireClient is the single place this store's onNotification/onReady
@@ -832,6 +1052,9 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   readyEpoch += 1;
+  dispatchReadyClient = null;
+  dispatchReadyEpoch = -1;
+  dispatchableMutationRefs.clear();
   resolveClientReadyOrRewired?.();
   resolveClientReadyOrRewired = null;
   unwireNotification?.();
@@ -847,6 +1070,9 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
+    dispatchReadyClient = null;
+    dispatchReadyEpoch = -1;
+    dispatchableMutationRefs.clear();
     resolveClientReadyOrRewired?.();
     resolveClientReadyOrRewired = null;
     void handleReady(client, readyEpoch);
@@ -911,7 +1137,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         hydrationEpoch,
       );
       const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now())
-        .then((model) => publishThreadHydration(ref, pending, model))
+        .then((result) => publishAndReconcileThreadHydration(ref, pending, result))
         .finally(() => {
           if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
         });
@@ -998,6 +1224,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     refCounts.delete(ref);
+    if (pinnedMutationRefs.has(ref)) return;
     // A pending read belongs to this released pane lifecycle. Retire it
     // before a new ensureThread(ref) can claim the same ref; the old promise's
     // identity-guarded finally blocks must not remove a newer hydration.
@@ -1187,68 +1414,70 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments) {
-    const client = requireClient();
-    try {
-      await client.request("turn/start", { ref, input: buildInput(text, attachments) });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const input = buildInput(text, attachments);
+    await enqueueMutation(ref, "turn/start", { ref, input }, { method: "turn/start", input }, attachments);
   },
 
   async steer(ref, text, attachments) {
-    const client = requireClient();
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId;
-    try {
-      await client.request("turn/steer", { ref, expectedTurnId, input: buildInput(text, attachments) });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
+    const input = buildInput(text, attachments);
+    await enqueueMutation(
+      ref,
+      "turn/steer",
+      { ref, expectedTurnId, input },
+      { method: "turn/steer", input },
+      attachments,
+    );
   },
 
   async queue(ref, text, attachments) {
-    const client = requireClient();
-    try {
-      await client.request("turn/queue", { ref, input: buildInput(text, attachments) });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
+    const input = buildInput(text, attachments);
+    await enqueueMutation(
+      ref,
+      "turn/queue",
+      { ref, expectedTurnId, input },
+      { method: "turn/queue", input },
+      attachments,
+    );
   },
 
   async interrupt(ref) {
-    const client = requireClient();
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId;
-    try {
-      await client.request("turn/interrupt", { ref, expectedTurnId });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
+    await enqueueMutation(ref, "turn/interrupt", { ref, expectedTurnId }, { method: "turn/interrupt" });
   },
 
   async drainAsSteer(ref, text, attachments) {
-    const client = requireClient();
-    try {
-      await client.request("turn/drainAsSteer", { ref, input: buildInput(text, attachments) });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const model = threadsStore.getState().threads.get(ref);
+    const expectedTurnId = model?.activeTurnId ?? "";
+    const expectedQueueRevision = model?.queue?.revision ?? 0;
+    const input = buildInput(text, attachments);
+    await enqueueMutation(
+      ref,
+      "turn/drainAsSteer",
+      { ref, expectedTurnId, expectedQueueRevision, input },
+      { method: "turn/drainAsSteer", input },
+      attachments,
+    );
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId) {
-    const client = requireClient();
-    try {
-      await client.request("turn/promoteQueuedAsSteer", { ref, index, expectedEntryId });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
+    await enqueueMutation(
+      ref,
+      "turn/promoteQueuedAsSteer",
+      { ref, index, expectedTurnId, expectedEntryId },
+      { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
+    );
   },
 
   async cancelQueued(ref, index, expectedEntryId) {
-    const client = requireClient();
-    try {
-      return await client.request("turn/cancelQueued", { ref, index, expectedEntryId });
-    } catch (err) {
-      throw mapConflict(err);
-    }
+    await enqueueMutation(
+      ref,
+      "turn/cancelQueued",
+      { ref, index, expectedEntryId },
+      { method: "turn/cancelQueued", index, expectedEntryId },
+    );
   },
 
   async setModel(ref, modelProvider, model) {
@@ -1436,6 +1665,16 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  if (mutationRuntime) {
+    mutationRuntime.active = false;
+    void mutationRuntime.outbox.stop();
+    mutationRuntime.storage.close();
+    mutationRuntime = null;
+  }
+  pinnedMutationRefs.clear();
+  dispatchableMutationRefs.clear();
+  dispatchReadyClient = null;
+  dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
   inflightHydrates.clear();

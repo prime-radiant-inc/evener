@@ -59,7 +59,7 @@ export type ConnectHandler = () => InitializeResponse | Promise<InitializeRespon
 // to script one just to get past the handshake.
 const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
   serverInfo: { name: "fake-serf-hub", version: "0.0.0" },
-  protocolVersion: "0",
+  protocolVersion: "serf-appwire-v2",
   sourceId: "fake",
   features: {
     threadList: false,

@@ -1,11 +1,11 @@
 import { mutationErrorData } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import { METHOD_NAMES, type MethodName, type MutationReceipt } from "../protocol/types.gen";
+import type { MethodName, MutationReceipt } from "../protocol/types.gen";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 export interface MutationDispatcherOptions {
-  getClient: () => AppwireClientLike | null | undefined;
+  getClient: (targetRef: string) => AppwireClientLike | null | undefined;
 }
 
 export class MutationDispatcher {
@@ -52,7 +52,7 @@ export class MutationDispatcher {
 
   async #drainTarget(targetRef: string): Promise<boolean> {
     for (;;) {
-      const client = this.#getClient();
+      const client = this.#getClient(targetRef);
       if (client?.state !== "ready") return false;
       const loaded = await this.#storage.nextDispatchable(targetRef);
       if (!loaded) return true;
@@ -61,6 +61,7 @@ export class MutationDispatcher {
       // tab's list read. Sending is allowed only after an extant-state recheck.
       const current = await this.#storage.getOutbox(loaded.clientMutationId);
       if (current?.state !== "submitting") continue;
+      if (this.#getClient(targetRef) !== client) return false;
 
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
@@ -87,7 +88,7 @@ export class MutationDispatcher {
       return "advance";
     } catch (error) {
       const data = mutationErrorData(error);
-      if (data?.clientMutationId !== undefined && data.clientMutationId !== record.clientMutationId) return "stop";
+      if (data?.clientMutationId !== record.clientMutationId) return "stop";
       if (data?.mutationOutcome === "notAccepted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
         return "advance";
@@ -110,10 +111,18 @@ export class MutationDispatcher {
   }
 }
 
-const KNOWN_METHODS: ReadonlySet<string> = new Set(METHOD_NAMES);
+const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+  "turn/cancelQueued",
+]);
 
 function mutationMethod(method: string): MethodName {
-  if (!KNOWN_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);
+  if (!RETRY_SAFE_MUTATION_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);
   return method as MethodName;
 }
 

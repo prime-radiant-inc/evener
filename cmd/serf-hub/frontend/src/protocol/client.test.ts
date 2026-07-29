@@ -1,7 +1,13 @@
 // @vitest-environment node
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { type AnyNotification, AppwireClient, type ConnectionState, RECONNECT_BASE_MS } from "./client";
+import {
+  type AnyNotification,
+  APPWIRE_PROTOCOL_VERSION,
+  AppwireClient,
+  type ConnectionState,
+  RECONNECT_BASE_MS,
+} from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
@@ -79,9 +85,31 @@ describe("AppwireClient", () => {
     expect(frames[0]).toEqual({
       id: 1,
       method: "initialize",
-      params: { clientInfo: DEFAULT_CLIENT_INFO, capabilities: DEFAULT_CAPABILITIES },
+      params: {
+        protocolVersion: "serf-appwire-v2",
+        clientInfo: DEFAULT_CLIENT_INFO,
+        capabilities: DEFAULT_CAPABILITIES,
+      },
     });
     expect(frames[1]).toEqual({ method: "initialized", params: {} });
+  });
+
+  test("connect rejects an initialize response for a different protocol version", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    const frame = lastSentFrame(fake);
+    fake.receive({
+      id: frame.id,
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "serf-appwire-v1" },
+    });
+
+    await expect(connecting).rejects.toThrow(
+      `AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received serf-appwire-v1`,
+    );
+    expect(client.state).toBe("closed");
   });
 
   test("connect is idempotent across concurrent callers", async () => {
@@ -366,6 +394,36 @@ describe("AppwireClient", () => {
     expect(client.state).toBe("ready");
     expect(readyCount).toBe(2);
     expect(states[states.length - 1]).toBe("ready");
+  });
+
+  test("a protocol mismatch during reconnect closes terminally without another dial", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    sockets[1]?.open();
+    await flushUntil(() => Boolean(sockets[1]?.sent.length));
+    const initialize = lastSentFrame(sockets[1]!);
+    sockets[1]?.receive({
+      id: initialize.id,
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "serf-appwire-v1" },
+    });
+    await flushUntil(() => client.state === "closed");
+
+    expect(client.state).toBe("closed");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
   });
 
   test("close() after socket open but before ready rejects the pending connect() promise", async () => {

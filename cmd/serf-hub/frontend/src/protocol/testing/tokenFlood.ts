@@ -161,7 +161,7 @@ export function buildFloodStream(count: number, seed = 1): FloodStream {
     } as AnyNotification,
     {
       method: "turn/completed",
-      params: { turnId, turn: { id: turnId, status: "completed", itemsView: "" } },
+      params: { threadId, ref, turnId, turn: { id: turnId, status: "completed", itemsView: "" } },
     } as AnyNotification,
   ];
 
@@ -230,7 +230,7 @@ export function hydrateFloodModel(ref: string): ThreadModel {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
   };
   const resp: ThreadReadResponse = { thread };
   return hydrateThread(resp, ref, 1000);

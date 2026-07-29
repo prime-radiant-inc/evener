@@ -64,7 +64,7 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // preserved separately by the item/completed and turn/completed handlers
 // (mergeReasoning), since they are more complete than this seed.
 function wireItemToModel(item: ThreadItem): ItemModel {
-  const model: ItemModel = {
+  const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,
     turnId: item.turnId ?? "",
     type: item.type,
@@ -87,6 +87,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
   if (item.type === "reasoning" && item.text) {
     model.reasoningSummaries = [[item.text]];
   }
@@ -289,6 +290,18 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   };
 }
 
+export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<string> {
+  const identities = new Set<string>();
+  for (const pending of resp.thread.serf.pendingMutations ?? []) identities.add(pending.clientMutationId);
+  for (const clientMutationId of resp.thread.serf.queue.clientMutationIds ?? []) identities.add(clientMutationId);
+  for (const turn of resp.thread.turns ?? []) {
+    for (const item of turn.items ?? []) {
+      if (item.clientMutationId) identities.add(item.clientMutationId);
+    }
+  }
+  return identities;
+}
+
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   const older = mergeToolCallsByCallId((resp.data ?? []).map(wireToTurnModel));
   return {
@@ -390,12 +403,8 @@ function upsertPendingEscalation(
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
-// no-op here) either way. turn/completed is the one exception worth calling
-// out: it carries no thread identifier at all, and turn IDs are per-thread
-// sequential, so the same turnId legitimately exists on multiple threads at
-// once. The store MUST deliver turn/completed only to the model whose
-// activeTurnId matches turnId; this function enforces that match
-// independently as a second line of defense (see the "turn/completed" case).
+// no-op here) either way. turn/completed additionally requires the matching
+// active turn because turn IDs are per-thread sequential.
 export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
   switch (n.method) {
     case "turn/started": {
@@ -429,23 +438,9 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     }
 
     case "turn/completed": {
-      // Routing contract (store-layer requirement): TurnCompletedParams is
-      // {turnId, turn} on the wire — it carries neither ref nor threadId
-      // (confirmed against appwire/types.go and types.gen.ts), and turn IDs
-      // are per-thread sequential ("turn_%d", internal/appprojector), so the
-      // SAME turnId routinely exists on more than one thread at once. A
-      // multiplexed store MUST NOT broadcast this notification to every
-      // subscribed ThreadModel — it must deliver it only to the model whose
-      // activeTurnId matches turnId. This reducer independently enforces
-      // that as a second line of defense (below), so a store bug or a
-      // notification delivered to the wrong model degrades to a same-
-      // reference no-op instead of corrupting an unrelated thread's history.
-      // One case is genuinely unroutable from the payload alone — two panes
-      // simultaneously mid-turn on the exact same numbered turn_N — and is
-      // left to correct store-side subscription routing; this gate cannot
-      // resolve it because both models would pass the check.
       const params = n.params;
       const turnId = params.turnId || params.turn.id;
+      if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) return model;
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
@@ -780,7 +775,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           // mirroring the historical reload shape's per-turn indexing
           // (internal/apptranscript/apptranscript.go:211-229, item_steering_<n>).
           const steeringCount = turn.items.filter((it) => it.type === "steering").length;
-          const item: ItemModel = {
+          const item: ItemModel & { clientMutationId?: string } = {
             id: `item_steering_live_${activeTurnId}_${steeringCount}`,
             turnId: activeTurnId,
             type: "steering",
@@ -790,6 +785,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
             source: params.source,
             steeringKind: params.kind,
           };
+          if (params.clientMutationId) item.clientMutationId = params.clientMutationId;
           return { ...turn, items: [...turn.items, item] };
         }),
         lastFrameAt: now,

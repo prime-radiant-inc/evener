@@ -9,6 +9,7 @@ import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
+  collectAuthoritativeMutationIds,
   hydrateThread,
   notificationTargetsThread,
   prependOlderTurns,
@@ -16,6 +17,7 @@ import {
 } from "./reducer";
 import type {
   AnyNotification,
+  QueueState,
   SandboxEscalationRequested,
   Thread,
   ThreadCapabilities,
@@ -125,7 +127,12 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-function testThread(overrides: Partial<Thread> = {}): Thread {
+type TestThreadOverrides = Omit<Partial<Thread>, "serf"> & {
+  serf?: Omit<Thread["serf"], "queue"> & { queue: Partial<QueueState> };
+};
+
+function testThread(overrides: TestThreadOverrides = {}): Thread {
+  const { serf, ...threadOverrides } = overrides;
   return {
     id: "thr_t",
     sessionId: "sess_t",
@@ -138,12 +145,17 @@ function testThread(overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "serf",
-    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {} },
-    ...overrides,
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      ...serf,
+      queue: { revision: 0, ...serf?.queue },
+    },
+    ...threadOverrides,
   };
 }
 
-function testHydrate(overrides: Partial<Thread> = {}): ThreadModel {
+function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   const thread = testThread(overrides);
   return hydrateThread({ thread }, thread.serf.ref, 1000);
 }
@@ -166,7 +178,18 @@ for (const f of ["basic-turn", "streaming-with-reset", "tool-and-jobs", "queue-a
     const { header, notifications } = readFixture(f);
     let model = hydrateThread(header.hydrate, header.ref, 1000);
     for (const [i, n] of notifications.entries()) {
-      model = applyNotification(model, n, 1000 + i);
+      const notification: AnyNotification =
+        n.method === "turn/completed"
+          ? {
+              ...n,
+              params: {
+                ...n.params,
+                threadId: header.hydrate.thread.id,
+                ref: header.ref,
+              },
+            }
+          : n;
+      model = applyNotification(model, notification, 1000 + i);
     }
     expect(model).toMatchSnapshot();
   });
@@ -407,13 +430,16 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
       model,
     ),
   ).toBe(false);
-  // serf/task/updated's ref is optional; when absent, threadId is the fallback key.
+  // v2 notifications carry both authoritative identities.
   expect(
-    notificationTargetsThread({ method: "serf/task/updated", params: { threadId: "thr_t", total: 1, done: 0 } }, model),
+    notificationTargetsThread(
+      { method: "serf/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 1, done: 0 } },
+      model,
+    ),
   ).toBe(true);
   expect(
     notificationTargetsThread(
-      { method: "serf/task/updated", params: { threadId: "not_thr_t", total: 1, done: 0 } },
+      { method: "serf/task/updated", params: { threadId: "not_thr_t", ref: "not_ref_t", total: 1, done: 0 } },
       model,
     ),
   ).toBe(false);
@@ -421,13 +447,7 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
   expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} }, model)).toBe(false);
 });
 
-test("turn/completed applies even though its payload carries no ref or threadId", () => {
-  // TurnCompletedParams is {turnId, turn} on the wire — no ref/threadId field
-  // exists to check (confirmed against appwire/types.go and types.gen.ts), so
-  // notificationTargetsThread always rejects it. The reducer instead gates
-  // turn/completed on model.activeTurnId === turnId (see the sibling-thread
-  // immunity test below for why: turn IDs are per-thread sequential, so the
-  // same turnId can legitimately belong to a different, unrelated thread).
+test("turn/completed applies with authoritative ref and thread identity", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -440,10 +460,20 @@ test("turn/completed applies even though its payload carries no ref or threadId"
   const beforeCompletion = model;
   const turnCompleted: AnyNotification = {
     method: "turn/completed",
-    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "", items: [] } },
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turnId: "turn_1",
+      turn: { id: "turn_1", status: "completed", itemsView: "", items: [] },
+    },
   };
 
-  expect(notificationTargetsThread(turnCompleted, model)).toBe(false);
+  expect(notificationTargetsThread(turnCompleted, model)).toBe(true);
+  const wrongThreadCompletion: AnyNotification = {
+    ...turnCompleted,
+    params: { ...turnCompleted.params, threadId: "thr_other", ref: "ref_other" },
+  };
+  expect(applyNotification(model, wrongThreadCompletion, 1002)).toBe(model);
   model = applyNotification(model, turnCompleted, 1002);
 
   expect(model).not.toBe(beforeCompletion);
@@ -509,7 +539,12 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   // Turn{ID,Status[,Error]} with Items nil, ItemsView "") — no items key.
   const aTurnCompleted: AnyNotification = {
     method: "turn/completed",
-    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    params: {
+      threadId: "thr_a",
+      ref: "ref_a",
+      turnId: "turn_1",
+      turn: { id: "turn_1", status: "completed", itemsView: "" },
+    },
   };
 
   // Sanity: the same notification legitimately completes A's own active
@@ -622,7 +657,12 @@ test("turn/completed settles only the FIRST turn matching a duplicated id, leavi
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     2000,
   );
@@ -674,7 +714,12 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     1003,
   );
@@ -700,6 +745,8 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
     {
       method: "turn/completed",
       params: {
+        threadId: "thr_t",
+        ref: "ref_t",
         turnId: "turn_1",
         turn: {
           id: "turn_1",
@@ -774,6 +821,8 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
     {
       method: "turn/completed",
       params: {
+        threadId: "thr_t",
+        ref: "ref_t",
         turnId: "turn_1",
         turn: {
           id: "turn_1",
@@ -826,6 +875,8 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
     {
       method: "turn/completed",
       params: {
+        threadId: "thr_t",
+        ref: "ref_t",
         turnId: "turn_1",
         turn: {
           id: "turn_1",
@@ -891,7 +942,12 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "interrupted", itemsView: "" },
+      },
     },
     1005,
   );
@@ -931,7 +987,12 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error },
+      },
     },
     1003,
   );
@@ -995,7 +1056,12 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error },
+      },
     },
     1005,
   );
@@ -1145,7 +1211,12 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     1003,
   );
@@ -1974,7 +2045,12 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "interrupted", itemsView: "" },
+      },
     },
     1020,
   );
@@ -2175,7 +2251,12 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     1003,
   );
@@ -2619,7 +2700,12 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     2000,
   );
@@ -2685,7 +2771,12 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
     model,
     {
       method: "turn/completed",
-      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
     },
     1002,
   );
@@ -2916,6 +3007,8 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
     {
       method: "turn/completed",
       params: {
+        threadId: "thr_t",
+        ref: "ref_t",
         turnId: "turn_1",
         turn: {
           id: "turn_1",
@@ -3153,4 +3246,83 @@ test("item/completed without a failure count leaves the model's figure alone", (
   );
 
   expect(model.failedToolCalls).toBe(3);
+});
+
+test("collectAuthoritativeMutationIds uses pending, queue, and transcript identities without text matching", () => {
+  const response = {
+    thread: testThread({
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_a",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "same text",
+              clientMutationId: "mutation-transcript",
+            },
+            {
+              id: "item_b",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "same text",
+              clientMutationId: "mutation-transcript",
+            },
+          ],
+        },
+      ],
+      serf: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 3,
+          clientMutationIds: ["mutation-queue", "mutation-transcript"],
+        },
+        pendingMutations: [
+          {
+            clientMutationId: "mutation-pending",
+            method: "turn/steer",
+            executionState: "accepted",
+            projectionState: "pending",
+          },
+        ],
+      },
+    }),
+  };
+
+  expect(collectAuthoritativeMutationIds(response)).toEqual(
+    new Set(["mutation-pending", "mutation-queue", "mutation-transcript"]),
+  );
+});
+
+test("hydrateThread preserves clientMutationId on authoritative transcript items", () => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_a",
+                turnId: "turn_1",
+                type: "userMessage",
+                text: "hello",
+                clientMutationId: "mutation-a",
+              },
+            ],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+
+  expect(model.turns[0]?.items[0]).toMatchObject({ clientMutationId: "mutation-a" });
 });
