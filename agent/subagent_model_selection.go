@@ -144,6 +144,7 @@ func (s *Session) resolvePluginAgentModel(
 	if !ok {
 		return pluginAgentModelResolution{reason: "unavailable"}
 	}
+	candidate = candidate.WithModel(advertisedInfo.ID)
 	return pluginAgentModelResolution{profile: candidate.WithLiveModelInfo(advertisedInfo)}
 }
 

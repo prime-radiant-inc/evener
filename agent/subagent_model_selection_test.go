@@ -374,6 +374,48 @@ func TestResolvePluginAgentModel_CustomAndExactMembership(t *testing.T) {
 	}
 }
 
+func TestResolvePluginAgentModel_NormalizedMatchFreezesAdvertisedWireID(t *testing.T) {
+	t.Parallel()
+
+	adapter := &pluginModelListAdapter{
+		fakeAdapter: fakeAdapter{name: "openai"},
+		models: []llm.ModelInfo{{
+			ID:            "GPT-5.3",
+			ContextWindow: 808_006,
+		}},
+	}
+	sess := newPluginModelSelectionSession(
+		t,
+		NewOpenAIProfile("gpt-5.2"),
+		adapter,
+		"",
+		nil,
+	)
+
+	got := sess.resolvePluginAgentModel(context.Background(), sess.currentProfile(), "gpt-5.3")
+	if got.reason != "" {
+		t.Fatalf("reason = %q, want success", got.reason)
+	}
+	if got.profile == nil {
+		t.Fatal("profile = nil, want successful normalized match")
+	}
+	if got.profile.ID() != "openai" {
+		t.Errorf("profile ID = %q, want provider-local openai", got.profile.ID())
+	}
+	if got.profile.Model() != "GPT-5.3" {
+		t.Errorf("model = %q, want advertised wire ID %q", got.profile.Model(), "GPT-5.3")
+	}
+	if got.profile.ContextWindowSize() != 808_006 {
+		t.Errorf(
+			"context window = %d, want advertised live metadata 808006",
+			got.profile.ContextWindowSize(),
+		)
+	}
+	if adapter.listCalls() != 1 {
+		t.Errorf("ListModels calls = %d, want 1", adapter.listCalls())
+	}
+}
+
 func TestResolvePluginAgentModel_AmbiguousCatalogAliasFailsClosed(t *testing.T) {
 	t.Parallel()
 
