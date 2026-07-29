@@ -695,22 +695,13 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
   return [];
 }
 
-function isAppendOnlyDelta(n: AnyNotification): boolean {
-  return (
-    n.method === "item/agentMessage/delta" ||
-    n.method === "item/reasoning/summaryTextDelta" ||
-    n.method === "item/toolOutput/delta"
-  );
-}
-
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
   // AppWire orders the matching response at the authoritative snapshot cut.
-  // Append-only chunks observed before it are already represented by this
-  // model and cannot be replayed safely. Stable-identity/full-state records
-  // remain replayable so a defensive stale snapshot still converges.
-  pending.notifications = pending.notifications.filter((notification) => !isAppendOnlyDelta(notification));
+  // Every notification already buffered is at or before that cut and is
+  // already represented by this model. Notifications delivered after the
+  // response enter the buffer later and remain ordered for replay.
+  pending.notifications = [];
   pending.routing = pendingHydrationRouting(ref, model);
-  for (const notification of pending.notifications) advancePendingHydrationRouting(notification, pending);
 }
 
 function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydration): boolean {
