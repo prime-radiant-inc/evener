@@ -335,21 +335,30 @@ func (s *relaySession) observe(epoch uint64, message appwire.Message, recvErr er
 		}
 	case (message.Response != nil || message.Error != nil) && capture != nil && capture.epoch == epoch && !capture.cutSeen:
 		// The ordered client invokes this synchronously before waking the
-		// request waiter, so later frames cannot cross this source cut.
+		// request waiter, so later frames cannot cross this source cut. The
+		// empty job is also a FIFO barrier for notifications accepted before
+		// this capture was installed.
 		capture.cutSeen = true
-		if len(capture.beforeCut) == 0 {
-			close(capture.flushed)
-		} else {
-			s.queuePublishLocked(capture.beforeCut, capture.flushed)
-			capture.beforeCut = nil
-		}
+		s.queuePublishLocked(capture.beforeCut, capture.flushed)
+		capture.beforeCut = nil
 	}
 	s.mu.Unlock()
 }
 
 func (s *relaySession) disconnect(epoch uint64) {
 	s.mu.Lock()
-	if s.closed || s.connection == nil || s.connection.epoch != epoch {
+	if s.closed || s.epoch != epoch {
+		s.mu.Unlock()
+		return
+	}
+	if s.connection == nil {
+		// Revoke a connection attempt whose receive loop ended before the
+		// initialized client could be installed.
+		s.epoch++
+		s.mu.Unlock()
+		return
+	}
+	if s.connection.epoch != epoch {
 		s.mu.Unlock()
 		return
 	}
