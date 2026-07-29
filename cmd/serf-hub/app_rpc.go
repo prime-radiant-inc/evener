@@ -75,6 +75,14 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
+func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appwire.ThreadReadParams) bool {
+	if !params.Subscribe {
+		return true
+	}
+	_, requiresLiveHandoff := source.(appsource.RelaySessionSource)
+	return !requiresLiveHandoff
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
@@ -158,12 +166,14 @@ func registerThreadHandlers(
 		}
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
-			saved, ok, pastErr := pastThreadReadResponse(cfg, params)
-			if pastErr != nil {
-				return appwire.ThreadReadResponse{}, pastErr
-			}
-			if ok {
-				return saved, nil
+			if allowsPastFallbackAfterLiveReadFailure(source, params) {
+				saved, ok, pastErr := pastThreadReadResponse(cfg, params)
+				if pastErr != nil {
+					return appwire.ThreadReadResponse{}, pastErr
+				}
+				if ok {
+					return saved, nil
+				}
 			}
 			return appwire.ThreadReadResponse{}, err
 		}

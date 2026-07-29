@@ -1555,6 +1555,186 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	}
 }
 
+func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-atomic-retry-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	handoff := &recordingRelayHandoff{
+		committed: make(chan struct{}),
+		aborted:   make(chan struct{}),
+	}
+	var lease *scriptedRelaySessionLease
+	lease = &scriptedRelaySessionLease{
+		readErr:    appwire.SessionUnavailable("canonical actor read failed"),
+		deliveries: make(chan appsource.RelayDelivery),
+		readHook: func() {
+			lease.mu.Lock()
+			lease.readErr = nil
+			lease.readResult = appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+			}
+			lease.readHook = func() {
+				lease.mu.Lock()
+				lease.readHook = nil
+				lease.readResult.Handoff = handoff
+				lease.mu.Unlock()
+			}
+			lease.mu.Unlock()
+		},
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		lease:                lease,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	params := appwire.ThreadReadParams{
+		Ref:          thread.Serf.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+	}
+	if response, err := client.ThreadRead(context.Background(), params); err == nil {
+		t.Errorf("first subscribed thread/read returned saved transcript %+v after its canonical actor failed", response.Thread)
+	}
+	if response, err := client.ThreadRead(context.Background(), params); err == nil {
+		t.Errorf("second subscribed thread/read returned saved transcript %+v without a live handoff", response.Thread)
+	}
+	response, err := client.ThreadRead(context.Background(), params)
+	if err != nil {
+		t.Fatalf("retry subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("retry thread ID = %q, want %q", response.Thread.ID, sessionID)
+	}
+	select {
+	case <-handoff.committed:
+	default:
+		t.Fatal("successful retry did not commit its live handoff")
+	}
+	if got := lease.readCallCount(); got != 3 {
+		t.Fatalf("canonical actor read calls = %d, want read failure, missing handoff, and successful retry", got)
+	}
+}
+
+func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-nonsubscribed-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	source := &relaySessionTestSource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		lease: &scriptedRelaySessionLease{
+			readErr:    appwire.SessionUnavailable("canonical actor read failed"),
+			deliveries: make(chan appsource.RelayDelivery),
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          thread.Serf.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err != nil {
+		t.Fatalf("non-subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("non-subscribed saved thread = %+v", response.Thread)
+	}
+}
+
+func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-non-atomic-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&pastFallbackRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: thread},
+		readErr:              appwire.SessionUnavailable("non-atomic live read failed"),
+	})
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          thread.Serf.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+	})
+	if err != nil {
+		t.Fatalf("non-atomic subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("non-atomic saved thread = %+v", response.Thread)
+	}
+}
+
 func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-images-0000000000")
@@ -4288,6 +4468,19 @@ func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
 type relayLifecycleSource struct {
 	thread   appwire.Thread
 	canceled chan struct{}
+}
+
+type pastFallbackRelaySource struct {
+	relayLifecycleSource
+	readErr error
+}
+
+func (s *pastFallbackRelaySource) ID() string {
+	return "local"
+}
+
+func (s *pastFallbackRelaySource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, s.readErr
 }
 
 type relaySubscribeResult struct {
