@@ -1,0 +1,134 @@
+import { mutationErrorData } from "../protocol/errors";
+import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import { METHOD_NAMES, type MethodName, type MutationReceipt } from "../protocol/types.gen";
+import type { MutationOutboxRecord } from "./mutationOutbox";
+import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+
+export interface MutationDispatcherOptions {
+  getClient: () => AppwireClientLike | null | undefined;
+}
+
+export class MutationDispatcher {
+  readonly #storage: MutationOutboxIndexedDB;
+  readonly #getClient: MutationDispatcherOptions["getClient"];
+  readonly #dispatching = new Map<string, Promise<void>>();
+  readonly #requestedRuns = new Map<string, number>();
+
+  constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
+    this.#storage = storage;
+    this.#getClient = options.getClient;
+  }
+
+  async dispatchTargets(targetRefs: Iterable<string>): Promise<void> {
+    await Promise.all([...new Set(targetRefs)].map((targetRef) => this.#dispatchTarget(targetRef)));
+  }
+
+  async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
+    await Promise.all(
+      [...new Set(clientMutationIds)].map((clientMutationId) => this.#storage.settleApplied(clientMutationId)),
+    );
+  }
+
+  #dispatchTarget(targetRef: string): Promise<void> {
+    this.#requestedRuns.set(targetRef, (this.#requestedRuns.get(targetRef) ?? 0) + 1);
+    const existing = this.#dispatching.get(targetRef);
+    if (existing) return existing;
+
+    const dispatch = this.#runTarget(targetRef).finally(() => {
+      if (this.#dispatching.get(targetRef) === dispatch) this.#dispatching.delete(targetRef);
+    });
+    this.#dispatching.set(targetRef, dispatch);
+    return dispatch;
+  }
+
+  async #runTarget(targetRef: string): Promise<void> {
+    let observedRun = 0;
+    do {
+      observedRun = this.#requestedRuns.get(targetRef) ?? 0;
+      const shouldContinue = await this.#drainTarget(targetRef);
+      if (!shouldContinue) return;
+    } while (observedRun !== (this.#requestedRuns.get(targetRef) ?? 0));
+  }
+
+  async #drainTarget(targetRef: string): Promise<boolean> {
+    for (;;) {
+      const client = this.#getClient();
+      if (client?.state !== "ready") return false;
+      const loaded = await this.#storage.nextDispatchable(targetRef);
+      if (!loaded) return true;
+
+      // Another tab may have settled or reclassified the record after this
+      // tab's list read. Sending is allowed only after an extant-state recheck.
+      const current = await this.#storage.getOutbox(loaded.clientMutationId);
+      if (current?.state !== "submitting") continue;
+
+      const outcome = await this.#attempt(client, current);
+      if (outcome === "stop") return false;
+    }
+  }
+
+  async #attempt(client: AppwireClientLike, record: MutationOutboxRecord): Promise<"advance" | "stop"> {
+    try {
+      const method = mutationMethod(record.method);
+      const request = client.request as unknown as (
+        requestMethod: MethodName,
+        params: Record<string, unknown>,
+      ) => Promise<unknown>;
+      const result = await request.call(client, method, record.payload);
+      const receipt = mutationReceipt(result);
+      if (
+        !receipt ||
+        receipt.clientMutationId !== record.clientMutationId ||
+        (receipt.disposition !== "applied" && receipt.disposition !== "replayed")
+      ) {
+        return "stop";
+      }
+      await this.#storage.settleApplied(record.clientMutationId);
+      return "advance";
+    } catch (error) {
+      const data = mutationErrorData(error);
+      if (data?.clientMutationId !== undefined && data.clientMutationId !== record.clientMutationId) return "stop";
+      if (data?.mutationOutcome === "notAccepted") {
+        await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
+        return "advance";
+      }
+      if (data?.mutationOutcome === "targetDeleted") {
+        await this.#storage.transferToRecovery(record.clientMutationId, "orphaned");
+        return "advance";
+      }
+      if (
+        data?.mutationOutcome === "unknown" &&
+        (data.cause === "persistenceUnavailable" || data.retryDisposition === "blocked")
+      ) {
+        await this.#storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      }
+      // Request timeouts, transport failures, and automatically retryable
+      // unknown outcomes retain submitting. A later ready/discovery event
+      // starts the next attempt; this loop never spins on an ambiguous result.
+      return "stop";
+    }
+  }
+}
+
+const KNOWN_METHODS: ReadonlySet<string> = new Set(METHOD_NAMES);
+
+function mutationMethod(method: string): MethodName {
+  if (!KNOWN_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);
+  return method as MethodName;
+}
+
+function mutationReceipt(result: unknown): MutationReceipt | undefined {
+  if (!result || typeof result !== "object" || !("receipt" in result)) return undefined;
+  const receipt = (result as { receipt?: unknown }).receipt;
+  if (!receipt || typeof receipt !== "object") return undefined;
+  const candidate = receipt as Partial<MutationReceipt>;
+  if (
+    typeof candidate.clientMutationId !== "string" ||
+    typeof candidate.disposition !== "string" ||
+    typeof candidate.threadId !== "string" ||
+    typeof candidate.projectionState !== "string"
+  ) {
+    return undefined;
+  }
+  return candidate as MutationReceipt;
+}

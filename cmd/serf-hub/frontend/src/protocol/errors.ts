@@ -87,3 +87,36 @@ export class ConnectionClosedError extends Error {
     this.name = "ConnectionClosedError";
   }
 }
+
+export type MutationOutcome = "notAccepted" | "unknown" | "targetDeleted";
+export type MutationRetryDisposition = "automatic" | "blocked" | "none";
+
+export interface MutationErrorData {
+  clientMutationId?: string;
+  mutationOutcome?: MutationOutcome;
+  retryDisposition?: MutationRetryDisposition;
+  cause?: string;
+}
+
+// mutationErrorData is the one parser for the retry-safe mutation envelope.
+// Only a WireError can carry an authoritative daemon outcome; transport and
+// local failures deliberately return undefined so callers retain the outbox
+// record rather than guessing whether the mutation applied.
+export function mutationErrorData(error: unknown): MutationErrorData | undefined {
+  if (!(error instanceof WireError) || !error.data || typeof error.data !== "object") return undefined;
+  const data = error.data as Record<string, unknown>;
+  const mutationOutcome = data.mutationOutcome;
+  const retryDisposition = data.retryDisposition;
+  return {
+    clientMutationId: typeof data.clientMutationId === "string" ? data.clientMutationId : undefined,
+    mutationOutcome:
+      mutationOutcome === "notAccepted" || mutationOutcome === "unknown" || mutationOutcome === "targetDeleted"
+        ? mutationOutcome
+        : undefined,
+    retryDisposition:
+      retryDisposition === "automatic" || retryDisposition === "blocked" || retryDisposition === "none"
+        ? retryDisposition
+        : undefined,
+    cause: typeof data.cause === "string" ? data.cause : undefined,
+  };
+}
