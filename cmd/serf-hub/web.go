@@ -44,12 +44,18 @@ type WebServer struct {
 	// remote generation, and 30s time bucket (see hubcore.TreeCache).
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
+
+	deletionStoreErr error
 }
 
 var manifestMarshal = json.Marshal
 
 // NewWebServer constructs the web server.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
+	var deletionStoreErr error
+	if cfg.DeletionStore == nil {
+		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)
+	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
 		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
@@ -61,15 +67,19 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}
 	web := &WebServer{
-		cfg:             cfg,
-		sources:         sources,
-		startedAt:       time.Now().UTC(),
-		lastGoodThreads: map[string][]appwire.Thread{},
-		liveModels:      &modelsCache{},
-		treeCache:       &hubcore.TreeCache{},
-		manifestFS:      assetsRoot(),
+		cfg:              cfg,
+		sources:          sources,
+		startedAt:        time.Now().UTC(),
+		lastGoodThreads:  map[string][]appwire.Thread{},
+		liveModels:       &modelsCache{},
+		treeCache:        &hubcore.TreeCache{},
+		manifestFS:       assetsRoot(),
+		deletionStoreErr: deletionStoreErr,
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
+	if deletionStoreErr == nil {
+		_ = web.resumeProjectDeletions()
+	}
 	return web
 }
 

@@ -20,6 +20,11 @@ type hubRelayHandle struct {
 	established bool
 }
 
+type hubRelaySubscriptionResult struct {
+	notifications <-chan appwire.Notification
+	err           error
+}
+
 type relayRetryClock interface {
 	Wait(context.Context, time.Duration) error
 }
@@ -142,6 +147,17 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if subscribeParams.Ref == "" {
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 		}
+		if contextOwnsDeletionTarget(ctx, subscribeParams.Ref, threadID) {
+			if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
+				return err
+			}
+		} else {
+			if _, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
+				return struct{}{}, nil
+			}); err != nil {
+				return err
+			}
+		}
 
 		var relayCtx context.Context
 		var relayHandle *hubRelayHandle
@@ -218,7 +234,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return err
 		}
 		relayMu.Unlock()
-		notifications, err := source.SubscribeThread(relayCtx, subscribeParams)
+		var notifications <-chan appwire.Notification
+		if contextOwnsDeletionTarget(ctx, subscribeParams.Ref, threadID) {
+			if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
+				return err
+			}
+		} else {
+			if _, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
+				return struct{}{}, nil
+			}); err != nil {
+				return err
+			}
+		}
+		notifications, err = source.SubscribeThread(relayCtx, subscribeParams)
 		if err != nil {
 			cancelRelay()
 			relayMu.Lock()
@@ -417,15 +445,18 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					}
 				}
 			}
-			type subscribeResult struct {
-				notifications <-chan appwire.Notification
-				err           error
-			}
-			subscribeForRecovery := func() (subscribeResult, bool) {
-				result := make(chan subscribeResult, 1)
+			subscribeForRecovery := func() (hubRelaySubscriptionResult, bool) {
+				result := make(chan hubRelaySubscriptionResult, 1)
 				go func() {
+					_, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", func() (struct{}, error) {
+						return struct{}{}, nil
+					})
+					if err != nil {
+						result <- hubRelaySubscriptionResult{err: err}
+						return
+					}
 					notifications, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
-					result <- subscribeResult{notifications: notifications, err: err}
+					result <- hubRelaySubscriptionResult{notifications: notifications, err: err}
 				}()
 				for {
 					select {
@@ -450,6 +481,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						return
 					}
 					if result.err != nil {
+						if isTargetDeletedError(result.err) {
+							return
+						}
 						recordFailure(result.err)
 						if waitForRetry(backoff.Next()) {
 							return

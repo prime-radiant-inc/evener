@@ -26,12 +26,15 @@ func setThreadModelWithResume(ctx context.Context, cfg hubcore.WebConfig, source
 }
 
 func setThreadModelOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadModelSetParams) error {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-	if err != nil {
-		return err
-	}
-	if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "model"); err != nil {
-		return err
-	}
-	return source.SetThreadModel(ctx, params)
+	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "model"); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, source.SetThreadModel(ctx, params)
+	})
+	return err
 }

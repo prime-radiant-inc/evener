@@ -51,7 +51,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 }
 
 var (
-	resolveTurnStartSource = sourceForThreadWithManagedLaunch
+	resolveTurnStartSource = sourceForThreadWithManagedLaunchUnlocked
 	resumeTurnStartThread  = hubThreadResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
@@ -146,6 +146,9 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
+			if isTargetDeletedError(err) {
+				return appwire.ThreadReadResponse{}, err
+			}
 			resp, ok, pastErr := pastThreadReadResponse(cfg, params)
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
@@ -189,6 +192,9 @@ func registerThreadHandlers(
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
 		source, srcErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		if isTargetDeletedError(srcErr) {
+			return appwire.ThreadTurnsListResponse{}, srcErr
+		}
 		var live appwire.ThreadTurnsListResponse
 		var liveErr error
 		if srcErr == nil {
@@ -228,6 +234,9 @@ func registerThreadHandlers(
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
 		if err != nil {
+			if isTargetDeletedError(err) {
+				return appwire.SerfSubagentPreviewResponse{}, err
+			}
 			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 			if pastErr != nil {
 				return appwire.SerfSubagentPreviewResponse{}, pastErr
@@ -286,19 +295,31 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		source, err := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
-		if err != nil {
+		resolved := false
+		attemptStart := func() (appwire.TurnStartResponse, error) {
+			return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
+				ownedCtx := contextWithDeletionTargetOwnership(ctx, params.Ref, params.ThreadID)
+				source, err := resolveTurnStartSource(ownedCtx, cfg, sources, params.Ref, params.ThreadID)
+				if err != nil {
+					return appwire.TurnStartResponse{}, err
+				}
+				resolved = true
+				return startTurn(ownedCtx, source, params)
+			})
+		}
+		resp, err := attemptStart()
+		if err == nil {
+			return resp, nil
+		}
+		if !resolved {
+			if isTargetDeletedError(err) {
+				return appwire.TurnStartResponse{}, err
+			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, resumeErr
 			}
-			source, err = resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
-			if err != nil {
-				return appwire.TurnStartResponse{}, err
-			}
-		}
-		resp, err := startTurn(ctx, source, params)
-		if err == nil {
-			return resp, nil
+			resolved = false
+			return attemptStart()
 		}
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
@@ -309,11 +330,8 @@ func registerThreadHandlers(
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 			return appwire.TurnStartResponse{}, resumeErr
 		}
-		source, sourceErr := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
-		if sourceErr != nil {
-			return appwire.TurnStartResponse{}, sourceErr
-		}
-		return startTurn(ctx, source, params)
+		resolved = false
+		return attemptStart()
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -325,11 +343,13 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedTurnID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
-		if err != nil {
-			return appwire.TurnSteerResponse{}, err
-		}
-		return source.SteerTurn(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.TurnSteerResponse{}, err
+			}
+			return source.SteerTurn(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -338,18 +358,22 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedTurnID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
-		if err != nil {
-			return appwire.TurnInterruptResponse{}, err
-		}
-		return source.InterruptTurn(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.TurnInterruptResponse{}, err
+			}
+			return source.InterruptTurn(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
-		if err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.EmptyResponse{}, err
+			}
+			return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -361,11 +385,13 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedTurnID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.TurnQueueResponse{}, err
-		}
-		return source.QueueTurn(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
+				return appwire.TurnQueueResponse{}, err
+			}
+			return source.QueueTurn(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -377,11 +403,13 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedTurnID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("expectedTurnId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.TurnDrainAsSteerResponse{}, err
-		}
-		return source.DrainAsSteer(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
+				return appwire.TurnDrainAsSteerResponse{}, err
+			}
+			return source.DrainAsSteer(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
@@ -396,11 +424,13 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-		}
-		return source.PromoteQueuedAsSteer(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
+				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+			}
+			return source.PromoteQueuedAsSteer(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -412,11 +442,13 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.TurnCancelQueuedResponse{}, err
-		}
-		return source.CancelQueued(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
+				return appwire.TurnCancelQueuedResponse{}, err
+			}
+			return source.CancelQueued(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
@@ -434,14 +466,16 @@ func registerThreadHandlers(
 		return setThreadNameWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		// No capability gate: there is no reasoning-effort thread capability, and
-		// the daemon/source already reject the call when it is unsupported (a
-		// non-serf source, or a daemon without the effort hook).
-		return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
+		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
+				return appwire.EmptyResponse{}, err
+			}
+			// No capability gate: there is no reasoning-effort thread capability, and
+			// the daemon/source already reject the call when it is unsupported (a
+			// non-serf source, or a daemon without the effort hook).
+			return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return setGoalWithResume(ctx, cfg, sources, params)

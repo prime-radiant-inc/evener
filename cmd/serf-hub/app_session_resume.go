@@ -25,7 +25,10 @@ func withSessionResume[R any](
 	ref string,
 	once func() (R, error),
 ) (R, error) {
-	resp, err := once()
+	attempt := func() (R, error) {
+		return withDeletionTargetOwnership(cfg, ref, "", "", once)
+	}
+	resp, err := attempt()
 	if err == nil {
 		return resp, nil
 	}
@@ -39,12 +42,12 @@ func withSessionResume[R any](
 		var zero R
 		return zero, resumeErr
 	}
-	return once()
+	return attempt()
 }
 
 func setThreadNameWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
@@ -61,16 +64,16 @@ func setThreadNameWithResume(ctx context.Context, cfg hubcore.WebConfig, sources
 // we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
-	err := func() error {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
-			return err
+			return struct{}{}, err
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shutdown"); err != nil {
-			return err
+			return struct{}{}, err
 		}
-		return source.ShutdownThread(ctx, params)
-	}()
+		return struct{}{}, source.ShutdownThread(ctx, params)
+	})
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
 		return nil
 	}
@@ -79,7 +82,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.GoalSetResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.GoalSetResponse{}, err
 		}

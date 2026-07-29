@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
@@ -89,6 +90,355 @@ func TestHubRPCAdvertisesTurnListsWithHandlers(t *testing.T) {
 	if !init.Features.ThreadTurnsList {
 		t.Fatalf("ThreadTurnsList not advertised despite Hub handlers: %+v", init.Features)
 	}
+}
+
+func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(webTestSessionID)
+	if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: webTestSessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	_, err = sourceForThreadWithManagedLaunch(context.Background(), cfg, sources, ref, webTestSessionID)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok ||
+		data.MutationOutcome != appwire.MutationOutcomeTargetDeleted ||
+		data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("deleting source resolution wire error = %#v", wire)
+	}
+}
+
+func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin(project.ID, []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		Past:          past,
+	}
+	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
+	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: raw,
+	})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting past read error = %T %v, want targetDeleted", err, err)
+	}
+}
+
+func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin(project.ID, []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resumeCalls++
+		return rendezvous.Entry{}, errors.New("deleting target reached spawner")
+	}}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		Past:          past,
+		Spawner:       spawner,
+	}
+
+	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.MutationOutcome != appwire.MutationOutcomeTargetDeleted {
+		t.Fatalf("deleting resume wire error = %#v", wire)
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("deleting resume reached spawner %d times", resumeCalls)
+	}
+}
+
+func TestDeletionFenceRejectsMutationWithTargetDeletedOutcome(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(webTestSessionID)
+	if _, err := store.Begin("project-mutate-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: webTestSessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	source := &deletionFenceMutationSource{}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+	tests := []struct {
+		method string
+		id     string
+		params any
+	}{
+		{appwire.MethodTurnStart, "mutation-start-after-delete", appwire.TurnStartParams{
+			Ref: ref, ClientMutationID: "mutation-start-after-delete",
+			Input: []appwire.InputItem{{Type: "text", Text: "start"}},
+		}},
+		{appwire.MethodTurnSteer, "mutation-steer-after-delete", appwire.TurnSteerParams{
+			Ref: ref, ClientMutationID: "mutation-steer-after-delete", ExpectedTurnID: "turn-before-delete",
+			Input: []appwire.InputItem{{Type: "text", Text: "steer"}},
+		}},
+		{appwire.MethodTurnInterrupt, "mutation-interrupt-after-delete", appwire.TurnInterruptParams{
+			Ref: ref, ClientMutationID: "mutation-interrupt-after-delete", ExpectedTurnID: "turn-before-delete",
+		}},
+		{appwire.MethodTurnQueue, "mutation-queue-after-delete", appwire.TurnQueueParams{
+			Ref: ref, ClientMutationID: "mutation-queue-after-delete", ExpectedTurnID: "turn-before-delete",
+			Input: []appwire.InputItem{{Type: "text", Text: "queue"}},
+		}},
+		{appwire.MethodTurnDrainAsSteer, "mutation-drain-after-delete", appwire.TurnDrainAsSteerParams{
+			Ref: ref, ClientMutationID: "mutation-drain-after-delete",
+			ExpectedTurnID: "turn-before-delete", ExpectedQueueRevision: 1,
+		}},
+		{appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote-after-delete", appwire.TurnPromoteQueuedAsSteerParams{
+			Ref: ref, ClientMutationID: "mutation-promote-after-delete",
+			ExpectedTurnID: "turn-before-delete", ExpectedEntryID: "queue-before-delete",
+		}},
+		{appwire.MethodTurnCancelQueued, "mutation-cancel-after-delete", appwire.TurnCancelQueuedParams{
+			Ref: ref, ClientMutationID: "mutation-cancel-after-delete",
+			ExpectedEntryID: "queue-before-delete",
+		}},
+	}
+	for i, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			raw, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = server.Router().Dispatch(context.Background(), appwire.Request{
+				ID:     appwire.NewIntID(int64(i + 1)),
+				Method: tc.method,
+				Params: raw,
+			})
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("deleting mutation error = %T %v, want WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok ||
+				data.ClientMutationID != tc.id ||
+				data.MutationOutcome != appwire.MutationOutcomeTargetDeleted ||
+				data.RetryDisposition != appwire.RetryDispositionNone {
+				t.Fatalf("deleting mutation wire error = %#v", wire)
+			}
+			if source.calls[tc.method] != 0 {
+				t.Fatalf("deleting mutation reached %s source %d times", tc.method, source.calls[tc.method])
+			}
+		})
+	}
+}
+
+func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	if _, err := store.Begin("project-relay-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: threadID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	source := &deletionFenceRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:   threadID,
+			Serf: appwire.SerfThread{Ref: ref},
+		}},
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	err = relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting relay error = %T %v, want targetDeleted", err, err)
+	}
+	if source.subscribeCalls != 0 {
+		t.Fatalf("deleting relay subscribed %d times", source.subscribeCalls)
+	}
+}
+
+func TestDeletionFenceRejectsForkBeforeLaunchingChild(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	if _, err := store.Begin("project-fork-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: threadID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	oldAside := hubAsideSession
+	t.Cleanup(func() { hubAsideSession = oldAside })
+	launchCalls := 0
+	hubAsideSession = func(string, string) (string, error) {
+		launchCalls++
+		return "", errors.New("deleting fork launched child")
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		StateDir:      t.TempDir(),
+	}
+
+	_, err = hubThreadFork(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadForkParams{
+		Ref:   ref,
+		Aside: true,
+	})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting fork error = %T %v, want targetDeleted", err, err)
+	}
+	if launchCalls != 0 {
+		t.Fatalf("deleting fork launched %d children", launchCalls)
+	}
+}
+
+type deletionFenceRelaySource struct {
+	relayLifecycleSource
+	subscribeCalls int
+}
+
+func (s *deletionFenceRelaySource) ID() string {
+	return "local"
+}
+
+func (s *deletionFenceRelaySource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.subscribeCalls++
+	return nil, errors.New("deleting relay reached source subscription")
+}
+
+type deletionFenceMutationSource struct {
+	relayLifecycleSource
+	calls map[string]int
+}
+
+func (s *deletionFenceMutationSource) ID() string {
+	return "local"
+}
+
+func (s *deletionFenceMutationSource) QueueTurn(
+	context.Context,
+	appwire.TurnQueueParams,
+) (appwire.TurnQueueResponse, error) {
+	s.recordCall(appwire.MethodTurnQueue)
+	return appwire.TurnQueueResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.recordCall(appwire.MethodTurnStart)
+	return appwire.TurnStartResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnSteer)
+	return appwire.TurnSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	s.recordCall(appwire.MethodTurnInterrupt)
+	return appwire.TurnInterruptResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnDrainAsSteer)
+	return appwire.TurnDrainAsSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnPromoteQueuedAsSteer)
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	s.recordCall(appwire.MethodTurnCancelQueued)
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) recordCall(method string) {
+	if s.calls == nil {
+		s.calls = make(map[string]int)
+	}
+	s.calls[method]++
 }
 
 func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {

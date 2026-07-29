@@ -40,8 +40,15 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	ref := appRefFromRouteID(id)
+	live := isLiveForRename(s, id)
+	unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, "")
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(s.cfg, ref, "", ""); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
 
-	if isLiveForRename(s, id) {
+	if live {
 		source, err := sourceForThread(s.sources, ref, "")
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "session not live")
