@@ -78,11 +78,26 @@ The canonical API log is one strict newline-delimited JSON file per session.
 1. Open or create the exact session leaf without following symlinks.
 2. Require a regular file and acquire its target-file lock.
 3. Create new files with mode `0600` on the supported macOS and Linux targets.
-4. Strictly scan existing complete records.
-5. If and only if the final line is incomplete, truncate it to the last complete
-   newline and sync the truncation before accepting appends.
-6. A malformed complete record, interior corruption, unsupported record, or
-   unsafe target fails closed without mutation.
+4. Inspect a bounded suffix, independent of total historical file size, to find
+   the append boundary. The bound derives from the maximum canonical record
+   size: one possible incomplete fragment plus the immediately preceding
+   complete record.
+5. Strictly validate the complete record immediately before the append boundary.
+   A malformed, oversized, or unsupported boundary record fails closed without
+   mutation.
+6. If and only if the final line is incomplete and bounded, truncate it to the
+   last complete newline and sync the truncation before accepting appends.
+7. An incomplete fragment or complete boundary record that exceeds the
+   canonical record bound, a missing boundary within that bound, or an unsafe
+   target fails closed without mutation.
+
+The API log is forensic evidence, not session replay state. Explicit API-log
+readers remain responsible for strict validation of every record they consume.
+Open-time recovery protects the next append from a torn tail; it does not
+revalidate ancient records on every daemon start. Without previously trusted
+metadata, bounded startup and whole-history revalidation of an existing file
+cannot both be guaranteed. This tail-boundary contract keeps resume work
+bounded while preserving exclusive ownership and canonical append durability.
 
 ### Append
 
@@ -264,10 +279,10 @@ instrumentation preserves the pre-Project-2 provider behavior.
 ### 1. Replace the overbuilt core
 
 Implement the target-lock, strict append, synchronous sync, sticky quarantine,
-partial-final-line recovery, structured omission, and bounded admission rules
-above on a fresh branch from the program execution head. Reuse small reviewed
-helpers or tests only when they match this design. Do not merge the Thirdwave
-core range.
+bounded partial-final-line recovery, boundary-record validation, structured
+omission, and bounded admission rules above on a fresh branch from the program
+execution head. Reuse small reviewed helpers or tests only when they match this
+design. Do not merge the Thirdwave core range.
 
 ### 2. Add eager resume ownership
 
@@ -306,7 +321,8 @@ corrected and reviewed. Do not reopen any independent slice's product scope.
 Required final evidence:
 
 - focused core tests for canonical append, sync failure, sticky quarantine,
-  final-tail recovery, corruption rejection, target lock, and eager resume;
+  bounded final-tail recovery, boundary corruption rejection, target lock, and
+  eager resume;
 - real scripted-provider tests for exact UTF-8 and binary request/response
   bodies, explicit retries/fallbacks, credential omission, and inexact bodies;
 - transcript tests proving no API payloads and no default API-log access;
