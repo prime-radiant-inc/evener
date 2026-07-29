@@ -202,3 +202,119 @@ func TestScanRecoveryRejectsInvalidCompleteLinesAtCanonicalBoundary(t *testing.T
 		})
 	}
 }
+
+func TestScanRecoveryRejectsInvalidRecordBeforePartialTail(t *testing.T) {
+	invalid := []byte("{broken}\n")
+	partial := []byte(`{"kind":"api_attempt"`)
+	data := append(append([]byte(nil), invalid...), partial...)
+
+	lastCompleteOffset, partialTail, err := ScanRecovery(bytes.NewReader(data), len(invalid)+len(partial))
+	if err == nil {
+		t.Fatal("ScanRecovery accepted an invalid complete boundary record before a partial tail")
+	}
+	if lastCompleteOffset != 0 || partialTail {
+		t.Fatalf("ScanRecovery invalid boundary = (%d, %t), want (0, false)", lastCompleteOffset, partialTail)
+	}
+}
+
+func TestScanRecoveryRejectsOversizedPartialTail(t *testing.T) {
+	const maxLineBytes = 64
+	data := []byte(strings.Repeat("x", maxLineBytes+1))
+
+	lastCompleteOffset, partialTail, err := ScanRecovery(bytes.NewReader(data), maxLineBytes)
+	if err == nil {
+		t.Fatal("ScanRecovery accepted an oversized partial tail")
+	}
+	if lastCompleteOffset != 0 || partialTail {
+		t.Fatalf("ScanRecovery oversized partial tail = (%d, %t), want (0, false)", lastCompleteOffset, partialTail)
+	}
+}
+
+func TestScanRecoveryBoundsWorkToCanonicalTail(t *testing.T) {
+	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
+	partial := []byte(`{"kind":"api_attempt"`)
+	tail := append([]byte{'\n'}, complete...)
+	tail = append(tail, '\n')
+	tail = append(tail, partial...)
+
+	const historicalBytes int64 = 1 << 40
+	reader := newSparseTailReadSeeker(historicalBytes, tail)
+	maxLineBytes := max(len(complete), len(partial))
+
+	lastCompleteOffset, partialTail, err := ScanRecovery(reader, maxLineBytes)
+	if err != nil {
+		t.Fatalf("ScanRecovery sparse tail: %v", err)
+	}
+	wantOffset := historicalBytes + 1 + int64(len(complete)) + 1
+	if lastCompleteOffset != wantOffset || !partialTail {
+		t.Fatalf("ScanRecovery sparse tail = (%d, %t), want (%d, true)", lastCompleteOffset, partialTail, wantOffset)
+	}
+	if reader.lowestReadOffset < historicalBytes {
+		t.Fatalf("ScanRecovery read historical prefix at offset %d, want offset >= %d", reader.lowestReadOffset, historicalBytes)
+	}
+	maxReadBytes := int64(3*maxLineBytes + 3)
+	if reader.readBytes > maxReadBytes {
+		t.Fatalf("ScanRecovery read %d bytes, want at most %d", reader.readBytes, maxReadBytes)
+	}
+}
+
+type sparseTailReadSeeker struct {
+	size             int64
+	offset           int64
+	tailOffset       int64
+	tail             []byte
+	readBytes        int64
+	lowestReadOffset int64
+}
+
+func newSparseTailReadSeeker(tailOffset int64, tail []byte) *sparseTailReadSeeker {
+	size := tailOffset + int64(len(tail))
+	return &sparseTailReadSeeker{
+		size:             size,
+		tailOffset:       tailOffset,
+		tail:             append([]byte(nil), tail...),
+		lowestReadOffset: size,
+	}
+}
+
+func (r *sparseTailReadSeeker) Read(p []byte) (int, error) {
+	if r.offset >= r.size {
+		return 0, io.EOF
+	}
+	readOffset := r.offset
+	n := int(min(int64(len(p)), r.size-r.offset))
+	for index := range p[:n] {
+		p[index] = '\n'
+	}
+	overlapStart := max(readOffset, r.tailOffset)
+	overlapEnd := min(readOffset+int64(n), r.size)
+	if overlapStart < overlapEnd {
+		copy(
+			p[overlapStart-readOffset:overlapEnd-readOffset],
+			r.tail[overlapStart-r.tailOffset:overlapEnd-r.tailOffset],
+		)
+	}
+	r.offset += int64(n)
+	r.readBytes += int64(n)
+	r.lowestReadOffset = min(r.lowestReadOffset, readOffset)
+	return n, nil
+}
+
+func (r *sparseTailReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	var next int64
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = r.offset + offset
+	case io.SeekEnd:
+		next = r.size + offset
+	default:
+		return 0, fmt.Errorf("invalid seek whence %d", whence)
+	}
+	if next < 0 {
+		return 0, fmt.Errorf("negative seek offset %d", next)
+	}
+	r.offset = next
+	return next, nil
+}
