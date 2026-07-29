@@ -48,6 +48,10 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
+		if pending.ExecutionState == "incorporated" &&
+			(pending.Method == clientMutationMethodStart || pending.Method == clientMutationMethodQueue) {
+			continue
+		}
 		pending.Input = cloneClientMutationInput(pending.Input)
 		pending.QueueEntryIDs = append([]string(nil), pending.QueueEntryIDs...)
 		pendingByID[id] = pending

@@ -6,9 +6,11 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
+	"primeradiant.com/serf/llm"
 )
 
 func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t *testing.T) {
@@ -119,6 +121,178 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 		}
 	}
 	t.Fatalf("pending mutations = %#v, want %q", response.Thread.Serf.PendingMutations, queueParams.ClientMutationID)
+}
+
+func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testing.T) {
+	tests := []struct {
+		name    string
+		blockAt int
+		accept  func(*testing.T, *agent.Session) string
+	}{
+		{
+			name:    "start",
+			blockAt: 1,
+			accept: func(t *testing.T, sess *agent.Session) string {
+				params := appwire.TurnStartParams{
+					ClientMutationID: "incorporated-start",
+					Input:            []appwire.InputItem{{Type: "text", Text: "durable start"}},
+				}
+				if _, err := sess.AcceptClientMutationStart(params); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				return params.ClientMutationID
+			},
+		},
+		{
+			name:    "queue",
+			blockAt: 2,
+			accept: func(t *testing.T, sess *agent.Session) string {
+				start, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+					ClientMutationID: "queue-parent-start",
+					Input:            []appwire.InputItem{{Type: "text", Text: "parent start"}},
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				params := appwire.TurnQueueParams{
+					ClientMutationID: "incorporated-queue",
+					ExpectedTurnID:   start.Turn.ID,
+					Input:            []appwire.InputItem{{Type: "text", Text: "durable queue"}},
+				}
+				if _, err := sess.AcceptClientMutationQueue(params); err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				return params.ClientMutationID
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := &mutationProjectionAdapter{
+				blockAt: test.blockAt,
+				blocked: make(chan struct{}),
+			}
+			sess := newMutationReplaySessionWithAdapter(t, adapter)
+			mutationID := test.accept(t, sess)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := sess.ProcessClientMutationStart(ctx, nil)
+				done <- err
+			}()
+			<-adapter.blocked
+
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", sess.ID())
+			srv.SetTranscriptPathFunc(sess.TranscriptPath)
+			srv.SetClientMutationProjectionFunc(sess.ClientMutationProjection)
+			response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
+			if err != nil {
+				cancel()
+				<-done
+				t.Fatalf("thread/read: %v", err)
+			}
+
+			assertMutationIdentityInTranscriptNotPending(t, response, mutationID)
+			cancel()
+			<-done
+		})
+	}
+}
+
+func assertMutationIdentityInTranscriptNotPending(
+	t *testing.T,
+	response appwire.ThreadReadResponse,
+	mutationID string,
+) {
+	t.Helper()
+	for _, turn := range response.Thread.Turns {
+		for _, item := range turn.Items {
+			if item.ClientMutationID == mutationID {
+				for _, pending := range response.Thread.Serf.PendingMutations {
+					if pending.ClientMutationID == mutationID {
+						t.Fatalf(
+							"mutation %q appears in transcript identity and pending mutations: %#v",
+							mutationID,
+							response.Thread.Serf.PendingMutations,
+						)
+					}
+				}
+				return
+			}
+		}
+	}
+	t.Fatalf("transcript has no item with client mutation identity %q", mutationID)
+}
+
+type mutationProjectionAdapter struct {
+	mu        sync.Mutex
+	mainCalls int
+	blockAt   int
+	blocked   chan struct{}
+}
+
+func (a *mutationProjectionAdapter) Name() string { return "openai" }
+
+func (a *mutationProjectionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if !requestHasTool(req, "communicate") {
+		return llm.Response{
+			Provider: a.Name(),
+			Model:    req.Model,
+			Message:  llm.Assistant(`{"name":"rejoin projection"}`),
+		}, nil
+	}
+
+	a.mu.Lock()
+	a.mainCalls++
+	call := a.mainCalls
+	a.mu.Unlock()
+	if call < a.blockAt {
+		args, _ := json.Marshal(map[string]any{
+			"message":  "done",
+			"end_turn": true,
+			"output": map[string]any{
+				"message":   "",
+				"data":      map[string]any{},
+				"artifacts": []string{},
+			},
+		})
+		return llm.Response{
+			Provider: a.Name(),
+			Model:    req.Model,
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "communicate-rejoin",
+						Name:      "communicate",
+						Arguments: args,
+						Type:      "function",
+					},
+				}},
+			},
+		}, nil
+	}
+
+	close(a.blocked)
+	<-ctx.Done()
+	return llm.Response{Provider: a.Name(), Model: req.Model}, ctx.Err()
+}
+
+func (a *mutationProjectionAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func requestHasTool(req llm.Request, name string) bool {
+	for _, tool := range req.Tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.T) {

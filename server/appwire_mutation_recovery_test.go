@@ -469,13 +469,18 @@ func TestAppWireMutationTerminalRejectionReplays(t *testing.T) {
 
 func newMutationReplaySession(t *testing.T) *agent.Session {
 	t.Helper()
-	stateDir := t.TempDir()
-	client := llm.NewClient()
-	client.Register(&blockingServerAdapter{
+	return newMutationReplaySessionWithAdapter(t, &blockingServerAdapter{
 		name:    "openai",
 		started: make(chan struct{}),
 		done:    make(chan error, 1),
 	})
+}
+
+func newMutationReplaySessionWithAdapter(t *testing.T, adapter llm.ProviderAdapter) *agent.Session {
+	t.Helper()
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(adapter)
 	sess, err := agent.NewSession(
 		client,
 		provider.NewOpenAIProfile("gpt-5.2"),

@@ -1024,6 +1024,9 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	if err != nil {
 		t.Fatalf("clientMutationSteer: %v", err)
 	}
+	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("accepted steering projection = %#v, ok=%v", pending, ok)
+	}
 	msg, ok := sess.popSteeringHead()
 	if !ok {
 		t.Fatal("popSteeringHead returned empty")
@@ -1031,6 +1034,9 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	claimed := sess.clientMutations.snapshot()
 	if claimed.PendingExecutions[params.ClientMutationID].ExecutionState != "claimed" {
 		t.Fatalf("steering was not claimed: %#v", claimed.PendingExecutions[params.ClientMutationID])
+	}
+	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "claimed" {
+		t.Fatalf("claimed steering projection = %#v, ok=%v", pending, ok)
 	}
 	if msg.StableTurnID != response.Receipt.TurnID {
 		t.Fatalf("steering stable turn = %q, receipt = %q", msg.StableTurnID, response.Receipt.TurnID)
@@ -1049,6 +1055,16 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	if last.ClientMutationID != params.ClientMutationID || last.StableTurnID != response.Receipt.TurnID {
 		t.Fatalf("steering transcript identity = (%q,%q)", last.ClientMutationID, last.StableTurnID)
 	}
+}
+
+func projectedClientMutation(sess *Session, clientMutationID string) (appwire.PendingMutation, bool) {
+	_, pending := sess.ClientMutationProjection()
+	for _, mutation := range pending {
+		if mutation.ClientMutationID == clientMutationID {
+			return mutation, true
+		}
+	}
+	return appwire.PendingMutation{}, false
 }
 
 func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing.T) {
