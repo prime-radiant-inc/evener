@@ -227,9 +227,12 @@ func fuzzTransportEdges(t *testing.T) {
 	_ = checkHubEnvironment(context.Background(), HubAddress{BaseURL: "://"}, &http.Client{}, "/state")
 }
 
-func fuzzDialHubRPC(t *testing.T, protocol string) {
+// fakeHubServer starts an httptest server that speaks just enough of the
+// appwire wire protocol to answer a single Initialize call with the given
+// protocol version, then drains frames until the client hangs up.
+func fakeHubServer(t *testing.T, protocol string) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -256,6 +259,11 @@ func fuzzDialHubRPC(t *testing.T, protocol string) {
 			}
 		}
 	}))
+}
+
+func fuzzDialHubRPC(t *testing.T, protocol string) {
+	t.Helper()
+	srv := fakeHubServer(t, protocol)
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 	client, err := dialHubRPC(context.Background(), addr, srv.Client())

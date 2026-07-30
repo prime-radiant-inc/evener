@@ -3,6 +3,7 @@ package appwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -171,13 +172,26 @@ func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T
 
 	request := <-transport.writes
 	transport.reads <- ResponseMessage(request.Request.ID, InitializeResponse{ProtocolVersion: "serf-appwire-v1"})
-	if err := <-done; err == nil {
+	err := <-done
+	if err == nil {
 		t.Fatal("mismatched initialize response accepted")
 	}
 	select {
 	case msg := <-transport.writes:
 		t.Fatalf("unexpected post-mismatch write: %+v", msg)
 	default:
+	}
+
+	// The mismatch must be matchable by type (kata zedg), not by parsing the
+	// message: hubstart's incompatible-hub screen depends on errors.As here
+	// to tell "hub speaks a different protocol" apart from any other dial
+	// failure.
+	var mismatch ProtocolVersionMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("err = %v (%T), want errors.As match for ProtocolVersionMismatchError", err, err)
+	}
+	if mismatch.Got != "serf-appwire-v1" || mismatch.Want != ProtocolVersion {
+		t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, "serf-appwire-v1", ProtocolVersion)
 	}
 }
 

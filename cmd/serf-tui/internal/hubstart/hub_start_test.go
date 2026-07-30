@@ -334,6 +334,37 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 	}
 }
 
+// TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol dials a fake hub
+// that completes the handshake but reports a protocol version this build
+// does not speak. appwire.Client.Initialize rejects that response (v2's
+// exact-match requirement); dialHubRPC must translate the typed mismatch
+// into a terminal, dedicated StartupError rather than a raw dial error
+// (kata zedg: this path went dead when v2 tightened Initialize but the
+// downstream StartupErrorIncompatibleAPI check was never wired to it).
+func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
+	srv := fakeHubServer(t, "serf-appwire-v1")
+	defer srv.Close()
+	addr := HubAddress{BaseURL: srv.URL}
+
+	_, err := dialHubRPC(context.Background(), addr, srv.Client())
+	if err == nil {
+		t.Fatal("dialHubRPC accepted a mismatched protocol version")
+	}
+	var startupErr StartupError
+	if !errors.As(err, &startupErr) || startupErr.Kind != StartupErrorIncompatibleAPI {
+		t.Fatalf("error=%v, want incompatible-api startup error", err)
+	}
+	if !isTerminalStartupError(err) {
+		t.Fatal("incompatible-api startup error must be terminal, not retryable")
+	}
+	screen := StartupErrorScreen(err)
+	for _, want := range []string{"Hub API is incompatible at " + addr.BaseURL, "serf-appwire-v1", appwire.ProtocolVersion} {
+		if !strings.Contains(screen, want) {
+			t.Fatalf("screen missing %q:\n%s", want, screen)
+		}
+	}
+}
+
 func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 	tests := []struct {
 		name string

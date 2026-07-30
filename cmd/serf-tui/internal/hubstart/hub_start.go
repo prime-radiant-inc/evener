@@ -397,20 +397,19 @@ func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client) (
 	}
 	client := appwire.NewClient(transport)
 	client.Start(context.WithoutCancel(ctx))
-	init, err := client.Initialize(ctx, appwire.InitializeParams{
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo: appwire.ClientInfo{Name: "serf-tui", Version: "tui"},
-	})
-	if err != nil {
+	}); err != nil {
 		_ = client.Close()
-		return nil, err
-	}
-	if init.ProtocolVersion != "" && init.ProtocolVersion != appwire.ProtocolVersion {
-		_ = client.Close()
-		return nil, StartupError{
-			Kind:   StartupErrorIncompatibleAPI,
-			Addr:   addr.BaseURL,
-			Detail: fmt.Sprintf("hub speaks %q, TUI requires %q", init.ProtocolVersion, appwire.ProtocolVersion),
+		var mismatch appwire.ProtocolVersionMismatchError
+		if errors.As(err, &mismatch) {
+			return nil, StartupError{
+				Kind:   StartupErrorIncompatibleAPI,
+				Addr:   addr.BaseURL,
+				Detail: fmt.Sprintf("hub speaks %q, TUI requires %q", mismatch.Got, mismatch.Want),
+			}
 		}
+		return nil, err
 	}
 	return client, nil
 }
