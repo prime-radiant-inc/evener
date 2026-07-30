@@ -71,9 +71,9 @@ const (
 )
 
 type clientMutationPreconditions struct {
-	ExpectedTurnID        string  `json:"expectedTurnId,omitempty"`
-	ExpectedEntryID       string  `json:"expectedEntryId,omitempty"`
-	ExpectedQueueRevision *uint64 `json:"expectedQueueRevision,omitempty"`
+	ExpectedTurnID        string  `json:"expected_turn_id,omitempty"`
+	ExpectedEntryID       string  `json:"expected_entry_id,omitempty"`
+	ExpectedQueueRevision *uint64 `json:"expected_queue_revision,omitempty"`
 }
 
 type clientMutationRejection struct {
@@ -83,20 +83,20 @@ type clientMutationRejection struct {
 }
 
 type clientMutationRecord struct {
-	ClientMutationID    string                          `json:"clientMutationId"`
+	ClientMutationID    string                          `json:"client_mutation_id"`
 	Method              string                          `json:"method"`
 	Payload             json.RawMessage                 `json:"payload,omitempty"`
 	Preconditions       clientMutationPreconditions     `json:"preconditions,omitempty"`
-	StableTurnID        string                          `json:"stableTurnId,omitempty"`
-	StableQueueEntryIDs []string                        `json:"stableQueueEntryIds,omitempty"`
-	PayloadHash         string                          `json:"payloadHash"`
-	OperationState      clientMutationOperationState    `json:"operationState"`
-	ExecutionState      string                          `json:"executionState"`
-	ProjectionState     appwire.MutationProjectionState `json:"projectionState"`
+	StableTurnID        string                          `json:"stable_turn_id,omitempty"`
+	StableQueueEntryIDs []string                        `json:"stable_queue_entry_ids,omitempty"`
+	PayloadHash         string                          `json:"payload_hash"`
+	OperationState      clientMutationOperationState    `json:"operation_state"`
+	ExecutionState      string                          `json:"execution_state"`
+	ProjectionState     appwire.MutationProjectionState `json:"projection_state"`
 	Result              json.RawMessage                 `json:"result,omitempty"`
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
-	AttemptGeneration   uint64                          `json:"attemptGeneration"`
+	AttemptGeneration   uint64                          `json:"attempt_generation"`
 }
 
 type clientMutationFailure struct {
@@ -105,37 +105,37 @@ type clientMutationFailure struct {
 
 type clientMutationQueueEntry struct {
 	ID               string              `json:"id"`
-	ClientMutationID string              `json:"clientMutationId"`
+	ClientMutationID string              `json:"client_mutation_id"`
 	Input            []appwire.InputItem `json:"input"`
 }
 
 type clientMutationBudgetReservation struct {
-	TurnID string `json:"turnId"`
+	TurnID string `json:"turn_id"`
 	Slots  uint64 `json:"slots"`
 }
 
 type clientMutationInterruptFence struct {
-	ClientMutationID string `json:"clientMutationId"`
-	ExpectedTurnID   string `json:"expectedTurnId"`
+	ClientMutationID string `json:"client_mutation_id"`
+	ExpectedTurnID   string `json:"expected_turn_id"`
 }
 
 type clientMutationSnapshot struct {
 	Version   int    `json:"version"`
-	SessionID string `json:"sessionId"`
+	SessionID string `json:"session_id"`
 	// ActiveTurnID is the sole durable authority used by retry-safe mutation
 	// preconditions. Task 4 owns lifecycle writes; queue and steering
 	// transitions only compare it while holding this store's serializer.
-	ActiveTurnID           string                                     `json:"activeTurnId,omitempty"`
-	AcceptedTurns          uint64                                     `json:"acceptedTurns"`
+	ActiveTurnID           string                                     `json:"active_turn_id,omitempty"`
+	AcceptedTurns          uint64                                     `json:"accepted_turns"`
 	Journal                map[string]clientMutationRecord            `json:"journal"`
-	InputQueue             []clientMutationQueueEntry                 `json:"inputQueue"`
-	QueueRevision          uint64                                     `json:"queueRevision"`
-	NextTurnSequence       uint64                                     `json:"nextTurnSequence"`
-	NextQueueEntrySequence uint64                                     `json:"nextQueueEntrySequence"`
-	BudgetReservations     map[string]clientMutationBudgetReservation `json:"budgetReservations"`
-	InterruptFence         *clientMutationInterruptFence              `json:"interruptFence,omitempty"`
-	PendingExecutions      map[string]appwire.PendingMutation         `json:"pendingExecutions"`
-	SteeringOrder          []string                                   `json:"steeringOrder,omitempty"`
+	InputQueue             []clientMutationQueueEntry                 `json:"input_queue"`
+	QueueRevision          uint64                                     `json:"queue_revision"`
+	NextTurnSequence       uint64                                     `json:"next_turn_sequence"`
+	NextQueueEntrySequence uint64                                     `json:"next_queue_entry_sequence"`
+	BudgetReservations     map[string]clientMutationBudgetReservation `json:"budget_reservations"`
+	InterruptFence         *clientMutationInterruptFence              `json:"interrupt_fence,omitempty"`
+	PendingExecutions      map[string]appwire.PendingMutation         `json:"pending_executions"`
+	SteeringOrder          []string                                   `json:"steering_order,omitempty"`
 }
 
 type clientMutationRequest struct {

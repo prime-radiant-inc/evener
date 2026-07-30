@@ -385,32 +385,32 @@ func TestClientMutationPersist_RejectsIncompleteSnapshot(t *testing.T) {
 		},
 		{
 			name:   "missing budget reservations",
-			mutate: func(snapshot map[string]any) { delete(snapshot, "budgetReservations") },
+			mutate: func(snapshot map[string]any) { delete(snapshot, "budget_reservations") },
 		},
 		{
 			name:   "null budget reservations",
-			mutate: func(snapshot map[string]any) { snapshot["budgetReservations"] = nil },
+			mutate: func(snapshot map[string]any) { snapshot["budget_reservations"] = nil },
 		},
 		{
 			name:   "missing pending executions",
-			mutate: func(snapshot map[string]any) { delete(snapshot, "pendingExecutions") },
+			mutate: func(snapshot map[string]any) { delete(snapshot, "pending_executions") },
 		},
 		{
 			name:   "null pending executions",
-			mutate: func(snapshot map[string]any) { snapshot["pendingExecutions"] = nil },
+			mutate: func(snapshot map[string]any) { snapshot["pending_executions"] = nil },
 		},
 		{
 			name: "missing execution state",
 			mutate: func(snapshot map[string]any) {
 				record := snapshot["journal"].(map[string]any)["mutation-1"].(map[string]any)
-				delete(record, "executionState")
+				delete(record, "execution_state")
 			},
 		},
 		{
 			name: "missing projection state",
 			mutate: func(snapshot map[string]any) {
 				record := snapshot["journal"].(map[string]any)["mutation-1"].(map[string]any)
-				delete(record, "projectionState")
+				delete(record, "projection_state")
 			},
 		},
 	}
