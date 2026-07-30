@@ -19,7 +19,7 @@ import (
 
 type clientMutationStartLifecycle interface {
 	AcceptClientMutationStart(appwire.TurnStartParams) (appwire.TurnStartResponse, error)
-	ClaimClientMutationStart() (queuedInput, bool, error)
+	claimClientMutationStart() (queuedInput, bool, error)
 	SetClientMutationStartWakeFunc(func())
 }
 
@@ -376,9 +376,9 @@ func TestClientMutation_StartAcceptedRecordRestoresAsRunnableStart(t *testing.T)
 		!reflect.DeepEqual(pending.Input, params.Input) {
 		t.Fatalf("restored accepted start = %#v, want complete runnable input with stable identity", pending)
 	}
-	claimed, ok, err := lifecycle.ClaimClientMutationStart()
+	claimed, ok, err := lifecycle.claimClientMutationStart()
 	if err != nil {
-		t.Fatalf("ClaimClientMutationStart after restore: %v", err)
+		t.Fatalf("claimClientMutationStart after restore: %v", err)
 	}
 	if !ok ||
 		claimed.ClientMutationID != params.ClientMutationID ||
@@ -449,9 +449,9 @@ func TestClientMutation_StartAcceptanceOwnsRunnableInputBeforeWake(t *testing.T)
 		t.Fatalf("wake count after replayed still-runnable start = %d, want 2", wakes)
 	}
 
-	claimed, ok, err := lifecycle.ClaimClientMutationStart()
+	claimed, ok, err := lifecycle.claimClientMutationStart()
 	if err != nil {
-		t.Fatalf("ClaimClientMutationStart: %v", err)
+		t.Fatalf("claimClientMutationStart: %v", err)
 	}
 	if !ok ||
 		claimed.ClientMutationID != params.ClientMutationID ||
@@ -605,9 +605,9 @@ func TestClientMutation_StartClaimedWithoutTranscriptRestoresRunnableSameTurn(t 
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	sess.Close()
 
@@ -627,7 +627,7 @@ func TestClientMutation_StartClaimedWithoutTranscriptRestoresRunnableSameTurn(t 
 	if snapshot.AcceptedTurns != 0 {
 		t.Fatalf("accepted turns after returning claimed start = %d, want 0", snapshot.AcceptedTurns)
 	}
-	reclaimed, ok, err := restored.ClaimClientMutationStart()
+	reclaimed, ok, err := restored.claimClientMutationStart()
 	if err != nil || !ok {
 		t.Fatalf("reclaim restored start: claimed=%#v ok=%v err=%v", reclaimed, ok, err)
 	}
@@ -650,9 +650,9 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(claimed.Text, claimed.Images))
 	turn.ClientMutationID = claimed.ClientMutationID
@@ -684,7 +684,7 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 		t.Fatalf("restored start entered steering projection: order=%v queue=%v",
 			snapshot.SteeringOrder, restored.SteeringQueueSnapshot())
 	}
-	reclaimed, ok, err := restored.ClaimClientMutationStart()
+	reclaimed, ok, err := restored.claimClientMutationStart()
 	if err != nil || !ok {
 		t.Fatalf("claim incorporated start: claimed=%#v ok=%v err=%v", reclaimed, ok, err)
 	}
@@ -720,9 +720,9 @@ func TestClientMutation_IncorporationFailureWritesOneFailedIdentityBearingUserIt
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	injected := errors.New("deterministic pre-append failure")
 	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return injected }
@@ -818,9 +818,9 @@ func TestClientMutation_StartTranscriptIOFailureRemainsRunnable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	injected := errors.New("transcript storage unavailable")
 	sess.clientMutationTranscriptAppend = func(schema.Turn) error { return injected }
@@ -874,9 +874,9 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	injected := errors.New("transcript storage unavailable")
 	sess.clientMutationTranscriptAppend = func(schema.Turn) error { return injected }
@@ -927,9 +927,9 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	ctx := withQueuedClientMutation(context.Background(), claimed)
 	if _, err := sess.processInputKindWithProvenance(
@@ -978,9 +978,9 @@ func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplica
 			if err != nil {
 				t.Fatalf("AcceptClientMutationStart: %v", err)
 			}
-			claimed, ok, err := sess.ClaimClientMutationStart()
+			claimed, ok, err := sess.claimClientMutationStart()
 			if err != nil || !ok {
-				t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+				t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 			}
 			failure := errors.New("deterministic pre-append failure")
 			crash := errors.New("simulated crash at " + boundary)
@@ -1049,9 +1049,9 @@ func TestClientMutation_InterruptWaitReleasesSerializerAndRunnerTerminalizesFenc
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	if err := sess.acceptUserInput(
 		withQueuedClientMutation(context.Background(), claimed),
@@ -1189,9 +1189,9 @@ func TestClientMutation_InterruptCrashAfterFenceRecoversTerminalReceipt(t *testi
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	if err := sess.acceptUserInput(
 		withQueuedClientMutation(context.Background(), claimed),
@@ -1263,9 +1263,9 @@ func TestClientMutation_InterruptReservationFaultSameProcessRetryTakesOverAndCan
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	if err := sess.acceptUserInput(
 		withQueuedClientMutation(context.Background(), claimed),
@@ -1376,7 +1376,7 @@ func TestClientMutation_InterruptAcceptedStartFallbackTerminalizesTargetAtomical
 	if sess.clientMutations.interruptCallbackCompleted(interrupt.ClientMutationID) {
 		t.Fatal("accepted interrupt retained its callback completion marker")
 	}
-	if claimed, ok, err := sess.ClaimClientMutationStart(); err != nil || ok {
+	if claimed, ok, err := sess.claimClientMutationStart(); err != nil || ok {
 		t.Fatalf("interrupted accepted start remained claimable: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 }
@@ -1504,9 +1504,9 @@ func newIncorporatedInterruptTestStart(
 	if err != nil {
 		t.Fatalf("AcceptClientMutationStart: %v", err)
 	}
-	claimed, ok, err := sess.ClaimClientMutationStart()
+	claimed, ok, err := sess.claimClientMutationStart()
 	if err != nil || !ok {
-		t.Fatalf("ClaimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	if err := sess.acceptUserInput(
 		withQueuedClientMutation(context.Background(), claimed),

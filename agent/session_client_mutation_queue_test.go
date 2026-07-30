@@ -272,10 +272,7 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, id := range []string{"mutation-a", "mutation-b"} {
-		id := id
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			_, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 				ClientMutationID: id,
@@ -283,7 +280,7 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 				Input:            []appwire.InputItem{{Type: "text", Text: id}},
 			})
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -1516,7 +1513,7 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 	if matches != 1 {
 		t.Fatalf("restored transcript identity count = %d, want 1", matches)
 	}
-	resumed, ok, err := restored.ClaimClientMutationStart()
+	resumed, ok, err := restored.claimClientMutationStart()
 	if err != nil || !ok {
 		t.Fatalf("claim restored incorporated queue turn: resumed=%#v ok=%v err=%v", resumed, ok, err)
 	}

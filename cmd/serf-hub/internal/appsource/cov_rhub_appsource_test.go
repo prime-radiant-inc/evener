@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -381,8 +382,8 @@ func fuzzScenarioCodexSourceUnavailableMethods(t *testing.T) {
 	ctx := context.Background()
 	assertUnavailable := func(name string, err error) {
 		t.Helper()
-		wire, ok := err.(appwire.WireError)
-		if !ok || wire.Code != appwire.CodeUnavailable {
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 			t.Errorf("%s error = %#v, want unavailable", name, err)
 		}
 	}
