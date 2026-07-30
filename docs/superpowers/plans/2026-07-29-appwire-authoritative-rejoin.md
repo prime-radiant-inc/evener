@@ -265,13 +265,13 @@ The serialized response and durable record must receive the same
 
   ```go
   {
-  	"start":     appwire.MutationProjectionPending,
-  	"steer":     appwire.MutationProjectionPending,
-  	"queue":     appwire.MutationProjectionPending,
-  	"drain":     appwire.MutationProjectionPending,
-  	"promote":   appwire.MutationProjectionPending,
-  	"interrupt": appwire.MutationProjectionReflected,
-  	"cancel":    appwire.MutationProjectionRemoved,
+    "start":     appwire.MutationProjectionPending,
+    "steer":     appwire.MutationProjectionPending,
+    "queue":     appwire.MutationProjectionPending,
+    "drain":     appwire.MutationProjectionPending,
+    "promote":   appwire.MutationProjectionPending,
+    "interrupt": appwire.MutationProjectionReflected,
+    "cancel":    appwire.MutationProjectionRemoved,
   }
   ```
 
@@ -641,13 +641,13 @@ helper, but production serve must use `PrepareAppIdentity` and
 
   ```go
   prepared, err := server.PrepareAppIdentity(
-  	"local",
-  	sess.ID(),
-  	sess.TranscriptPath(),
+    "local",
+    sess.ID(),
+    sess.TranscriptPath(),
   )
   if err != nil {
-  	sess.Close()
-  	return fmt.Errorf("prepare app identity: %w", err)
+    sess.Close()
+    return fmt.Errorf("prepare app identity: %w", err)
   }
   srv.ReplaceAppIdentity(prepared, nil)
   ```
