@@ -516,6 +516,15 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 		}
 		target.OperationState = clientMutationOperationTerminal
 		target.ExecutionState = "interrupted"
+		// reflected, not removed, and the choice is deliberate. An interrupt
+		// ends the turn these inputs were accepted into; it does not un-accept
+		// them, and the transcript keeps whatever they produced before the
+		// cancel landed. removed means "this input is gone, drop your optimistic
+		// copy and show nothing", which would be a lie about input the session
+		// did act on. Both states retire the optimistic copy the same way in the
+		// browser, so nothing observable pins this today -- the difference is
+		// what the daemon is asserting, and it is asserting the input was
+		// incorporated.
 		target.ProjectionState = appwire.MutationProjectionReflected
 		target.Payload = nil
 		snapshot.Journal[id] = target
@@ -642,7 +651,16 @@ type clientMutationOwner struct {
 }
 
 type clientMutationStore struct {
-	mu                          sync.Mutex
+	// mu is the store serializer: one read-modify-write at a time, held across
+	// the durable write so a second mutation cannot interleave between
+	// validation and commit.
+	mu sync.Mutex
+	// stateMu guards the committed generation alone and is never held across a
+	// durable write. It exists so snapshot(), a pure read of the last committed
+	// generation, does not queue behind another mutation's fsync -- the daemon
+	// projects that snapshot into thread/read while it holds the AppWire
+	// projection gate, where a stall blocks the whole session event bridge.
+	stateMu                     sync.RWMutex
 	fs                          afero.Fs
 	stateDir                    string
 	sessionID                   string
@@ -762,7 +780,7 @@ func (s *clientMutationStore) executeAtomic(
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
-		s.state = next
+		s.commitStateLocked(next)
 		if current.OperationState != clientMutationOperationInFlight {
 			return clientMutationLookup{
 				Disposition: clientMutationDispositionReserved,
@@ -781,7 +799,7 @@ func (s *clientMutationStore) executeAtomic(
 		if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 			return clientMutationLookup{}, err
 		}
-		s.state = next
+		s.commitStateLocked(next)
 		if s.faults.AfterReservation != nil {
 			if err := s.faults.AfterReservation(); err != nil {
 				return clientMutationLookup{}, err
@@ -803,7 +821,7 @@ func (s *clientMutationStore) executeAtomic(
 	}
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
-		s.state = next
+		s.commitStateLocked(next)
 	}
 	if err != nil {
 		return clientMutationLookup{}, err
@@ -880,7 +898,7 @@ func (s *clientMutationStore) reservePrepared(
 	if _, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteReservation, s.faults); err != nil {
 		return clientMutationLookup{}, err
 	}
-	s.state = next
+	s.commitStateLocked(next)
 
 	if record.OperationState != clientMutationOperationInFlight {
 		return clientMutationLookup{
@@ -947,7 +965,7 @@ func (s *clientMutationStore) update(lease *clientMutationLease, mutate func(*cl
 
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
-		s.state = next
+		s.commitStateLocked(next)
 	}
 	if err != nil {
 		return err
@@ -998,9 +1016,22 @@ func (s *clientMutationStore) clearInterruptCallbackCompleted(clientMutationID s
 	delete(s.interruptCallbacksCompleted, clientMutationID)
 }
 
+// commitStateLocked publishes a generation that is already durable. The caller
+// holds mu for the whole read-modify-write; this narrows the window a reader
+// can contend on to the assignment itself.
+func (s *clientMutationStore) commitStateLocked(next clientMutationSnapshot) {
+	s.stateMu.Lock()
+	s.state = next
+	s.stateMu.Unlock()
+}
+
+// snapshot returns the last committed generation. It takes only stateMu, so it
+// answers while another mutation is still writing its own generation to disk --
+// the answer is the same either way, since an uncommitted generation is not
+// state yet.
 func (s *clientMutationStore) snapshot() clientMutationSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	return cloneClientMutationSnapshot(s.state)
 }
 
@@ -1017,7 +1048,7 @@ func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error)
 	}
 	renamed, err := saveClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID, next, clientMutationWriteEffect, s.faults)
 	if renamed {
-		s.state = next
+		s.commitStateLocked(next)
 	}
 	if err != nil {
 		return err

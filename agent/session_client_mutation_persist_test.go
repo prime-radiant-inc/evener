@@ -17,6 +17,52 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// TestClientMutationSnapshotAnswersDuringAnotherMutationsDurableWrite pins
+// that reading the committed generation is independent of this store's own
+// durable write. The daemon reaches this read from thread/read's snapshot
+// callback, which runs under the AppWire projection gate: a read that queued
+// behind an unrelated mutation's fsync would hold that gate for the length of
+// a disk write, stalling RecordAppEvent -- the whole session event bridge --
+// along with every hydration release and every other connection's capture.
+//
+// A regression deadlocks rather than failing an assertion: the parked writer
+// holds the serializer this read would have wanted.
+func TestClientMutationSnapshotAnswersDuringAnotherMutationsDurableWrite(t *testing.T) {
+	writing := make(chan struct{})
+	release := make(chan struct{})
+	store, err := newClientMutationStoreFS(afero.NewMemMapFs(), "/state", "session-1", clientMutationFaults{
+		BeforeEffectSnapshotRename: func() error {
+			close(writing)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new mutation store: %v", err)
+	}
+
+	mutated := make(chan error, 1)
+	go func() {
+		mutated <- store.mutate(func(next *clientMutationSnapshot) error {
+			next.ActiveTurnID = "turn-1"
+			return nil
+		})
+	}()
+	<-writing
+
+	if got := store.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("active turn during an uncommitted write = %q, want the last committed generation", got)
+	}
+
+	close(release)
+	if err := <-mutated; err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	if got := store.snapshot().ActiveTurnID; got != "turn-1" {
+		t.Fatalf("active turn after commit = %q, want turn-1", got)
+	}
+}
+
 func TestClientMutationPersist_UnseenPreparationIsAtomicAndRunsOnce(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	injected := errors.New("after reservation")

@@ -55,36 +55,63 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // It takes only s.mu and notifies nothing: the single notification egress stays
 // RecordAppEvent's projection commit, which acquires projectionMu first.
 func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
+	effect := sessionEventStatusEffect(ev)
+	if effect == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.acceptsSessionEventLocked(ev.SessionID) {
 		return
 	}
+	effect(s)
+}
+
+// sessionEventStatusEffect returns the status write an event announces, or nil
+// when it announces none.
+//
+// Choosing the effect before the lock keeps every event that has none -- which
+// is nearly all of them, every token delta included -- off s.mu entirely. This
+// loop is the only consumer draining the session event channel, and that
+// channel drops on overflow, so anything that slows the drain shortens the
+// distance to a silently lost event.
+//
+// This is deliberately one switch rather than a kind test in front of the
+// existing one: a second list of the status-bearing kinds would drift from this
+// one silently, and the drift would look like an event that simply stopped
+// updating status.
+func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 	switch ev.Kind {
 	case events.EventSessionStart:
 		d, ok := ev.Data.(events.SessionStartData)
 		if !ok {
-			return
+			return nil
 		}
-		s.updateSessionInfoLocked(ev.SessionID, d.Model, d.Profile)
-		s.status.State = d.State
-		if d.State == "" {
-			s.status.State = string(agent.SessionIdle)
+		return func(s *Server) {
+			s.updateSessionInfoLocked(ev.SessionID, d.Model, d.Profile)
+			s.status.State = d.State
+			if d.State == "" {
+				s.status.State = string(agent.SessionIdle)
+			}
 		}
 	case events.EventAssistantTextEnd:
-		s.status.Turns++
+		return func(s *Server) { s.status.Turns++ }
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
 			// An interrupted end closes nothing: the session stays live and the
 			// cancelled turn is still unwinding. The event is still projected by
 			// the caller — only its status effects are skipped.
-			return
+			return nil
 		}
-		s.setProcessingLocked(false)
-		s.status.State = string(agent.SessionClosed)
-		if ok && d.State != "" {
-			s.status.State = d.State
+		return func(s *Server) {
+			s.setProcessingLocked(false)
+			s.status.State = string(agent.SessionClosed)
+			if ok && d.State != "" {
+				s.status.State = d.State
+			}
 		}
+	default:
+		return nil
 	}
 }
