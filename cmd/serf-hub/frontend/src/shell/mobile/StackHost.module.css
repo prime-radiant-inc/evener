@@ -23,6 +23,23 @@
   border-bottom: 1px solid var(--edge);
 }
 
+.title {
+  flex: 1 1 auto;
+  /* min-width: 0 is required for ellipsis truncation inside a flex row -
+   * the same rule PaneScaffold's own .title records. */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+  letter-spacing: var(--tracking-display);
+}
+
 .leading {
   /* Always rendered, even empty (welcome - see StackHost.tsx's showBack) -
    * a single empty flex item still anchors at the row's start under

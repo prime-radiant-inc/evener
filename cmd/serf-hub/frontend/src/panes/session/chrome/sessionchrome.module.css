@@ -19,3 +19,18 @@
    * panescaffold.module.css's own .actions uses for the header row. */
   margin-left: auto;
 }
+
+/* The relocated header cadence (2026-07-30-mobile-session-layout-design.md,
+ * decision 3): desktop shows liveness in the pane header, which is hidden
+ * below the breakpoint - so this slot is desktop-hidden and mobile-shown. */
+.cadenceSlot {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  .cadenceSlot {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+  }
+}

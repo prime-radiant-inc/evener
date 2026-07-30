@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -7,6 +10,8 @@ import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome } from "./SessionChrome";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -300,4 +305,34 @@ test("still measures the chrome once the thread model loads after the initial mo
   } finally {
     ro.restore();
   }
+});
+
+// Mobile cadence relocation (2026-07-30-mobile-session-layout-design.md,
+// decision 3): the session header's liveness cadence moves into the footer
+// chrome row, because the pane header itself is hidden on mobile. Rendered
+// always, shown only below the breakpoint via CSS - panes never ask "am I
+// mobile?".
+test("composes the session liveness cadence into the chrome row", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_cad", { status: { type: "active" } }));
+  await threadsStore.getState().ensureThread("ref_cad");
+
+  render(<SessionChrome ref="ref_cad" />);
+
+  const slot = document.querySelector('[data-testid="session-chrome-cadence"]');
+  expect(slot).not.toBeNull();
+  // The Cadence widget itself renders inside the slot.
+  expect(slot!.querySelector('[data-testid="cadence-dot"]')).not.toBeNull();
+});
+
+test("the cadence slot is desktop-hidden and mobile-shown (CSS source, jsdom has no layout)", () => {
+  const css = readFileSync(join(here, "sessionchrome.module.css"), "utf8");
+  const base = css.match(/\.cadenceSlot \{([^}]*)\}/);
+  expect(base).not.toBeNull();
+  expect(base![1]).toContain("display: none");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile).not.toBeNull();
+  const slot = mobile![1]!.match(/\.cadenceSlot \{([^}]*)\}/);
+  expect(slot).not.toBeNull();
+  expect(slot![1]).not.toContain("display: none");
 });

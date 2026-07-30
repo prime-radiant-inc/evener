@@ -37,7 +37,7 @@ that wraps or contains anything wide.
    | Pane | Title | Cadence | Actions |
    |---|---|---|---|
    | Session | session name | liveness sparkline | — |
-   | Spawn | "New session" | — | primary Spawn button |
+   | Spawn | "New session" | — | — (the primary Spawn button lives in the form's PromptCard, not the header) |
    | Doc / Transcript | filename / thread | — | ‹ Back to \<session\> |
    | Settings / Welcome | label | — | — |
 
@@ -45,9 +45,10 @@ that wraps or contains anything wide.
    - Doc/Transcript **BackToParentAction** goes away with the header: on
      mobile you arrived from the parent, so the top-bar Back already returns
      there. The top-bar title carries the "whose child is this" identity.
-   - Spawn's **primary button** moves to a sticky form footer on mobile
-     (building on the existing MobileSettingRows paradigm).
-   - Settings/Welcome need nothing — their headers were title-only.
+   - Settings/Welcome/Spawn need nothing — their headers were title-only
+     (Spawn's primary button already lives in the form body's PromptCard
+     actions slot, verified in Spawn.tsx during implementation; the
+     inventory line in an earlier draft of this table was wrong).
 
 4. **44px touch targets everywhere on mobile.** `tokens.css`'s existing
    `@media (max-width: 900px)` block gains `--tap-min: 44px`. IconButton,

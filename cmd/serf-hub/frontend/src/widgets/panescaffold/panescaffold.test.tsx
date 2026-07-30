@@ -102,3 +102,71 @@ test("the body rule scrolls independently of the header and footer", () => {
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   expect(css).toContain("overflow-y: auto");
 });
+
+// The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
+// decision 2): PaneScaffold always publishes its title, host-agnostically -
+// StackHost renders it in the mobile top bar, DockHost never reads it.
+test("publishes its title to the chrome store on mount", async () => {
+  const { resetChromeStoreForTests, chromeStore } = await import("../../shell/chromeStore");
+  resetChromeStoreForTests();
+  render(<PaneScaffold title="Sessions">content</PaneScaffold>);
+  expect(chromeStore.getState().paneTitle).toBe("Sessions");
+});
+
+test("publishes mobileTitle in preference to title when both are given", async () => {
+  const { resetChromeStoreForTests, chromeStore } = await import("../../shell/chromeStore");
+  resetChromeStoreForTests();
+  render(
+    <PaneScaffold title="A very long desktop title" mobileTitle="Short">
+      content
+    </PaneScaffold>,
+  );
+  expect(chromeStore.getState().paneTitle).toBe("Short");
+});
+
+test("republishes when the title prop changes", async () => {
+  const { resetChromeStoreForTests, chromeStore } = await import("../../shell/chromeStore");
+  resetChromeStoreForTests();
+  const { rerender } = render(<PaneScaffold title="Before">content</PaneScaffold>);
+  rerender(<PaneScaffold title="After">content</PaneScaffold>);
+  expect(chromeStore.getState().paneTitle).toBe("After");
+});
+
+test("clears the chrome store title on unmount", async () => {
+  const { resetChromeStoreForTests, chromeStore } = await import("../../shell/chromeStore");
+  resetChromeStoreForTests();
+  const { unmount } = render(<PaneScaffold title="Sessions">content</PaneScaffold>);
+  unmount();
+  expect(chromeStore.getState().paneTitle).toBeNull();
+});
+
+// Mobile full-bleed + hidden header (2026-07-30-mobile-session-layout-design.md,
+// decisions 1 and 3): on the phone the pane loses its card chrome (the
+// top bar and surface steps carry the structure) and its header (the title
+// moved into StackHost's top bar via the chrome store).
+test("mobile: the pane sheds its border and radius to sit flush against the screen edges", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile).not.toBeNull();
+  const paneRule = mobile![1]!.match(/\.pane \{([^}]*)\}/);
+  expect(paneRule).not.toBeNull();
+  expect(paneRule![1]).toContain("border: none");
+  expect(paneRule![1]).toContain("border-radius: 0");
+});
+
+test("mobile: the in-pane header is hidden - the title lives in the top bar", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const headerRule = mobile![1]!.match(/\.header \{([^}]*)\}/);
+  expect(headerRule).not.toBeNull();
+  expect(headerRule![1]).toContain("display: none");
+});
+
+test("mobile: the body can never scroll sideways - wide content is contained, not panned", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
+  const bodyRule = css.match(/\.body \{([^}]*)\}/);
+  expect(bodyRule![1]).toContain("overflow-x: clip");
+});

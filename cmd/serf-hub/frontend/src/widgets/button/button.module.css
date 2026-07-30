@@ -100,3 +100,21 @@
 .dangerQuiet:focus-visible {
   outline: 2px solid var(--danger);
 }
+
+/* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
+ * min-height, not height - the desktop heights above stay the desktop sizing
+ * rule and this only ever grows them to the 44px --tap-min declared in
+ * tokens.css's phone block. xs is deliberately included: the composer's
+ * Stop/Send/Steer verb cluster uses it, and those are exactly the buttons a
+ * thumb must hit. */
+@media (max-width: 899px) {
+  .xs {
+    min-height: var(--tap-min);
+  }
+  .sm {
+    min-height: var(--tap-min);
+  }
+  .md {
+    min-height: var(--tap-min);
+  }
+}

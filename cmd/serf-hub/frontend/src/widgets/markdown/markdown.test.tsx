@@ -162,3 +162,15 @@ test("inline code is a quiet underline, not a filled chip: no background, no rad
   // relative size tracks both.
   expect(rule).toMatch(/font-size:\s*0\.86em/);
 });
+
+// Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
+// 5): prose wraps long tokens - a 90-char path or URL is transcript reality,
+// and without an anywhere-break it escapes the bubble, the turn, and
+// ultimately the pane (the phone screenshot that motivated the spec).
+test("the root rule wraps long unbreakable tokens anywhere", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "markdown.module.css"), "utf8");
+  const root = css.match(/\.root \{([^}]*)\}/);
+  expect(root).not.toBeNull();
+  expect(root![1]).toContain("overflow-wrap: anywhere");
+});

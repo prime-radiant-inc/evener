@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
+import { chromeStore } from "../../shell/chromeStore";
 import { requireClass } from "../internal/requireClass";
 import styles from "./panescaffold.module.css";
 
@@ -31,6 +32,20 @@ const CLASS = {
  * behaves the same way.
  */
 export function PaneScaffold({ title, mobileTitle, cadence, actions, footer, children }: PaneScaffoldProps) {
+  // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
+  // decision 2): publish the title ALWAYS, host-agnostically - StackHost
+  // renders it in the mobile top bar, DockHost never reads it, so this widget
+  // never asks which host is showing it. mobileTitle wins where both are
+  // given: the top bar is exactly the cramped slot mobileTitle exists for.
+  // The cleanup clears on unmount so a closed pane never leaves a stale
+  // title behind (breakpoint crossings unmount every pane - StackHost.tsx's
+  // own comment - and the bar must not keep naming one).
+  const publishedTitle = mobileTitle ?? title;
+  useEffect(() => {
+    chromeStore.getState().setPaneTitle(publishedTitle);
+    return () => chromeStore.getState().setPaneTitle(null);
+  }, [publishedTitle]);
+
   return (
     <div className={CLASS.pane}>
       <div className={CLASS.header}>

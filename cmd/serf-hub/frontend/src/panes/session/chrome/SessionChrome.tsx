@@ -15,9 +15,9 @@
 // carries no permanent goal button.
 import { useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
-import type { MenuItem } from "../../../widgets";
+import { Cadence, type MenuItem } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { NOW_TICK_MS, useNowTick } from "../liveness";
+import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
 import { SessionActionsMenu } from "./SessionActionsMenu";
@@ -31,8 +31,14 @@ export interface SessionChromeProps {
 
 const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
+  cadenceSlot: requireClass(styles.cadenceSlot, "sessionchrome.module.css", "cadenceSlot"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
 };
+
+// Module-level empty array so a ref with no tracked frames yet doesn't get a
+// fresh [] identity every render (Session.tsx's own frameTimes lookup does
+// the same for the header cadence).
+const EMPTY_FRAME_TIMES: number[] = [];
 
 // Below this measured width, Details and Tasks no longer fit beside the
 // model/cost strip and the "..." trigger without wrapping the row onto a
@@ -87,6 +93,13 @@ function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => v
 
 export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  // The cadence that used to live in the pane header's cadence slot: the
+  // header is hidden on mobile (2026-07-30-mobile-session-layout-design.md,
+  // decision 3), so the liveness marker relocates here. Rendered always,
+  // revealed only below the breakpoint by .cadenceSlot's own CSS - the same
+  // "panes never ask am I mobile?" rule the header channel follows. Read
+  // from the same store fields Session.tsx reads for the header copy.
+  const frameTimes = useThreadsStore((s) => s.frameTimes.get(sessionRef) ?? EMPTY_FRAME_TIMES);
   // Session.tsx already runs one useNowTick(NOW_TICK_MS) for the header's
   // own Cadence/LivenessLine; this is a second, independent instance for
   // the footer's work-time clock (widgets/cadence's own doc comment: "no
@@ -112,6 +125,9 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
 
   return (
     <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
+      <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
+        <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+      </span>
       <StatusRow sessionRef={sessionRef} model={model} now={now} />
       <GoalControl
         sessionRef={sessionRef}

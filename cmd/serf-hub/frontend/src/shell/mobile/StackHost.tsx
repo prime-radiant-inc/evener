@@ -39,6 +39,7 @@
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useEffect, useRef } from "react";
 import { Chevron, IconButton } from "../../widgets";
+import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL } from "../routing";
 import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
@@ -130,6 +131,12 @@ export interface StackHostProps {
 export function StackHost({ railSlot }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
+  // The focused pane's title, published host-agnostically by its
+  // PaneScaffold through the chrome store (chromeStore.ts's own comment).
+  // null (no pane publishing - e.g. a fixture or a pane mid-swap) leaves
+  // the span empty, exactly the empty bar this component drew before the
+  // channel existed.
+  const paneTitle = useChromeStore((s) => s.paneTitle);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
 
   // This component's OWN back-stack: ids previously focused, most-recent-
@@ -258,6 +265,9 @@ export function StackHost({ railSlot }: StackHostProps = {}) {
             />
           )}
         </div>
+        <span className={styles.title} data-testid="topbar-title">
+          {paneTitle}
+        </span>
         <TreeDrawer>{railSlot}</TreeDrawer>
       </div>
       <div className={styles.body}>

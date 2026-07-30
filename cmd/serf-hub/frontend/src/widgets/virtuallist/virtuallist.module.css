@@ -4,6 +4,11 @@
    * flex:1, or similar. */
   height: 100%;
   overflow-y: auto;
+  /* With overflow-y set, overflow-x would compute to auto - the page-level
+   * horizontal scrollbar a too-wide descendant produces. The list never
+   * pans sideways: wide content is wrapped or contained by its own widget
+   * (2026-07-30-mobile-session-layout-design.md, decision 5). */
+  overflow-x: clip;
   position: relative;
 }
 

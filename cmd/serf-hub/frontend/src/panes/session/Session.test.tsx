@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
@@ -1279,4 +1282,18 @@ test("does not treat the prelude turn as empty once a real turn exists alongside
 
   expect(await screen.findByText("hello")).toBeTruthy();
   expect(screen.queryByTestId("empty-state")).toBeNull();
+});
+
+// Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
+// 5): the transcript chain between PaneScaffold's clipped body and the
+// virtual list must be able to shrink - a missing min-width: 0 on any flex
+// link pins the whole column to its widest child.
+test("the transcript flex chain carries min-width: 0", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "session.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const cls of ["transcriptContent", "transcriptList"]) {
+    const rule = css.match(new RegExp(`\\.${cls} \\{([^}]*)\\}`));
+    expect(rule, `session.module.css must define .${cls}`).not.toBeNull();
+    expect(rule![1]).toContain("min-width: 0");
+  }
 });
