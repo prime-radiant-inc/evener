@@ -36,15 +36,15 @@ const (
 // deletion. No target-directory path is retained as deletion authority.
 type DeletionTarget struct {
 	Ref      string `json:"ref"`
-	ThreadID string `json:"threadId"`
+	ThreadID string `json:"thread_id"`
 }
 
 // DeletionRecord is one irrevocable project deletion generation.
 type DeletionRecord struct {
-	ProjectID    string           `json:"projectId"`
+	ProjectID    string           `json:"project_id"`
 	Generation   uint64           `json:"generation"`
 	State        DeletionState    `json:"state"`
-	WholeProject bool             `json:"wholeProject"`
+	WholeProject bool             `json:"whole_project"`
 	Targets      []DeletionTarget `json:"targets"`
 }
 
