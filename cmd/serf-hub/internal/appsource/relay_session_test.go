@@ -130,7 +130,7 @@ func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
 	defer lease.Close()
-	listenCtx, stopListening := context.WithCancel(context.Background())
+	listenCtx, stopListening := context.WithCancel(t.Context())
 	defer stopListening()
 	deliveries, err := lease.Listen(listenCtx)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *te
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	listenCtx, stopListening := context.WithCancel(context.Background())
+	listenCtx, stopListening := context.WithCancel(t.Context())
 	defer stopListening()
 	deliveries, err := lease.Listen(listenCtx)
 	if err != nil {
@@ -334,8 +334,7 @@ func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	deliveries, err := lease.Listen(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +429,7 @@ func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 	}()
 	close(start)
 	winnerCount := 0
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if <-winners {
 			winnerCount++
 		}
@@ -562,8 +561,7 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	}
 	lease := leaseValue.(*relaySessionLease)
 	defer lease.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	deliveries, err := lease.Listen(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -772,15 +770,14 @@ func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	listenCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	listenCtx := t.Context()
 	deliveries, err := lease.Listen(listenCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	received := make(chan struct{})
 	go func() {
-		for i := 0; i < 4097; i++ {
+		for range 4097 {
 			delivery := <-deliveries
 			delivery.Acknowledge()
 		}
@@ -796,7 +793,7 @@ func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(
 	}
 	initialResult.result.Handoff.Commit()
 
-	for i := 0; i < 4097; i++ {
+	for range 4097 {
 		initialCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "x"))}
 	}
 	<-received
@@ -822,8 +819,7 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	listenCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	listenCtx := t.Context()
 	deliveries, err := lease.Listen(listenCtx)
 	if err != nil {
 		t.Fatal(err)

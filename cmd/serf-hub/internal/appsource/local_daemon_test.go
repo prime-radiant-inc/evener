@@ -31,7 +31,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 		return []LocalDaemonEntry{{Entry: entry}}
 	}, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var dialMu sync.Mutex
 	dialCount := 0
@@ -68,7 +68,7 @@ func TestRelaySessionHealthyRejoinUsesCanonicalConnection(t *testing.T) {
 	if deliveries == nil {
 		t.Fatal("Listen returned a nil delivery stream")
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		result, readErr := lease.Read(ctx, params)
 		if readErr != nil {
 			t.Fatalf("Read %d: %v", i+1, readErr)

@@ -367,12 +367,12 @@ func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *test
 		done <- err
 	}()
 	request := <-transport.writes
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(request.Request.ID, ThreadListResponse{})
 
-	for i := 0; i < burst+1; i++ {
+	for range burst + 1 {
 		<-observed
 	}
 	if err := <-done; err != nil {

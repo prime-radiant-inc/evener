@@ -9,8 +9,6 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
-type deletionOwnershipContextKey struct{}
-
 func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
 	if ref != "" {
 		return sources.SourceForRef(ref)
@@ -50,15 +48,6 @@ func withDeletionTargetOwnership[R any](
 		return zero, err
 	}
 	return action()
-}
-
-func contextWithDeletionTargetOwnership(ctx context.Context, ref, threadID string) context.Context {
-	return context.WithValue(ctx, deletionOwnershipContextKey{}, deletionThreadID(ref, threadID))
-}
-
-func contextOwnsDeletionTarget(ctx context.Context, ref, threadID string) bool {
-	ownedThreadID, _ := ctx.Value(deletionOwnershipContextKey{}).(string)
-	return ownedThreadID != "" && ownedThreadID == deletionThreadID(ref, threadID)
 }
 
 func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {

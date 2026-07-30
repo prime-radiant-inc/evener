@@ -100,8 +100,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams)
 		session = nil
 	}
 	if session == nil {
-		var created *relaySession
-		created = newRelaySession(
+		created := newRelaySession(
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
 				currentEntry, resolveErr := s.entryForRef(key, "")
 				if resolveErr != nil {

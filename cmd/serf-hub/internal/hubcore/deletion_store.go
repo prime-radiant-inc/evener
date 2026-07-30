@@ -191,7 +191,7 @@ func (s *DeletionStore) TargetState(ref, threadID string) (DeletionState, bool) 
 	if s == nil {
 		return "", false
 	}
-	ref, threadID = normalizeDeletionLookup(ref, threadID)
+	ref, _ = normalizeDeletionLookup(ref, threadID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.state.Records) - 1; i >= 0; i-- {

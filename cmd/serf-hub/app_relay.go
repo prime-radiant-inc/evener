@@ -569,16 +569,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				return true, nil
 			}
-			var registered bool
-			var err error
-			if contextOwnsDeletionTarget(ctx, subscribeParams.Ref, threadID) {
-				if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
-					return err
-				}
-				registered, err = registerExisting()
-			} else {
-				registered, err = withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
-			}
+			registered, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
 			if err != nil {
 				return err
 			}
