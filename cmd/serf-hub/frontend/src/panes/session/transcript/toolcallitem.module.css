@@ -140,12 +140,10 @@ summary.row:focus-visible {
 
 /* With a purpose above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer. flex-basis 100% is what forces the
- * line break inside the wrapping row.
- *
- * order: 1 pushes it AFTER every other item in the wrap sequence, so the
- * affordances and the chevron - which follow it in the DOM - still ride the
- * purpose's own line instead of each wrapping onto a third. Measured in the
- * real app: without this the two-line row was 73px; with it, 39px. */
+ * line break inside the wrapping row. The row's affordances (e.g. "Open
+ * beside") ride THIS line now - rendered inline at the end of the summary
+ * text by ToolRow, not as flex items of the row - so no order trick is
+ * needed to keep the row at two lines. */
 /* kata rdry: this line is a tool RESULT ("Wrote fizzbuzz.py"), shown on every
  * purpose-bearing row in every transcript - not a placeholder/disabled/
  * timestamp, --ink-low's documented job (design-system.md). --ink-low measured
@@ -154,7 +152,6 @@ summary.row:focus-visible {
  * .tag. There is no longer a hover override to --ink-mid - resting state
  * already reads it. */
 .demoted {
-  order: 1;
   flex: 0 0 100%;
   color: var(--ink-mid);
 }
@@ -190,6 +187,22 @@ summary.row:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The row's trailing affordance (e.g. "Open beside"), riding INLINE at the
+ * end of the demoted summary text (ToolRow.tsx's grammar): an inline-level
+ * box at the tail of the tool-call line, not a flex item of the row - the
+ * same idiom the chevron uses on the headline line, so nothing can justify
+ * it away from the words it acts on. Inside the collapsed line's .clamped
+ * flex row it is a flex-none item that never shrinks (the head's ellipsis
+ * absorbs the pressure); in the expanded, wrapping summary it follows the
+ * last word wherever the wrap lands. */
+.summaryTrailing {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  vertical-align: middle;
+  margin-left: var(--space-2);
 }
 
 /* The disclosure affordance, riding INLINE at the end of the headline text

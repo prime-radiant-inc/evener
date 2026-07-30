@@ -6,8 +6,8 @@
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
 //     rail:   [kind icon, 50%]            (in the gutter, beside line 1)
-//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline] [affordances]
-//     line 2: verb target [· meta]
+//     line 1: [✗ failure glyph?] [status?] purpose[chevron inline]
+//     line 2: verb target [· meta] [affordances]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
@@ -39,7 +39,11 @@
 //     the same sans face - fixed-width is reserved for shell, whose summary
 //     IS a command (descriptor monoSummary);
 //   - verb/target/meta are one string the descriptor's summary() produced;
-//   - affordances are trailing controls (e.g. "Open beside").
+//   - affordances are trailing controls (e.g. "Open beside") and they ride the
+//     TOOL-CALL line: inline at the end of the summary when there is one,
+//     which - with a purpose present - is the demoted second line, not the
+//     rationale line. A purpose-only row (no summary) trails them on the
+//     purpose line instead, the one line it has.
 //
 // A row with no purpose is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
@@ -59,6 +63,7 @@ const CLASS = {
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
   clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
+  summaryTrailing: requireClass(styles.summaryTrailing, "toolcallitem.module.css", "summaryTrailing"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
 
@@ -198,10 +203,14 @@ export function ToolRow({
             summary
           )}
           {!hasPurpose && chevron}
+          {/* Affordances ride the TOOL-CALL line (see the grammar above):
+              inline at the end of the summary text, so with a purpose present
+              they sit on the demoted second line - not the rationale line. */}
+          {hasPurpose && trailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
         </span>
       )}
       {!hasPurpose && !hasSummary && chevron}
-      {trailing}
+      {(!hasPurpose || !hasSummary) && trailing}
     </>
   );
 

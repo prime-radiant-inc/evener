@@ -486,11 +486,24 @@ test("the row hover is an ink wash, not a surface token that can match the pane"
   expect(hover![1]).not.toMatch(/var\(--surface-/);
 });
 
-// A1: with a purpose present the summary demotes onto its own line, but the
-// affordances and chevron must stay on the purpose's line - otherwise the row
-// wraps to three lines (measured: 73px instead of 47px).
-test("the demoted summary is ordered last so affordances do not wrap onto a third line", () => {
-  expect(rowCss()).toMatch(/\.demoted\s*\{[^}]*order:\s*1/);
+// A1: with a purpose present the summary demotes onto its own line, and the
+// affordances ride THAT line - the tool call they act on - not the rationale
+// line. Rendered inline at the end of the summary text (same idiom as the
+// chevron on the headline line), so the row still never wraps to three.
+test("with a purpose, a trailing affordance rides the tool-call line, not the rationale line", () => {
+  render(
+    <ToolRow
+      summary="Read a.ts"
+      purpose="Check the source."
+      failed={false}
+      expandable={false}
+      expanded={false}
+      trailing={<button type="button">Open beside</button>}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Open beside" });
+  expect(screen.getByTestId("tool-row-summary").contains(button)).toBe(true);
+  expect(screen.getByTestId("tool-row-purpose").contains(button)).toBe(false);
 });
 
 // Associativity rhythm (Jesse's review call): the gap between a rationale

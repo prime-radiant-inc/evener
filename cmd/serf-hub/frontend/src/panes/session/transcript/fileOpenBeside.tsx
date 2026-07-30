@@ -25,21 +25,28 @@ import { useThreadsStore } from "../../../stores/threads";
 import { IconButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
 
-// The app's 16x16 stroke grammar (see PopoutHeaderAction.tsx's PopoutIcon,
-// UserMessageItem.tsx's ForkGlyph): a document splitting into a second one
-// beside it - two panels with an arrow crossing from the first into the
-// second, currentColor so it inherits IconButton's variant colour exactly as
-// the text label it replaces did (kata 3qnd - the surrounding pane chrome,
-// Pop out/Fork from here, is all icons; this was the one text label left).
+// The traditional "open out of the box" glyph - a box with its top-right
+// corner open and an arrow leaving through it - in the app's 16x16 stroke
+// grammar (same geometry as PopoutHeaderAction.tsx's PopoutIcon, at this
+// control's 14px size), currentColor so it inherits IconButton's variant
+// colour exactly as the text label it replaced did (kata 3qnd - the
+// surrounding pane chrome, Pop out/Fork from here, is all icons; this was
+// the one text label left).
 export function OpenBesideIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <rect x="1.5" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
-      <rect x="9.5" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
       <path
-        d="M7 8H9.3M8 6.3L9.7 8L8 9.7"
+        d="M12.5 8.5V12.5H3.5V3.5H7.5"
         stroke="currentColor"
-        strokeWidth="1.3"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <path
+        d="M8 8L13 3M9.5 3H13V6.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
