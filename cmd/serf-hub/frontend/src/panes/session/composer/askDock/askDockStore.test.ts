@@ -59,6 +59,26 @@ function askArgs(questions: Array<Record<string, unknown>>): string {
 
 const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
+const TWO_QUESTIONS = [
+  { header: "First", question: "q1", options: [{ label: "a", detail: "b" }] },
+  { header: "Second", question: "q2", options: [{ label: "c", detail: "d" }] },
+];
+
+const THREE_QUESTIONS = [...TWO_QUESTIONS, { header: "Third", question: "q3", options: [{ label: "e", detail: "f" }] }];
+
+const MULTI_THEN_SINGLE = [
+  {
+    header: "Pick",
+    question: "q1",
+    multi_select: true,
+    options: [
+      { label: "a", detail: "b" },
+      { label: "c", detail: "d" },
+    ],
+  },
+  { header: "Second", question: "q2", options: [{ label: "e", detail: "f" }] },
+];
+
 // startTurn emits turn/started - every item/started|completed notification
 // below requires its turn to already exist in the model
 // (reducer.ts's resolveInsertTurnId), exactly like the real wire: a turn
@@ -114,6 +134,41 @@ function userMessageNotification(ref: string, turnId: string, itemId: string, te
 function ackAskUserCall(fake: FakeClient, ref: string, turnId: string, itemId: string, callId: string): void {
   fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/started", "inProgress"));
   fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/completed", "completed"));
+}
+
+// ackAskUserCallWith is ackAskUserCall with a parameterized question set
+// (the ONE_QUESTION-fixture helper above's own shape, generalized for the
+// multi-question batches the kata-99yf active-tab tests need).
+function ackAskUserCallWith(
+  fake: FakeClient,
+  ref: string,
+  turnId: string,
+  itemId: string,
+  callId: string,
+  questions: Array<Record<string, unknown>>,
+): void {
+  for (const [method, status] of [
+    ["item/started", "inProgress"],
+    ["item/completed", "completed"],
+  ] as const) {
+    fake.emitNotification({
+      method,
+      params: {
+        threadId: `thr_${ref}`,
+        ref,
+        turnId,
+        item: {
+          type: "commandExecution",
+          id: itemId,
+          turnId,
+          toolName: "ask_user",
+          callId,
+          status,
+          argumentsJson: askArgs(questions),
+        },
+      },
+    });
+  }
 }
 
 beforeEach(() => {
@@ -328,5 +383,105 @@ describe("sendBatch", () => {
 
     expect(outcome).toEqual({ outcome: "stale" });
     expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+  });
+});
+
+describe("active tab (kata 99yf)", () => {
+  // setupBatch hydrates one batch holding `questions` and returns its id.
+  async function setupBatch(fake: FakeClient, questions: Array<Record<string, unknown>>): Promise<string> {
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCallWith(fake, "ref_a", "turn_1", "item_1", "call_1", questions);
+    const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+    if (!batchId) throw new Error("test setup: expected one batch to exist");
+    return batchId;
+  }
+
+  function activeFor(batchId: string): string | undefined {
+    return askDockStore.getState().byRef.get("ref_a")?.active[batchId];
+  }
+
+  test("setActive records the visible question and rejects keys outside the batch", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, TWO_QUESTIONS);
+
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:1");
+    expect(activeFor(batchId)).toBe("call_1:1");
+
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:99");
+    expect(activeFor(batchId)).toBe("call_1:1");
+
+    askDockStore.getState().setActive("ref_a", "ask-batch-999", "call_1:0");
+    expect(activeFor("ask-batch-999")).toBeUndefined();
+  });
+
+  test("a one-click single-select answer auto-advances to the next unanswered question", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, TWO_QUESTIONS);
+
+    askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["a"] });
+    expect(activeFor(batchId)).toBe("call_1:1");
+
+    // Once nothing unanswered remains the reader stays put (and a skip is
+    // itself a one-click resolution that would advance if there were
+    // anywhere to go).
+    askDockStore.getState().setAnswer("ref_a", "call_1:1", { kind: "skip" });
+    expect(activeFor(batchId)).toBe("call_1:1");
+  });
+
+  test("auto-advance wraps to an earlier unanswered question", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, THREE_QUESTIONS);
+
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:2");
+    askDockStore.getState().setAnswer("ref_a", "call_1:2", { kind: "fallback" });
+    expect(activeFor(batchId)).toBe("call_1:0");
+  });
+
+  test("multi-select, free-text, and let-serf-decide answers never auto-advance", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, MULTI_THEN_SINGLE);
+
+    askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["a"] });
+    expect(activeFor(batchId)).toBeUndefined();
+
+    askDockStore.getState().setAnswer("ref_a", "call_1:1", { kind: "free", text: "x" });
+    expect(activeFor(batchId)).toBeUndefined();
+
+    askDockStore.getState().setAnswer("ref_a", "call_1:1", { kind: "decide", leaning: "" });
+    expect(activeFor(batchId)).toBeUndefined();
+  });
+
+  test("answering a question that is not the visible tab does not move the active tab", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, TWO_QUESTIONS);
+
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:1");
+    askDockStore.getState().setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["a"] });
+    expect(activeFor(batchId)).toBe("call_1:1");
+  });
+
+  test("the active entry is pruned when its batch is sent", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, TWO_QUESTIONS);
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:1");
+    fake.on("turn/start", () => new Promise(() => {}));
+
+    await askDockStore.getState().sendBatch("ref_a", batchId);
+
+    expect(activeFor(batchId)).toBeUndefined();
+  });
+
+  test("the active entry is pruned when its batch resolves elsewhere", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupBatch(fake, TWO_QUESTIONS);
+    askDockStore.getState().setActive("ref_a", batchId, "call_1:1");
+
+    startTurn(fake, "ref_a", "turn_2");
+    fake.emitNotification(userMessageNotification("ref_a", "turn_2", "item_2", "[answers]..."));
+
+    expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
+    expect(activeFor(batchId)).toBeUndefined();
   });
 });

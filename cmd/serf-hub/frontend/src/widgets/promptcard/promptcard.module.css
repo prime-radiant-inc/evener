@@ -19,6 +19,15 @@
   outline-offset: 2px;
 }
 
+/* The author-level .card display:flex above outranks the UA stylesheet's
+ * [hidden] display:none, so the component's own hidden prop must be
+ * re-asserted at author level - otherwise a "hidden" card keeps laying out
+ * and painting (kata 99yf: the ask dock sat ABOVE a still-visible composer
+ * instead of replacing it). */
+.card[hidden] {
+  display: none;
+}
+
 .controls {
   display: flex;
   align-items: center;

@@ -282,3 +282,137 @@ test("has no residual askDockStore state for this ref after the batch settles an
 
   expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]);
 });
+
+// --- kata 99yf: one question on screen at a time, behind a tab strip ------
+
+const TWO_QUESTIONS = [
+  { header: "First", question: "q1", options: [{ label: "a", detail: "b" }] },
+  { header: "Second", question: "q2", options: [{ label: "c", detail: "d" }] },
+];
+
+async function hydrateWithTwoAsk(
+  fake: FakeClient,
+  questions: Array<Record<string, unknown>> = TWO_QUESTIONS,
+): Promise<void> {
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", questions);
+}
+
+test("a multi-question batch shows only the first question behind a tab strip", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  expect(screen.getByRole("tablist", { name: "Questions" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /1\. First/ }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: /2\. Second/ }).getAttribute("aria-selected")).toBe("false");
+  expect(screen.getByText("q1")).toBeTruthy();
+  // The whole point of the kata: the second question is NOT on the screen.
+  expect(screen.queryByText("q2")).toBeNull();
+});
+
+test("a single-question batch renders no tab strip", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(screen.getByText("Ship now?")).toBeTruthy();
+});
+
+test("clicking a tab switches the visible question", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("tab", { name: /2\. Second/ }));
+
+  expect(screen.queryByText("q1")).toBeNull();
+  expect(screen.getByText("q2")).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /2\. Second/ }).getAttribute("aria-selected")).toBe("true");
+});
+
+test("a one-click answer auto-advances to the next unanswered question and checks its tab", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: "a" }));
+
+  expect(screen.queryByText("q1")).toBeNull();
+  expect(screen.getByText("q2")).toBeTruthy();
+  // The answered tab keeps its place but gains the answered marker (a
+  // visually-hidden "(answered)" for AT, a check glyph on screen).
+  expect(screen.getByRole("tab", { name: /1\. First \(answered\)/ })).toBeTruthy();
+  expect(screen.getByText(/1 of 2 questions answered/i)).toBeTruthy();
+});
+
+test("a multi-select answer does not auto-advance - more boxes may follow", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake, [
+    {
+      header: "Pick",
+      question: "q1",
+      multi_select: true,
+      options: [
+        { label: "a", detail: "b" },
+        { label: "c", detail: "d" },
+      ],
+    },
+    { header: "Second", question: "q2", options: [{ label: "e", detail: "f" }] },
+  ]);
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("checkbox", { name: "a" }));
+
+  expect(screen.getByText("q1")).toBeTruthy();
+  expect(screen.queryByText("q2")).toBeNull();
+});
+
+test("arrow keys move the active tab within the strip", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const firstTab = screen.getByRole("tab", { name: /1\. First/ });
+  firstTab.focus();
+  await user.keyboard("{ArrowRight}");
+
+  const secondTab = screen.getByRole("tab", { name: /2\. Second/ });
+  expect(document.activeElement).toBe(secondTab);
+  expect(secondTab.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByText("q2")).toBeTruthy();
+
+  await user.keyboard("{ArrowLeft}");
+  expect(document.activeElement).toBe(firstTab);
+  expect(screen.getByText("q1")).toBeTruthy();
+});
+
+test("a late-arriving question growing the batch keeps the in-progress answer's focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  const freeInput = screen.getByPlaceholderText(/type your answer/i);
+  await user.type(freeInput, "partial");
+  expect(document.activeElement).toBe(freeInput);
+
+  // The batch grows 1 -> 2 questions: the tab strip appears and the
+  // in-progress card must survive that exact re-render with focus intact.
+  await act(async () => {
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", [
+      { header: "Second", question: "q2", options: [{ label: "x", detail: "y" }] },
+    ]);
+  });
+
+  expect(screen.getByRole("tablist", { name: "Questions" })).toBeTruthy();
+  expect(document.activeElement).toBe(freeInput);
+  expect((freeInput as HTMLInputElement).value).toBe("partial");
+});

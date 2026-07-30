@@ -28,6 +28,40 @@
   background: var(--attention-bg);
 }
 
+/* Question tab strip (kata 99yf): one question on screen at a time; the
+ * strip is how the reader lists and switches the batch's questions. Plain
+ * layout/control tokens only - the amber envelope above stays the one
+ * needs-you signal, so no token-contract allowlist entry of its own. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  background: var(--surface-0);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* Selected is --accent (control selection, design-system.md §4 - same rule
+ * as askquestioncard's checked ring), not --attention: the amber container
+ * already owns "a human is needed", a tab is just navigation within it. */
+.tab[aria-selected="true"] {
+  color: var(--ink-hi);
+  border-color: var(--accent);
+}
+
+.tabCheck {
+  color: var(--accent);
+}
+
 .footer {
   display: flex;
   align-items: center;

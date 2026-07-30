@@ -13,6 +13,13 @@
   gap: var(--space-2);
 }
 
+/* Same author-vs-UA cascade hole as promptcard's .card[hidden] (see that
+ * file's comment): display:flex here outranks the UA [hidden] display:none,
+ * so the askPending hide (Composer.tsx) must be re-asserted explicitly. */
+.chips[hidden] {
+  display: none;
+}
+
 .imageTile {
   position: relative;
   display: flex;

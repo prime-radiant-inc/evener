@@ -32,6 +32,14 @@ export interface AskAnswerState {
 export interface AskDockRefState {
   batches: AskBatch[];
   answers: Record<string, AskAnswerState>;
+  // Which question's tab is the visible one, per batch (batchId -> question
+  // key) - kata 99yf's one-question-at-a-time dock. Lives here, not in
+  // component state, for the same wave-5 reason answers do: a dockview pane
+  // remount must not bounce the reader back to question 1 mid-review.
+  // Entries are pruned alongside the batch/question they point at
+  // (reconcileRef/removeBatch); a missing entry means "show the first
+  // question" (AskDock's render-time default).
+  active: Record<string, string>;
   // Keys this client has permanently finished with after our own durable send
   // commit. Excluding them from liveAskQuestions for this ref prevents the
   // original ask_user item from resurfacing before the eventual resolving
@@ -53,6 +61,10 @@ export interface AskDockState {
   byRef: Map<string, AskDockRefState>;
   setAnswer(ref: string, key: string, resolution: AskResolution | null): void;
   setNote(ref: string, key: string, note: string): void;
+  // setActive records which question tab is visible for a batch. A key that
+  // does not belong to the named batch is a no-op (never navigate the reader
+  // to a question that is not there).
+  setActive(ref: string, batchId: string, key: string): void;
   // sendBatch composes `batchId`'s current answers and submits them through
   // the plain threadsStore.send() path (spec: no dedicated wire method for
   // answers exists - verified). Re-checks the batch still exists and isn't
@@ -62,7 +74,7 @@ export interface AskDockState {
   sendBatch(ref: string, batchId: string): Promise<SendBatchOutcome>;
 }
 
-const EMPTY_REF_STATE: AskDockRefState = { batches: [], answers: {}, excludedKeys: new Set() };
+const EMPTY_REF_STATE: AskDockRefState = { batches: [], answers: {}, active: {}, excludedKeys: new Set() };
 
 // Batch ids are purely local identifiers (never sent over the wire) - a
 // monotonic counter is simplest and sufficient; resetAskDockStoreForTests
@@ -108,16 +120,52 @@ function removeBatch(ref: string, batchId: string): void {
     for (const [key, value] of Object.entries(refState.answers)) {
       if (!removedKeys.has(key)) nextAnswers[key] = value;
     }
+    const nextActive: Record<string, string> = {};
+    for (const [id, key] of Object.entries(refState.active)) {
+      if (id !== batchId) nextActive[id] = key;
+    }
     const nextExcluded = new Set(refState.excludedKeys);
     for (const key of removedKeys) nextExcluded.add(key);
     const nextByRef = new Map(s.byRef);
     nextByRef.set(ref, {
       batches: refState.batches.filter((b) => b.id !== batchId),
       answers: nextAnswers,
+      active: nextActive,
       excludedKeys: nextExcluded,
     });
     return { byRef: nextByRef };
   });
+}
+
+// nextUnansweredKey finds the tab to auto-advance to after a one-click
+// resolution lands (kata 99yf): the first still-unanswered question AFTER
+// `fromIndex` in posting order, wrapping to earlier questions if none
+// follows, so answering the last tab circles back to whatever was skipped.
+// `answers` must be the post-write map (the just-answered question reads as
+// answered). Returns undefined when every other question is answered too -
+// the reader stays put on the last tab rather than the dock yanking them
+// away from a finished set.
+function nextUnansweredKey(
+  batch: AskBatch,
+  answers: Record<string, AskAnswerState>,
+  fromIndex: number,
+): string | undefined {
+  const total = batch.questions.length;
+  for (let step = 1; step < total; step++) {
+    const q = batch.questions[(fromIndex + step) % total];
+    if (q !== undefined && (answers[q.key]?.resolution ?? null) === null) return q.key;
+  }
+  return undefined;
+}
+
+// advancesOnAnswer is the one-click-resolution rule for auto-advance: a
+// single-select option pick, a skip, or a fallback is a COMPLETE answer the
+// moment it lands, so the dock moves on. Multi-select checkboxes, free
+// text, and a serf-decide leaning are all mid-edit states (more typing or
+// more boxes may follow), so they never move the reader mid-gesture.
+function advancesOnAnswer(questionMultiSelect: boolean, resolution: AskResolution): boolean {
+  if (resolution.kind === "skip" || resolution.kind === "fallback") return true;
+  return resolution.kind === "option" && !questionMultiSelect;
 }
 
 export const askDockStore = createStore<AskDockState>(() => ({
@@ -126,10 +174,36 @@ export const askDockStore = createStore<AskDockState>(() => ({
   setAnswer(ref, key, resolution) {
     askDockStore.setState((s) => {
       const refState = s.byRef.get(ref) ?? EMPTY_REF_STATE;
+      const nextAnswers = { ...refState.answers, [key]: { resolution, note: answerFor(refState, key).note } };
+      // Auto-advance (kata 99yf): a one-click resolution landing on the tab
+      // the reader is currently on moves the dock to the next unanswered
+      // question. Only the null -> answered transition does this (un-
+      // selecting, or editing an already-answered question, stays put), and
+      // only when the answered key IS the visible tab (an active entry that
+      // names another question means the reader already moved on; an absent
+      // entry means the render-time default - the first question - which
+      // can only be the answered one here, since only the visible tab's
+      // controls exist to set a resolution).
+      let nextActive = refState.active;
+      if (resolution !== null && answerFor(refState, key).resolution === null) {
+        const batch = refState.batches.find((b) => b.questions.some((q) => q.key === key));
+        const index = batch?.questions.findIndex((q) => q.key === key) ?? -1;
+        const question = index >= 0 ? batch?.questions[index] : undefined;
+        if (
+          batch !== undefined &&
+          question !== undefined &&
+          advancesOnAnswer(question.multiSelect, resolution) &&
+          (refState.active[batch.id] === undefined || refState.active[batch.id] === key)
+        ) {
+          const next = nextUnansweredKey(batch, nextAnswers, index);
+          if (next !== undefined) nextActive = { ...refState.active, [batch.id]: next };
+        }
+      }
       const nextByRef = new Map(s.byRef);
       nextByRef.set(ref, {
         ...refState,
-        answers: { ...refState.answers, [key]: { resolution, note: answerFor(refState, key).note } },
+        answers: nextAnswers,
+        active: nextActive,
       });
       return { byRef: nextByRef };
     });
@@ -143,6 +217,18 @@ export const askDockStore = createStore<AskDockState>(() => ({
         ...refState,
         answers: { ...refState.answers, [key]: { resolution: answerFor(refState, key).resolution, note } },
       });
+      return { byRef: nextByRef };
+    });
+  },
+
+  setActive(ref, batchId, key) {
+    askDockStore.setState((s) => {
+      const refState = s.byRef.get(ref) ?? EMPTY_REF_STATE;
+      const batch = refState.batches.find((b) => b.id === batchId);
+      if (!batch?.questions.some((q) => q.key === key)) return s;
+      if (refState.active[batchId] === key) return s;
+      const nextByRef = new Map(s.byRef);
+      nextByRef.set(ref, { ...refState, active: { ...refState.active, [batchId]: key } });
       return { byRef: nextByRef };
     });
   },
@@ -196,9 +282,23 @@ function reconcileRef(ref: string, model: ThreadModel): void {
     for (const [key, value] of Object.entries(refState.answers)) {
       if (trackedKeys.has(key)) nextAnswers[key] = value;
     }
+    // An active-tab entry is valid only while its batch still exists AND its
+    // question still belongs to that batch - otherwise drop it so the dock
+    // falls back to its render-time default rather than pointing at a tab
+    // that no longer exists.
+    const nextActive: Record<string, string> = {};
+    for (const [batchId, key] of Object.entries(refState.active)) {
+      const batch = nextBatches.find((b) => b.id === batchId);
+      if (batch?.questions.some((q) => q.key === key)) nextActive[batchId] = key;
+    }
 
     const nextByRef = new Map(s.byRef);
-    nextByRef.set(ref, { batches: nextBatches, answers: nextAnswers, excludedKeys: refState.excludedKeys });
+    nextByRef.set(ref, {
+      batches: nextBatches,
+      answers: nextAnswers,
+      active: nextActive,
+      excludedKeys: refState.excludedKeys,
+    });
     return { byRef: nextByRef };
   });
 }
