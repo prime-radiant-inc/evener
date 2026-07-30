@@ -141,6 +141,23 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySessionTranscriptReducer(reducer)
 			if turnID != "" && turnID == m.detail.ActiveTurnID {
 				m.detail.ActiveTurnID = ""
+				// The turn sessionTurnRunning() was told is active just ended, so
+				// the two signals it reads must be reconciled here rather than
+				// waiting on thread/status/changed (kata s8x8). A genuine turn
+				// failure never gets one: session_lifecycle.go's
+				// processInputKindWithProvenance returns on a non-cancelled error
+				// before reaching the EventSessionEnd emit that only the
+				// clean-completion tail and the interrupt branch reach, so the
+				// projector never has a trigger to re-announce status and the
+				// composer would offer queue/steer indefinitely with no turn id to
+				// name. A successful multi-turn drain (more queued work) proves this
+				// wrong within the same notification batch — turn/started and
+				// thread/status/changed(active) ride right behind turn/completed —
+				// so clearing here costs nothing on that path.
+				m.session.processing = false
+				if m.detail.State == appwire.ThreadStatusActive {
+					m.detail.State = appwire.ThreadStatusIdle
+				}
 			}
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))

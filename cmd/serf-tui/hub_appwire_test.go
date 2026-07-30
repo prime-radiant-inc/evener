@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -381,6 +382,63 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 	}
 	if got.session.messages[1].Kind != transcript.MsgAssistant || got.session.messages[1].Text != "done" {
 		t.Fatalf("assistant message=%+v", got.session.messages[1])
+	}
+}
+
+// TestHubModelTurnCompletedReconcilesProcessingForFailedTurn is the s8x8
+// regression: after turn/completed clears ActiveTurnID for the active turn,
+// session.processing and detail.State must not go on claiming a turn is
+// running. A genuine (non-cancelled) turn failure never gets a follow-up
+// thread/status/changed from the daemon (session_lifecycle.go's
+// processInputKindWithProvenance returns on error without reaching the
+// EventSessionEnd emit that only the clean-completion tail and the
+// interrupt branch reach), so sessionTurnRunning() would otherwise keep
+// offering queue/steer — mutations that require an expectedTurnId this
+// client no longer has — indefinitely, not just for a bounded race window.
+func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{
+		Ref:          "local:th_1",
+		SessionID:    "sess_1",
+		State:        appwire.ThreadStatusActive,
+		ActiveTurnID: "turn_1",
+		Capabilities: hubSessionCapabilities{Send: true, Queue: true},
+	}
+	m.session.processing = true
+
+	// Precondition: a turn in flight puts the composer in queue mode.
+	if mode := m.sessionComposerMode(); mode != hubComposerModeQueue {
+		t.Fatalf("precondition: composer mode=%v, want queue", mode)
+	}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+			"threadId": "th_1",
+			"ref":      "local:th_1",
+			"turnId":   "turn_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusFailed,
+				Error:  &appwire.TurnError{Message: "rate limited"},
+			},
+		}).Notification,
+	})
+
+	got := updated.(hubModel)
+	if got.detail.ActiveTurnID != "" {
+		t.Fatalf("active turn=%q, want cleared", got.detail.ActiveTurnID)
+	}
+	if got.session.processing {
+		t.Fatal("session.processing=true after the active turn failed, want false")
+	}
+	if mode := got.sessionComposerMode(); mode == hubComposerModeQueue {
+		t.Fatal("composer mode=queue after the active turn failed; it offers a mutation with no turn id to name")
+	}
+	view := got.sessionComposerPanel().View()
+	if strings.Contains(view, "queue") {
+		t.Fatalf("composer view still advertises queue mode after the active turn failed:\n%s", view)
 	}
 }
 
