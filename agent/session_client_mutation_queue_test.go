@@ -1022,6 +1022,13 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 	if snapshot.QueueRevision != 3 {
 		t.Fatalf("queue revision = %d, want enqueue+claim+return = 3", snapshot.QueueRevision)
 	}
+	// pushQueueHead moved this mutation BACKWARD to queued state -- no
+	// transcript item describes it, so a retry inside this window must still
+	// see pending, the same contract as a fresh claim (kata: appwire
+	// authoritative rejoin, CARRY-1 round 2).
+	if got := snapshot.Journal[queued.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("returned-to-queue projection state = %q, want pending", got)
+	}
 }
 
 func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) {

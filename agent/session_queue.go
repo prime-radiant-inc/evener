@@ -544,7 +544,15 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 			}
 			record := snapshot.Journal[entry.ClientMutationID]
 			record.ExecutionState = "accepted"
-			record.ProjectionState = appwire.MutationProjectionReflected
+			// This moves the mutation BACKWARD to queued state -- no
+			// transcript item describes it, so it must report pending, not
+			// reflected. Unlike claimClientMutationStart's start-claim branch,
+			// no conditional gating is needed here: the guard above already
+			// restricts this whole function body to ExecutionState=="claimed"
+			// (never "incorporated"), so there is no already-correctly-
+			// reflected case sharing this path that a blind swap could
+			// downgrade.
+			record.ProjectionState = acceptedClientMutationProjection(record.Method)
 			snapshot.Journal[entry.ClientMutationID] = record
 			delete(snapshot.PendingExecutions, entry.ClientMutationID)
 			snapshot.InputQueue = append([]clientMutationQueueEntry{{
