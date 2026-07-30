@@ -268,11 +268,11 @@ func sierPureInitHelpers(t *testing.T, r *sierReader) {
 	if got := cacheReadPtr(int64(r.intn(3))); got != nil && *got < 0 {
 		t.Fatalf("cacheReadPtr returned negative value %d", *got)
 	}
-	eligible := modelFallbackEligible(errors.New("retryable by default"))
+	eligible := modelFallbackEligible(errors.New("retryable by default"), llm.DefaultRetryPolicy())
 	if eligible {
 		t.Fatal("generic retryable error was fallback eligible")
 	}
-	if !modelFallbackEligible(context.Canceled) {
+	if !modelFallbackEligible(context.Canceled, llm.DefaultRetryPolicy()) {
 		t.Fatal("permanent cancellation was not fallback eligible")
 	}
 	if !strings.Contains(unknownHookEventWarning("plugin", "Typo"), "Typo") {

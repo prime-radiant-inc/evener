@@ -95,7 +95,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			if cacheReadPtr(0) != nil || *cacheReadPtr(7) != 7 {
 				t.Fatal("cacheReadPtr conversion mismatch")
 			}
-			if modelFallbackEligible(errors.New("retryable")) || !modelFallbackEligible(context.Canceled) {
+			if modelFallbackEligible(errors.New("retryable"), llm.DefaultRetryPolicy()) || !modelFallbackEligible(context.Canceled, llm.DefaultRetryPolicy()) {
 				t.Fatal("fallback eligibility classification mismatch")
 			}
 			if !strings.Contains(unsupportedHandlerTypeWarning("plugin", "event", ""), "(empty)") {

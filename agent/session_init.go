@@ -1025,13 +1025,38 @@ func (s *Session) revalidateModelFallbacksLocked() []string {
 	return dropped
 }
 
-func modelFallbackEligible(err error) bool {
+func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	switch llm.Classify(err) {
 	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
 		return true
+	case llm.ErrorClassRetryable:
+		return retryLoopDeclined(err, policy)
 	default:
 		return false
 	}
+}
+
+// retryLoopDeclined reports whether the retry chain refused to retry err at all
+// because the server asked for a longer wait than the backoff cap allows.
+//
+// unified-llm-spec.md: "If Retry-After exceeds max_delay, do NOT retry. Raise
+// the error immediately with retry_after set on the exception. This prevents
+// silently waiting minutes for a rate limit to clear." The error therefore
+// reaches the fallback chain still classified Retryable but with zero retries
+// spent — retrying the same model is precisely what was just refused, so the
+// next model is the only route left. Mirrors llm.retryDelay's own condition; if
+// the two ever disagree, an error would be declined by one layer and ignored by
+// the other, which is the dead zone this closes.
+func retryLoopDeclined(err error, policy llm.RetryPolicy) bool {
+	if policy.MaxDelay <= 0 {
+		return false
+	}
+	var le llm.Error
+	if !errors.As(err, &le) {
+		return false
+	}
+	retryAfter := le.RetryAfter()
+	return retryAfter != nil && *retryAfter > policy.MaxDelay
 }
 
 func (s *Session) applyAgentRolePromptOverride() {

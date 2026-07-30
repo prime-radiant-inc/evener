@@ -396,3 +396,74 @@ func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
 		t.Errorf("attempted models: got %v, want exactly [primary]", got)
 	}
 }
+
+// A 429 whose Retry-After exceeds the policy's MaxDelay is a different animal
+// from an ordinary rate limit. Per unified-llm-spec.md ("If Retry-After exceeds
+// max_delay, do NOT retry. Raise the error immediately with retry_after set on
+// the exception"), the retry loop declines it outright — zero retries. It then
+// lands in a dead zone: too retryable for the fallback chain, already refused by
+// the retry chain, so nothing handles it and the turn hard-fails on the first
+// attempt. When the retry path has explicitly given up on this model, trying
+// the next one is exactly what the fallback chain is for.
+func TestFallbackChain_RetryAfterBeyondMaxDelayFallsBack(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	// The server asks for 90s; the policy's cap is 60s, so Retry is not allowed
+	// to wait it out.
+	longWait := 90 * time.Second
+	rateLimit := llm.ErrorFromHTTPStatus("openai", 429, "rate limited", nil, &longWait)
+
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model == "fallback-b" {
+				return agenttest.FinalResponse("fallback B answered"), nil
+			}
+			return llm.Response{}, rateLimit
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 60 * time.Second}
+	sleep := func(ctx context.Context, d time.Duration) error { return nil }
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+		LLMRetryPolicy: &policy,
+		LLMSleep:       sleep,
+		ModelFallbacks: []string{"fallback-b"},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v, want the fallback to answer", err)
+	}
+
+	got := f.Models()
+	if len(got) == 0 {
+		t.Fatal("no model attempts recorded")
+	}
+	// The spec's "do NOT retry" still holds: exactly one attempt on the primary,
+	// not a burned budget.
+	primaryAttempts := 0
+	for _, m := range got {
+		if m == "primary" {
+			primaryAttempts++
+		}
+	}
+	if primaryAttempts != 1 {
+		t.Errorf("primary attempts = %d, want 1 (spec: a Retry-After past max_delay is not retried)", primaryAttempts)
+	}
+	if got[len(got)-1] != "fallback-b" {
+		t.Errorf("final attempt = %q, want the fallback to have been tried", got[len(got)-1])
+	}
+}

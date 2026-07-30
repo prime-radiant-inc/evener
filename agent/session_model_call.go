@@ -775,7 +775,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// existing retry budget on the same model and DO NOT trigger the
 	// fallback chain — they are handled by the retry loop inside
 	// callModel. Kata cxw8.
-	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
+	//
+	// The one exception, and it is not a softening of that rule: a server-set
+	// Retry-After longer than the backoff cap, which the retry loop refuses to
+	// wait out and returns immediately with zero retries spent (kata r128).
+	// Nothing burned a budget there, so "handled by the retry loop" is false for
+	// that error alone. See modelFallbackEligible.
+	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err, policy) {
 		// requestedEffort is the snapshot taken under lock in prepareModelRequest,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
