@@ -236,6 +236,20 @@ func (c *Client) failPending(err error) {
 	}
 }
 
+// ProtocolVersionMismatchError is returned by Client.Initialize when a hub
+// answers the handshake with a protocol version other than the one this
+// client build speaks. Callers match it with errors.As instead of parsing
+// the message, so an incompatible hub can be distinguished from any other
+// Initialize failure (kata zedg).
+type ProtocolVersionMismatchError struct {
+	Got  string // protocol version the hub reported
+	Want string // protocol version this client requires
+}
+
+func (e ProtocolVersionMismatchError) Error() string {
+	return fmt.Sprintf("appwire initialize: server protocol version %q, want %q", e.Got, e.Want)
+}
+
 func (c *Client) Initialize(ctx context.Context, params InitializeParams) (InitializeResponse, error) {
 	var out InitializeResponse
 	if params.ProtocolVersion == "" {
@@ -248,7 +262,7 @@ func (c *Client) Initialize(ctx context.Context, params InitializeParams) (Initi
 		return out, err
 	}
 	if out.ProtocolVersion != ProtocolVersion {
-		return InitializeResponse{}, fmt.Errorf("appwire initialize: server protocol version %q, want %q", out.ProtocolVersion, ProtocolVersion)
+		return InitializeResponse{}, ProtocolVersionMismatchError{Got: out.ProtocolVersion, Want: ProtocolVersion}
 	}
 	if err := c.Notify(ctx, MethodInitialized, EmptyParams{}); err != nil {
 		return InitializeResponse{}, err
