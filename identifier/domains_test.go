@@ -23,6 +23,7 @@ func TestGeneratedIDDomains(t *testing.T) {
 		{"agent-call", "ag_", NewAgentCallID, ValidateAgentCallID},
 		{"api-attempt", "att_", NewAPIAttemptID, ValidateAPIAttemptID},
 		{"synthetic-call", "call_", NewSyntheticCallID, ValidateSyntheticCallID},
+		{"client-mutation", "", NewClientMutationID, ValidateClientMutationID},
 		{"terminal-generation", "", NewTerminalGeneration, ValidateTerminalGeneration},
 	}
 	for _, tt := range tests {
@@ -59,6 +60,7 @@ func TestGeneratedIDValidatorsRejectWrongDomain(t *testing.T) {
 		{"agent-call", "ag_", NewAgentCallID, ValidateAgentCallID},
 		{"api-attempt", "att_", NewAPIAttemptID, ValidateAPIAttemptID},
 		{"synthetic-call", "call_", NewSyntheticCallID, ValidateSyntheticCallID},
+		{"client-mutation", "", NewClientMutationID, ValidateClientMutationID},
 		{"terminal-generation", "", NewTerminalGeneration, ValidateTerminalGeneration},
 	}
 	for _, tt := range tests {
@@ -107,7 +109,7 @@ func TestMustGeneratedIDDomains(t *testing.T) {
 		"watch": MustNewWatchID, "watch generation": MustNewWatchGeneration,
 		"watch delivery": MustNewWatchDeliveryID, "agent call": MustNewAgentCallID,
 		"API attempt": MustNewAPIAttemptID, "synthetic call": MustNewSyntheticCallID,
-		"terminal generation": MustNewTerminalGeneration,
+		"client mutation": MustNewClientMutationID, "terminal generation": MustNewTerminalGeneration,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := newID(); got == "" {
