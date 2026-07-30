@@ -1729,9 +1729,6 @@ func TestClientMutation_InitialReceiptProjectionState(t *testing.T) {
 			if receipt.ProjectionState != tc.want {
 				t.Fatalf("%s receipt projection state = %q, want %q", tc.method, receipt.ProjectionState, tc.want)
 			}
-			if !tc.projected {
-				return
-			}
 			_, pending := sess.ClientMutationProjection()
 			var found *appwire.PendingMutation
 			for i := range pending {
@@ -1739,6 +1736,15 @@ func TestClientMutation_InitialReceiptProjectionState(t *testing.T) {
 					found = &pending[i]
 					break
 				}
+			}
+			if !tc.projected {
+				// Assert the absence rather than skipping: a terminal method
+				// that started leaving a pending entry would otherwise go
+				// unnoticed here.
+				if found != nil {
+					t.Fatalf("%s is terminal at acceptance but left a pending projection entry: %+v", tc.method, *found)
+				}
+				return
 			}
 			if found == nil {
 				t.Fatalf("%s left no pending projection entry for the accepted mutation: %#v", tc.method, pending)

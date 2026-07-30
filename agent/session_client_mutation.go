@@ -526,7 +526,11 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	}
 	record.OperationState = clientMutationOperationTerminal
 	record.ExecutionState = "interrupted"
-	record.ProjectionState = appwire.MutationProjectionReflected
+	// The durable record and the serialized receipt above must come from the
+	// same helper. interruptResponseFromRecord overwrites the deserialized
+	// receipt with this field on every replay, so a literal here would make
+	// the receipt's own projection state dead and let the two drift silently.
+	record.ProjectionState = acceptedClientMutationProjection(record.Method)
 	record.Payload = nil
 	record.Result = result
 	snapshot.Journal[fence.ClientMutationID] = record
