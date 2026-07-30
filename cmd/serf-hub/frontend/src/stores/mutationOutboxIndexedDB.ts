@@ -1,11 +1,12 @@
+import type { InputItem } from "../protocol/types.gen";
 import type {
+  MutationAttachment,
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationOutboxState,
   MutationRecoveryKind,
   MutationRecoveryRecord,
-  RecoveryResendTarget,
 } from "./mutationOutbox";
 import { createSecureUUID } from "./secureUUID";
 
@@ -13,7 +14,8 @@ type MutationOutboxOperation =
   | "enqueueIntent"
   | "settleReceipt"
   | "transferToRecovery"
-  | "updateRecovery"
+  | "updateRecoveryInput"
+  | "discardRecovery"
   | "resendRecovery";
 
 export interface MutationOutboxIndexedDBOptions {
@@ -258,56 +260,61 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async updateRecovery(
+  async updateRecoveryInput(
     clientMutationId: string,
-    update: Pick<MutationRecoveryRecord, "payload" | "optimisticDisplay">,
+    input: InputItem[],
+    attachments?: MutationAttachment[],
   ): Promise<MutationRecoveryRecord | undefined> {
-    return this.#write(RECOVERY_STORE, "updateRecovery", async (transaction) => {
+    return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
       const next: MutationRecoveryRecord = {
         ...record,
-        payload: { ...update.payload },
-        optimisticDisplay: update.optimisticDisplay,
+        payload: { ...record.payload, input },
+        optimisticDisplay:
+          record.optimisticDisplay && typeof record.optimisticDisplay === "object"
+            ? { ...record.optimisticDisplay, input }
+            : { method: record.method, input },
+        attachments: attachments ?? record.attachments,
       };
       await requestResult(store.put(next));
       return next;
     });
   }
 
-  async resendRecovery(
-    clientMutationId: string,
-    target: RecoveryResendTarget,
-  ): Promise<MutationOutboxRecord | undefined> {
-    if (!target.targetRef.trim()) throw new Error("targetRef is required");
+  async discardRecovery(clientMutationId: string): Promise<boolean> {
+    return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
+      const store = transaction.objectStore(RECOVERY_STORE);
+      const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
+      if (!record) return false;
+      await requestResult(store.delete(clientMutationId));
+      return true;
+    });
+  }
+
+  async resendRecovery(clientMutationId: string, intent: MutationIntent): Promise<MutationOutboxRecord | undefined> {
+    if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write([OUTBOX_STORE, RECOVERY_STORE, SEQUENCE_STORE], "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(clientMutationId));
       if (!recovery) return undefined;
-      const intentSequence = await this.#allocateSequence(transaction, target.targetRef);
+      const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
-      const attachments = recovery.attachments.map((attachment) => ({
+      const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
       }));
       const record: MutationOutboxRecord = {
-        ...recovery,
-        targetRef: target.targetRef,
-        threadId: target.threadId,
-        payload: {
-          ...recovery.payload,
-          ref: target.targetRef,
-          threadId: target.threadId,
-          clientMutationId: nextMutationId,
-        },
+        ...intent,
+        payload: { ...intent.payload, clientMutationId: nextMutationId },
         attachments,
+        version: 1,
         clientMutationId: nextMutationId,
         intentSequence,
         createdAt: this.#now(),
         state: "submitting",
       };
-      delete (record as Partial<MutationRecoveryRecord>).recoveryKind;
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       await requestResult(recoveryStore.delete(clientMutationId));
       return record;

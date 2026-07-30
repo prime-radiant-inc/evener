@@ -303,6 +303,100 @@ describe("MutationOutboxIndexedDB", () => {
     ]);
   });
 
+  test("recovery input edits replace text and attachments in one transaction", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const oldAttachment = {
+      presentationId: "old-presentation",
+      name: "old.png",
+      mediaType: "image/png",
+      blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+    };
+    const newAttachment = {
+      presentationId: "new-presentation",
+      name: "new.png",
+      mediaType: "image/png",
+      blob: new Blob([new Uint8Array([9, 8, 7])], { type: "image/png" }),
+    };
+    const original = await store.enqueueIntent({
+      ...intent("old text"),
+      attachments: [oldAttachment],
+    });
+    await store.transferToRecovery(original.clientMutationId, "rejected");
+
+    const updated = await store.updateRecoveryInput(
+      original.clientMutationId,
+      [
+        { type: "text", text: "edited text" },
+        { type: "image", mediaType: "image/png", data: "CQgH", name: "new.png" },
+      ],
+      [newAttachment],
+    );
+
+    expect(updated?.payload.input).toEqual([
+      { type: "text", text: "edited text" },
+      { type: "image", mediaType: "image/png", data: "CQgH", name: "new.png" },
+    ]);
+    expect(updated?.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
+  });
+
+  test("discardRecovery removes only the selected durable draft", async () => {
+    const store = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const first = await store.enqueueIntent(intent("first"));
+    const second = await store.enqueueIntent(intent("second"));
+    await store.transferToRecovery(first.clientMutationId, "rejected");
+    await store.transferToRecovery(second.clientMutationId, "rejected");
+
+    expect(await store.discardRecovery(first.clientMutationId)).toBe(true);
+    expect(await store.getRecovery(first.clientMutationId)).toBeUndefined();
+    expect(await store.getRecovery(second.clientMutationId)).toBeDefined();
+  });
+
+  test("recovery resend uses fresh Composer routing while retaining one winner", async () => {
+    const createMutationId = idSequence();
+    const origin = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
+    const recovered = await origin.enqueueIntent(intent("stale"));
+    await origin.transferToRecovery(recovered.clientMutationId, "rejected");
+    const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
+    const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
+    const freshIntent: MutationIntent = {
+      ...intent("edited"),
+      method: "turn/queue",
+      payload: {
+        ref: TARGET,
+        expectedTurnId: "turn-current",
+        input: [{ type: "text", text: "edited" }],
+      },
+      optimisticDisplay: {
+        method: "turn/queue",
+        input: [{ type: "text", text: "edited" }],
+      },
+    };
+
+    const winners = (
+      await Promise.all([
+        tabA.resendRecovery(recovered.clientMutationId, freshIntent),
+        tabB.resendRecovery(recovered.clientMutationId, freshIntent),
+      ])
+    ).filter(Boolean);
+
+    expect(winners).toHaveLength(1);
+    expect(winners[0]).toMatchObject({
+      method: "turn/queue",
+      payload: {
+        expectedTurnId: "turn-current",
+        input: [{ type: "text", text: "edited" }],
+      },
+    });
+  });
+
   test("simultaneous recovery resend consumes one draft and mints one new mutation", async () => {
     const createMutationId = idSequence();
     const origin = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
@@ -313,8 +407,8 @@ describe("MutationOutboxIndexedDB", () => {
 
     const winners = (
       await Promise.all([
-        tabA.resendRecovery(rejected.clientMutationId, { targetRef: TARGET, threadId: "thread-1" }),
-        tabB.resendRecovery(rejected.clientMutationId, { targetRef: TARGET, threadId: "thread-1" }),
+        tabA.resendRecovery(rejected.clientMutationId, intent("retry me")),
+        tabB.resendRecovery(rejected.clientMutationId, intent("retry me")),
       ])
     ).filter((record) => record !== undefined);
 
@@ -333,7 +427,7 @@ describe("MutationOutboxIndexedDB", () => {
       createMutationId: idSequence(),
       createPresentationId: idSequence("presentation"),
     });
-    const original = await store.enqueueIntent({
+    const originalIntent = {
       ...intent("recover attachment"),
       attachments: [
         {
@@ -343,13 +437,11 @@ describe("MutationOutboxIndexedDB", () => {
           blob: new Blob([new Uint8Array([1, 3, 5, 7])], { type: "image/png" }),
         },
       ],
-    });
+    };
+    const original = await store.enqueueIntent(originalIntent);
     await store.transferToRecovery(original.clientMutationId, "rejected");
 
-    const resent = await store.resendRecovery(original.clientMutationId, {
-      targetRef: TARGET,
-      threadId: "thread-1",
-    });
+    const resent = await store.resendRecovery(original.clientMutationId, originalIntent);
     const attachment = resent?.attachments[0];
     expect(attachment?.presentationId).toBe("presentation-1");
     expect(attachment?.name).toBe("proof.png");

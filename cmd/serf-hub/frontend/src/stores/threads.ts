@@ -473,7 +473,16 @@ export async function updateRecoveryMutation(
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const record = await runtime.storage.updateRecovery(clientMutationId, { payload, optimisticDisplay });
+  const optimisticInput =
+    optimisticDisplay && typeof optimisticDisplay === "object" && "input" in optimisticDisplay
+      ? optimisticDisplay.input
+      : undefined;
+  const input = Array.isArray(payload.input)
+    ? (payload.input as InputItem[])
+    : Array.isArray(optimisticInput)
+      ? (optimisticInput as InputItem[])
+      : [];
+  const record = await runtime.storage.updateRecoveryInput(clientMutationId, input);
   if (!record) return false;
   notifyMutationPersistence([record.targetRef]);
   return true;
@@ -486,7 +495,17 @@ export async function resendRecoveryMutation(
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const record = await runtime.storage.resendRecovery(clientMutationId, { targetRef, threadId });
+  const recovery = await runtime.storage.getRecovery(clientMutationId);
+  if (!recovery) return undefined;
+  const intent: MutationIntent = {
+    targetRef,
+    threadId,
+    method: recovery.method,
+    payload: { ...recovery.payload, ref: targetRef, threadId },
+    attachments: recovery.attachments,
+    optimisticDisplay: recovery.optimisticDisplay,
+  };
+  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence([targetRef]);

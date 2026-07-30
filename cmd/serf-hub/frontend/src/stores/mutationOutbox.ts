@@ -47,11 +47,6 @@ export interface MutationRecoveryRecord extends MutationOutboxRecord {
   recoveryKind: MutationRecoveryKind;
 }
 
-export interface RecoveryResendTarget {
-  targetRef: string;
-  threadId?: string;
-}
-
 interface BroadcastChannelLike extends EventTarget {
   postMessage(message: unknown): void;
   close(): void;
