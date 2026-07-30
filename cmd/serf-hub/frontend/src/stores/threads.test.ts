@@ -1830,6 +1830,150 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  // The headline scenario: a pane whose first read failed converges when the
+  // connection comes back, with nothing driving the retry by hand.
+  //
+  // A reconnect does NOT re-read this ref. The failed attempt deleted its own
+  // pending entry, no model was ever published, and nothing pinned it, so the
+  // ref is in none of the three sets handleReady fans out over. Retiring the
+  // owned lifecycles on the ready-epoch bump is the whole of the convergence
+  // here: it settles the parked owner, which then re-arms against the new
+  // generation itself.
+  test("a reconnect converges a pane whose first read failed, with no retry fired by hand", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("thread/read timed out");
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_reconnected", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    // The owner must be parked on its lifecycle before the reconnect, or this
+    // covers the adopt-a-replacement arm instead of the wait this test names.
+    await settleCallerContinuations();
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await ensuring;
+
+    // Nothing here fired the scheduled retry; the reconnect cancelled it.
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(readAttempts).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_reconnected");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // A read that fails on a client the store has already replaced must arm
+  // nothing. The doomed retry would take the one retry slot the CURRENT
+  // generation's lifecycle has, and the next genuine failure on the live
+  // client would then find it occupied and schedule nothing at all.
+  test("a superseded client's failure arms no retry on the live lifecycle", async () => {
+    const a = connectFakeClient();
+    const aRead: { reject: ((error: unknown) => void) | null } = { reject: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((_, reject) => (aRead.reject = reject)));
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => aRead.reject !== null);
+
+    // B is not ready yet, so the swap re-reads nothing and client A's attempt
+    // is still the current pending one at the moment it fails - which is what
+    // puts the failure past the attempt-identity check and onto this fence.
+    const b = new FakeClient("connecting");
+    b.on("thread/read", (params) =>
+      readResponse((params as { ref: string }).ref, {
+        turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }],
+      }),
+    );
+    connectionStore.getState().connect(b);
+
+    aRead.reject?.(new RequestTimeoutError("client A read timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+
+    b.emitReady();
+    await ensuring;
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // A socket that has dropped is not this lifecycle's to pace: that client
+  // generation's own next ready transition re-reads what it tracks. Arming a
+  // retry here would aim a read at a dead wire and occupy the lifecycle's one
+  // retry slot while doing it.
+  test("a failure on a client that is no longer ready arms no retry", async () => {
+    const fake = connectFakeClient();
+    const firstRead: { reject: ((error: unknown) => void) | null } = { reject: null };
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) return new Promise<ThreadReadResponse>((_, reject) => (firstRead.reject = reject));
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_after_ready", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => firstRead.reject !== null);
+
+    // The socket drops with no ready epoch change - a transition INTO ready is
+    // the only thing that bumps it - so client identity and epoch both still
+    // match and this fence is the only one left standing.
+    fake.emitStateChange("reconnecting");
+    firstRead.reject?.(new RequestTimeoutError("read timed out on a dropped socket"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+
+    fake.emitReady();
+    await ensuring;
+    expect(readAttempts).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_after_ready");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // A targeted resync re-reads one ref on the SAME client and ready epoch, so
+  // none of the fire-time identity fences applies to it. The scheduled retry
+  // must still stand down: the attempt already on the wire owns the next
+  // outcome, including arming the retry after it.
+  test("a scheduled retry stands down for an attempt a resync already put on the wire", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    const resyncRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("thread/read timed out");
+      return new Promise<ThreadReadResponse>((resolve) => (resyncRead.resolve = resolve));
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    await settleCallerContinuations();
+
+    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushUntil(() => resyncRead.resolve !== null);
+    expect(readAttempts).toBe(2);
+
+    runScheduledHydrationRetry();
+    await flushUntil(() => readAttempts === 3);
+    expect(readAttempts).toBe(2);
+
+    resyncRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_resync", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_resync");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   // Pre-Task-5, wiring was lazy (attached inside requireClient(), the first
   // time some store action ran) - so this test used to connect the client
   // FIRST, attach spies second, and prove idempotency only across
@@ -4533,6 +4677,47 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
       clientMutationId: "mutation-a",
     });
+  });
+
+  // openOwnedHydration must retire the lifecycle it replaces. A pinned ref is
+  // the one owner that survives releaseThread untouched, so an owner
+  // generation can be bumped while an older generation's lifecycle still holds
+  // a scheduled retry and an unsettled firstHydration. Without the retire that
+  // retry is never cancelled, and whatever is waiting on that promise waits
+  // for a generation nothing will ever publish into.
+  test("a superseded owner generation retires the lifecycle it replaces", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+    let readAttempts = 0;
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      throw new RequestTimeoutError("rejoin read timed out");
+    });
+
+    // The durable record is the only owner, so this lifecycle belongs to owner
+    // generation zero. Both reads the ready transition produces fail and share
+    // the one retry that lifecycle has.
+    fake.emitReady();
+    await flushIndexedDBUntil(() => readAttempts === 2);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+
+    // A pane claims the same ref, which bumps the owner generation. Its own
+    // failed read opens the replacement lifecycle.
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    void ensuring.catch(() => undefined);
+    await flushUntil(() => scheduledHydrationRetries.length === 2);
+
+    expect(scheduledHydrationRetries).toHaveLength(2);
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(scheduledHydrationRetries[1]?.cancelled).toBe(false);
   });
 
   test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {
