@@ -607,47 +607,198 @@ func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
 	}
 }
 
-// TestTurnStartPublishesItsPendingMutation pins the other change point that
-// reaches the daemon through a handler rather than an event.
+// TestEveryMutationHandlerPublishesItsQueueChange pins the change points that
+// reach the daemon through a HANDLER rather than through the event stream.
 //
-// The six sibling mutation handlers all reflect the durable queue, which emits
-// QUEUE_CHANGED. turn/start does not: it records a pending execution and emits
-// nothing until the serve loop later CLAIMS it. A client reading in between
-// would not see its own in-flight mutation, which is the single thing the
-// retry-safe projection exists to show a reconnecting client.
-func TestTurnStartPublishesItsPendingMutation(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
-	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
-		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			// Stands in for AcceptClientMutationStart: the durable intent is
-			// recorded, and nothing is emitted.
-			src.pendingMutations = []appwire.PendingMutation{{
-				ClientMutationID: params.ClientMutationID,
-				Method:           "turn/start",
-				ExecutionState:   "accepted",
-			}}
-			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
-		},
-	})
-
-	conn := srv.AppServer().NewConnection("turn-start")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(
-		appwire.NewIntID(1), appwire.MethodInitialize,
-		appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
-		appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-			Ref:              "local:th_1",
-			ClientMutationID: "cm_1",
-			Input:            []appwire.InputItem{{Type: "text", Text: "go"}},
-		}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("turn/start: %v", resp.Kind())
+// All seven turn/* handlers commit to the durable client-mutation store and then
+// refresh the queue facet. Only turn/start's need was obvious: it records a
+// pending execution and emits nothing until the serve loop later CLAIMS it, so a
+// client reading in between could not see its own in-flight mutation -- the one
+// thing the retry-safe projection exists to show a reconnecting client. Move 1's
+// re-review then measured the other six on a real session and found turn/steer
+// and turn/interrupt emit nothing either, which is why the fix was made uniform
+// instead of targeted.
+//
+// Uniformity that nothing enforces is the failure mode this branch keeps
+// finding, so each handler is pinned on its own row: delete one handler's
+// refreshFacets and exactly that subtest fails, with the mutation the client
+// just committed still absent from the wire.
+//
+// Every case drives the real RPC over a real connection and reads the thread
+// back over another one. The retry-safe callback stands in for the session's
+// accept step: it records the durable intent in the source and emits NOTHING, so
+// the handler's own refresh is the only thing that can put the value on the
+// wire.
+func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
+	// record builds the callback body every case shares: stamp the accepted
+	// intent onto the source, silently, exactly as the durable store does.
+	record := func(src *stubThreadEnvelopeSource, method, mutationID string) {
+		src.pendingMutations = []appwire.PendingMutation{{
+			ClientMutationID: mutationID,
+			Method:           method,
+			ExecutionState:   "accepted",
+		}}
 	}
 
-	got := readThreadOverWire(t, srv, "local:th_1").Serf.PendingMutations
-	if len(got) != 1 || got[0].ClientMutationID != "cm_1" {
-		t.Fatalf("pendingMutations = %+v after turn/start, want the accepted intent", got)
+	cases := []struct {
+		method     string
+		mutationID string
+		install    func(src *stubThreadEnvelopeSource, mutationID string) RetrySafeTurnFunctions
+		params     func(mutationID string) any
+	}{
+		{
+			method:     appwire.MethodTurnStart,
+			mutationID: "cm_start",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Start: func(p appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					record(src, appwire.MethodTurnStart, p.ClientMutationID)
+					return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnStartParams{
+					Ref:              "local:th_1",
+					ClientMutationID: id,
+					Input:            []appwire.InputItem{{Type: "text", Text: "go"}},
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnSteer,
+			mutationID: "cm_steer",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Steer: func(p appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+					record(src, appwire.MethodTurnSteer, p.ClientMutationID)
+					return appwire.TurnSteerResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnSteerParams{
+					Ref:              "local:th_1",
+					ClientMutationID: id,
+					ExpectedTurnID:   "turn_1",
+					Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnQueue,
+			mutationID: "cm_queue",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Queue: func(p appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+					record(src, appwire.MethodTurnQueue, p.ClientMutationID)
+					return appwire.TurnQueueResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnQueueParams{
+					Ref:              "local:th_1",
+					ClientMutationID: id,
+					ExpectedTurnID:   "turn_1",
+					Input:            []appwire.InputItem{{Type: "text", Text: "later"}},
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnInterrupt,
+			mutationID: "cm_interrupt",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Interrupt: func(_ context.Context, p appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+					record(src, appwire.MethodTurnInterrupt, p.ClientMutationID)
+					return appwire.TurnInterruptResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnInterruptParams{
+					Ref:              "local:th_1",
+					ClientMutationID: id,
+					ExpectedTurnID:   "turn_1",
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnDrainAsSteer,
+			mutationID: "cm_drain",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Drain: func(p appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+					record(src, appwire.MethodTurnDrainAsSteer, p.ClientMutationID)
+					return appwire.TurnDrainAsSteerResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnDrainAsSteerParams{
+					Ref:              "local:th_1",
+					ClientMutationID: id,
+					ExpectedTurnID:   "turn_1",
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnPromoteQueuedAsSteer,
+			mutationID: "cm_promote",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Promote: func(p appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+					record(src, appwire.MethodTurnPromoteQueuedAsSteer, p.ClientMutationID)
+					return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnPromoteQueuedAsSteerParams{
+					Ref:              "local:th_1",
+					Index:            0,
+					ClientMutationID: id,
+					ExpectedTurnID:   "turn_1",
+					ExpectedEntryID:  "entry_1",
+				}
+			},
+		},
+		{
+			method:     appwire.MethodTurnCancelQueued,
+			mutationID: "cm_cancel",
+			install: func(src *stubThreadEnvelopeSource, id string) RetrySafeTurnFunctions {
+				return RetrySafeTurnFunctions{Cancel: func(p appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+					record(src, appwire.MethodTurnCancelQueued, p.ClientMutationID)
+					return appwire.TurnCancelQueuedResponse{}, nil
+				}}
+			},
+			params: func(id string) any {
+				return appwire.TurnCancelQueuedParams{
+					Ref:              "local:th_1",
+					Index:            0,
+					ClientMutationID: id,
+					ExpectedEntryID:  "entry_1",
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "th_1")
+			src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+			srv.SetRetrySafeTurnFunctions(tc.install(src, tc.mutationID))
+
+			conn := srv.AppServer().NewConnection("mutation-handler")
+			conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(1), appwire.MethodInitialize,
+				appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+			resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+				appwire.NewIntID(2), tc.method, tc.params(tc.mutationID)))
+			if resp.Kind() != appwire.MessageResponse {
+				t.Fatalf("%s: %v (%+v)", tc.method, resp.Kind(), resp.Response)
+			}
+			// The callback ran, so the durable intent exists. Anything missing
+			// from the wire below is the handler's refresh, not the accept.
+			if len(src.pendingMutations) != 1 {
+				t.Fatalf("%s: callback did not record the intent; the case proves nothing", tc.method)
+			}
+
+			got := readThreadOverWire(t, srv, "local:th_1").Serf.PendingMutations
+			if len(got) != 1 || got[0].ClientMutationID != tc.mutationID {
+				t.Fatalf("pendingMutations = %+v after %s, want the accepted intent %q on the wire",
+					got, tc.method, tc.mutationID)
+			}
+		})
 	}
 }
