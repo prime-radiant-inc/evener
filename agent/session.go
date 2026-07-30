@@ -75,7 +75,14 @@ type Session struct {
 	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
-	envInfo      schema.EnvironmentInfo
+	// authoritativeConsumer records that something is draining events and cannot
+	// be lied to. ConsumeEventsLossless is the ONLY writer, and it sets this in
+	// the same call that enters the drain loop, so the flag can never be true
+	// without a live consumer. Do not add another way to set it: "lossless with
+	// nobody reading" is a permanent wedge, and the point of this shape is that
+	// it cannot be spelled. Read under eventsMu.RLock in sendEvent.
+	authoritativeConsumer bool
+	envInfo               schema.EnvironmentInfo
 
 	// --- Synchronization / lock discipline ---
 	//

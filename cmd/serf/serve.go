@@ -149,8 +149,16 @@ func defaultServeDeps() serveDeps {
 			return lc.Listen(ctx, network, addr)
 		},
 		newServer: func(cfg server.ServerConfig) serveServer { return server.NewServer(cfg) },
+		// The daemon registers as the session's AUTHORITATIVE consumer rather
+		// than ranging over Events(): its projection is the sole authority for
+		// turn reads, so an event it misses is absent from every thread/read
+		// for the life of the identity. Registering is what makes the feed
+		// lossless -- there is no separate switch, and there must not be one.
 		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
-			server.BridgeWithObserver(s.(*server.Server), sess.Events(), observer)
+			srv := s.(*server.Server)
+			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+				server.BridgeEvent(srv, ev, observer)
+			})
 		},
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,

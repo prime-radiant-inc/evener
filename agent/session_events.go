@@ -14,7 +14,50 @@ import (
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
+//
+// Delivery on it is BEST-EFFORT: a full buffer drops. That is correct for an
+// observer -- a CLI printing NDJSON, a dev tool -- and correct for the many
+// sessions that never read it at all. A consumer whose state would be
+// permanently wrong if it missed an event must use ConsumeEventsLossless
+// instead.
 func (s *Session) Events() <-chan events.SessionEvent { return s.events }
+
+// ConsumeEventsLossless delivers every event to consume, in order, until the
+// session closes. It blocks, so callers run it on their own goroutine.
+//
+// It exists because the daemon's in-memory projection is the sole authority for
+// turn reads. An event the daemon never sees is absent from every thread/read
+// for the life of the identity, and nothing re-derives it -- a page reload does
+// not help, only a daemon restart. Best-effort delivery to that consumer is
+// silent, permanent corruption.
+//
+// The registration and the drain loop are ONE call on purpose. Losslessness is
+// a promise about the consumer, not a setting on the session: a session marked
+// lossless with nobody reading wedges its emitters forever the moment its
+// buffer fills. Making the mark inseparable from the loop means that state is
+// unreachable rather than merely discouraged -- which matters because the
+// sessions with no reader are the common case (every subagent and delegate),
+// and because no test in this repo drives a session hard enough to notice.
+//
+// One consumer per session. A second would silently split the stream between
+// them, so it panics rather than corrupting both.
+func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) {
+	s.eventsMu.Lock()
+	if s.eventsClosed {
+		s.eventsMu.Unlock()
+		return
+	}
+	if s.authoritativeConsumer {
+		s.eventsMu.Unlock()
+		panic("agent: session already has an authoritative event consumer")
+	}
+	s.authoritativeConsumer = true
+	s.eventsMu.Unlock()
+
+	for ev := range s.events {
+		consume(ev)
+	}
+}
 
 // emitSessionStartEnvelope emits EventSessionStart and then flushes every
 // buffer of construction-time diagnostics that accumulated before it. THE
@@ -225,7 +268,25 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 		select {
 		case s.events <- ev:
 		default:
-			// Drop events if the consumer is too slow; v1 is best-effort.
+			// The buffer is full, and what to do about it depends entirely on
+			// whether anything is reading.
+			//
+			// With an authoritative consumer attached, a drop is permanent
+			// corruption: the daemon's in-memory projection is the sole
+			// authority for turn reads, so an event that never arrives is
+			// absent from every thread/read for the life of the identity and
+			// nothing re-derives it. Wait instead. The wait is bounded by the
+			// consumer's own work, which is memory plus at most one jobs.jsonl
+			// read per turn.
+			//
+			// With nothing reading, waiting is not backpressure, it is a
+			// permanent wedge. That is the normal case, not an edge: every
+			// subagent and delegate has an unread channel by design, because a
+			// child reaches its parent through synchronous callbacks instead.
+			// For them the drop is the only behaviour that is not a deadlock.
+			if s.authoritativeConsumer {
+				s.events <- ev
+			}
 		}
 	}
 	s.eventsMu.RUnlock()

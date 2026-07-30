@@ -14,25 +14,42 @@ func Bridge(srv *Server, eventCh <-chan events.SessionEvent) {
 
 // BridgeWithObserver behaves like Bridge and also invokes observer for every
 // event before broadcasting it. This is used to tee raw NDJSON event logs.
+//
+// The channel form is for callers that already hold one. The daemon does NOT
+// use it: it registers through agent.Session.ConsumeEventsLossless so its feed
+// cannot drop, and applies each event with BridgeEvent.
 func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
 	for ev := range eventCh {
-		if observer != nil {
-			observer(ev)
-		}
-		// A cheap early-out for an event the daemon does not serve. It is not
-		// the guard: applySessionEventStatus and RecordAppEvent each re-test
-		// acceptance under the lock they mutate, because this one runs unlocked
-		// and an identity can be replaced between it and them.
-		if !srv.acceptsSessionEvent(ev.SessionID) {
-			continue
-		}
-		srv.applySessionEventStatus(ev)
-		// Sample the envelope facets this event can have moved, before the
-		// commit that publishes the event announcing them. Same ordering, and
-		// for the same reason, as applySessionEventStatus above.
-		srv.refreshThreadEnvelopeForEvent(ev)
-		srv.RecordAppEvent(ev)
+		BridgeEvent(srv, ev, observer)
 	}
+}
+
+// BridgeEvent applies one session event to the server: the observer tee, then
+// the status write, the envelope refresh, and the projection commit.
+//
+// Everything it does is bounded, in-memory work plus at most one jobs.jsonl
+// read per turn, and that is load-bearing rather than incidental. This runs on
+// the daemon's authoritative consumer, whose feed now blocks its emitter rather
+// than dropping, so anything slow in here becomes a stall on the session loop.
+// The observer is called through a non-blocking tee for exactly this reason
+// (see cmd/serf's verboseEventTee); do not add an unbounded wait here.
+func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.SessionEvent)) {
+	if observer != nil {
+		observer(ev)
+	}
+	// A cheap early-out for an event the daemon does not serve. It is not
+	// the guard: applySessionEventStatus and RecordAppEvent each re-test
+	// acceptance under the lock they mutate, because this one runs unlocked
+	// and an identity can be replaced between it and them.
+	if !srv.acceptsSessionEvent(ev.SessionID) {
+		return
+	}
+	srv.applySessionEventStatus(ev)
+	// Sample the envelope facets this event can have moved, before the
+	// commit that publishes the event announcing them. Same ordering, and
+	// for the same reason, as applySessionEventStatus above.
+	srv.refreshThreadEnvelopeForEvent(ev)
+	srv.RecordAppEvent(ev)
 }
 
 // applySessionEventStatus writes the status an event announces, before the
