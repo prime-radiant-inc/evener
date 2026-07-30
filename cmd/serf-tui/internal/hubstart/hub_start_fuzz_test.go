@@ -245,13 +245,26 @@ func fuzzDialHubRPC(t *testing.T, protocol string) {
 		}
 		out, _ := json.Marshal(appwire.ResponseMessage(msg.Request.ID, appwire.InitializeResponse{ProtocolVersion: protocol}))
 		_ = conn.Write(r.Context(), websocket.MessageText, out)
+		// v2's handshake does not end at the response: appwire.Client.Initialize
+		// then sends an `initialized` notification. A server that returns here
+		// closes the socket underneath that write, and the client reports
+		// "failed to write msg: use of closed network connection" instead of the
+		// dial result under test. Drain until the client hangs up.
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
 	}))
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 	client, err := dialHubRPC(context.Background(), addr, srv.Client())
-	if protocol == "obsolete" {
+	// v2 requires an exact protocol match (appwire.Client.Initialize), so every
+	// other value — including an absent one, which is what an old hub sends —
+	// must be refused rather than treated as "unknown, probably fine".
+	if protocol != appwire.ProtocolVersion {
 		if err == nil {
-			t.Fatal("obsolete protocol accepted")
+			t.Fatalf("protocol %q accepted; v2 requires an exact match with %q", protocol, appwire.ProtocolVersion)
 		}
 		return
 	}

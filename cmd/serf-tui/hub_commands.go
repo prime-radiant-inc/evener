@@ -528,12 +528,22 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 
 func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
+	// Minted here rather than inside the closure: one user action is one
+	// mutation, whatever happens to the command afterwards.
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
+		if idErr != nil {
+			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
+		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
 			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
-		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Input: appendTextInput(text, items)})
+		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+			Ref:              ref.String(),
+			ClientMutationID: mutationID,
+			Input:            appendTextInput(text, items),
+		})
 		return hubSendMsg{ref: ref.String(), text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
@@ -562,11 +572,22 @@ func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.
 }
 
 func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnID string) tea.Cmd {
+	// Only the interrupt branch is a retry-safe turn mutation; the rest are
+	// thread-level calls the guard does not cover. Minted unconditionally so the
+	// identity is fixed to the action, not to the branch taken at run time.
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
 		var err error
 		switch action {
 		case "interrupt":
-			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String(), ExpectedTurnID: turnID})
+			if idErr != nil {
+				return hubActionMsg{action: action, err: idErr}
+			}
+			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{
+				Ref:              ref.String(),
+				ClientMutationID: mutationID,
+				ExpectedTurnID:   turnID,
+			})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
 		case "shutdown":

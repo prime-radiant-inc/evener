@@ -72,8 +72,8 @@ func testAttachmentDefensiveBranches(t *testing.T) {
 
 func testQueueAttachmentFailures(t *testing.T) {
 	missing := &clipboard.PastedImage{Path: filepath.Join(t.TempDir(), "missing.png")}
-	_ = sendHubQueue(nil, appwire.Ref{}, "x", "d", []*clipboard.PastedImage{missing})()
-	_ = sendHubDrainAsSteer(nil, appwire.Ref{}, "x", "d", []*clipboard.PastedImage{missing})()
+	_ = sendHubQueue(nil, appwire.Ref{}, "x", "d", []*clipboard.PastedImage{missing}, "turn_0")()
+	_ = sendHubDrainAsSteer(nil, appwire.Ref{}, "x", "d", []*clipboard.PastedImage{missing}, "turn_0", 0)()
 	path := filepath.Join(t.TempDir(), "image.bin")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)

@@ -24,9 +24,18 @@ var notifyMethods = []string{
 	appwire.NotifySerfJobStarted,
 	appwire.NotifySerfJobFinished,
 	appwire.NotifySerfSteeringInjected,
+	appwire.NotifySerfThreadModelRetry,
 	appwire.NotifyWarning,
 	appwire.NotifySerfAuthUpdated,
 	appwire.NotifySerfLaunchUpdated,
+	// These five are dispatched by applyHubNotification but were missing here,
+	// so the fuzzer's "reaches every json.Unmarshal branch" was false for them.
+	// Surfaced by TestEveryWireNotificationIsHandledOrExplicitlyIgnored.
+	appwire.NotifyThreadModelChanged,
+	appwire.NotifyThreadReasoningEffortChanged,
+	appwire.NotifySerfMarketplaceUpdated,
+	appwire.NotifySerfPluginUpdated,
+	appwire.NotifySerfSandboxEscalationRequested,
 }
 
 // FuzzApplyHubNotification drives the serf-tui hub's real notification-decode

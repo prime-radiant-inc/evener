@@ -397,7 +397,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.session.resetInput()
 			m.session.refreshViewport()
 			attachments := m.snapshotPendingAttachmentsForSubmit()
-			return m, sendHubQueue(m.client, ref, text, draft, attachments)
+			return m, sendHubQueue(m.client, ref, text, draft, attachments, m.detail.ActiveTurnID)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
@@ -512,7 +512,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	if pending == "" && !hasAttachments {
 		// Pure drain of the existing queue. Clear nothing on the composer.
-		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, len(m.sessionQueue))
+		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, m.detail.ActiveTurnID, m.detail.Queue.Revision, len(m.sessionQueue))
 	}
 	// Composer has text and/or attachments. sendHubDrainAsSteer sends the
 	// payload on turn/drainAsSteer so the daemon folds it into the same
@@ -523,7 +523,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	m.session.resetInput()
 	m.session.refreshViewport()
 	attachments := m.snapshotPendingAttachmentsForSubmit()
-	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, len(m.sessionQueue))
+	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.ActiveTurnID, m.detail.Queue.Revision, len(m.sessionQueue))
 }
 
 func isQueuedDrainPartial(err error) bool {

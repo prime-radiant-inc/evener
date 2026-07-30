@@ -13,6 +13,7 @@ import (
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
+	m.clearModelRetryOnProgress(notification.Method)
 	// Panel-refresh notifications fire regardless of current mode.
 	switch notification.Method {
 	case appwire.NotifySerfAuthUpdated:
@@ -109,6 +110,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer := m.sessionTranscriptReducer()
 			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
 			m.applySessionTranscriptReducer(reducer)
+		}
+	case appwire.NotifySerfThreadModelRetry:
+		var params appwire.ThreadModelRetryParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.modelRetry = &params
 		}
 	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
 		var params appwire.SerfJobParams
@@ -526,4 +532,29 @@ func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
 	m.browseSelected = -1
 	m.transcriptView = nil
 	m.session.refreshViewport()
+}
+
+// clearModelRetryOnProgress drops a pending model-call retry once the model has
+// actually produced something, or the turn it belonged to has settled.
+//
+// The retry describes a wait in progress. Leaving it on the chip strip beside
+// live output would assert a wait that is over, and the reader has no way to
+// tell a current retry from a stale one. Enumerated rather than "any
+// notification": queue, task and job notifications all arrive while a model
+// call is genuinely still waiting, and clearing on those would hide the retry
+// exactly when it is true.
+func (m *hubModel) clearModelRetryOnProgress(method string) {
+	if m.modelRetry == nil {
+		return
+	}
+	switch method {
+	case appwire.NotifyAgentMessageDelta,
+		appwire.NotifyReasoningSummaryDelta,
+		appwire.NotifyToolOutputDelta,
+		appwire.NotifyItemStarted,
+		appwire.NotifyItemCompleted,
+		appwire.NotifyTurnCompleted,
+		appwire.NotifyTurnStarted:
+		m.modelRetry = nil
+	}
 }

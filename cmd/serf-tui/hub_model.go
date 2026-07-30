@@ -172,6 +172,14 @@ type hubModel struct {
 	sessionQueue    []string
 	sessionQueueRef string
 
+	// modelRetry holds the in-flight model-call retry the daemon reported on
+	// serf/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral
+	// chip-strip state, never a transcript line: one rate-limited session logged
+	// 91 retries in four hours, and the reader's question ("is this alive, and
+	// when does it come back?") is about now, not history. Cleared as soon as
+	// the model produces real output.
+	modelRetry *appwire.ThreadModelRetryParams
+
 	// pendingAttachments holds image attachments staged by Ctrl+V or
 	// pasted-path detection. Each entry has a backing temp file at
 	// PastedImage.Path that the submit flow ships as an InputItem and

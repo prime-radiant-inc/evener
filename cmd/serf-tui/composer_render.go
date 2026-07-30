@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
@@ -24,6 +26,10 @@ type composerContext struct {
 	HubAddr   string
 	Provider  string
 	Width     int
+	// Retry is the pending model-call retry (hubModel.modelRetry), rendered as
+	// a status fragment so a rate-limited session reads as waiting rather than
+	// wedged. Empty when nothing is being retried.
+	Retry string
 }
 
 // renderComposerChipStrip renders the live-context band above the composer
@@ -140,11 +146,37 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme) string {
 	health := lipgloss.NewStyle().Background(bg).Foreground(healthClr).Bold(true).Render("●") +
 		bgOnly.Render(" ") + dim.Render(healthLabel)
 	fragments = append(fragments, health)
+	// Ahead of the hub address: while a model call is being retried, that is the
+	// most actionable thing on the line, and the address is static context.
+	if ctx.Retry != "" {
+		fragments = append(fragments, lipgloss.NewStyle().Background(bg).Foreground(th.StateWarning).Render(ctx.Retry))
+	}
 	if ctx.HubAddr != "" {
 		fragments = append(fragments, dim.Render(ctx.HubAddr))
 	}
 	sep := ghost.Render(" · ")
 	return strings.Join(fragments, sep)
+}
+
+// composerRetryChip renders a pending model-call retry for the chip strip:
+// cause, position in the retry budget, and the wait. The wait is the
+// load-bearing part — it is what separates "back in 60s" from "wedged", which
+// is the whole reason the retry is surfaced at all.
+//
+// Only rate limiting gets its own wording; it is the one a user can act on
+// (wait, or switch model) and overwhelmingly the common case. Anything else
+// retryable reads as a generic provider error rather than leaking an
+// error-class token like "server" into the UI.
+func composerRetryChip(retry *appwire.ThreadModelRetryParams) string {
+	if retry == nil {
+		return ""
+	}
+	cause := "provider error"
+	if retry.ErrorClass == "rate_limit" {
+		cause = "rate limited"
+	}
+	seconds := max((retry.DelayMS+500)/1000, 0)
+	return fmt.Sprintf("%s · retry %d/%d · %ds", cause, retry.Attempt, retry.MaxAttempts, seconds)
 }
 
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a

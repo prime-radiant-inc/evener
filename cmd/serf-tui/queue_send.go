@@ -40,16 +40,25 @@ type hubDrainAsSteerMsg struct {
 // after the active turn completes. When attachments are supplied (kata re91)
 // they are read from disk at submit time and shipped as image InputItems
 // alongside the text.
-func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
+// expectedTurnID is the turn the queue is being appended behind
+// (appwire.ValidateMutationParams requires it): the daemon rejects the enqueue
+// rather than attaching it to a turn that has since been replaced.
+func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, expectedTurnID string) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
+		if idErr != nil {
+			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
+		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
 			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
-			Ref:   ref.String(),
-			Input: appendTextInput(text, items),
+			Ref:              ref.String(),
+			ClientMutationID: mutationID,
+			ExpectedTurnID:   expectedTurnID,
+			Input:            appendTextInput(text, items),
 		})
 		return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
@@ -59,20 +68,31 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 // queued message into a single STEERING message for the in-flight turn.
 // When the composer carries text or attachments (kata re91) they ride on
 // the drain request so the daemon appends and drains atomically.
-func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, preQueueDepth ...int) tea.Cmd {
+// expectedTurnID and expectedQueueRevision are the preconditions
+// appwire.ValidateMutationParams requires. The revision is a CAS token: draining
+// is destructive, so a queue that changed since the user saw it must be rejected
+// rather than silently swallowed into a steer they did not intend.
+func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, expectedTurnID string, expectedQueueRevision uint64, preQueueDepth ...int) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
+	mutationID, idErr := newClientMutationID()
 	return func() tea.Msg {
 		depth := 0
 		if len(preQueueDepth) > 0 {
 			depth = preQueueDepth[0]
+		}
+		if idErr != nil {
+			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
 		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
 			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
-			Ref:   ref.String(),
-			Input: appendTextInput(text, items),
+			Ref:                   ref.String(),
+			ClientMutationID:      mutationID,
+			ExpectedTurnID:        expectedTurnID,
+			ExpectedQueueRevision: expectedQueueRevision,
+			Input:                 appendTextInput(text, items),
 		})
 		return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
