@@ -874,11 +874,13 @@ function replayHydrationNotifications(
   return { model: hydrated, appliedAt };
 }
 
-// A snapshot may only publish into the ready generation it was cut on. The
-// epoch alone says that, for the client too: rewireClient bumps readyEpoch
-// before it assigns wiredClient, and the epoch only ever increases, so a
-// pending hydrate captured under a different client necessarily carries an
-// older epoch. There is no separate client check here for that reason.
+// A snapshot may only publish into the ready generation it was cut on, and the
+// epoch alone says that for the client too: rewireClient bumps readyEpoch
+// before it assigns wiredClient, the epoch only ever increases, and every
+// hydration captures its client and its epoch in the same synchronous step —
+// the one site that used to capture them either side of an await now re-reads
+// the client, and a test pins it there. So a hydration under a superseded
+// client necessarily carries a superseded epoch.
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch) return null;
@@ -891,7 +893,6 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
 
   pendingThreadHydrations.delete(ref);
   threadsStore.setState((s) => {
-    if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return s;
     const nextThreads = new Map(s.threads);
     nextThreads.set(ref, hydrated);
     if (appliedAt.length === 0) return { threads: nextThreads };
@@ -927,14 +928,14 @@ function publishWatchedHydration(
   includeTurns: boolean,
   generation: number,
 ): ThreadModel | null {
-  // Same ready-generation gate as publishThreadHydration, and the same reason
-  // there is no separate client check beside it.
+  // Same ready-generation gate as publishThreadHydration, for the same reason.
+  // No owner check beside it: unlike a pinned thread ref, a watched ref cannot
+  // outlive its claim while holding a pending entry — releaseWatchedThread is
+  // the only decrementer and deletes the pending entry in the same block, and
+  // the generation only advances while the count is zero, i.e. while no pending
+  // entry exists. storeWatchedModel re-decides both a call later regardless.
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch) return null;
-  if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) {
-    pendingWatchedHydrations.delete(ref);
-    return null;
-  }
 
   const replayed = replayHydrationNotifications(model, pending.notifications);
   pendingWatchedHydrations.delete(ref);
@@ -1241,10 +1242,13 @@ async function refreshTrackedThread(
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
   transferPendingHydration(previous, pending);
-  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
-    if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
-    return publishAndReconcileThreadHydration(ref, pending, result);
-  });
+  // No pre-check here: pending.client is this `client` and pending.epoch is this
+  // `epoch`, so publishThreadHydration re-decides exactly the same thing one
+  // frame later, and returning null from there reconciles nothing either. The
+  // gate lives in one place.
+  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) =>
+    publishAndReconcileThreadHydration(ref, pending, result),
+  );
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
@@ -1289,10 +1293,10 @@ async function refreshWatchedThread(
   const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
   transferPendingHydration(previous, pending);
   const includeTurns = watchIncludeTurns.get(ref) ?? false;
-  const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) => {
-    if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
-    return publishWatchedHydration(ref, pending, model, includeTurns, generation);
-  });
+  // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
+  const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
+    publishWatchedHydration(ref, pending, model, includeTurns, generation),
+  );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
     hasPublishedModel && (!includeTurns || (watchHydratedIncludeTurns.get(ref) ?? false));
@@ -1529,7 +1533,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             client = requireClient();
-            if (client.state !== "ready") await clientReadyOrRewired;
+            // Waiting for readiness can span a further swap, and startHydration
+            // stamps the hydration with the epoch it reads at capture time. A
+            // client captured before this wait would therefore be labelled with
+            // the live generation while pointing at a superseded connection, so
+            // read it again on the way out. Same shape as the re-arm below and
+            // as both of watchThread's.
+            if (client.state !== "ready") {
+              await clientReadyOrRewired;
+              client = requireClient();
+            }
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }

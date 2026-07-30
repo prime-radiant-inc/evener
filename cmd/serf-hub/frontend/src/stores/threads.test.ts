@@ -1915,6 +1915,48 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  // ensureThread's client-swap re-arm waits for the replacement client to reach
+  // ready. Anything captured before that wait can be a whole ready generation
+  // out of date when it resumes, and a client captured there is the one thing a
+  // hydration can carry that its own ready-epoch stamp will not show: the epoch
+  // is read fresh at capture, so a read issued to a superseded client arrives
+  // labelled with the live generation. The read has to go to the client that is
+  // wired now, not to the one that was wired when the wait began.
+  test("a re-arm that waited for readiness reads from the client wired now", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () => {
+      throw new RequestTimeoutError("client A read timed out");
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    void ensuring.catch(() => undefined);
+    await flushUntil(() => a.calls.some((call) => call.method === "thread/read"));
+
+    // B is still connecting, so the re-arm parks waiting for it.
+    const b = new FakeClient("connecting");
+    b.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    connectionStore.getState().connect(b);
+    await settleCallerContinuations();
+
+    // B reaches ready and C replaces it before the parked caller runs again:
+    // waking it resolves a microtask later, and this swap is synchronous.
+    b.emitReady();
+    const c = new FakeClient("ready");
+    c.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_c", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    connectionStore.getState().connect(c);
+    await ensuring;
+
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+    expect(c.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_c");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   // A read that fails on a client the store has already replaced must arm
   // nothing. The doomed retry would take the one retry slot the CURRENT
   // generation's lifecycle has, and the next genuine failure on the live
@@ -3800,7 +3842,10 @@ describe("useThreadsStore.watchThread", () => {
     staleRead.resolve?.(
       readResponse("ref_a", { turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }] }),
     );
-    await flushUntil(() => threadsStore.getState().watchedThreads.has("ref_a"));
+    // The publish decision after a resolved read is microtasks only, and a task
+    // yield by spec runs after the microtask checkpoint drains completely - so
+    // this is the decision having been made, not a budget being waited out.
+    await settleCallerContinuations();
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
 
     b.emitReady();
@@ -4992,25 +5037,30 @@ describe("retry-safe mutation outbox integration", () => {
     // pending entry standing.
     fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
     const inspector = new MutationOutboxIndexedDB();
-    for (let attempt = 0; attempt < 20 && (await inspector.getOutbox("mutation-a")) !== undefined; attempt += 1) {
-      await Promise.resolve();
+    let recordSettled = false;
+    for (let attempt = 0; attempt < 20 && !recordSettled; attempt += 1) {
+      recordSettled =
+        (await inspector.getOutbox("mutation-a")) === undefined &&
+        (await inspector.getOptimistic("mutation-a")) === undefined;
     }
-    expect(await inspector.getOutbox("mutation-a")).toBeUndefined();
     inspector.close();
-    await flushIndexedDBUntil(() => false, 4);
+    expect(recordSettled).toBe(true);
+    await settleCallerContinuations();
 
+    // A fan-out puts its requests on the wire synchronously, so if the ref were
+    // still owned this read count would already be 2 on the next line. Nothing
+    // is being waited out here: the reconnect either superseded that pending
+    // entry or it did not, and the answer is settled by the time emitReady
+    // returns.
     fake.emitStateChange("reconnecting");
     fake.emitReady();
-    await flushIndexedDBUntil(() => reads.length > 1);
-    // Still one read: had the ref still been owned, the reconnect's fan-out
-    // would have superseded that pending entry and this test would be covering
-    // the attempt-identity check instead of the epoch fence.
-    expect(reads).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
 
-    // A pane claims the ref and adopts the read already in flight for it.
+    // A pane claims the ref and adopts the read already in flight for it -
+    // also synchronous, for the same reason: starting its own read instead
+    // would show up in fake.calls before ensureThread first suspends.
     const ensuring = threadsStore.getState().ensureThread("ref_a");
-    await flushIndexedDBUntil(() => reads.length > 1);
-    expect(reads).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
 
     reads[0]!.resolve(
       readResponse("ref_a", { turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }] }),
@@ -5027,6 +5077,56 @@ describe("retry-safe mutation outbox integration", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_live");
     threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // The publish gate's ownership fence does more than keep an unowned model out
+  // of the store - the setState below it declines that on its own. What only
+  // this fence stops is the snapshot being treated as published at all:
+  // publishAndReconcileThreadHydration settles every durable intent the
+  // snapshot claims as applied, and a settled intent does not come back. A
+  // snapshot for a ref nobody owns any more must not get that authority.
+  test("a snapshot for a ref that lost its last owner settles no durable intent", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    await seedPinnedIntent("ref_b", "mutation-b");
+    const reads = new Map<string, { resolve: (response: ThreadReadResponse) => void }>();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", (params) => {
+      const ref = (params as { ref: string }).ref;
+      return new Promise<ThreadReadResponse>((resolve) => reads.set(ref, { resolve }));
+    });
+    // Neither intent may settle by way of its own replay.
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.has("ref_a") && reads.has("ref_b"));
+    expect(reads.has("ref_a")).toBe(true);
+
+    // ref_a's record settles, and it was ref_a's only owner.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    const inspector = new MutationOutboxIndexedDB();
+    let recordSettled = false;
+    for (let attempt = 0; attempt < 20 && !recordSettled; attempt += 1) {
+      recordSettled = (await inspector.getOutbox("mutation-a")) === undefined;
+    }
+    expect(recordSettled).toBe(true);
+    await settleCallerContinuations();
+
+    // ref_a's rejoin now answers, and its snapshot claims ref_b's intent as
+    // applied. Nothing owns ref_a, so the snapshot carries no authority at all.
+    reads.get("ref_a")?.resolve(
+      readResponse("ref_a", {
+        serf: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: ["mutation-b"] },
+        },
+      }),
+    );
+    await settleCallerContinuations();
+
+    expect(await inspector.getOutbox("mutation-b")).toBeDefined();
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    inspector.close();
   });
 
   test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {
