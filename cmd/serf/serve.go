@@ -118,7 +118,12 @@ type serveDeps struct {
 	// observer writes to must outlive it: Session.Close() closes the event
 	// channel but does not wait for the buffered tail to be delivered, so
 	// "the session is closed" is not "the consumer is done".
-	bridge           func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{}
+	bridge func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{}
+	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
+	// Injectable so a test can wedge it: the reason the tee exists is that the
+	// real one can be a pipe nobody drains, and that is not reproducible against
+	// a real terminal.
+	verboseOut       io.Writer
 	subscriberCount  func(serveServer, string) int
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
@@ -504,7 +509,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var eventObserver func(events.SessionEvent)
 	var closeEventObserver func()
 	if *verbose {
-		tee := newVerboseEventTee(os.Stderr, verboseEventTeeBuffer)
+		verboseOut := deps.verboseOut
+		if verboseOut == nil {
+			verboseOut = os.Stderr
+		}
+		tee := newVerboseEventTee(verboseOut, verboseEventTeeBuffer)
 		eventObserver = tee.observe
 		closeEventObserver = tee.close
 	}
