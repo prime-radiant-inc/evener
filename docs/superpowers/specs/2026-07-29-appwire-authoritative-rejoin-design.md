@@ -394,12 +394,32 @@ wire fields or timers.
 - hot handoff between simultaneously active old and new daemon sessions
 - silently dropped frame detection while one WebSocket stays ready
 
-The last limitation is conscious. The browser trusts ordered WebSocket
-delivery plus explicit `serf/thread/resync`. Current production paths either
-deliver, disconnect a slow subscriber, or issue resync; review found no path
-that silently omits a frame while keeping the socket ready and omitting
-resync. Adding public epochs without a proven producer gap would expand the
-protocol without fixing the observed one-shot hydration failure.
+The last limitation was conscious, and its stated justification no longer
+holds. The browser trusts ordered WebSocket delivery plus explicit
+`serf/thread/resync`. Downstream of the projection that is still true: a
+subscriber that cannot keep up is disconnected rather than skipped
+(`Connection.enqueue` in `internal/appserver/server.go` refuses on a full
+send queue and the connection is unregistered), so no frame is silently
+omitted while a socket stays ready.
+
+The gap is UPSTREAM of the projection, and it is now proven. `sendEvent`
+(`agent/session_events.go`) delivers on a 256-deep channel with a
+non-blocking send and drops on overflow. That drop was harmless when the
+transcript was the authority and every read re-derived turn state from
+disk. It is not harmless now: this design made the in-memory snapshot the
+sole authority, and the materialized thread envelope extended that to the
+whole envelope, so a dropped event is permanently absent from every
+`thread/read` for the life of the identity. No daemon code produces
+`serf/thread/resync`, so nothing repairs it and a page reload does not.
+
+That is the proven producer gap the paragraph above said did not exist. It
+is still open. Closing it is not the one-line change it looks like: the same
+channel is a deliberately unread sink for every subagent and delegate
+session, whose events reach the parent through synchronous callbacks
+instead, so an unconditional blocking send wedges every child on its 257th
+event while leaving the default suite green. Until the delivery contract is
+decided per consumer, the daemon's projection remains lossy under
+sustained bridge stall.
 
 ## Verification
 
