@@ -75,6 +75,20 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
+func blockedUnknownMutationError(clientMutationID string, err error) error {
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: err.Error(),
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  appwire.MutationOutcomeUnknown,
+			RetryDisposition: appwire.RetryDispositionBlocked,
+			Cause:            "persistenceUnavailable",
+		},
+	}
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
@@ -289,7 +303,7 @@ func registerThreadHandlers(
 		source, err := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-				return appwire.TurnStartResponse{}, resumeErr
+				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
 			}
 			source, err = resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 			if err != nil {
@@ -307,7 +321,7 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-			return appwire.TurnStartResponse{}, resumeErr
+			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
 		}
 		source, sourceErr := resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if sourceErr != nil {
