@@ -42,13 +42,23 @@
   flex: none;
 }
 
-/* min-width: 0 - a flex item's automatic minimum size would otherwise pin the
+/* flex: 1 1 auto - the column SPANS the row, it does not shrink-to-fit. It
+ * must: the bubble below caps itself at max-width: 92% OF THIS COLUMN, and a
+ * shrink-to-fit column is sized by the bubble in turn - a cyclic percentage
+ * the browser resolves to roughly 92% of the bubble's own max-content, so
+ * every message wider than the header got its tail words wrapped even in a
+ * wide window (live-DOM measurement 2026-07-30: "commit and merge" clamped
+ * to 133px in a 651px row). With the column spanning the row, 92% resolves
+ * against the row width and fit-content hugs short messages instead. Same
+ * contract as the agent side's .column (agentmessageitem.module.css).
+ * min-width: 0 - a flex item's automatic minimum size would otherwise pin the
  * column to its longest unbreakable word and defeat the text's break-word
  * wrapping. */
 .content {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  flex: 1 1 auto;
   min-width: 0;
 }
 

@@ -151,6 +151,14 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   // speakeravatar.test.tsx's drift-pin test.
   expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--speaker-gap\);/);
   expect(css).toMatch(/\.avatar\s*\{[\s\S]*flex:\s*none;/);
+  // The content column must SPAN the row (flex: 1 1 auto), matching the agent
+  // side's .column: left shrink-to-fit, the bubble's max-width: 92% becomes a
+  // cyclic percentage against a containing block sized by the bubble itself,
+  // which resolves to roughly 92% of the text's own width and wraps the tail
+  // words of every message wider than the header (2026-07-30 live-DOM
+  // measurement: "commit and merge" clamped to 133px and wrapped in a 651px
+  // row).
+  expect(css).toMatch(/\.content\s*\{[\s\S]*flex:\s*1 1 auto;[\s\S]*min-width:\s*0;/);
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
   // Speaker name at body size / medium weight / --ink-hi (spec decision 1);
   // clock time at caption / --ink-low.
