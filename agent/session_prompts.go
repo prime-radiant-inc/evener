@@ -42,13 +42,40 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // don't must resolve it via currentEnv() first — renderSystemPrompt cannot
 // call currentEnv() itself since it is invoked from both locked and unlocked
 // contexts and s.mu is not reentrant.
-func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) {
+// It RETURNS the diagnostic for a failed render rather than emitting it, and
+// that is a lock-safety requirement, not a style choice. Three of its four
+// callers run under s.mu, and emit's first act is activeCausalProvenance(),
+// which takes s.mu — so emitting from in here self-deadlocks a non-reentrant
+// mutex with no concurrency involved at all. Returning the message makes the
+// callee incapable of that, so no present or future caller has to know: the
+// caller emits after it unlocks, and initSessionState buffers instead, because
+// nothing may reach the stream before SESSION_START.
+//
+// The empty string means the render succeeded.
+func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) string {
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
+		return ""
+	}
+	prompt, warning := s.renderSystemPrompt(env)
+	s.cachedSystemPrompt = prompt
+	return warning
+}
+
+// reportPromptRenderFailure emits the diagnostic refreshSystemPromptCache
+// returned, if any. Callers MUST call it after releasing s.mu: it goes through
+// emit, which takes s.mu to stamp provenance.
+//
+// It is a named function rather than an inline `if` at each site so the lock
+// contract has somewhere to be written down once, and so a reader at a call
+// site can see that the emit is deliberately outside the critical section
+// above it rather than incidentally after it.
+func (s *Session) reportPromptRenderFailure(warning string) {
+	if warning == "" {
 		return
 	}
-	s.cachedSystemPrompt = s.renderSystemPrompt(env)
+	s.emit(events.EventWarning, events.WarningData{Message: warning})
 }
 
 func promptSectionDirExists(dir string) bool {
@@ -192,9 +219,11 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	return fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
 }
 
-// renderSystemPrompt renders the system prompt using the template resolver.
-// See refreshSystemPromptCache for the env-locking contract.
-func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
+// renderSystemPrompt renders the system prompt using the template resolver. It
+// returns the prompt and, when the render failed, the diagnostic its caller
+// must report; see refreshSystemPromptCache for why that is returned rather
+// than emitted here, and for the env-locking contract.
+func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string) {
 	projDir := ""
 	if !s.cfg.NoProjectPrompts {
 		projDir = projectPromptDir(env, s.envInfo.WorkingDir)
@@ -240,9 +269,9 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 	)
 	if err != nil {
 		// Template rendering should not fail — embedded templates are compiled into the binary.
-		// Log the error and return a minimal prompt rather than silently degrading to legacy.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("template render failed: %v", err)})
-		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err)
+		// Report the error and return a minimal prompt rather than silently degrading to legacy.
+		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err),
+			fmt.Sprintf("template render failed: %v", err)
 	}
 	if trimmed := strings.TrimSpace(s.systemPromptOverride); trimmed != "" {
 		sources = append([]promptSource{{
@@ -261,5 +290,5 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) string {
 		})
 	}
 	s.promptSourceLog = sources
-	return result
+	return result, ""
 }

@@ -116,8 +116,9 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image

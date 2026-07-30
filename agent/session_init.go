@@ -959,9 +959,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// Cache project docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
 
-	// Cache tool definitions and the rendered prompt.
+	// Cache tool definitions and the rendered prompt. A render failure here is a
+	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
+	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache(env)
+	if warning := s.refreshSystemPromptCache(env); warning != "" {
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
+			events.WarningData{Message: warning})
+	}
 
 	return s.promptSourceLog, nil
 }

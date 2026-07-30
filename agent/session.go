@@ -817,7 +817,7 @@ func (s *Session) SetModel(model string) error {
 	// below, or the cached prompt keeps claiming the launch model's cutoff
 	// forever (G15).
 	s.envInfo.KnowledgeCutoff = nextProfile.KnowledgeCutoff()
-	s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
 	// longer validate against the new profile are dropped; their names are
 	// surfaced in the switch marker's warning line below.
@@ -844,6 +844,7 @@ func (s *Session) SetModel(model string) error {
 		droppedFallbacks:  s.lastDroppedModelFallbacks,
 	})
 	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
