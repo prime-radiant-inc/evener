@@ -254,8 +254,9 @@ const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 // firstHydration promise instead of racing its own read.
 //
 // Backoff paces those retries and nothing else. Release, client identity, ready
-// epoch, and owner generation are the correctness fences; they are re-checked
-// when the retry fires and again before anything publishes.
+// epoch, and owner generation are the correctness fences, and they are all
+// enforced by one mechanism: each of them retires this record, and retiring a
+// record cancels the retry it holds (closeOwnedHydration).
 type HydrationOwnerKind = "thread" | "watched";
 
 interface OwnedHydration {
@@ -1120,6 +1121,14 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
   return owned;
 }
 
+// Retirement is total, and it is the only fence the retry path needs. Closing a
+// lifecycle removes its record AND cancels its scheduled callback in the same
+// step, so a retired lifecycle cannot reach the wire: the production scheduler
+// is clearTimeout, and a fired callback that somehow outruns its cancel finds
+// its own record gone from the map and returns. Every state change that would
+// invalidate a pending retry — client swap, ready-epoch bump, released claim,
+// dropped pin, superseded owner generation — runs through here first, which is
+// why none of them needs its own check inside the callback. Do not re-add one.
 function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel | null): void {
   const lifecycles = ownedHydrationsFor(kind);
   const owned = lifecycles.get(ref);
@@ -1157,6 +1166,10 @@ function retireAllOwnedHydrations(): void {
 // while this attempt is still the newest one on the current client and ready
 // epoch. A newer client, a newer ready generation, and a released claim each
 // own convergence themselves, so none of them gets a retry from here.
+//
+// Every check below decides whether a retry is worth ARMING. Nothing re-checks
+// them when it fires, because arming is guarded by a lifecycle record and
+// retiring that record cancels the retry with it (closeOwnedHydration).
 function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pending: PendingThreadHydration): void {
   const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
   // A rejection removes only this attempt's own response-cut buffer, and it
@@ -1174,15 +1187,16 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
   // Not ready is not this lifecycle's to pace: that client generation's next
   // ready trigger re-reads what it tracks and retires this record either way.
   if (client.state !== "ready") return;
-  const generation = owned.generation;
   owned.retryAttempt += 1;
   owned.cancelRetry = hydrationRetryScheduler(owned.retryAttempt, () => {
+    // The whole fire-time fence: this callback belongs to one lifecycle record,
+    // and it acts only while that record is still the live one for this ref.
+    // See closeOwnedHydration for why nothing else has to be re-checked here.
     if (ownedHydrationsFor(kind).get(ref) !== owned) return;
     owned.cancelRetry = null;
-    if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
-    if (!hydrationOwnerActive(kind, ref) || hydrationOwnerGeneration(kind, ref) !== generation) return;
     // Another attempt reached the wire while this retry waited; it owns the
-    // next outcome, including scheduling the retry after it.
+    // next outcome, including scheduling the retry after it. Retirement says
+    // nothing about a concurrent attempt, so this one is its own check.
     if (pendingHydrations.has(ref)) return;
     const retried =
       kind === "watched" ? retryWatchedHydration(client, epoch, ref) : retryTrackedHydration(client, epoch, ref);

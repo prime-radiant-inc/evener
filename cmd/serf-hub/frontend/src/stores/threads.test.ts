@@ -1870,6 +1870,50 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  // The fire-time fence, on its own. Every other reason a retry must stand down
+  // is decided when it is ARMED; the only thing left to check when it fires is
+  // that the lifecycle it was armed for is still the live one. This case puts
+  // every downstream guard in the permissive state - the pane still owns the
+  // ref, the client and its socket are the same object, nothing is in flight -
+  // so a retired record is the only thing standing between a superseded ready
+  // generation's callback and a read aimed at a dead epoch.
+  test("a retired lifecycle's fired retry reaches no wire while its ref is still owned", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("thread/read timed out");
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_reconnected", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    await settleCallerContinuations();
+
+    // The reconnect retires the lifecycle and converges the pane. In production
+    // the retire's clearTimeout ends the story; the injected scheduler only
+    // marks the entry cancelled, so firing it below stands in for a timer that
+    // real clearTimeout would never have let run.
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await ensuring;
+    expect(readAttempts).toBe(2);
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_reconnected");
+
+    scheduledHydrationRetries[0]?.retry();
+    await settleCallerContinuations();
+
+    expect(readAttempts).toBe(2);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_reconnected");
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   // A read that fails on a client the store has already replaced must arm
   // nothing. The doomed retry would take the one retry slot the CURRENT
   // generation's lifecycle has, and the next genuine failure on the live
@@ -4718,6 +4762,118 @@ describe("retry-safe mutation outbox integration", () => {
     expect(scheduledHydrationRetries).toHaveLength(2);
     expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
     expect(scheduledHydrationRetries[1]?.cancelled).toBe(false);
+  });
+
+  // seedPinnedIntent leaves one durable turn/queue record for `ref`, which is
+  // the only kind of owner a ref can have with no pane and no watcher mounted.
+  async function seedPinnedIntent(ref: string, clientMutationId: string): Promise<void> {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => clientMutationId });
+    await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/queue",
+      payload: { ref, expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+  }
+
+  // appliedItemNotification carries a clientMutationId, which is what makes the
+  // store reconcile that identity and then re-derive the ref's pin from what is
+  // left in storage. It is the only trigger that can unpin a ref without a
+  // successful authoritative read.
+  function appliedItemNotification(ref: string, clientMutationId: string) {
+    return {
+      method: "item/completed" as const,
+      params: {
+        threadId: `thr_${ref}`,
+        ref,
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution" as const,
+          id: "item_1",
+          turnId: "turn_1",
+          clientMutationId,
+          output: "queued",
+          status: "completed" as const,
+        },
+      },
+    };
+  }
+
+  // Retirement is total only if every way a ref can lose its last owner runs
+  // through it. Losing a pin is the one that does not go through
+  // releaseThread/releaseWatchedThread, so dropUnpinnedModel has to retire the
+  // lifecycle itself: without that, a retry stays armed for a ref this store
+  // has stopped tracking, and its callback would still find a live record.
+  test("settling the last durable record retires the lifecycle its pin held open", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    let readAttempts = 0;
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      throw new RequestTimeoutError("rejoin read timed out");
+    });
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => readAttempts === 2);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(false);
+
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    await flushIndexedDBUntil(() => scheduledHydrationRetries[0]?.cancelled === true);
+
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(readAttempts).toBe(2);
+  });
+
+  // The mirror of the case above, one step earlier: here the pin goes away
+  // while the read is still on the wire, so there is no lifecycle to retire
+  // yet. Opening one anyway would arm a retry for a ref nothing owns - a timer
+  // and a map entry that outlive everything that could ever consume them.
+  test("a rejoin read that fails after its record settles arms no retry", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      const read = deferred<ThreadReadResponse>();
+      reads.push(read);
+      return read.promise;
+    });
+    // The intent must stay durable until this test settles it by hand, so its
+    // replay never reaches a response.
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    // The ready transition rejoins the discovered pinned ref. Publishing its
+    // snapshot is what makes the unpin below observable: dropUnpinnedModel
+    // removes exactly the model this read published.
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length === 1);
+    reads[0]!.resolve(readResponse("ref_a"));
+    await flushIndexedDBUntil(() => threadsStore.getState().threads.has("ref_a"));
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+
+    // A resync puts one more read on the wire, and its pending entry is the
+    // current one - so nothing but ownership stands between its failure and a
+    // scheduled retry.
+    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushIndexedDBUntil(() => reads.length === 2);
+    expect(reads).toHaveLength(2);
+
+    // Settling the record drops the pin, and the pin was the only claim: the
+    // model is dropped, which is this store deciding it has nothing to converge.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    await flushIndexedDBUntil(() => !threadsStore.getState().threads.has("ref_a"));
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+
+    reads[1]!.reject(new RequestTimeoutError("resync read timed out"));
+    await flushIndexedDBUntil(() => scheduledHydrationRetries.length > 0);
+    expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
   test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {
