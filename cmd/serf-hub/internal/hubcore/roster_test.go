@@ -163,8 +163,8 @@ func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
 	r := NewRoster(dir, prober)
 	r.procAlive = func(int) bool { return true } // process starts out alive
 	r.Refresh()
-	if _, ok := r.Find("01CRASHED"); !ok {
-		t.Fatal("entry should be present after a successful probe")
+	if live, ok := r.Find("01CRASHED"); !ok || live.Crashed {
+		t.Fatalf("reachable entry = %+v, want present and not crashed", live)
 	}
 
 	// kill -9: the probe now fails AND the process is confirmed gone.
@@ -179,13 +179,16 @@ func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
 	if got.Status != "errored" {
 		t.Fatalf("crashed session status = %q, want %q", got.Status, "errored")
 	}
+	if !got.Crashed {
+		t.Fatal("retained dead-process entry is not marked crashed")
+	}
 
 	// Stable across subsequent refreshes: it must not flip back to something
 	// else, nor eventually get pruned, once marked as crashed.
 	r.Refresh()
 	got, ok = r.Find("01CRASHED")
-	if !ok || got.Status != "errored" {
-		t.Fatalf("crashed marker did not persist across a later refresh: ok=%v status=%q", ok, got.Status)
+	if !ok || got.Status != "errored" || !got.Crashed {
+		t.Fatalf("crashed marker did not persist across a later refresh: ok=%v entry=%+v", ok, got)
 	}
 }
 
@@ -215,6 +218,9 @@ func fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster(t *testing.T) {
 	}
 	if got.Status != "errored" {
 		t.Fatalf("status = %q, want %q", got.Status, "errored")
+	}
+	if !got.Crashed {
+		t.Fatal("fresh roster's retained dead-process entry is not marked crashed")
 	}
 }
 

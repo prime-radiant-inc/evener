@@ -25,6 +25,9 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			live := cfg.Roster.List()
 			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
 			for _, item := range live {
+				if item.Crashed {
+					continue
+				}
 				entries = append(entries, appsource.LocalDaemonEntry{
 					Entry:      item.Entry,
 					SessionID:  item.SessionID,

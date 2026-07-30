@@ -26,6 +26,7 @@ type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
 	Status             string             // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	Crashed            bool               // true only for a retained record whose daemon PID is confirmed gone
 	PendingAsk         bool               // true while the daemon reports an unanswered ask_user question
 	PendingEscalation  bool               // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 	RunningSubagentIDs []string           // in-process children reported by this daemon; not independently routable
@@ -300,6 +301,7 @@ func (r *Roster) Refresh() {
 				crashed = prev
 			}
 			crashed.Status = "errored"
+			crashed.Crashed = true
 			byPID[e.PID] = crashed
 			bySess[sessionID] = crashed
 			continue

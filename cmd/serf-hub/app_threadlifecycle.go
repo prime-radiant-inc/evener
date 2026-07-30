@@ -274,12 +274,12 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// spawning again. Only this Hub's exact flag-day protocol establishes
 		// ownership; an older daemon can be healthy while remaining unroutable
 		// through the current local source. Refresh also preserves a dead daemon
-		// as an errored tombstone for diagnostics. Both cases must fall through
+		// as a crash marker for diagnostics. Both cases must fall through
 		// to spawning.
 		if cfg.Roster != nil {
 			hubRosterRefresh(cfg.Roster)
 			if le, ok := cfg.Roster.Find(sessionID); ok &&
-				le.Status != "errored" &&
+				!le.Crashed &&
 				le.Protocol == appwire.ProtocolVersion {
 				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
 			}
