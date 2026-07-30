@@ -247,6 +247,55 @@ type PendingThreadHydration = {
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+// One owned hydration lifecycle per (ref, owner kind, owner generation). It
+// exists only while that owner still needs a first authoritative model and the
+// newest attempt has failed: the attempt that failed schedules exactly one
+// retry through it, and every owner of that generation awaits the one
+// firstHydration promise instead of racing its own read.
+//
+// Backoff paces those retries and nothing else. Release, client identity, ready
+// epoch, and owner generation are the correctness fences; they are re-checked
+// when the retry fires and again before anything publishes.
+type HydrationOwnerKind = "thread" | "watched";
+
+interface OwnedHydration {
+  generation: number;
+  retryAttempt: number;
+  cancelRetry: (() => void) | null;
+  // Settles with the model this lifecycle publishes, or null once the
+  // lifecycle is retired (release, client swap, new ready generation) so a
+  // waiting owner re-arms against the current generation instead of hanging.
+  firstHydration: Promise<ThreadModel | null>;
+  settle: (model: ThreadModel | null) => void;
+}
+
+const ownedThreadHydrations = new Map<string, OwnedHydration>();
+const ownedWatchedHydrations = new Map<string, OwnedHydration>();
+
+// A scheduler, not a clock: tests install a manual queue and invoke the retry
+// callback directly, so no assertion in this store's suite depends on elapsed
+// time. The returned function cancels the scheduled callback.
+type HydrationRetryScheduler = (attempt: number, retry: () => void) => () => void;
+
+const HYDRATION_RETRY_BASE_MS = 500;
+const HYDRATION_RETRY_MAX_MS = 15_000;
+
+const backoffHydrationRetryScheduler: HydrationRetryScheduler = (attempt, retry) => {
+  const delay = Math.min(HYDRATION_RETRY_MAX_MS, HYDRATION_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+  const timer = setTimeout(retry, delay);
+  return () => clearTimeout(timer);
+};
+
+let hydrationRetryScheduler: HydrationRetryScheduler = backoffHydrationRetryScheduler;
+
+export function installHydrationRetrySchedulerForTests(scheduler: HydrationRetryScheduler): () => void {
+  const previous = hydrationRetryScheduler;
+  hydrationRetryScheduler = scheduler;
+  return () => {
+    hydrationRetryScheduler = previous;
+  };
+}
+
 let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
@@ -284,6 +333,8 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
 
 function dropUnpinnedModel(ref: string): void {
   if (pinnedMutationRefs.has(ref) || (refCounts.get(ref) ?? 0) > 0) return;
+  // Nothing owns this ref any more, so no scheduled retry may outlive it.
+  retireOwnedHydration("thread", ref);
   threadsStore.setState((state) => {
     if (!state.threads.has(ref) && !state.frameTimes.has(ref)) return state;
     const threads = new Map(state.threads);
@@ -508,7 +559,16 @@ async function hydrateAndSubscribe(
   now: number,
   pending: PendingThreadHydration,
 ): Promise<ThreadHydration> {
-  const response: ThreadReadResponse = await client.request("thread/read", readParams(ref));
+  let response: ThreadReadResponse;
+  try {
+    response = await client.request("thread/read", readParams(ref));
+  } catch (err) {
+    // thread/read is answered from the daemon's in-memory snapshot, so a
+    // rejection here is a transport failure, not a slow file read and not a
+    // lost claim. Ask this ref's owner generation to read again.
+    scheduleOwnedHydrationRetry("thread", ref, pending);
+    throw err;
+  }
   const model = hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return { model, response };
@@ -538,7 +598,13 @@ async function hydrateAndSubscribeWatch(
   pending: PendingThreadHydration,
   includeTurns = false,
 ): Promise<ThreadModel> {
-  const resp: ThreadReadResponse = await client.request("thread/read", watchReadParams(ref, includeTurns));
+  let resp: ThreadReadResponse;
+  try {
+    resp = await client.request("thread/read", watchReadParams(ref, includeTurns));
+  } catch (err) {
+    scheduleOwnedHydrationRetry("watched", ref, pending);
+    throw err;
+  }
   const model = hydrateThread(resp, ref, now);
   applyHydrationResponseCut(pending, ref, model);
   return model;
@@ -830,6 +896,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     nextFrameTimes.set(ref, times);
     return { threads: nextThreads, frameTimes: nextFrameTimes };
   });
+  settleOwnedHydration("thread", ref, hydrated);
   return hydrated;
 }
 
@@ -866,6 +933,7 @@ function publishWatchedHydration(
   const replayed = replayHydrationNotifications(model, pending.notifications);
   pendingWatchedHydrations.delete(ref);
   storeWatchedModel(ref, replayed.model, includeTurns, generation, replayed.appliedAt);
+  settleOwnedHydration("watched", ref, replayed.model);
   return replayed.model;
 }
 
@@ -1021,6 +1089,223 @@ function storeWatchedModel(
   });
 }
 
+function ownedHydrationsFor(kind: HydrationOwnerKind): Map<string, OwnedHydration> {
+  return kind === "watched" ? ownedWatchedHydrations : ownedThreadHydrations;
+}
+
+// A ref is owned while a pane holds a claim, a watcher holds a claim, or a
+// durable mutation record pins it. Ownership is what makes convergence this
+// store's job at all; with none left there is nothing to converge for.
+function hydrationOwnerActive(kind: HydrationOwnerKind, ref: string): boolean {
+  if (kind === "watched") return (watchRefCounts.get(ref) ?? 0) > 0;
+  return (refCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref);
+}
+
+function hydrationOwnerGeneration(kind: HydrationOwnerKind, ref: string): number {
+  return kind === "watched" ? (watchGenerations.get(ref) ?? 0) : (ensureGenerations.get(ref) ?? 0);
+}
+
+function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydration {
+  const lifecycles = ownedHydrationsFor(kind);
+  const generation = hydrationOwnerGeneration(kind, ref);
+  const existing = lifecycles.get(ref);
+  if (existing?.generation === generation) return existing;
+  if (existing) retireOwnedHydration(kind, ref);
+  let settle: (model: ThreadModel | null) => void = () => {};
+  const firstHydration = new Promise<ThreadModel | null>((resolve) => {
+    settle = resolve;
+  });
+  const owned: OwnedHydration = { generation, retryAttempt: 0, cancelRetry: null, firstHydration, settle };
+  lifecycles.set(ref, owned);
+  return owned;
+}
+
+function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel | null): void {
+  const lifecycles = ownedHydrationsFor(kind);
+  const owned = lifecycles.get(ref);
+  if (!owned) return;
+  lifecycles.delete(ref);
+  owned.cancelRetry?.();
+  owned.cancelRetry = null;
+  owned.settle(model);
+}
+
+// A published authoritative model retires the lifecycle that was waiting for
+// one, whichever attempt produced it — this owner's own retry, a reconnect, or
+// a targeted resync. Settling at the single publish point (rather than on the
+// retry's own promise) is what keeps an owner from waiting on a lifecycle some
+// other attempt already satisfied, and resets the retry attempt with it.
+function settleOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel): void {
+  closeOwnedHydration(kind, ref, model);
+}
+
+function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
+  closeOwnedHydration(kind, ref, null);
+}
+
+// A new client or a new ready epoch owns convergence for every ref: cancel the
+// retries the retired generation scheduled and wake its owners so they re-arm
+// against the current one.
+function retireAllOwnedHydrations(): void {
+  for (const ref of [...ownedThreadHydrations.keys()]) retireOwnedHydration("thread", ref);
+  for (const ref of [...ownedWatchedHydrations.keys()]) retireOwnedHydration("watched", ref);
+}
+
+// scheduleOwnedHydrationRetry is the self-heal itself: the attempt that just
+// failed in transport asks its owner generation to read again. At most one
+// retry is outstanding per lifecycle — concurrent owners share it — and only
+// while this attempt is still the newest one on the current client and ready
+// epoch. A newer client, a newer ready generation, and a released claim each
+// own convergence themselves, so none of them gets a retry from here.
+function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pending: PendingThreadHydration): void {
+  const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
+  // A rejection removes only this attempt's own response-cut buffer, and it
+  // removes it now rather than a microtask later: the retry scheduled below
+  // must be able to see that no attempt is in flight for this ref. A newer
+  // attempt already owns the entry, so leave that one — and its retry — alone.
+  if (pendingHydrations.get(ref) !== pending) return;
+  pendingHydrations.delete(ref);
+  const client = pending.client;
+  const epoch = pending.epoch;
+  if (wiredClient !== client || readyEpoch !== epoch) return;
+  if (!hydrationOwnerActive(kind, ref)) return;
+  const owned = openOwnedHydration(kind, ref);
+  if (owned.cancelRetry) return;
+  // Not ready is not this lifecycle's to pace: that client generation's next
+  // ready trigger re-reads what it tracks and retires this record either way.
+  if (client.state !== "ready") return;
+  const generation = owned.generation;
+  owned.retryAttempt += 1;
+  owned.cancelRetry = hydrationRetryScheduler(owned.retryAttempt, () => {
+    if (ownedHydrationsFor(kind).get(ref) !== owned) return;
+    owned.cancelRetry = null;
+    if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+    if (!hydrationOwnerActive(kind, ref) || hydrationOwnerGeneration(kind, ref) !== generation) return;
+    // Another attempt reached the wire while this retry waited; it owns the
+    // next outcome, including scheduling the retry after it.
+    if (pendingHydrations.has(ref)) return;
+    const retried =
+      kind === "watched" ? retryWatchedHydration(client, epoch, ref) : retryTrackedHydration(client, epoch, ref);
+    void retried.catch(() => {
+      // A failed retry schedules the next one through this same path.
+    });
+  });
+}
+
+// The retry action for a real pane or a pinned outbox ref: one targeted
+// authoritative refresh, then the same replay gate a resync opens — mutation
+// replay stays closed until an authoritative read actually succeeds.
+async function retryTrackedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
+  dispatchableMutationRefs.delete(ref);
+  await refreshTrackedThread(client, epoch, ref, true);
+  const runtime = getMutationRuntime();
+  if (!runtime || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
+  if (dispatchableMutationRefs.has(ref)) scheduleMutationDispatch(runtime, [ref]);
+}
+
+async function retryWatchedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
+  await refreshWatchedThread(client, epoch, ref, true);
+}
+
+// refreshTrackedThread re-subscribes one real-pane/pinned ref and replaces its
+// model wholesale from the fresh snapshot (hydrateThread) — snapshot recovery
+// for notifications the old relay missed. A rejection keeps the last published
+// model and leaves the next read to this ref's owned retry lifecycle.
+async function refreshTrackedThread(
+  client: AppwireClientLike,
+  epoch: number,
+  ref: string,
+  targetedResync: boolean,
+): Promise<void> {
+  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
+  const previous = pendingThreadHydrations.get(ref);
+  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
+  const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
+  transferPendingHydration(previous, pending);
+  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
+    if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
+    return publishAndReconcileThreadHydration(ref, pending, result);
+  });
+  const hasPublishedModel = threadsStore.getState().threads.has(ref);
+  // A failed targeted predecessor may already have removed `previous`.
+  // Keep the newest targeted read adoptable by the still-active initial
+  // caller until a sufficient model has actually published.
+  const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
+  if (trackForActiveLifecycle) {
+    inflightHydrates.set(ref, hydration);
+    inflightHydrateClients.set(ref, client);
+    inflightHydrateEpochs.set(ref, epoch);
+    void hydration
+      .finally(() => {
+        if (inflightHydrates.get(ref) === hydration) {
+          inflightHydrates.delete(ref);
+          inflightHydrateClients.delete(ref);
+          inflightHydrateEpochs.delete(ref);
+        }
+      })
+      .catch(() => {});
+  }
+  try {
+    const model = await hydration;
+    if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
+  } catch {
+    // The stale model stays published. Convergence is the owned hydration
+    // lifecycle's job now (scheduleOwnedHydrationRetry, above).
+  } finally {
+    if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
+  }
+}
+
+// refreshWatchedThread is the watched-owner mirror of refreshTrackedThread.
+async function refreshWatchedThread(
+  client: AppwireClientLike,
+  epoch: number,
+  ref: string,
+  targetedResync: boolean,
+): Promise<void> {
+  if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
+  const generation = watchGenerations.get(ref) ?? 0;
+  const previous = pendingWatchedHydrations.get(ref);
+  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
+  const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
+  transferPendingHydration(previous, pending);
+  const includeTurns = watchIncludeTurns.get(ref) ?? false;
+  const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) => {
+    if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
+    return publishWatchedHydration(ref, pending, model, includeTurns, generation);
+  });
+  const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
+  const hasSufficientPublishedModel =
+    hasPublishedModel && (!includeTurns || (watchHydratedIncludeTurns.get(ref) ?? false));
+  // Rich watched callers need the same adoption path as open callers,
+  // and a published lean model is not sufficient for includeTurns.
+  const trackForActiveLifecycle =
+    (previous !== undefined && !hasPublishedModel) || (targetedResync && !hasSufficientPublishedModel);
+  if (trackForActiveLifecycle) {
+    inflightWatchHydrates.set(ref, hydration);
+    inflightWatchHydrateClients.set(ref, client);
+    inflightWatchHydrateEpochs.set(ref, epoch);
+    inflightWatchIncludeTurns.set(ref, includeTurns);
+    void hydration
+      .finally(() => {
+        if (inflightWatchHydrates.get(ref) === hydration) {
+          inflightWatchHydrates.delete(ref);
+          inflightWatchHydrateClients.delete(ref);
+          inflightWatchHydrateEpochs.delete(ref);
+          inflightWatchIncludeTurns.delete(ref);
+        }
+      })
+      .catch(() => {});
+  }
+  try {
+    await hydration;
+  } catch {
+    // Same rationale as the real-pane path above.
+  } finally {
+    if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
+  }
+}
+
 // handleReady re-subscribes every currently-tracked ref by default, or only
 // targetRef when a relay-recovery hint names one thread. Either path subscribes
 // additively and replaces its model wholesale from the fresh snapshot
@@ -1048,89 +1333,8 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
-    ...Array.from(refs, async (ref) => {
-      if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
-      const previous = pendingThreadHydrations.get(ref);
-      if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
-      const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
-      transferPendingHydration(previous, pending);
-      const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
-        if (wiredClient !== client || pendingThreadHydrations.get(ref) !== pending) return null;
-        return publishAndReconcileThreadHydration(ref, pending, result);
-      });
-      const hasPublishedModel = threadsStore.getState().threads.has(ref);
-      // A failed targeted predecessor may already have removed `previous`.
-      // Keep the newest targeted read adoptable by the still-active initial
-      // caller until a sufficient model has actually published.
-      const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
-      if (trackForActiveLifecycle) {
-        inflightHydrates.set(ref, hydration);
-        inflightHydrateClients.set(ref, client);
-        inflightHydrateEpochs.set(ref, epoch);
-        void hydration
-          .finally(() => {
-            if (inflightHydrates.get(ref) === hydration) {
-              inflightHydrates.delete(ref);
-              inflightHydrateClients.delete(ref);
-              inflightHydrateEpochs.delete(ref);
-            }
-          })
-          .catch(() => {});
-      }
-      try {
-        const model = await hydration;
-        if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
-      } catch {
-        // Best-effort: a failed re-subscribe leaves the stale model in place
-        // rather than losing it; the next onReady (another reconnect) or a
-        // fresh ensureThread() from a remounting pane will retry.
-      } finally {
-        if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
-      }
-    }),
-    ...Array.from(watchRefs, async (ref) => {
-      if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
-      const generation = watchGenerations.get(ref) ?? 0;
-      const previous = pendingWatchedHydrations.get(ref);
-      if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
-      const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
-      transferPendingHydration(previous, pending);
-      const includeTurns = watchIncludeTurns.get(ref) ?? false;
-      const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) => {
-        if (wiredClient !== client || pendingWatchedHydrations.get(ref) !== pending) return null;
-        return publishWatchedHydration(ref, pending, model, includeTurns, generation);
-      });
-      const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
-      const hasSufficientPublishedModel =
-        hasPublishedModel && (!includeTurns || (watchHydratedIncludeTurns.get(ref) ?? false));
-      // Rich watched callers need the same adoption path as open callers,
-      // and a published lean model is not sufficient for includeTurns.
-      const trackForActiveLifecycle =
-        (previous !== undefined && !hasPublishedModel) || (targetedResync && !hasSufficientPublishedModel);
-      if (trackForActiveLifecycle) {
-        inflightWatchHydrates.set(ref, hydration);
-        inflightWatchHydrateClients.set(ref, client);
-        inflightWatchHydrateEpochs.set(ref, epoch);
-        inflightWatchIncludeTurns.set(ref, includeTurns);
-        void hydration
-          .finally(() => {
-            if (inflightWatchHydrates.get(ref) === hydration) {
-              inflightWatchHydrates.delete(ref);
-              inflightWatchHydrateClients.delete(ref);
-              inflightWatchHydrateEpochs.delete(ref);
-              inflightWatchIncludeTurns.delete(ref);
-            }
-          })
-          .catch(() => {});
-      }
-      try {
-        await hydration;
-      } catch {
-        // Best-effort, same rationale as the real-pane path above.
-      } finally {
-        if (pendingWatchedHydrations.get(ref) === pending) pendingWatchedHydrations.delete(ref);
-      }
-    }),
+    ...Array.from(refs, (ref) => refreshTrackedThread(client, epoch, ref, targetedResync)),
+    ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
   ]);
 
   if (!runtime || wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
@@ -1170,6 +1374,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   readyEpoch += 1;
+  retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   dispatchableMutationRefs.clear();
@@ -1188,6 +1393,7 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(() => {
     readyEpoch += 1;
+    retireAllOwnedHydrations();
     dispatchReadyClient = null;
     dispatchReadyEpoch = -1;
     dispatchableMutationRefs.clear();
@@ -1302,7 +1508,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }
-          throw err;
+          // Release is terminal for this owner generation: this call's claim is
+          // already gone, so there is nothing left to retry or to report.
+          if (!lifecycleActive) return;
+          // Same client, same ready epoch: the read failed in transport, not
+          // because this pane lost the ref. The failed attempt owns one
+          // scheduled retry for this owner generation, and every concurrent
+          // owner waits on that one lifecycle rather than reading again here.
+          const owned = ownedThreadHydrations.get(ref);
+          if (owned?.generation !== generation) throw err;
+          await owned.firstHydration;
+          // Fall through to the shared re-arm below: it returns when the claim
+          // is gone or a model published, and otherwise rejoins the newest
+          // attempt on the current client.
         }
 
         if ((refCounts.get(ref) ?? 0) <= 0) return;
@@ -1343,6 +1561,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     refCounts.delete(ref);
     if (pinnedMutationRefs.has(ref)) return;
+    // Release is terminal for this owner generation: cancel its scheduled
+    // retry and wake anything still awaiting its first model.
+    retireOwnedHydration("thread", ref);
     // A pending read belongs to this released pane lifecycle. Retire it
     // before a new ensureThread(ref) can claim the same ref; the old promise's
     // identity-guarded finally blocks must not remove a newer hydration.
@@ -1461,7 +1682,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           inflight = inflightWatchHydrates.get(ref) ?? startHydration(client);
           continue;
         }
-        throw err;
+        // Release is terminal for this watcher generation, same as above.
+        if (!lifecycleActive) return;
+        // Same client, same ready epoch: the watcher still owns this ref, so
+        // its own lifecycle reads again. Same contract as ensureThread above.
+        const owned = ownedWatchedHydrations.get(ref);
+        if (owned?.generation !== generation) throw err;
+        await owned.firstHydration;
+        // Fall through to the shared re-arm below, which re-checks the
+        // rich/lean requirement a published model has to satisfy.
       }
 
       if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) return;
@@ -1487,6 +1716,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    retireOwnedHydration("watched", ref);
     watchGenerations.set(ref, (watchGenerations.get(ref) ?? 0) + 1);
     // A retired lifecycle must not lend its pending hydrate to a new watcher.
     // The old promise may still settle, but its generation check prevents it
@@ -1797,6 +2027,7 @@ export function resetThreadsStoreForTests(): void {
       close() {},
     });
   };
+  retireAllOwnedHydrations();
   pinnedMutationRefs.clear();
   dispatchableMutationRefs.clear();
   dispatchReadyClient = null;

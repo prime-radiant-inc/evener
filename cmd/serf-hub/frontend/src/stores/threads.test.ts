@@ -10,6 +10,7 @@ import {
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
 import { RequestTimeoutError, WireError } from "../protocol/errors";
+import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   ModelListResponse,
@@ -28,6 +29,7 @@ import {
   ConflictError,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
+  installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   threadsStore,
   useThreadsStore,
@@ -182,14 +184,49 @@ function mutationReceipt(clientMutationId: string, disposition = "applied") {
   };
 }
 
+// The hydration retry scheduler is injected so every retry in this suite is
+// driven by an explicit call, never by elapsed time: the assertions below count
+// requests and compare map identity, and no test advances a timer or waits out
+// a delay. Installing it for EVERY test also keeps the production backoff's
+// real setTimeout out of the suite entirely, so a failing read in an unrelated
+// test cannot leave a live timer behind.
+interface ScheduledHydrationRetry {
+  attempt: number;
+  retry: () => void;
+  cancelled: boolean;
+}
+
+let scheduledHydrationRetries: ScheduledHydrationRetry[] = [];
+let restoreHydrationRetryScheduler: (() => void) | null = null;
+
+// runScheduledHydrationRetry invokes exactly one scheduled retry, proving first
+// that it exists and was not cancelled - a cancelled entry that still fires
+// would make every "release/swap cancels the retry" assertion below vacuous.
+function runScheduledHydrationRetry(index = 0): void {
+  const scheduled = scheduledHydrationRetries[index];
+  expect(scheduled, `no hydration retry scheduled at index ${index}`).toBeDefined();
+  expect(scheduled?.cancelled).toBe(false);
+  scheduled?.retry();
+}
+
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  scheduledHydrationRetries = [];
+  restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
+    const scheduled: ScheduledHydrationRetry = { attempt, retry, cancelled: false };
+    scheduledHydrationRetries.push(scheduled);
+    return () => {
+      scheduled.cancelled = true;
+    };
+  });
   await deleteMutationDatabase();
 });
 
 afterEach(() => {
   cleanup();
+  restoreHydrationRetryScheduler?.();
+  restoreHydrationRetryScheduler = null;
   vi.restoreAllMocks();
 });
 
@@ -1358,44 +1395,57 @@ describe("useThreadsStore.ensureThread", () => {
     await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow(/no client connected/i);
   });
 
-  test("propagates a thread/read failure and leaves the ref untracked", async () => {
+  test("a repeatedly failing read keeps the ref untracked and re-arms one retry per attempt", async () => {
     const fake = connectFakeClient();
+    let readAttempts = 0;
     fake.on("thread/read", () => {
+      readAttempts += 1;
       throw new Error("boom");
     });
 
-    await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow("boom");
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // Each failure re-arms exactly one retry rather than stacking them, and the
+    // attempt number the scheduler is asked to pace advances with it.
+    runScheduledHydrationRetry(0);
+    await flushUntil(() => scheduledHydrationRetries.length === 2);
+    expect(readAttempts).toBe(2);
+    expect(scheduledHydrationRetries.map((scheduled) => scheduled.attempt)).toEqual([1, 2]);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // Release is what ends it, not a failure count.
+    threadsStore.getState().releaseThread("ref_a");
+    await ensuring;
+    expect(scheduledHydrationRetries[1]?.cancelled).toBe(true);
+    expect(readAttempts).toBe(2);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
-  test("a failed ensureThread rolls back its own refcount: retry-success + a single release fully untracks the ref", async () => {
+  test("a failed read never doubles the pane's claim: retry-success + a single release fully untracks the ref", async () => {
     const fake = connectFakeClient();
-    let shouldFail = true;
     let readCount = 0;
     fake.on("thread/read", () => {
       readCount += 1;
-      if (shouldFail) throw new Error("boom");
+      if (readCount === 1) throw new Error("boom");
       return readResponse("ref_a");
     });
 
-    // Attempt 1 fails. Without rolling back, its refcount increment would
-    // strand the ref permanently once attempt 2 succeeds and the caller
-    // releases only once (the normal mount/retry/unmount lifecycle: one
-    // logical pane, two ensureThread attempts, one eventual release).
-    await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow("boom");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-
-    // Attempt 2 (the retry) succeeds.
-    shouldFail = false;
-    await threadsStore.getState().ensureThread("ref_a");
+    // One logical pane, ONE ensureThread call across the failure and the retry:
+    // the failed attempt keeps the single claim it made instead of dropping it
+    // and requiring the caller to claim again.
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    runScheduledHydrationRetry();
+    await ensuring;
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     expect(readCount).toBe(2); // one failed read, one successful read — no stale inflight sharing across attempts
 
     // The single natural release must fully untrack it. releaseThread()
     // only removes the ref from `threads` on the branch where its refcount
     // was exactly 1 going in — so this passing is itself proof the failed
-    // attempt's claim was rolled back rather than silently surviving
-    // alongside the successful retry's claim.
+    // attempt never left a second claim behind.
     threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
 
@@ -1409,7 +1459,7 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
-  test("same-lifecycle ensure failures each roll back one shared claim", async () => {
+  test("an owner joining a shared read mid-flight shares its one retry and keeps its own claim", async () => {
     const fake = connectFakeClient();
     let readCount = 0;
     const box: { rejectRead: ((error: Error) => void) | null } = { rejectRead: null };
@@ -1431,13 +1481,17 @@ describe("useThreadsStore.ensureThread", () => {
     expect(readCount).toBe(1);
 
     box.rejectRead?.(new Error("shared read failure"));
-    const results = await Promise.allSettled([firstEnsure, secondEnsure]);
-    expect(results[0]?.status).toBe("rejected");
-    expect(results[1]?.status).toBe("rejected");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    expect(scheduledHydrationRetries).toHaveLength(1);
 
-    await threadsStore.getState().ensureThread("ref_a");
+    runScheduledHydrationRetry();
+    await Promise.all([firstEnsure, secondEnsure]);
     expect(readCount).toBe(2);
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_retry");
+
+    // Both claims survived the shared failure, so both have to be released.
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
@@ -1542,6 +1596,212 @@ describe("useThreadsStore.ensureThread", () => {
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
 
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // Owned hydration (the retry lifecycle). A read that fails while the socket
+  // is still ready is a transport failure, not a lost claim: the pane keeps the
+  // ref and the store schedules the next read itself. Every case below drives
+  // the injected scheduler by hand and asserts request counts and map identity,
+  // never elapsed time.
+  test("same-ready initial read failure retries while the pane still owns the ref", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("thread/read timed out");
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_retry", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const publishedModels: ThreadModel[] = [];
+    const unsubscribe = threadsStore.subscribe((state, previous) => {
+      const model = state.threads.get("ref_a");
+      if (model && model !== previous.threads.get("ref_a")) publishedModels.push(model);
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    // Drain the rejection all the way through the caller before the retry
+    // fires, so this covers an owner already WAITING on its lifecycle rather
+    // than one that happens to find a replacement read already in flight.
+    await flushUntil(() => false, 5);
+
+    // Nothing below emits ready, focuses the window, remounts a pane, or swaps
+    // the client: the retry is the store's own, scheduled by the failed read.
+    expect(readAttempts).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    runScheduledHydrationRetry();
+    await ensuring;
+    unsubscribe();
+
+    expect(readAttempts).toBe(2);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(publishedModels).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_retry");
+
+    // One claim, one release: the failed attempt never rolled the claim back,
+    // so a single release still fully untracks the ref.
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("same-ready refresh failure preserves stale model until retry succeeds", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) {
+        return readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] });
+      }
+      if (readAttempts === 2) throw new RequestTimeoutError("refresh read timed out");
+      return readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+
+    // Stale beats blank: the failed refresh leaves version A published.
+    expect(readAttempts).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_a");
+
+    runScheduledHydrationRetry();
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "turn_b");
+
+    expect(readAttempts).toBe(3);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("release cancels scheduled hydration retry and late response cannot resurrect", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    const late: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts <= 2) throw new RequestTimeoutError("thread/read timed out");
+      return new Promise<ThreadReadResponse>((resolve) => {
+        late.resolve = resolve;
+      });
+    });
+
+    // Phase 1: release while a retry is scheduled. The scheduler's own cancel
+    // must run, and firing the cancelled callback anyway must reach no wire.
+    const firstEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    threadsStore.getState().releaseThread("ref_a");
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+
+    scheduledHydrationRetries[0]?.retry();
+    await firstEnsure;
+    expect(readAttempts).toBe(1);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // Phase 2: release while the retry's own read is still in flight. Its late
+    // response belongs to a retired generation and must not resurrect the ref.
+    const secondEnsure = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 2);
+    runScheduledHydrationRetry(1);
+    await flushUntil(() => late.resolve !== null);
+    expect(readAttempts).toBe(3);
+
+    threadsStore.getState().releaseThread("ref_a");
+    late.resolve?.(readResponse("ref_a", { turns: [{ id: "turn_late", status: "completed", itemsView: "full" }] }));
+    await secondEnsure;
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+  });
+
+  test("client swap fences an old client's scheduled retry and response", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () => {
+      if (a.calls.filter((call) => call.method === "thread/read").length === 1) {
+        throw new RequestTimeoutError("client A read timed out");
+      }
+      // Only reachable if the stale retry escapes its client fence; this
+      // response would overwrite client B's authoritative model.
+      return readResponse("ref_a", { turns: [{ id: "turn_a", status: "completed", itemsView: "full", items: [] }] });
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    const b = new FakeClient("ready");
+    const bRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (bRead.resolve = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => bRead.resolve !== null);
+
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    scheduledHydrationRetries[0]?.retry();
+    await flushUntil(() => a.calls.filter((call) => call.method === "thread/read").length === 2);
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    bRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_b", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+
+    expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("concurrent owners share one retrying read lifecycle", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("thread/read timed out");
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_shared", status: "completed", itemsView: "full", items: [] }],
+      });
+    });
+
+    const publishedModels: ThreadModel[] = [];
+    const unsubscribe = threadsStore.subscribe((state, previous) => {
+      const model = state.threads.get("ref_a");
+      if (model && model !== previous.threads.get("ref_a")) publishedModels.push(model);
+    });
+
+    const firstOwner = threadsStore.getState().ensureThread("ref_a");
+    const secondOwner = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    // Both owners must be waiting on the one lifecycle before it produces a
+    // read - see the initial-hydration case above for why this drain matters.
+    await flushUntil(() => false, 5);
+
+    // Two owners, one failed read, one scheduled retry.
+    expect(readAttempts).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+
+    runScheduledHydrationRetry();
+    await Promise.all([firstOwner, secondOwner]);
+    unsubscribe();
+
+    expect(readAttempts).toBe(2);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(publishedModels).toHaveLength(1);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_shared");
+
+    // Both claims survived the shared failure, so the ref stays tracked until
+    // both owners release.
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
     threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
@@ -3304,13 +3564,54 @@ describe("useThreadsStore.watchThread", () => {
     await expect(threadsStore.getState().watchThread("ref_a")).rejects.toThrow(/no client connected/i);
   });
 
-  test("propagates a thread/read failure and leaves the ref untracked", async () => {
+  test("a failed watched read keeps the watcher claim and leaves the ref untracked until release", async () => {
     const fake = connectFakeClient();
+    let readAttempts = 0;
     fake.on("thread/read", () => {
+      readAttempts += 1;
       throw new Error("boom");
     });
 
-    await expect(threadsStore.getState().watchThread("ref_a")).rejects.toThrow("boom");
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    expect(readAttempts).toBe(1);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    await watching;
+    expect(scheduledHydrationRetries[0]?.cancelled).toBe(true);
+    expect(readAttempts).toBe(1);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("same-ready watched read failure retries while watcher ownership remains", async () => {
+    const fake = connectFakeClient();
+    let readAttempts = 0;
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      if (readAttempts === 1) throw new RequestTimeoutError("watched thread/read timed out");
+      return readResponse("ref_a");
+    });
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+
+    expect(readAttempts).toBe(1);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    runScheduledHydrationRetry();
+    await watching;
+
+    expect(readAttempts).toBe(2);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.threadId).toBe("thr_ref_a");
+    // The watched lifecycle is its own owner kind: the real-pane map stays out
+    // of it entirely.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
@@ -3773,7 +4074,7 @@ describe("useThreadsStore.watchThread", () => {
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
 
-  test("a rejected shared hydrate leaves the mounted watcher claim until cleanup", async () => {
+  test("a rejected shared hydrate keeps the mounted watcher claim and retries for it", async () => {
     const fake = connectFakeClient();
     const pending: Array<{
       resolve: (response: ThreadReadResponse) => void;
@@ -3793,22 +4094,21 @@ describe("useThreadsStore.watchThread", () => {
     expect(pending).toHaveLength(1);
 
     // The first watcher has already unmounted; the second watcher still owns
-    // its claim when the shared request fails.
+    // its claim when the shared request fails, so the read is retried on its
+    // behalf rather than abandoned.
     threadsStore.getState().releaseWatchedThread("ref_a");
     pending[0]!.reject(new Error("hydrate failed"));
-    await expect(first).rejects.toThrow("hydrate failed");
-    await expect(second).rejects.toThrow("hydrate failed");
+    await flushUntil(() => scheduledHydrationRetries.length === 1);
+    expect(scheduledHydrationRetries).toHaveLength(1);
 
-    // A fresh watch provides a model so the remaining original claim can be
-    // observed through the normal last-release behavior.
-    const probe = threadsStore.getState().watchThread("ref_a");
+    runScheduledHydrationRetry();
     await flushUntil(() => pending.length === 2);
     pending[1]!.resolve(readResponse("ref_a"));
-    await probe;
+    await Promise.all([first, second]);
 
-    // Releasing the probe must leave the still-mounted original watcher
-    // tracked; only its later cleanup may clear the ref.
-    threadsStore.getState().releaseWatchedThread("ref_a");
+    // Exactly one claim survived the failure: had the rejection consumed the
+    // still-mounted watcher's claim, nothing would have been left to retry for
+    // and the model could not be tracked at all.
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
     threadsStore.getState().releaseWatchedThread("ref_a");
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
@@ -4162,6 +4462,50 @@ describe("retry-safe mutation outbox integration", () => {
 
     expect(readAttempts).toBe(2);
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "thread/read", "turn/queue"]);
+  });
+
+  test("pinned mutation rejoin retries without focus or another ready transition", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedTurnId: "", input: [{ type: "text", text: "queued" }] },
+      attachments: [],
+      optimisticDisplay: { text: "queued" },
+    });
+    storage.close();
+    let readAttempts = 0;
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      readAttempts += 1;
+      // Both reads the ready transition itself can produce fail: the rejoin
+      // read for the discovered pinned ref, and the one the outbox's own
+      // ready-scan then asks for. Every non-retry trigger this connection has
+      // is exhausted by the time the assertions below run.
+      if (readAttempts <= 2) throw new RequestTimeoutError("rejoin read timed out");
+      return readResponse("ref_a");
+    });
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => readAttempts === 2);
+
+    // The durable record is what owns this ref; replay stays closed while the
+    // authoritative read is still missing. Both failures share ONE scheduled
+    // retry - a lifecycle never stacks them.
+    expect(scheduledHydrationRetries).toHaveLength(1);
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "thread/read"]);
+
+    // No window focus event and no second emitReady: the store's own scheduled
+    // retry is the only thing left that can converge this ref.
+    runScheduledHydrationRetry();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    expect(readAttempts).toBe(3);
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "thread/read", "thread/read", "turn/queue"]);
+    expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
+      clientMutationId: "mutation-a",
+    });
   });
 
   test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {

@@ -112,33 +112,34 @@ const ESTIMATED_TURN_HEIGHT = 96;
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
 
-  // ensureThread on mount / releaseThread on unmount, exactly once each.
-  // AppShell mounts DockHost (and therefore this pane) unconditionally,
-  // independent of whether the one AppwireClient has finished its
-  // connect() handshake yet (see AppShell.tsx: the connect effect and the
+  // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
+  // unmount. AppShell mounts DockHost (and therefore this pane)
+  // unconditionally, independent of whether the one AppwireClient has finished
+  // its connect() handshake yet (see AppShell.tsx: the connect effect and the
   // pane tree are siblings, not sequenced) - a direct deep link to /s/{ref}
   // routinely reaches this effect before the client is "ready", and
-  // AppwireClient.request() rejects any non-exempt method until then. This
-  // defers the ONE ensureThread attempt until a client is actually usable
-  // (immediately, if one already is - the common case for a pane opened
-  // into an already-connected app) rather than failing fast and never
-  // retrying; once that attempt has fired (success or failure), it is
-  // never repeated - a later reconnect blip is threads.ts's own
-  // handleReady's job for whatever is already tracked, not this effect's.
+  // AppwireClient.request() rejects any non-exempt method until then. So the
+  // claim waits for a usable client (immediately, if one already is - the
+  // common case for a pane opened into an already-connected app).
+  //
+  // The claim, not this call, is what the store converges on: while this pane
+  // holds the ref, stores/threads.ts owns reading it - retrying a failed read
+  // on a still-ready client, rejoining a replaced one, and re-subscribing
+  // across reconnects. That is why claiming once here is enough, and why this
+  // component has no timer, no reload, and no retry loop of its own.
   useEffect(() => {
     let started = false;
 
     const tryStart = () => {
       if (started || connectionStore.getState().state !== "ready") return;
       started = true;
-      // Best-effort: a failed hydrate (network error, or - as in some
-      // pane-routing tests - a client with no thread/read handler scripted
-      // at all) leaves the pane showing its loading state; there is
-      // nothing further to do with the rejection here, but it must be
-      // observed so it never surfaces as an unhandled rejection.
-      // ensureThread's own catch already rolled back this attempt's
-      // refcount claim (stores/threads.ts), so there is no leak to clean
-      // up on top of that.
+      // ensureThread resolves once the ref is hydrated or this pane's claim is
+      // gone; a transient read failure is the store's to retry, not this
+      // effect's. It can still reject for a condition no retry can fix (no
+      // connected client at all, or - as in some pane-routing tests - a client
+      // with no thread/read handler scripted), which leaves the pane on its
+      // loading state; there is nothing further to do with that rejection here,
+      // but it must be observed so it never surfaces as an unhandled one.
       threadsStore
         .getState()
         .ensureThread(ref)
