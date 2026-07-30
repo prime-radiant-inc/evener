@@ -253,7 +253,7 @@ Expected: PASS.
 - Consumes: the production Hub launch path and transcript writer
 - Produces: evidence that the repaired session and a fresh session hydrate without stale routing or non-AppWire camelCase persistence
 
-- [ ] **Step 1: Run package and static verification**
+- [x] **Step 1: Run package and static verification**
 
 Run:
 
@@ -273,7 +273,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 2: Exercise a fresh session**
+- [x] **Step 2: Exercise a fresh session**
 
 Launch a fresh local session through the production Hub path, verify an exact
 `thread/read` with `includeTurns:true`, `itemsView:"full"`,
@@ -283,14 +283,14 @@ rendezvous removal. Refresh or restart the Hub and repeat the subscribed read.
 Expected: the session remains visible as failed, its persisted transcript
 hydrates, and the dead endpoint is not dialed.
 
-- [ ] **Step 3: Audit newly persisted identifier fields**
+- [x] **Step 3: Audit newly persisted identifier fields**
 
 Inspect the fresh transcript and adjacent durable state with the strict
 transcript reader and the repository naming checker. AppWire JSON remains
 camelCase by protocol; Serf-owned transcript and durable-state JSON keys remain
 snake_case.
 
-- [ ] **Step 4: Commit the scoped implementation**
+- [x] **Step 4: Commit the scoped implementation**
 
 Review `git status` and stage only:
 
