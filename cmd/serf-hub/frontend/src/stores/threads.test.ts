@@ -252,6 +252,67 @@ describe("useConnectionStore", () => {
     });
     expect(result.current).toBe("ready");
   });
+
+  test("a replaced client's later state cannot overwrite the current client", () => {
+    const a = connectFakeClient("ready");
+    const b = new FakeClient("ready");
+    connectionStore.getState().connect(b);
+
+    a.emitStateChange("closed");
+
+    expect(connectionStore.getState().client).toBe(b);
+    expect(connectionStore.getState().state).toBe("ready");
+  });
+
+  // The detach half, proven on its own. The identity check below would keep
+  // the store correct even without this, so nothing else here fails when the
+  // unsubscribe is dropped — and a replaced client would then keep a live
+  // subscription for the rest of the page's life.
+  test("wiring a replacement invokes the outgoing client's unsubscribe", () => {
+    let unsubscribes = 0;
+    class CountingClient extends FakeClient {
+      override onStateChange(cb: (s: ConnectionState) => void): () => void {
+        const detach = super.onStateChange(cb);
+        return () => {
+          unsubscribes++;
+          detach();
+        };
+      }
+    }
+
+    connectionStore.getState().connect(new CountingClient("ready"));
+    expect(unsubscribes).toBe(0);
+
+    connectionStore.getState().connect(new FakeClient("ready"));
+    expect(unsubscribes).toBe(1);
+  });
+
+  // The unsubscribe returned by onStateChange is the cooperative half of the
+  // fence. It is not sufficient on its own: a real client may have already
+  // captured the callback into an in-flight dispatch, so detaching cannot
+  // un-invoke it. The identity check has to stand without it.
+  test("a late callback from a replaced client is ignored even when its unsubscribe does not detach", () => {
+    class UndetachableClient extends FakeClient {
+      captured: ((s: ConnectionState) => void) | null = null;
+      override onStateChange(cb: (s: ConnectionState) => void): () => void {
+        this.captured = cb;
+        return () => {};
+      }
+    }
+
+    const stale = new UndetachableClient("ready");
+    connectionStore.getState().connect(stale);
+    const leaked = stale.captured;
+    expect(leaked).not.toBeNull();
+
+    const current = new FakeClient("ready");
+    connectionStore.getState().connect(current);
+
+    leaked?.("closed");
+
+    expect(connectionStore.getState().client).toBe(current);
+    expect(connectionStore.getState().state).toBe("ready");
+  });
 });
 
 describe("useThreadsStore.ensureThread", () => {

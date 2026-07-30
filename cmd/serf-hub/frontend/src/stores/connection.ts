@@ -38,14 +38,37 @@ export interface ConnectionStoreState {
   connect: (client: AppwireClientLike) => void;
 }
 
+// unwireStateChange detaches the outgoing client's connection-state listener
+// when a replacement is wired in. Without it the old client keeps a live
+// subscription for the rest of the page's life, and its eventual "closed"
+// overwrites the state of a client that is perfectly healthy — the banner
+// reports a dead connection while requests keep succeeding.
+//
+// Detaching is only the cooperative half of the fence. A client may already
+// have captured the callback into an in-flight dispatch, where unsubscribing
+// cannot un-invoke it, so the callback below re-checks ownership before it
+// publishes. Either half alone leaves a window; both together do not.
+//
+// This is connection-state listener ownership only. It is deliberately
+// separate from the notification/ready listener ownership threads.ts manages:
+// those re-subscribe per ref and per ready generation and are torn down when a
+// ref is released, whereas this is one connection-wide mirror that lives
+// exactly as long as its client is the wired one.
+let unwireStateChange: (() => void) | null = null;
+
 export const connectionStore = createStore<ConnectionStoreState>(() => ({
   state: "idle",
   serverInfo: undefined,
   client: null,
   connect: (client) => {
     if (connectionStore.getState().client === client) return;
+    unwireStateChange?.();
+    unwireStateChange = null;
     connectionStore.setState({ client, state: client.state });
-    client.onStateChange((s) => connectionStore.setState({ state: s }));
+    unwireStateChange = client.onStateChange((s) => {
+      if (connectionStore.getState().client !== client) return;
+      connectionStore.setState({ state: s });
+    });
   },
 }));
 
