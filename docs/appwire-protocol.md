@@ -176,6 +176,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
 | `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
 | `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
+| `serf/thread/modelRetry` | `ThreadModelRetryParams` | A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item. |
 | `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `serf/job/started` | `SerfJobParams` | A background job started. |
 | `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
@@ -930,6 +931,22 @@ _(no fields)_
 | `model` | `string` |  |  |
 | `reasoningEffortLevels` | `[]string` | yes |  |
 | `supportsReasoning` | `bool` | yes |  |
+
+
+### `ThreadModelRetryParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `turnId` | `string` | yes |  |
+| `attempt` | `int` |  |  |
+| `maxAttempts` | `int` |  |  |
+| `delayMs` | `int64` |  |  |
+| `errorClass` | `string` | yes |  |
+| `statusCode` | `int` | yes |  |
+| `message` | `string` | yes |  |
+| `model` | `string` | yes |  |
 
 
 ### `ThreadModelSetParams`

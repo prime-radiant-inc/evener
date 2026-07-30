@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2012,5 +2013,82 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	}
 	if d.Cause != nil {
 		t.Fatalf("ErrorData.Cause: got %+v, want nil for non-provider error", d.Cause)
+	}
+}
+
+// kata 4zn8: a rate limit rejected at stream open produces no partial output,
+// so the only retry-triggered event serf had (EventAssistantTextReset, gated on
+// partial) never fires. The session went silent for the whole retry chain and a
+// 429 storm was indistinguishable from a hang. Each retry must announce itself
+// on the event bus with the attempt number, the wait, and why.
+func TestSession_EmitsRetryEventWhenRateLimitedAtStreamOpen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 429, "rate limit exceeded", nil, nil),
+	}
+	c.Register(f)
+
+	var mu sync.Mutex
+	var retries []events.ModelRetryData
+	done := make(chan struct{})
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	policy := llm.RetryPolicy{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: time.Second}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		LLMSleep:       noSleep,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			if ev.Kind == events.EventModelRetry {
+				mu.Lock()
+				retries = append(retries, ev.Data.(events.ModelRetryData))
+				mu.Unlock()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected failure after exhausting the retry budget")
+	}
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	got := append([]events.ModelRetryData(nil), retries...)
+	mu.Unlock()
+
+	// One event before each of the 2 retries; the initial attempt is not a retry.
+	if len(got) != 2 {
+		t.Fatalf("model-retry events = %d, want 2 (one before each retry)", len(got))
+	}
+	for i, ev := range got {
+		wantAttempt := i + 1
+		if ev.Attempt != wantAttempt {
+			t.Errorf("event %d: Attempt = %d, want %d", i, ev.Attempt, wantAttempt)
+		}
+		if ev.MaxAttempts != 3 {
+			t.Errorf("event %d: MaxAttempts = %d, want 3 (1 initial + 2 retries)", i, ev.MaxAttempts)
+		}
+		if ev.ErrorClass != "rate_limit" {
+			t.Errorf("event %d: ErrorClass = %q, want %q", i, ev.ErrorClass, "rate_limit")
+		}
+		if ev.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("event %d: StatusCode = %d, want 429", i, ev.StatusCode)
+		}
+		// The wait is the whole point of the event: a reader has to be able to
+		// tell "back in 32s" from "wedged".
+		if ev.DelayMS <= 0 {
+			t.Errorf("event %d: DelayMS = %d, want a positive wait", i, ev.DelayMS)
+		}
 	}
 }

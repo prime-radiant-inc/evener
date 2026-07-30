@@ -407,6 +407,20 @@ function upsertPendingEscalation(
 // no-op here) either way. turn/completed additionally requires the matching
 // active turn because turn IDs are per-thread sequential.
 export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+  const next = applyNotificationToThread(model, n, now);
+  // A real frame supersedes a pending model-call retry: the model produced
+  // something, so the wait the retry described is over. Keyed on lastFrameAt
+  // advancing rather than on a list of "real" methods, so a frame-bearing
+  // notification added later cannot forget to clear it. serf/thread/modelRetry
+  // itself deliberately does not restamp, so it survives its own dispatch.
+  if (next.modelRetry && next.lastFrameAt !== model.lastFrameAt) {
+    const { modelRetry: _superseded, ...cleared } = next;
+    return cleared;
+  }
+  return next;
+}
+
+function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
@@ -756,6 +770,25 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           return { ...turn, items: [...turn.items, item] };
         }),
         lastFrameAt: now,
+      };
+    }
+
+    case "serf/thread/modelRetry": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const params = n.params;
+      // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
+      // quiet/stall clock is measuring a real silence; this explains it rather
+      // than resetting it.
+      return {
+        ...model,
+        modelRetry: {
+          attempt: params.attempt,
+          maxAttempts: params.maxAttempts,
+          delayMs: params.delayMs,
+          ...(params.errorClass ? { errorClass: params.errorClass } : {}),
+          ...(params.statusCode ? { statusCode: params.statusCode } : {}),
+          ...(params.turnId ? { turnId: params.turnId } : {}),
+        },
       };
     }
 

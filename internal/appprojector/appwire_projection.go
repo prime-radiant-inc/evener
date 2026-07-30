@@ -375,6 +375,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			TurnID:   turnID,
 			ItemID:   itemID,
 		})}
+	case events.EventModelRetry:
+		// Thread-scoped, item-less: the retry is state about the wait in
+		// progress, not a fact worth a transcript row (see
+		// appwire.ThreadModelRetryParams on why 91 rows is the wrong answer).
+		data := eventData[events.ModelRetryData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfThreadModelRetry, appwire.ThreadModelRetryParams{
+			ThreadID:    p.threadID,
+			Ref:         p.ref,
+			TurnID:      p.activeTurnID,
+			Attempt:     data.Attempt,
+			MaxAttempts: data.MaxAttempts,
+			DelayMS:     data.DelayMS,
+			ErrorClass:  data.ErrorClass,
+			StatusCode:  data.StatusCode,
+			Message:     data.Message,
+			Model:       data.Model,
+		})}
 	case events.EventCommunicate:
 		p.skillCandidate = skillActivationCandidate{}
 		data := eventData[events.CommunicateData](event.Data)

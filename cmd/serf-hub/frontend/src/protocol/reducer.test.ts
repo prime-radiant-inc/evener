@@ -3337,3 +3337,98 @@ test("hydrateThread preserves clientMutationId on authoritative transcript items
 
   expect(model.turns[0]?.items[0]).toMatchObject({ clientMutationId: "mutation-a" });
 });
+
+// kata 4zn8: a rate-limited model call must land as explainable liveness state
+// WITHOUT restamping lastFrameAt. The model has genuinely produced nothing —
+// restamping would reset the quiet/stall clock and make a four-hour rate limit
+// render calmer than it does today, which is the opposite of the point.
+test("serf/thread/modelRetry records retry state and leaves lastFrameAt alone", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  const frameAtBeforeRetry = model.lastFrameAt;
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 9,
+        maxAttempts: 11,
+        delayMs: 60000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        message: "rate limit exceeded",
+        model: "k3",
+      },
+    },
+    999000,
+  );
+
+  expect(model.modelRetry).toEqual({
+    attempt: 9,
+    maxAttempts: 11,
+    delayMs: 60000,
+    errorClass: "rate_limit",
+    statusCode: 429,
+    turnId: "turn_1",
+  });
+  expect(model.lastFrameAt).toBe(frameAtBeforeRetry);
+});
+
+// The retry state answers "what is happening now". Once the model actually
+// produces something, or the turn settles, it is history and must not linger
+// next to live output.
+test("modelRetry clears once the model produces a frame", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "serf/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 11,
+        delayMs: 1000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+      },
+    },
+    1002,
+  );
+  expect(model.modelRetry).toBeDefined();
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1003,
+  );
+  expect(model.modelRetry).toBeUndefined();
+});

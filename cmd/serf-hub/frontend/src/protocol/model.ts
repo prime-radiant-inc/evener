@@ -121,6 +121,19 @@ export interface TurnModel {
   error?: unknown;
 }
 
+// A model call that failed with a retryable error and is waiting to be tried
+// again. Attempt counts retries (the first retry is 1); maxAttempts is the whole
+// budget including the initial try, so "attempt 9 of 11" renders without the
+// client knowing the daemon's retry policy.
+export interface ModelRetryState {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorClass?: string;
+  statusCode?: number;
+  turnId?: string;
+}
+
 export interface ThreadModel {
   ref: string;
   threadId: string;
@@ -143,6 +156,12 @@ export interface ThreadModel {
   tasks: { total: number; done: number } | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input
+  // The in-flight model-call retry, when one is pending (serf/thread/modelRetry).
+  // Liveness input, and deliberately NOT a lastFrameAt restamp: the model has
+  // produced nothing, so the quiet/stall clock must keep running. This only
+  // explains the silence it is already measuring. Cleared the moment the model
+  // produces a real frame or the turn settles.
+  modelRetry?: ModelRetryState;
   // Wave 5 T1: the following are all sourced from thread.serf
   // (appwire/types.go's SerfThread, lines 223-274) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

@@ -33,6 +33,12 @@ const (
 	// call retried after streaming partial output emits this so the retry's
 	// output replaces, rather than appends to, the partial that was shown.
 	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
+	// EventModelRetry reports that a model call failed with a retryable error
+	// and will be attempted again after a wait. It is the only signal a reader
+	// gets while a provider is rate-limiting: a rejection at stream open streams
+	// nothing, so EventAssistantTextReset (which needs partial output) stays
+	// silent and the turn otherwise emits no frames at all until it settles.
+	EventModelRetry EventKind = "MODEL_RETRY"
 	// EventReasoningSummaryDelta carries an incremental chunk of the model's
 	// reasoning summary (the readable "thinking" stream hosted models emit).
 	EventReasoningSummaryDelta EventKind = "REASONING_SUMMARY_DELTA"

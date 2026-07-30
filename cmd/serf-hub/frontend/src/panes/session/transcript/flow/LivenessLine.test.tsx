@@ -123,3 +123,40 @@ test("an undefined turnId (no active turn yet) reads as zero running children ev
   render(<LivenessLine lastFrameAt={0} now={185_000} active={true} sessionRef="s1" turnId={undefined} />);
   expect(screen.getByTestId("liveness-line").textContent!.toLowerCase()).toContain("stalled");
 });
+
+// --- model-call retries (kata 4zn8): the daemon reports what it is waiting on,
+// so the line stops guessing "May be stalled" at a provider that is merely rate
+// limiting. The retry arrives on ThreadModel.modelRetry and is passed straight
+// through; this component adds no clock and no inference of its own.
+
+test("renders the retry cause and wait instead of the quiet phrase", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={{ attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit" }}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.textContent).toBe("Rate limited — retry 9 of 11, next in 60s");
+  expect(el.textContent!.toLowerCase()).not.toContain("quiet");
+});
+
+test("past the stall threshold a retry still surfaces the silence rather than hiding it", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={630_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={{ attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit" }}
+    />,
+  );
+  const text = screen.getByTestId("liveness-line").textContent ?? "";
+  expect(text).toContain("Rate limited — retry 9 of 11");
+  expect(text).toContain("no updates for");
+});

@@ -40,6 +40,7 @@ func (AssistantTextStartData) eventKind() EventKind { return EventAssistantTextS
 func (AssistantTextDeltaData) eventKind() EventKind { return EventAssistantTextDelta }
 func (AssistantTextEndData) eventKind() EventKind   { return EventAssistantTextEnd }
 func (AssistantTextResetData) eventKind() EventKind { return EventAssistantTextReset }
+func (ModelRetryData) eventKind() EventKind         { return EventModelRetry }
 func (ReasoningSummaryDeltaData) eventKind() EventKind {
 	return EventReasoningSummaryDelta
 }
@@ -91,6 +92,7 @@ var (
 	_ EventData = AssistantTextDeltaData{}
 	_ EventData = ReasoningSummaryDeltaData{}
 	_ EventData = AssistantTextEndData{}
+	_ EventData = ModelRetryData{}
 	_ EventData = ToolCallStartData{}
 	_ EventData = ToolCallOutputDeltaData{}
 	_ EventData = ToolCallEndData{}

@@ -216,6 +216,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               active={model.status.type === "active"}
               sessionRef={ref}
               turnId={model.activeTurnId}
+              retry={model.modelRetry}
             />
           </>
         }

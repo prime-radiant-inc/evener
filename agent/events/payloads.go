@@ -81,6 +81,25 @@ type AssistantTextDeltaData struct {
 // assistant message, which consumers already track.
 type AssistantTextResetData struct{}
 
+// ModelRetryData is the payload for an EventModelRetry event: a model call
+// failed with a retryable error and will be tried again after DelayMS.
+//
+// Attempt counts retries, so the first retry is 1; MaxAttempts is the whole
+// budget including the initial try (MaxRetries+1), which makes "attempt 9 of
+// 11" renderable without the consumer knowing the policy. ErrorClass and
+// StatusCode carry why, so a reader can tell a rate limit from a 503. Message
+// is the provider's own text, already sanitized of credentials by the llm
+// error types.
+type ModelRetryData struct {
+	Attempt     int    `json:"attempt"`
+	MaxAttempts int    `json:"max_attempts"`
+	DelayMS     int64  `json:"delay_ms"`
+	ErrorClass  string `json:"error_class,omitempty"`
+	StatusCode  int    `json:"status_code,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Model       string `json:"model,omitempty"`
+}
+
 // ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta
 // event: an incremental chunk of the model's reasoning summary. SummaryIndex
 // increments when the model opens a new reasoning section.

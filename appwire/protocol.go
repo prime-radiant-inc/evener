@@ -223,6 +223,7 @@ var Notifications = []NotificationSpec{
 	{NotifyReasoningSummaryDelta, ReasoningSummaryDeltaParams{}, "Incremental reasoning-summary text chunk for a reasoning item."},
 	{NotifyToolOutputDelta, ToolOutputDeltaParams{}, "Incremental tool-output chunk for a tool-call item."},
 	{NotifyWarning, WarningParams{}, "Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures."},
+	{NotifySerfThreadModelRetry, ThreadModelRetryParams{}, "A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item."},
 	{NotifySerfSteeringInjected, SerfSteeringInjectedParams{}, "A steering message was injected into the active turn."},
 	{NotifySerfJobStarted, SerfJobParams{}, "A background job started."},
 	{NotifySerfJobFinished, SerfJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},

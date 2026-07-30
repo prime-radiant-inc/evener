@@ -187,3 +187,46 @@ test("formatExactGap: a non-zero remainder appends seconds", () => {
 test("formatExactGap: minutes and seconds both round down to whole units", () => {
   expect(formatExactGap(185_999)).toBe("3m 5s");
 });
+
+// kata 4zn8: a sustained provider rate limit rendered as "May be stalled — no
+// updates for 10m 30s". Honest, and useless: the daemon knew it was on attempt
+// 9 of 11 with 60s to the next try. A retry the daemon reports is a wait it can
+// explain, so it pre-empts the guess — under the same asymmetry the subagent
+// case already uses, because a retry claim can go stale too (a daemon that dies
+// mid-retry leaves this state behind forever, kata 3h02).
+test("describeLiveness: a pending retry explains the quiet instead of guessing", () => {
+  const retry = { attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit", statusCode: 429 };
+  expect(describeLiveness(30_000, true, 0, retry)).toEqual({
+    level: "retrying",
+    text: "Rate limited — retry 9 of 11, next in 60s",
+  });
+});
+
+test("describeLiveness: a non-rate-limit retryable error names itself generically", () => {
+  const retry = { attempt: 2, maxAttempts: 11, delayMs: 4_000, errorClass: "server", statusCode: 503 };
+  expect(describeLiveness(30_000, true, 0, retry)).toEqual({
+    level: "retrying",
+    text: "Provider error — retry 2 of 11, next in 4s",
+  });
+});
+
+test("describeLiveness: past the stall threshold a retry reports both facts, never suppressing the stall", () => {
+  const retry = { attempt: 9, maxAttempts: 11, delayMs: 60_000, errorClass: "rate_limit", statusCode: 429 };
+  expect(describeLiveness(630_000, true, 0, retry)).toEqual({
+    level: "stalled",
+    text: "Rate limited — retry 9 of 11, next in 60s — no updates for 10m 30s",
+  });
+});
+
+test("describeLiveness: a retry under the quiet threshold stays invisible, like every other wait", () => {
+  const retry = { attempt: 1, maxAttempts: 11, delayMs: 1_000, errorClass: "rate_limit", statusCode: 429 };
+  expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
+});
+
+test("describeLiveness: a retry pre-empts the subagent wait — it is the more specific explanation", () => {
+  const retry = { attempt: 3, maxAttempts: 11, delayMs: 8_000, errorClass: "rate_limit", statusCode: 429 };
+  expect(describeLiveness(30_000, true, 2, retry)).toEqual({
+    level: "retrying",
+    text: "Rate limited — retry 3 of 11, next in 8s",
+  });
+});

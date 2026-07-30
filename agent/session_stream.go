@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"primeradiant.com/serf/agent/events"
@@ -26,7 +27,37 @@ type sessionModelResponse struct {
 	StreamedAssistant bool
 }
 
+// emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
+// req on the session event bus. Attempt counts retries (the first retry is 1);
+// MaxAttempts is the full budget including the initial try, so a consumer can
+// render "attempt 9 of 11" without knowing the policy.
+func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request) func(error, int, time.Duration) {
+	return func(err error, attempt int, delay time.Duration) {
+		data := events.ModelRetryData{
+			Attempt:     attempt,
+			MaxAttempts: max(policy.MaxRetries, 0) + 1,
+			DelayMS:     delay.Milliseconds(),
+			ErrorClass:  llm.Kind(err).String(),
+			Model:       req.Model,
+		}
+		if err != nil {
+			data.Message = err.Error()
+		}
+		var le llm.Error
+		if errors.As(err, &le) {
+			data.StatusCode = le.StatusCode()
+		}
+		s.emit(events.EventModelRetry, data)
+	}
+}
+
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request) (sessionModelResponse, error) {
+	// Announce every retry before its backoff sleep. Both paths below share this
+	// policy, so a rejection at stream open and a mid-stream truncation report
+	// alike. Without it the whole retry chain is silent on the event bus: a
+	// rejection streams nothing, so the assistant-text reset (which needs partial
+	// output) never fires and a long rate limit is indistinguishable from a hang.
+	policy.OnRetry = s.emitModelRetry(policy, req)
 	if profile.SupportsStreaming() {
 		// Retry the whole open+consume cycle: a retryable failure can surface
 		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the

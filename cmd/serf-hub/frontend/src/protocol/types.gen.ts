@@ -946,6 +946,19 @@ export interface ThreadModelChangedParams {
   supportsReasoning?: boolean;
 }
 
+export interface ThreadModelRetryParams {
+  threadId: string;
+  ref: string;
+  turnId?: string;
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorClass?: string;
+  statusCode?: number;
+  message?: string;
+  model?: string;
+}
+
 export interface ThreadModelSetParams {
   ref: string;
   modelProvider: string;
@@ -1337,6 +1350,7 @@ export const NOTIFICATION_NAMES = [
   "item/reasoning/summaryTextDelta",
   "item/toolOutput/delta",
   "warning",
+  "serf/thread/modelRetry",
   "serf/steering/injected",
   "serf/job/started",
   "serf/job/finished",
@@ -1483,6 +1497,7 @@ export interface NotificationTypes {
   "item/reasoning/summaryTextDelta": ReasoningSummaryDeltaParams;
   "item/toolOutput/delta": ToolOutputDeltaParams;
   "warning": WarningParams;
+  "serf/thread/modelRetry": ThreadModelRetryParams;
   "serf/steering/injected": SerfSteeringInjectedParams;
   "serf/job/started": SerfJobParams;
   "serf/job/finished": SerfJobParams;

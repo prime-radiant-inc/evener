@@ -105,6 +105,7 @@ const (
 	NotifyToolOutputDelta              = "item/toolOutput/delta"
 	NotifyWarning                      = "warning"
 	NotifySerfContextPressure          = "serf/thread/contextPressure/updated"
+	NotifySerfThreadModelRetry         = "serf/thread/modelRetry"
 	NotifySerfThreadResync             = "serf/thread/resync"
 	NotifySerfTaskUpdated              = "serf/task/updated"
 	NotifySerfSteeringInjected         = "serf/steering/injected"
@@ -1360,6 +1361,32 @@ type AgentMessageResetParams struct {
 	Ref      string `json:"ref"`
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
+}
+
+// ThreadModelRetryParams is the params shape for the serf/thread/modelRetry
+// notification: the session's model call failed with a retryable error and will
+// be tried again after DelayMS.
+//
+// Thread-scoped and deliberately item-less. One rate-limited session produced 91
+// retries in four hours; as transcript items that is noise, and the reader's
+// actual question ("is this alive, and when does it come back?") is a question
+// about now, not about history. Clients render it as ephemeral liveness state,
+// which the next retry or the turn's settlement supersedes.
+//
+// Attempt counts retries, so the first retry is 1. MaxAttempts is the whole
+// budget including the initial try, so "attempt 9 of 11" renders without the
+// client knowing the retry policy.
+type ThreadModelRetryParams struct {
+	ThreadID    string `json:"threadId"`
+	Ref         string `json:"ref"`
+	TurnID      string `json:"turnId,omitempty"`
+	Attempt     int    `json:"attempt"`
+	MaxAttempts int    `json:"maxAttempts"`
+	DelayMS     int64  `json:"delayMs"`
+	ErrorClass  string `json:"errorClass,omitempty"`
+	StatusCode  int    `json:"statusCode,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Model       string `json:"model,omitempty"`
 }
 
 // ToolOutputDeltaParams is the params shape for the item/toolOutput/delta

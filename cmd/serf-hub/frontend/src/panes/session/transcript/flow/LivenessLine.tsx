@@ -1,10 +1,12 @@
 // LivenessLine is the honest, quiet liveness indicator for the transcript
 // pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s", or -
-// while the active turn's own delegated children are still running -
-// "Waiting on N subagents" instead of either (design brief principle 6: a
-// wait explained by children is not a stall). The quiet/stalled/waiting
-// decision itself is driven purely by describeLiveness (see liveness.ts);
-// this component's own job is sourcing that decision's two live inputs: `now`
+// when the wait has a known explanation - that explanation instead of either:
+// "Rate limited - retry 9 of 11, next in 60s" while the daemon is retrying a
+// model call, or "Waiting on N subagents" while the active turn's own
+// delegated children are still running (design brief principle 6: a wait
+// explained is not a stall). That decision is driven purely by
+// describeLiveness (see liveness.ts); this component's own job is sourcing
+// its live inputs: `now`
 // (Session.tsx's own useNowTick value, already plumbed there for Cadence, so
 // this never starts a second clock - same "no timers, no Date.now()"
 // contract as widgets/cadence's own Cadence) and the running-children count,
@@ -17,7 +19,7 @@
 
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnScopeKey, useSubagentRows } from "../tools/subagentModuleStore";
-import { describeLiveness } from "./liveness";
+import { describeLiveness, type RetryWait } from "./liveness";
 import styles from "./livenessline.module.css";
 
 export interface LivenessLineProps {
@@ -31,6 +33,13 @@ export interface LivenessLineProps {
   sessionRef: string | undefined;
   /** ThreadModel.activeTurnId - undefined (no active turn yet) reads as zero running children. */
   turnId: string | undefined;
+  /**
+   * ThreadModel.modelRetry - the daemon's own report of a model call waiting to
+   * be retried. Passed straight through: unlike the running-children count,
+   * this needs no client-side derivation, and unlike lastFrameAt it is not a
+   * clock. Undefined whenever no retry is pending.
+   */
+  retry?: RetryWait;
 }
 
 const CLASS = {
@@ -38,7 +47,7 @@ const CLASS = {
   stalled: requireClass(styles.stalled, "livenessline.module.css", "stalled"),
 };
 
-export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId }: LivenessLineProps) {
+export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, retry }: LivenessLineProps) {
   const rows = useSubagentRows(turnScopeKey(sessionRef, turnId ?? ""));
   // turnId undefined means there is no active turn to ask about (e.g. the
   // brief window between thread/status/changed flipping "active" and
@@ -52,7 +61,7 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId }: L
   // before that child's own delegate tool call has settled a new output.
   const runningSubagents =
     turnId === undefined ? 0 : rows.filter((row) => (row.liveKind ?? row.kind) === "running").length;
-  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents);
+  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retry);
   if (level === "none" || text === null) return null;
 
   return (

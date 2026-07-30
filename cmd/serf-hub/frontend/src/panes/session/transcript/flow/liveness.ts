@@ -1,11 +1,17 @@
-// Pure "honest liveness" logic: quiet ~Nm -> "may be stalled" - or, while the
-// active turn's own delegated children are still running, "waiting on N
-// subagents" instead of either (design brief principle 6: a wait fully
-// explained by running children is not a stall). Driven by gap = now -
-// ThreadModel.lastFrameAt, active, and a running-children COUNT
+// Pure "honest liveness" logic: quiet ~Nm -> "may be stalled" - or, when the
+// wait has a known explanation, that explanation instead of either. Two
+// explanations exist, in precedence order: a model call the daemon has told us
+// it is retrying ("rate limited - retry 9 of 11, next in 60s", kata 4zn8), and
+// the active turn's own delegated children still running ("waiting on N
+// subagents"). Both are design brief principle 6: a wait fully explained is not
+// a stall. The retry wins when both hold, being the more specific and more
+// directly observed of the two. Driven by gap = now -
+// ThreadModel.lastFrameAt, active, a running-children COUNT
 // (LivenessLine.tsx sources it from subagentModuleStore, scoped by
 // turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
-// bare turn id is never enough). Display-only - no self-heal/reconnect side
+// bare turn id is never enough), and ThreadModel.modelRetry (which
+// deliberately does NOT restamp lastFrameAt, so the gap this reads keeps
+// measuring the real silence the retry is explaining). Display-only - no self-heal/reconnect side
 // effect (that's a connection.ts/threads.ts concern, not this pane's), no
 // idle animation (Cadence already carries live activity via its trace - see
 // widgets/cadence). Session-level thresholds only; the legacy renderer also
@@ -14,7 +20,7 @@
 // unify with (borrowing its live COUNT is not adopting its thresholds), per
 // parity doc's own Highlights section.
 
-export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting";
+export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
 
 export interface LivenessInfo {
   level: LivenessLevel;
@@ -57,6 +63,38 @@ export function formatExactGap(gapMs: number): string {
 }
 
 /**
+ * The pending model-call retry the daemon reported (ThreadModel.modelRetry),
+ * narrowed to what this line renders.
+ */
+export interface RetryWait {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorClass?: string;
+}
+
+/**
+ * Names the retry's cause for the reader. Only rate limiting gets its own
+ * phrasing: it is the one the reader can act on (wait, or switch model), and it
+ * is overwhelmingly the common case - one session logged 91 of them in four
+ * hours. Everything else retryable reads as a generic provider error rather
+ * than leaking an error-class token like "server" into the UI.
+ */
+export function formatRetryCause(errorClass?: string): string {
+  return errorClass === "rate_limit" ? "Rate limited" : "Provider error";
+}
+
+/**
+ * The retry line's text: cause, position in the retry budget, and the wait.
+ * The wait is the load-bearing part - it is what separates "back in 60s" from
+ * "wedged", which is the whole reason this line exists.
+ */
+export function formatRetryWait(retry: RetryWait): string {
+  const seconds = Math.max(0, Math.round(retry.delayMs / SECOND_MS));
+  return `${formatRetryCause(retry.errorClass)} — retry ${retry.attempt} of ${retry.maxAttempts}, next in ${seconds}s`;
+}
+
+/**
  * Pluralizes the running-children count for the "waiting" level's text -
  * singular "1 subagent", plural otherwise - matching the design brief
  * mockup's own worked example (liveness indicator: "waiting on 1 subagent").
@@ -93,8 +131,18 @@ export function formatSubagentCount(count: number): string {
  * arrived for a long time. The reader can act on that; they cannot act on
  * "waiting on 1 subagent" held for nine minutes.
  */
-export function describeLiveness(gapMs: number, active: boolean, runningSubagents: number): LivenessInfo {
+export function describeLiveness(
+  gapMs: number,
+  active: boolean,
+  runningSubagents: number,
+  retry?: RetryWait,
+): LivenessInfo {
   if (!active || gapMs < QUIET_THRESHOLD_MS) return { level: "none", text: null };
+  if (retry) {
+    const retrying = formatRetryWait(retry);
+    if (gapMs < STALL_THRESHOLD_MS) return { level: "retrying", text: retrying };
+    return { level: "stalled", text: `${retrying} — no updates for ${formatExactGap(gapMs)}` };
+  }
   if (runningSubagents > 0) {
     const waiting = `Waiting on ${formatSubagentCount(runningSubagents)}`;
     if (gapMs < STALL_THRESHOLD_MS) return { level: "waiting", text: waiting };

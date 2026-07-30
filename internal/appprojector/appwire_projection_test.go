@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -2627,5 +2628,56 @@ func TestAppEventProjectorToolCallEndKeepsCompletedStatusWithoutError(t *testing
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("successful tool item Status=%q, want %q", item.Status, appwire.TurnStatusCompleted)
+	}
+}
+
+// kata 4zn8: a rate-limited model call must reach the client as a thread-scoped
+// retry notice. It is deliberately NOT an item — a four-hour rate limit
+// produced 91 retries in one session, and 91 transcript items is noise, not
+// signal. The client renders it as ephemeral liveness state instead.
+func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"}})
+
+	out := p.Project(events.SessionEvent{Kind: events.EventModelRetry, SessionID: "th_1", Data: events.ModelRetryData{
+		Attempt:     9,
+		MaxAttempts: 11,
+		DelayMS:     60000,
+		ErrorClass:  "rate_limit",
+		StatusCode:  429,
+		Message:     "rate limit exceeded",
+		Model:       "k3",
+	}})
+
+	var got *appwire.ThreadModelRetryParams
+	for i := range out {
+		if out[i].Method == appwire.NotifySerfThreadModelRetry {
+			pp, ok := out[i].Params.(appwire.ThreadModelRetryParams)
+			if !ok {
+				t.Fatalf("retry params=%T", out[i].Params)
+			}
+			got = &pp
+		}
+	}
+	if got == nil {
+		t.Fatalf("model retry did not emit NotifySerfThreadModelRetry: %+v", out)
+		return
+	}
+	if got.ThreadID != "th_1" {
+		t.Errorf("ThreadID = %q, want %q", got.ThreadID, "th_1")
+	}
+	if got.Attempt != 9 || got.MaxAttempts != 11 {
+		t.Errorf("attempt = %d/%d, want 9/11", got.Attempt, got.MaxAttempts)
+	}
+	if got.DelayMS != 60000 {
+		t.Errorf("DelayMS = %d, want 60000", got.DelayMS)
+	}
+	if got.ErrorClass != "rate_limit" || got.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("errorClass/status = %q/%d, want rate_limit/429", got.ErrorClass, got.StatusCode)
+	}
+
+	// A retry must not manufacture a transcript item.
+	if hasAppNotification(out, appwire.NotifyItemStarted) || hasAppNotification(out, appwire.NotifyItemCompleted) {
+		t.Errorf("model retry emitted an item lifecycle notification: %+v", out)
 	}
 }
