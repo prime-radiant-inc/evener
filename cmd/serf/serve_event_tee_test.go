@@ -67,7 +67,7 @@ func TestVerboseEventTeeDoesNotBlockOnAStalledWriter(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			tee.observe(events.SessionEvent{Kind: events.EventWarning, SessionID: "s1"})
 		}
 	}()
@@ -111,7 +111,7 @@ func TestVerboseEventTeeWritesWhatItAccepts(t *testing.T) {
 func TestVerboseEventTeeAnnouncesWhatItDropped(t *testing.T) {
 	w := newBlockingWriter()
 	tee := newVerboseEventTee(w, 4)
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		tee.observe(events.SessionEvent{Kind: events.EventWarning, SessionID: "s1"})
 	}
 	w.unblock()
@@ -141,7 +141,7 @@ func (b *syncBuffer) String() string {
 
 func nonEmptyLines(s string) []string {
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.TrimSpace(line) != "" {
 			out = append(out, line)
 		}

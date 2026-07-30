@@ -20,7 +20,7 @@ func losslessTestSession(id string) *Session {
 }
 
 func emitN(s *Session, n int) {
-	for i := 0; i < n; i++ {
+	for range n {
 		s.sendEvent(events.EventWarning, events.WarningData{Message: "x"}, nil)
 	}
 }
