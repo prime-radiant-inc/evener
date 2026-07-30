@@ -88,17 +88,6 @@
   border-color: var(--accent);
 }
 
-/* cezn: always-visible (never hover-gated), non-color caption stating
- * Send's current timing while a turn runs - the tooltip on the submit
- * button says the same thing, but only after a 300ms hover nobody gives it
- * mid-flow. Plain caption text, no chroma, no border - meaning carried by
- * the words alone. */
-.sendTiming {
-  margin: 0;
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
 .visuallyHidden {
   position: absolute;
   width: 1px;
