@@ -260,8 +260,11 @@ redundant notification, but a delivered notification can never lead the
 snapshot field it announces.
 
 `CaptureSubscription` remains the response-cut primitive. Its snapshot
-callback opens no file: the turn window is cloned from the installed
-snapshot, and the transcript is never parsed there.
+callback never parses the transcript: the turn window is cloned from the
+installed in-memory snapshot. That does not make the callback I/O-free. It
+runs entirely inside the projection gate, and several of the sixteen
+session-state callbacks it invokes can still block behind a lock another
+component holds across disk I/O.
 
 The callback does still read live session state through the daemon's injected
 callbacks, and that is required rather than incidental. Every envelope field
@@ -275,9 +278,38 @@ field it announced never arrives. That is the gap invariant 6 exists to close,
 so the envelope is not sampled early.
 
 What the callback must therefore never do is block on a lock some other
-component holds across I/O. `clientMutationStore.snapshot`, the one such
-reader on this path, publishes its committed generation under a narrow mutex
-that is never held across the store's own durable write.
+component holds across I/O. One blocking reader on this path is fixed:
+`clientMutationStore.snapshot` used to queue behind the mutation store's own
+fsync; it now publishes its committed generation under a narrow mutex,
+`stateMu`, that the store's serializer takes only to publish and never holds
+across a write.
+
+Four paths still block, and none of them can be fixed the same way, because
+each guards a real durable write or a real filesystem read that has to happen
+somewhere:
+
+- `failedToolCallsFn` calls `transcript.Writer.FailedToolCalls()`, which takes
+  `Writer.mu`. `Writer.append()` holds that same mutex across the seek, the
+  line write, and `w.file.Sync()` on every durable transcript append. This is
+  the hottest of the four: it fires on ordinary turns, not just client
+  mutations.
+- `detailedStatusFn` calls `jobManager.list`, which calls
+  `jobstore.Store.Load()`. `Load` synchronously rereads `jobs.jsonl` and holds
+  `Store.mu` across its own `Append` and `syncLocked`/`f.Sync()`.
+- `taskAggregateFn` calls `TasksWithError()`, which calls `TaskStore.View()`.
+  `View` takes `TaskStore.mu`, the same mutex `save()` (MkdirAll, WriteFile,
+  Rename) holds when called from `Append`, `PopulateFromTemplates`, and
+  `updateLocked`, plus a first-call `Load()` inside a `sync.Once`.
+- Eleven of the sixteen session-state callbacks take the session's own mutex
+  (`agent.Session.mu`). `SetModel`, reachable from the wire via
+  `thread/modelSet`, holds that mutex across rendering the system prompt: an
+  `os.Stat` and `os.ReadFile` per section, plus a `git rev-parse` fork on a
+  cold memo.
+
+The fix that removes all four at once, rather than narrowing each lock in
+turn, is a cached thread envelope that the session pushes into on write, so
+the read under the gate becomes a pointer load instead of a call into
+session, job, or task state. That is future work: it has not been built.
 
 ## Frontend owned hydration
 

@@ -396,7 +396,17 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // emitted after the sample and committed before the cut is discarded on release
 // as already-reflected, and the state it announced then never reaches the
 // client at all. Anything called from here must therefore be cheap AND must not
-// block on a lock another component holds across disk I/O.
+// block on a lock another component holds across disk I/O -- a rule this code
+// does not fully satisfy yet. clientMutationStore.snapshot was fixed; four
+// paths still block: failedToolCallsFn behind the transcript-append fsync (the
+// hottest, since it fires on every turn, not just client mutations),
+// detailedStatusFn behind jobstore's synchronous jobs.jsonl read and fsync,
+// taskAggregateFn behind TaskStore's save()/Load(), and eleven of these
+// sixteen callbacks behind Session.mu, which SetModel holds across rendering
+// the system prompt. See
+// docs/superpowers/specs/2026-07-29-appwire-authoritative-rejoin-design.md
+// for the full audit; the real fix is a cached envelope the session pushes
+// into, which does not exist yet.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
 	thread := s.appThread()
 	var olderCursor string
