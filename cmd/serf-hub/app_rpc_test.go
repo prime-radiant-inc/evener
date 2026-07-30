@@ -6640,6 +6640,88 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 		t.Fatal("timed out waiting for resume relay notification")
 	}
 }
+
+func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
+	oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+	t.Cleanup(func() {
+		resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+	})
+
+	const (
+		mutationID    = "mutation-resume-failed"
+		resumeMessage = "restore session: incompatible mutation snapshot"
+	)
+	tests := []struct {
+		name           string
+		configure      func(*int)
+		wantStartCalls int
+	}{
+		{
+			name: "initial source resolution",
+			configure: func(_ *int) {
+				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+					return nil, errors.New("source unavailable")
+				}
+			},
+		},
+		{
+			name: "session unavailable while starting turn",
+			configure: func(startCalls *int) {
+				source := &scriptedAppSource{
+					id: "local",
+					startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+						(*startCalls)++
+						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
+					},
+				}
+				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+					return source, nil
+				}
+			},
+			wantStartCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			startCalls := 0
+			resumeCalls := 0
+			tc.configure(&startCalls)
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeMessage)
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				ClientMutationID: mutationID,
+			})
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("TurnStart error %T=%v, want WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok ||
+				wire.Code != appwire.CodeInternalError ||
+				wire.Message != resumeMessage ||
+				data.SerfErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+				data.ClientMutationID != mutationID ||
+				data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+				data.RetryDisposition != appwire.RetryDispositionBlocked ||
+				data.Cause != "persistenceUnavailable" {
+				t.Fatalf("wire code=%d message=%q data=%#v", wire.Code, wire.Message, wire.Data)
+			}
+			if resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", resumeCalls)
+			}
+			if startCalls != tc.wantStartCalls {
+				t.Fatalf("start calls=%d, want %d", startCalls, tc.wantStartCalls)
+			}
+		})
+	}
+}
+
 func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()
