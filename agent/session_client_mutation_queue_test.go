@@ -917,7 +917,17 @@ func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdent
 	assertUserInputEventIdentity(t, sess, params.ClientMutationID, queued.StableTurnID)
 }
 
-func TestClientMutation_QueueReplayStaysReflectedWhileClaimed(t *testing.T) {
+// TestClientMutation_QueueReplayStaysPendingWhileClaimed pins the contract for
+// the window between claim and transcript incorporation: popQueueHead makes
+// the input durable and claimed, but no transcript item exists for it yet, so
+// nothing a client can read may describe it as visible. A retry of the same
+// client mutation ID inside that window must still see `pending` -- only
+// markClaimedUserTranscriptIncorporated (which runs after the durable
+// transcript append) may advance it to `reflected`. Reporting `reflected` here
+// would tell the browser its optimistic copy is safe to drop
+// (mutationOutboxIndexedDB.ts:172 retains only on "pending") while nothing had
+// replaced it.
+func TestClientMutation_QueueReplayStaysPendingWhileClaimed(t *testing.T) {
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-claimed-reflection",
@@ -936,12 +946,12 @@ func TestClientMutation_QueueReplayStaysReflectedWhileClaimed(t *testing.T) {
 		t.Fatalf("replay claimed queue mutation: %v", err)
 	}
 	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
-		replayed.Receipt.ProjectionState != appwire.MutationProjectionReflected {
-		t.Fatalf("claimed replay receipt = %#v, want replayed/reflected", replayed.Receipt)
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionPending {
+		t.Fatalf("claimed replay receipt = %#v, want replayed/pending", replayed.Receipt)
 	}
 	snapshot := sess.clientMutations.snapshot()
-	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
-		t.Fatalf("claimed pending projection = %q, want reflected", got)
+	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("claimed pending projection = %q, want pending", got)
 	}
 }
 

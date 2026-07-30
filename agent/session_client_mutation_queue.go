@@ -876,7 +876,11 @@ func (s *Session) restoreDurableClientMutationQueues() {
 				}
 				snapshot.BudgetReservations[id] = clientMutationBudgetReservation{TurnID: pending.TurnID, Slots: 1}
 				delete(snapshot.PendingExecutions, id)
-				record.ProjectionState = appwire.MutationProjectionReflected
+				// This claim crashed before its transcript item landed, so
+				// restore reconstitutes it back onto the plain input queue --
+				// the same not-yet-visible state a fresh queue entry starts
+				// in, not the reflected state a genuine incorporation earns.
+				record.ProjectionState = acceptedClientMutationProjection(record.Method)
 			} else {
 				pending.ExecutionState = "accepted"
 				snapshot.PendingExecutions[id] = pending

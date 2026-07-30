@@ -288,9 +288,15 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 				pending.ExecutionState = "claimed"
 				delete(snapshot.BudgetReservations, id)
 				snapshot.AcceptedTurns++
+				// No transcript item exists for this claim yet, so it must
+				// report pending, not reflected. When ExecutionState was
+				// already "incorporated" (a crash-recovery reclaim of a start
+				// whose transcript append already landed), this branch is
+				// skipped and the reflected state markClaimedUserTranscriptIncorporated
+				// set earlier is left untouched.
+				record.ProjectionState = acceptedClientMutationProjection(record.Method)
+				pending.ProjectionState = acceptedClientMutationProjection(record.Method)
 			}
-			record.ProjectionState = appwire.MutationProjectionReflected
-			pending.ProjectionState = appwire.MutationProjectionReflected
 			snapshot.Journal[id] = record
 			snapshot.PendingExecutions[id] = pending
 			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
@@ -325,7 +331,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			return nil
 		}
 		record.ExecutionState = "claimed"
-		record.ProjectionState = appwire.MutationProjectionReflected
+		record.ProjectionState = acceptedClientMutationProjection(record.Method)
 		snapshot.Journal[entry.ClientMutationID] = record
 		snapshot.PendingExecutions[entry.ClientMutationID] = appwire.PendingMutation{
 			ClientMutationID: entry.ClientMutationID,
@@ -334,7 +340,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			ExecutionState:   "claimed",
 			TurnID:           record.StableTurnID,
 			QueueEntryIDs:    []string{entry.ID},
-			ProjectionState:  appwire.MutationProjectionReflected,
+			ProjectionState:  acceptedClientMutationProjection(record.Method),
 		}
 		snapshot.InputQueue = snapshot.InputQueue[1:]
 		snapshot.QueueRevision++

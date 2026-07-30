@@ -501,7 +501,7 @@ func (s *Session) popQueueHead() queuedInput {
 			reserveClientMutationTurnID(snapshot, &record)
 		}
 		record.ExecutionState = "claimed"
-		record.ProjectionState = appwire.MutationProjectionReflected
+		record.ProjectionState = acceptedClientMutationProjection(record.Method)
 		snapshot.Journal[entry.ClientMutationID] = record
 		snapshot.PendingExecutions[entry.ClientMutationID] = appwire.PendingMutation{
 			ClientMutationID: entry.ClientMutationID,
@@ -510,7 +510,7 @@ func (s *Session) popQueueHead() queuedInput {
 			ExecutionState:   "claimed",
 			TurnID:           record.StableTurnID,
 			QueueEntryIDs:    []string{entry.ID},
-			ProjectionState:  appwire.MutationProjectionReflected,
+			ProjectionState:  acceptedClientMutationProjection(record.Method),
 		}
 		snapshot.InputQueue = snapshot.InputQueue[1:]
 		snapshot.QueueRevision++
