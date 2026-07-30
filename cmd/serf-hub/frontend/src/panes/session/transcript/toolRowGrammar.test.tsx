@@ -396,7 +396,9 @@ test("the rail icon is 50% opacity in the speaker-avatar column, pulled into the
   expect(iconRule).not.toBe(null);
   expect(iconRule?.[1]).toContain("opacity: 0.5");
   expect(iconRule?.[1]).toContain("width: var(--speaker-avatar-size)");
-  expect(iconRule?.[1]).toContain("margin-right: var(--speaker-gap)");
+  // slot + margin + the row's own column-gap = one speaker-gutter, so the
+  // rationale lands exactly on the content edge (aligned with its summary).
+  expect(iconRule?.[1]).toContain("margin-right: calc(var(--speaker-gap) - var(--space-2))");
   // The gutter pull shares the runContent indent's media query (the negative
   // margin is only safe when the wrapper's reserved padding exists).
   const mediaRule = css.match(/@media \(min-width: 700px\) \{\s*\.rowIcon\s*\{([^}]*)\}/);

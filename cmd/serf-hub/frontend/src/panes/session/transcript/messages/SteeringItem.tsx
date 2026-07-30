@@ -34,6 +34,7 @@ import { UserMessageView } from "./UserMessageItem";
 const CLASS = {
   details: requireClass(styles.details, "steeringitem.module.css", "details"),
   summary: requireClass(styles.summary, "steeringitem.module.css", "summary"),
+  railIcon: requireClass(styles.railIcon, "steeringitem.module.css", "railIcon"),
   label: requireClass(styles.label, "steeringitem.module.css", "label"),
   chevron: requireClass(styles.chevron, "steeringitem.module.css", "chevron"),
   body: requireClass(styles.body, "steeringitem.module.css", "body"),
@@ -114,7 +115,15 @@ function SteeringDivider({
           toggleDisclosure(disclosureKey, false);
         }}
       >
-        <SteeringGlyph />
+        {/* The diamond rails with the thought/tool kind icons (Jesse's
+            unification call): a run row with an empty rail reads as
+            "weirdly indented". The slot span carries the rail geometry
+            (--speaker-avatar-size wide, 50% opacity); the summary itself
+            takes the gutter pull above the breakpoint, same container-pull
+            mechanism as thinkblock's. */}
+        <span className={CLASS.railIcon} data-testid="steering-rail-icon" aria-hidden="true">
+          <SteeringGlyph />
+        </span>
         <span className={CLASS.label}>{label}</span>
         <span
           className={CLASS.chevron}
