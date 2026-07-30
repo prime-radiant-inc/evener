@@ -370,7 +370,10 @@ func fuzzScenarioBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: appwire.ThreadStatusIdle},
 	}
 
-	tree := buildTree(metas, live)
+	// Pinned clock: BuildTree's wall clock would auto-archive the fixed-date
+	// meta (14-day window) and the Live tier excludes archived rows — this
+	// scenario asserts ordering, not aging.
+	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, base.Add(2*time.Hour))
 	got := make([]string, 0, len(tree.Live))
 	for _, node := range tree.Live {
 		got = append(got, node.ID)

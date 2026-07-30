@@ -365,6 +365,10 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 }
 
 func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
+	// Recent timestamps: the tree auto-archives by last-activity age (14d),
+	// and the Live tier excludes archived rows — this scenario asserts
+	// source-qualified identity, not aging.
+	nowUnix := time.Now().Unix()
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
 		return map[string]any{"data": []map[string]any{{
@@ -372,8 +376,8 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 			"sessionId":     "th_codex",
 			"preview":       "Codex tree task",
 			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     200,
+			"createdAt":     nowUnix - 100,
+			"updatedAt":     nowUnix,
 			"status":        map[string]any{"type": "idle"},
 			"cwd":           "/work/codex",
 			"cliVersion":    "codex-test",
