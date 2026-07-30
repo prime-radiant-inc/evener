@@ -57,10 +57,6 @@ func (w *blockingWriter) contents() string {
 func TestVerboseEventTeeDoesNotBlockOnAStalledWriter(t *testing.T) {
 	w := newBlockingWriter()
 	tee := newVerboseEventTee(w, 8)
-	t.Cleanup(func() {
-		w.unblock()
-		tee.close()
-	})
 
 	// Far more events than the buffer holds, so this cannot pass merely by
 	// fitting: it has to survive the writer being wedged AND the queue filling.
@@ -75,8 +71,17 @@ func TestVerboseEventTeeDoesNotBlockOnAStalledWriter(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
+		// Deliberately NOT closing the tee here, and not in a t.Cleanup either.
+		// A regression leaves that goroutine parked inside observe, and closing
+		// the tee underneath it panics with "send on closed channel" on ITS
+		// stack -- which kills the binary before the failure below is printed,
+		// turning a named assertion into a crash dump. The parked goroutine
+		// leaks; the test has already failed, and a leak is the cheap half.
 		t.Fatal("observe blocked on a stalled writer: the bridge is coupled to stderr")
 	}
+	// Reached only when every observe returned, so nothing is inside the tee.
+	w.unblock()
+	tee.close()
 }
 
 // TestVerboseEventTeeWritesWhatItAccepts proves the tee is not merely fast
@@ -111,8 +116,19 @@ func TestVerboseEventTeeWritesWhatItAccepts(t *testing.T) {
 func TestVerboseEventTeeAnnouncesWhatItDropped(t *testing.T) {
 	w := newBlockingWriter()
 	tee := newVerboseEventTee(w, 4)
-	for range 200 {
-		tee.observe(events.SessionEvent{Kind: events.EventWarning, SessionID: "s1"})
+	// Same reason as the liveness test: emit off the test goroutine with a
+	// budget, so a tee that blocks names itself instead of hanging the package.
+	emitted := make(chan struct{})
+	go func() {
+		defer close(emitted)
+		for range 200 {
+			tee.observe(events.SessionEvent{Kind: events.EventWarning, SessionID: "s1"})
+		}
+	}()
+	select {
+	case <-emitted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("observe blocked; this test cannot measure drops against a tee that waits")
 	}
 	w.unblock()
 	tee.close()

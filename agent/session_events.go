@@ -49,11 +49,21 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 //
 // One consumer per session. A second would silently split the stream between
 // them, so it panics rather than corrupting both.
-func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) {
+//
+// The returned channel closes when the drain has finished, AFTER the last event
+// has been handed to consume. Anything whose lifetime is shorter than the
+// session's -- a log sink, a tee, a file handle the consumer writes to -- must
+// wait on it before tearing down. Session.Close() closes the event channel but
+// does NOT wait for the tail to be delivered, so "the session is closed" is not
+// "the consumer is done", and a closer that assumes otherwise is racing a
+// goroutine it never joined.
+func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) <-chan struct{} {
+	drained := make(chan struct{})
 	s.eventsMu.Lock()
 	if s.eventsClosed {
 		s.eventsMu.Unlock()
-		return
+		close(drained)
+		return drained
 	}
 	if s.authoritativeConsumer {
 		s.eventsMu.Unlock()
@@ -63,10 +73,12 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) {
 	s.eventsMu.Unlock()
 
 	go func() {
+		defer close(drained)
 		for ev := range s.events {
 			consume(ev)
 		}
 	}()
+	return drained
 }
 
 // emitSessionStartEnvelope emits EventSessionStart and then flushes every

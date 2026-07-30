@@ -134,8 +134,13 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	}
 	// The dep must return once attached and drain on its own goroutine; see
 	// serveDeps.bridge.
-	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent)) {
-		go server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
+	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
+		}()
+		return drained
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return observedServer.AppServer().SubscriberCount(id)
@@ -391,8 +396,13 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		state.srv = &clearIdentityServer{Server: server.NewServer(cfg), state: state}
 		return state.srv
 	}
-	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
-		go server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+		}()
+		return drained
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return state.srv.AppServer().SubscriberCount(id)
@@ -685,7 +695,8 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 
 	var bridged int
 	var bridgeMu sync.Mutex
-	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
+	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
+		drained := make(chan struct{})
 		bridgeMu.Lock()
 		bridged++
 		n := bridged
@@ -693,9 +704,14 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 		if n > 1 {
 			// The replacement session's events are never drained, so nothing
 			// after the identity commit can refresh the envelope.
-			return
+			close(drained)
+			return drained
 		}
-		go server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+		go func() {
+			defer close(drained)
+			server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+		}()
+		return drained
 	}
 
 	var diagnostics bool
@@ -740,7 +756,11 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 // seed is the only thing that can populate the envelope.
 func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
-	deps.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) {}
+	deps.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{} {
+		drained := make(chan struct{})
+		close(drained)
+		return drained
+	}
 
 	var diagnostics bool
 	deps.serveHTTP = func(*http.Server, net.Listener) error {

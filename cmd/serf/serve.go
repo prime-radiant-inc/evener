@@ -113,7 +113,12 @@ type serveDeps struct {
 	// once the attachment is in effect, draining on its own goroutine -- the
 	// caller does not spawn it. A blocking implementation would leave the
 	// session live with a feed that still drops.
-	bridge           func(serveServer, *agent.Session, func(events.SessionEvent))
+	//
+	// The returned channel closes when that drain has FINISHED. Anything the
+	// observer writes to must outlive it: Session.Close() closes the event
+	// channel but does not wait for the buffered tail to be delivered, so
+	// "the session is closed" is not "the consumer is done".
+	bridge           func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{}
 	subscriberCount  func(serveServer, string) int
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
@@ -158,9 +163,9 @@ func defaultServeDeps() serveDeps {
 		// turn reads, so an event it misses is absent from every thread/read
 		// for the life of the identity. Registering is what makes the feed
 		// lossless -- there is no separate switch, and there must not be one.
-		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
+		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
 			srv := s.(*server.Server)
-			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			return sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 				server.BridgeEvent(srv, ev, observer)
 			})
 		},
@@ -497,11 +502,35 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// The observer runs ON the bridge goroutine, which is the daemon's
 	// authoritative consumer, so it must never block: see verboseEventTee.
 	var eventObserver func(events.SessionEvent)
+	var closeEventObserver func()
 	if *verbose {
 		tee := newVerboseEventTee(os.Stderr, verboseEventTeeBuffer)
-		defer tee.close()
 		eventObserver = tee.observe
+		closeEventObserver = tee.close
 	}
+
+	// Every bridge drain this serve starts, so teardown can wait for them.
+	// A session gets a new one on /clear, and each ends when its own session's
+	// event channel closes.
+	var drainsMu sync.Mutex
+	var bridgeDrains []<-chan struct{}
+	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
+	// but does not wait for the buffered tail, so a drain is still calling the
+	// observer after the session is closed -- and observe on a closed tee panics
+	// on the drain's own goroutine, which kills the process and skips every
+	// defer registered above this one. Waiting and closing live in ONE defer so
+	// the order cannot be broken by inserting another defer between them.
+	defer func() {
+		drainsMu.Lock()
+		pending := append([]<-chan struct{}(nil), bridgeDrains...)
+		drainsMu.Unlock()
+		for _, drained := range pending {
+			<-drained
+		}
+		if closeEventObserver != nil {
+			closeEventObserver()
+		}
+	}()
 
 	var notifyCallback func()
 	var subscriberCallback func() int
@@ -561,7 +590,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// goroutine, so returning here means the registration has taken effect.
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
-		deps.bridge(srv, s, eventObserver)
+		drained := deps.bridge(srv, s, eventObserver)
+		drainsMu.Lock()
+		bridgeDrains = append(bridgeDrains, drained)
+		drainsMu.Unlock()
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
