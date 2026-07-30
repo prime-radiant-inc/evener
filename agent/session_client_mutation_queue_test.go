@@ -917,7 +917,17 @@ func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdent
 	assertUserInputEventIdentity(t, sess, params.ClientMutationID, queued.StableTurnID)
 }
 
-func TestClientMutation_QueueReplayStaysReflectedWhileClaimed(t *testing.T) {
+// TestClientMutation_QueueReplayStaysPendingWhileClaimed pins the contract for
+// the window between claim and transcript incorporation: popQueueHead makes
+// the input durable and claimed, but no transcript item exists for it yet, so
+// nothing a client can read may describe it as visible. A retry of the same
+// client mutation ID inside that window must still see `pending` -- only
+// markClaimedUserTranscriptIncorporated (which runs after the durable
+// transcript append) may advance it to `reflected`. Reporting `reflected` here
+// would tell the browser its optimistic copy is safe to drop
+// (mutationOutboxIndexedDB.ts:172 retains only on "pending") while nothing had
+// replaced it.
+func TestClientMutation_QueueReplayStaysPendingWhileClaimed(t *testing.T) {
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-claimed-reflection",
@@ -936,12 +946,12 @@ func TestClientMutation_QueueReplayStaysReflectedWhileClaimed(t *testing.T) {
 		t.Fatalf("replay claimed queue mutation: %v", err)
 	}
 	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
-		replayed.Receipt.ProjectionState != appwire.MutationProjectionReflected {
-		t.Fatalf("claimed replay receipt = %#v, want replayed/reflected", replayed.Receipt)
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionPending {
+		t.Fatalf("claimed replay receipt = %#v, want replayed/pending", replayed.Receipt)
 	}
 	snapshot := sess.clientMutations.snapshot()
-	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
-		t.Fatalf("claimed pending projection = %q, want reflected", got)
+	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("claimed pending projection = %q, want pending", got)
 	}
 }
 
@@ -1012,6 +1022,12 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 	if snapshot.QueueRevision != 3 {
 		t.Fatalf("queue revision = %d, want enqueue+claim+return = 3", snapshot.QueueRevision)
 	}
+	// pushQueueHead moves this mutation BACKWARD to queued state -- no
+	// transcript item describes it, so a retry inside this window must still
+	// see pending, the same contract as a fresh claim.
+	if got := snapshot.Journal[queued.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("returned-to-queue projection state = %q, want pending", got)
+	}
 }
 
 func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) {
@@ -1024,6 +1040,9 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	if err != nil {
 		t.Fatalf("clientMutationSteer: %v", err)
 	}
+	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("accepted steering projection = %#v, ok=%v", pending, ok)
+	}
 	msg, ok := sess.popSteeringHead()
 	if !ok {
 		t.Fatal("popSteeringHead returned empty")
@@ -1031,6 +1050,9 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	claimed := sess.clientMutations.snapshot()
 	if claimed.PendingExecutions[params.ClientMutationID].ExecutionState != "claimed" {
 		t.Fatalf("steering was not claimed: %#v", claimed.PendingExecutions[params.ClientMutationID])
+	}
+	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "claimed" {
+		t.Fatalf("claimed steering projection = %#v, ok=%v", pending, ok)
 	}
 	if msg.StableTurnID != response.Receipt.TurnID {
 		t.Fatalf("steering stable turn = %q, receipt = %q", msg.StableTurnID, response.Receipt.TurnID)
@@ -1049,6 +1071,16 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	if last.ClientMutationID != params.ClientMutationID || last.StableTurnID != response.Receipt.TurnID {
 		t.Fatalf("steering transcript identity = (%q,%q)", last.ClientMutationID, last.StableTurnID)
 	}
+}
+
+func projectedClientMutation(sess *Session, clientMutationID string) (appwire.PendingMutation, bool) {
+	_, pending := sess.ClientMutationProjection()
+	for _, mutation := range pending {
+		if mutation.ClientMutationID == clientMutationID {
+			return mutation, true
+		}
+	}
+	return appwire.PendingMutation{}, false
 }
 
 func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing.T) {
@@ -1539,6 +1571,45 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 	}
 	if afterResume != 1 {
 		t.Fatalf("resumed incorporated queue duplicated transcript: count=%d", afterResume)
+	}
+}
+
+// TestClientMutation_QueueClaimedWithoutTranscriptRestoresPendingOnRequeue is
+// the crash-recovery counterpart to the test above: a queue entry claimed but
+// never incorporated before the crash has no transcript item describing it,
+// so restoreDurableClientMutationQueues must requeue it as pending -- the
+// same not-yet-visible state a fresh queue entry starts in -- not reassert
+// the reflected state that only a genuine transcript append earns.
+func TestClientMutation_QueueClaimedWithoutTranscriptRestoresPendingOnRequeue(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "queue-claimed-recovery",
+		Input:            []appwire.InputItem{{Type: "text", Text: "resume claimed queue"}},
+	}
+	if _, err := sess.clientMutationQueue(params); err != nil {
+		t.Fatalf("clientMutationQueue: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("popQueueHead claimed = %#v, want %q", claimed, params.ClientMutationID)
+	}
+	sess.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	snapshot := restored.clientMutations.snapshot()
+	if len(snapshot.InputQueue) != 1 ||
+		snapshot.InputQueue[0].ClientMutationID != params.ClientMutationID ||
+		snapshot.InputQueue[0].ID != claimed.ID {
+		t.Fatalf("restored requeued entry = %#v, want original claimed entry", snapshot.InputQueue)
+	}
+	if _, ok := snapshot.PendingExecutions[params.ClientMutationID]; ok {
+		t.Fatal("restored requeued mutation remained runnable in PendingExecutions")
+	}
+	if got := snapshot.Journal[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("restored requeued projection = %q, want pending", got)
 	}
 }
 

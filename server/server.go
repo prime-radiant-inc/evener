@@ -176,15 +176,18 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                    sync.RWMutex
-	status                StatusInfo
-	appSourceID           string
-	appThreadID           string
-	appIdentityGeneration uint64
-	appProjector          *appprojector.AppEventProjector
-	appTurns              *appTurnSnapshot
-	appActiveTurnID       string
-	appReservedTurnID     string
+	mu           sync.RWMutex
+	status       StatusInfo
+	appSourceID  string
+	appThreadID  string
+	appProjector *appprojector.AppEventProjector
+	// appTurns is the daemon's one materialized turn authority. Every turn read
+	// -- thread/read, the latest window, an older page -- clones or windows this
+	// and nothing else.
+	appTurns                  *appTurnSnapshot
+	appActiveTurnID           string
+	appReservedTurnID         string
+	beforeAppProjectionCommit func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -213,6 +216,7 @@ type Server struct {
 	queueIDsFn                    func() []string
 	queuePreviewFn                func() []string
 	queueTextsFn                  func() []string
+	clientMutationProjectionFn    func() (appwire.QueueState, []appwire.PendingMutation)
 	compactFunc                   func(context.Context) error
 	clearFunc                     func(context.Context) error
 	pressureFn                    func() float64
@@ -247,7 +251,6 @@ type Server struct {
 	tasksFn             func() any
 	taskAggregateFn     func() *appwire.TaskAggregate
 	shutdownFunc        func()
-	transcriptPathFn    func() string
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
@@ -291,9 +294,13 @@ func NewServer(cfg ServerConfig) *Server {
 				DirectoryComplete: false,
 			},
 		}),
+		// AppReplaySize bounds notification RETENTION, which is transport
+		// replay for a reconnecting subscriber. It does not bound the turn
+		// snapshot: eviction changes how far a client can catch up from
+		// deltas, never what the thread contains.
 		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
-		appTurns:    &appTurnSnapshot{limit: replaySize},
+		appTurns:    &appTurnSnapshot{},
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
 		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),
@@ -346,10 +353,14 @@ func (s *Server) GetStatus() StatusInfo {
 // UpdateSessionInfo sets session identity fields.
 func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Lock()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
+func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
 	s.status.Profile = profile
-	s.mu.Unlock()
 }
 
 // SetWorkingDir sets the working directory exposed in /status.
@@ -524,6 +535,15 @@ func (s *Server) SetQueueIDsFunc(fn func() []string) {
 func (s *Server) SetQueueTextsFunc(fn func() []string) {
 	s.mu.Lock()
 	s.queueTextsFn = fn
+	s.mu.Unlock()
+}
+
+// SetClientMutationProjectionFunc installs the durable retry-safe mutation
+// snapshot used by thread/read. Queue revision and pending mutations must come
+// from one store generation.
+func (s *Server) SetClientMutationProjectionFunc(fn func() (appwire.QueueState, []appwire.PendingMutation)) {
+	s.mu.Lock()
+	s.clientMutationProjectionFn = fn
 	s.mu.Unlock()
 }
 
@@ -731,6 +751,11 @@ type InputRequest struct {
 // it — so the id minted here is the one the real turn goes on to use.
 func (s *Server) SetProcessing(processing bool) {
 	s.mu.Lock()
+	s.setProcessingLocked(processing)
+	s.mu.Unlock()
+}
+
+func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if processing {
 		// The empty check is belt-and-braces, not load-bearing: ReserveTurnID
@@ -745,7 +770,6 @@ func (s *Server) SetProcessing(processing bool) {
 		}
 		s.appReservedTurnID = ""
 	}
-	s.mu.Unlock()
 }
 
 // InputCh returns the channel that receives user input messages.

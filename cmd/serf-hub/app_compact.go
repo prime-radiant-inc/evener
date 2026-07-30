@@ -46,14 +46,17 @@ func compactThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources
 }
 
 func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-	if err != nil {
-		return err
-	}
-	if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
-		return err
-	}
-	return source.CompactThread(ctx, params)
+	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
+		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, source.CompactThread(ctx, params)
+	})
+	return err
 }
 
 func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, threadID, action string) error {

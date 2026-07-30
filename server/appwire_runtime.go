@@ -3,10 +3,13 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent"
@@ -23,27 +26,122 @@ func (s *Server) AppServer() *appserver.Server {
 	return s.appServer
 }
 
-func (s *Server) SetAppIdentity(sourceID, threadID string) {
+// PreparedAppIdentity is a validated AppWire identity whose transcript has
+// already been projected, but which nothing has published yet. Every fallible
+// step -- header validation and transcript projection -- happens while building
+// one, so installing it cannot fail and cannot leave the server half-switched.
+type PreparedAppIdentity struct {
+	sourceID  string
+	threadID  string
+	projector *appprojector.AppEventProjector
+	turns     *appTurnSnapshot
+}
+
+// PrepareAppIdentity projects transcriptPath into a seeded turn snapshot for
+// threadID and builds the matching event projector. It touches no Server state,
+// so a caller can abandon the result on any later failure.
+//
+// An empty transcript path seeds empty state. A transcript that does not exist
+// yet is the same answer: the session simply has no persisted history to seed
+// from. A transcript whose header names a DIFFERENT session is an error --
+// seeding one thread from another thread's history would publish a
+// conversation that never happened.
+func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppIdentity, error) {
 	if sourceID == "" {
 		sourceID = "local"
 	}
+	if strings.TrimSpace(threadID) == "" {
+		return PreparedAppIdentity{}, errors.New("thread id is required")
+	}
+	var turns []appwire.Turn
+	persistedEntries := 0
+	if path := strings.TrimSpace(transcriptPath); path != "" {
+		header := transcriptHeader(path, appTranscriptMaxLineBytes)
+		if header.SessionID != "" && header.SessionID != threadID {
+			return PreparedAppIdentity{}, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
+		}
+		projected, entries, err := appTurnsFromTranscriptFile(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return PreparedAppIdentity{}, err
+		}
+		turns = projected
+		persistedEntries = entries
+	}
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
-	s.mu.Lock()
-	s.appSourceID = sourceID
-	s.appThreadID = threadID
-	s.appIdentityGeneration++
-	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
-	s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
-	s.appActiveTurnID = ""
-	s.appReservedTurnID = ""
-	s.appLastStampedFailedToolCalls = nil
-	s.mu.Unlock()
+	snapshot := &appTurnSnapshot{threadID: threadID}
+	snapshot.Seed(turns)
+	// Fence the live turn ids above the seeded ones HERE, where the seed count
+	// is known, rather than waiting for the session's own SessionStart to carry
+	// it: nothing orders that event ahead of the first turn-starting request,
+	// and since this snapshot became the only turn authority a collision
+	// overwrites the seeded turn permanently.
+	projector := appprojector.NewAppEventProjector(threadID, ref)
+	projector.SeedPersistedTurns(persistedEntries)
+	return PreparedAppIdentity{
+		sourceID:  sourceID,
+		threadID:  threadID,
+		projector: projector,
+		turns:     snapshot,
+	}, nil
 }
 
-func (s *Server) SetTranscriptPathFunc(fn func() string) {
-	s.mu.Lock()
-	s.transcriptPathFn = fn
-	s.mu.Unlock()
+// ReplaceAppIdentity publishes a prepared identity. It runs inside one
+// projection commit so no notification can cross between the old authority and
+// the new one, and it cannot fail: preparation already did everything that
+// could.
+//
+// activate, when non-nil, runs first and must itself be infallible -- it is
+// where a caller swaps whatever it owns alongside the daemon's identity (the
+// live session on clear).
+//
+// Replacing a different, non-empty identity closes the old thread's stream with
+// one thread/closed record targeted at the OLD thread and ref. That record is
+// recorded through the notifier so it takes the same ordered delivery path as
+// every other notification, and it is deliberately not applied to the new
+// snapshot: it describes the thread that just ended.
+func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func()) {
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		if activate != nil {
+			activate()
+		}
+		s.mu.Lock()
+		oldSourceID, oldThreadID := s.appSourceID, s.appThreadID
+		s.appSourceID = prepared.sourceID
+		s.appThreadID = prepared.threadID
+		s.appProjector = prepared.projector
+		s.appTurns = prepared.turns
+		s.appActiveTurnID = ""
+		s.appReservedTurnID = ""
+		s.appLastStampedFailedToolCalls = nil
+		s.status.SessionID = prepared.threadID
+		s.mu.Unlock()
+
+		if oldThreadID == "" || oldThreadID == prepared.threadID {
+			return nil
+		}
+		if oldSourceID == "" {
+			oldSourceID = "local"
+		}
+		oldRef := appwire.Ref{SourceID: oldSourceID, ThreadID: oldThreadID}.String()
+		return []appserver.SequencedNotification{s.appNotifier.Record(oldThreadID, appwire.NotifyThreadClosed, appwire.ThreadClosedParams{
+			ThreadID: oldThreadID,
+			Ref:      oldRef,
+			Reason:   "replaced",
+		})}
+	})
+}
+
+// SetAppIdentity installs an identity with no seeded history. Production serve
+// prepares from the session's transcript instead; this is the shorthand for a
+// thread that has none. It runs the same validation, so an identity
+// PrepareAppIdentity would reject is not installed through this door either --
+// it is rejected here and nothing changes.
+func (s *Server) SetAppIdentity(sourceID, threadID string) {
+	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
+	if err != nil {
+		return
+	}
+	s.ReplaceAppIdentity(prepared, nil)
 }
 
 func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserver.SequencedNotification {
@@ -51,24 +149,67 @@ func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserv
 }
 
 func (s *Server) RecordAppEvent(event events.SessionEvent) {
-	s.mu.Lock()
-	if !s.acceptsSessionEventLocked(event.SessionID) {
+	s.mu.RLock()
+	beforeCommit := s.beforeAppProjectionCommit
+	s.mu.RUnlock()
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		var committed []appserver.SequencedNotification
+		s.mu.Lock()
+		if !s.acceptsSessionEventLocked(event.SessionID) {
+			s.mu.Unlock()
+			return nil
+		}
+		s.ensureAppProjectorLocked(event.SessionID)
+		projected := s.appProjector.Project(event)
+		snapshot := s.appTurns
+		s.appActiveTurnID = s.appProjector.ActiveTurnID()
+		threadID := s.appThreadID
+		if threadID == "" {
+			threadID = event.SessionID
+		}
+		if threadID == "" {
+			threadID = s.status.SessionID
+		}
+		sourceID := s.appSourceID
+		if sourceID == "" {
+			sourceID = "local"
+		}
+		ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 		s.mu.Unlock()
-		return
-	}
-	s.ensureAppProjectorLocked(event.SessionID)
-	projected := s.appProjector.Project(event)
-	snapshot := s.appTurns
-	s.appActiveTurnID = s.appProjector.ActiveTurnID()
-	s.mu.Unlock()
 
-	for _, item := range projected {
-		params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
-		params = s.stampFailureCountOnItemCompleted(item.Method, params)
-		record := s.appNotifier.Record(item.ThreadID, item.Method, params)
-		snapshot.Apply([]appserver.SequencedNotification{record})
-		s.appServer.Broadcast(item.ThreadID, item.Method, params)
+		for _, item := range projected {
+			params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
+			params = s.stampFailureCountOnItemCompleted(item.Method, params)
+			params = stampAppNotificationTarget(params, threadID, ref)
+			record := s.appNotifier.Record(threadID, item.Method, params)
+			snapshot.Apply([]appserver.SequencedNotification{record})
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+func stampAppNotificationTarget(params any, threadID, ref string) any {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return params
 	}
+	fields := map[string]json.RawMessage{}
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return params
+		}
+	}
+	fields["threadId"], _ = json.Marshal(threadID)
+	fields["ref"], _ = json.Marshal(ref)
+	qualified, err := json.Marshal(fields)
+	if err != nil {
+		return params
+	}
+	return json.RawMessage(qualified)
 }
 
 // stampFailureCountOnStatusChange rides the session's running failure count
@@ -220,99 +361,83 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 }
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	thread := s.appThread()
-	if params.Subscribe {
-		appserver.Subscribe(ctx, thread.ID)
+	if !params.Subscribe {
+		return s.appThreadReadSnapshot(params), nil
 	}
+	var response appwire.ThreadReadResponse
+	captured := appserver.CaptureSubscription(
+		ctx,
+		params.ReplaceSubscription,
+		s.appProjectionThreadID,
+		s.appNotifier.CurrentSequence,
+		func() bool {
+			response = s.appThreadReadSnapshot(params)
+			return true
+		},
+	)
+	if !captured {
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
+	}
+	return response, nil
+}
+
+// appThreadReadSnapshot answers entirely from memory. It runs under the
+// subscription cut, so it must not open a file: transcript persistence can lead
+// live event delivery, and a read that parsed the file there would return an
+// output whose matching notification is still on the other side of the cut --
+// the same answer twice, under two identities.
+//
+// It stays under the cut for a second reason, which is why sampling the session
+// envelope before CaptureSubscription would be wrong however tempting: queue,
+// status, active turn, escalations and the failure count are each announced by
+// a notification as well as carried here. A session writes its state before
+// emitting the event that announces it, so a sample taken inside the gate can
+// only lead its notifications. A sample taken outside can lag one -- an event
+// emitted after the sample and committed before the cut is discarded on release
+// as already-reflected, and the state it announced then never reaches the
+// client at all. Anything called from here must therefore be cheap AND must not
+// block on a lock another component holds across disk I/O -- a rule this code
+// does not fully satisfy yet. clientMutationStore.snapshot was fixed; four
+// paths still block: failedToolCallsFn behind the transcript-append fsync (the
+// hottest, since it fires on every turn, not just client mutations),
+// detailedStatusFn behind jobstore's synchronous jobs.jsonl read and fsync,
+// taskAggregateFn behind TaskStore's save()/Load(), and eleven of these
+// sixteen callbacks behind Session.mu, which SetModel holds across rendering
+// the system prompt. See
+// docs/superpowers/specs/2026-07-29-appwire-authoritative-rejoin-design.md
+// for the full audit; the real fix is a cached envelope the session pushes
+// into, which does not exist yet.
+func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
+	thread := s.appThread()
 	var olderCursor string
 	if params.IncludeTurns {
-		var err error
-		if params.TurnLimit <= 0 {
-			var turns []appwire.Turn
-			turns, err = s.appAllTurns(thread.ID)
-			thread.Turns, olderCursor = appwire.WindowTurns(turns, params.TurnLimit)
-		} else {
-			thread.Turns, olderCursor, err = s.appLatestTurns(thread.ID, params.TurnLimit)
-		}
-		if err != nil {
-			return appwire.ThreadReadResponse{}, err
-		}
+		thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
 	}
-	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, nil
+	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
 }
 
-// appAllTurns materializes the full ordered turn list (oldest-first), choosing
-// the transcript-file turns over the notification-derived turns when richer.
-func (s *Server) appAllTurns(threadID string) ([]appwire.Turn, error) {
-	notificationTurns := appTurnsFromNotifications(s.AppNotificationsAfter(0, threadID))
-	transcriptTurns, err := s.appTurnsFromTranscript()
-	if err != nil {
-		return nil, err
+func (s *Server) appProjectionThreadID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.appThreadID != "" {
+		return s.appThreadID
 	}
-	if useTranscriptTurns(transcriptTurns, notificationTurns) {
-		return transcriptTurns, nil
-	}
-	return notificationTurns, nil
+	return s.status.SessionID
 }
 
-func (s *Server) appNotificationTurns(threadID string) ([]appwire.Turn, *appTurnSnapshot) {
+// appAllTurns returns the whole installed snapshot for threadID, oldest-first.
+// It is the one authority: thread/read, the latest window, and older pages all
+// derive from this slice, so they cannot disagree with each other or with what
+// subscribers were sent.
+func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 	s.mu.RLock()
 	snapshot := s.appTurns
-	generation := s.appIdentityGeneration
+	installed := s.appThreadID == threadID && snapshot != nil && snapshot.threadID == threadID
 	s.mu.RUnlock()
-	return s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
-}
-
-func (s *Server) appNotificationTurnsForIdentity(threadID string, snapshot *appTurnSnapshot, generation uint64) ([]appwire.Turn, *appTurnSnapshot) {
-	if snapshot == nil || snapshot.threadID != threadID || !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, snapshot
+	if !installed {
+		return nil
 	}
-	for {
-		window := s.appNotifier.RetainedWindow(threadID)
-		turns := snapshot.ReconcileAndSnapshot(window.LowerSeq, window.Records)
-		if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-			return nil, snapshot
-		}
-		if s.appNotifier.RetainedWindowCurrent(window.UpperSeq) {
-			if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-				return nil, snapshot
-			}
-			return turns, snapshot
-		}
-	}
-}
-
-func (s *Server) appReadIdentity(threadID string) (*appTurnSnapshot, uint64, func() string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.appThreadID != threadID || s.appTurns == nil || s.appTurns.threadID != threadID {
-		return nil, 0, nil, false
-	}
-	return s.appTurns, s.appIdentityGeneration, s.transcriptPathFn, true
-}
-
-func (s *Server) appReadIdentityCurrent(threadID string, snapshot *appTurnSnapshot, generation uint64) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.appThreadID == threadID && s.appTurns == snapshot && s.appIdentityGeneration == generation
-}
-
-func transcriptPathFrom(fn func() string) string {
-	if fn == nil {
-		return ""
-	}
-	return strings.TrimSpace(fn())
-}
-
-func validatedTranscriptPath(threadID, path string) string {
-	if path == "" {
-		return ""
-	}
-	header := transcriptHeader(path, 128<<20)
-	if header.SessionID != "" && header.SessionID != threadID {
-		return ""
-	}
-	return path
+	return snapshot.Snapshot()
 }
 
 func transcriptHeader(path string, maxLineBytes int) transcript.Header {
@@ -340,116 +465,23 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 	}
 }
 
-func (s *Server) transcriptPath() string {
-	s.mu.RLock()
-	fn := s.transcriptPathFn
-	s.mu.RUnlock()
-	if fn == nil {
-		return ""
-	}
-	return strings.TrimSpace(fn())
+// appLatestTurns windows the newest limit turns out of the installed snapshot
+// and returns the cursor for the page before them. A limit of zero or less
+// returns the whole thread with no cursor.
+func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
+	return appwire.WindowTurns(s.appAllTurns(threadID), limit)
 }
 
-func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string, error) {
-	if limit <= 0 {
-		turns, err := s.appAllTurns(threadID)
-		if err != nil {
-			return nil, "", err
-		}
-		turns, cursor := appwire.WindowTurns(turns, limit)
-		return turns, cursor, nil
-	}
-	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
-	if !ok {
-		return nil, "", nil
-	}
-	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, "", nil
-	}
-	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, "", nil
-	}
-	if path == "" {
-		turns, cursor := appwire.WindowTurns(notificationTurns, limit)
-		return turns, cursor, nil
-	}
-	transcriptTurns, cursor, err := transcriptTurnCache.LatestFromFile(path, 128<<20, limit, projectBoundedDaemonTranscriptTurn)
-	if err != nil {
-		return nil, "", err
-	}
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, "", nil
-	}
-	transcriptCount := len(transcriptTurns)
-	if cursor != "" {
-		if older, err := strconv.Atoi(cursor); err == nil {
-			transcriptCount += older
-		}
-	}
-	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
-	if authoritative {
-		return transcriptTurns, cursor, nil
-	}
-	turns, cursor := appwire.WindowTurns(notificationTurns, limit)
-	return turns, cursor, nil
-}
-
-func (s *Server) appPageTurns(threadID, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
-	if limit <= 0 {
-		turns, err := s.appAllTurns(threadID)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, err
-		}
-		return appwire.PageTurns(turns, cursor, limit), nil
-	}
-	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
-	if !ok {
-		return appwire.ThreadTurnsListResponse{}, nil
-	}
-	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}, nil
-	}
-	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}, nil
-	}
-	if path == "" {
-		return appwire.PageTurns(notificationTurns, cursor, limit), nil
-	}
-	page, err := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	transcriptCount, err := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}, nil
-	}
-	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
-	if authoritative {
-		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
-	}
-	return appwire.PageTurns(notificationTurns, cursor, limit), nil
+// appPageTurns pages backward through the installed snapshot from cursor.
+func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
+	return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
 }
 
 // handleAppThreadTurnsList pages turns backward (older) for lazy transcript
 // loading. The web client seeds the latest window via thread/read(TurnLimit)
 // and walks back with this as the user scrolls up.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit)
-}
-
-func (s *Server) appTurnsFromTranscript() ([]appwire.Turn, error) {
-	path := s.transcriptPath()
-	if path == "" {
-		return nil, nil
-	}
-	return appTurnsFromTranscriptFile(path)
+	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit), nil
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -783,6 +815,7 @@ func (s *Server) appThread() appwire.Thread {
 	qdfn := s.queueDepthFn
 	qifn := s.queueIDsFn
 	qtfn := s.queueTextsFn
+	cmpfn := s.clientMutationProjectionFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	ftcfn := s.failedToolCallsFn
@@ -819,27 +852,32 @@ func (s *Server) appThread() appwire.Thread {
 		diagnostics = appDiagnosticsFromDetailedStatus(ds)
 	}
 	queue := appwire.QueueState{}
-	if qpfn != nil {
-		if preview := qpfn(); len(preview) > 0 {
-			queue.Preview = append([]string(nil), preview...)
-			queue.Depth = len(preview)
+	var pendingMutations []appwire.PendingMutation
+	if cmpfn != nil {
+		queue, pendingMutations = cmpfn()
+	} else {
+		if qpfn != nil {
+			if preview := qpfn(); len(preview) > 0 {
+				queue.Preview = append([]string(nil), preview...)
+				queue.Depth = len(preview)
+			}
 		}
-	}
-	if qifn != nil && queue.Depth > 0 {
-		if ids := qifn(); len(ids) == queue.Depth {
-			queue.IDs = append([]string(nil), ids...)
+		if qifn != nil && queue.Depth > 0 {
+			if ids := qifn(); len(ids) == queue.Depth {
+				queue.IDs = append([]string(nil), ids...)
+			}
 		}
-	}
-	if qtfn != nil && queue.Depth > 0 {
-		if texts := qtfn(); len(texts) == queue.Depth {
-			queue.Texts = append([]string(nil), texts...)
+		if qtfn != nil && queue.Depth > 0 {
+			if texts := qtfn(); len(texts) == queue.Depth {
+				queue.Texts = append([]string(nil), texts...)
+			}
 		}
-	}
-	// Fall back to depthFn when preview isn't wired (some tests stub only
-	// the depth callback). Without this we'd silently drop authoritative
-	// depth information.
-	if queue.Depth == 0 && qdfn != nil {
-		queue.Depth = qdfn()
+		// Fall back to depthFn when preview isn't wired (some tests stub only
+		// the depth callback). Without this we'd silently drop authoritative
+		// depth information.
+		if queue.Depth == 0 && qdfn != nil {
+			queue.Depth = qdfn()
+		}
 	}
 	var goalState *appwire.GoalState
 	if gsfn != nil {
@@ -918,6 +956,7 @@ func (s *Server) appThread() appwire.Thread {
 			Capabilities:          s.appCapabilities(status.State, processing),
 			Diagnostics:           diagnostics,
 			Queue:                 queue,
+			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
 			Usage:                 usage,

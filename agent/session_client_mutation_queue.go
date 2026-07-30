@@ -29,6 +29,62 @@ type clientMutationTranscriptItems struct {
 	Failure      bool
 }
 
+// ClientMutationProjection returns the reconstructible retry-safe queue and
+// pending-input view from one durable mutation-store generation.
+func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
+	if s == nil || s.clientMutations == nil {
+		return appwire.QueueState{}, nil
+	}
+	snapshot := s.clientMutations.snapshot()
+	queue := appwire.QueueState{
+		Depth:    len(snapshot.InputQueue),
+		Revision: snapshot.QueueRevision,
+	}
+	if len(snapshot.InputQueue) > 0 {
+		queue.Preview = make([]string, len(snapshot.InputQueue))
+		queue.IDs = make([]string, len(snapshot.InputQueue))
+		queue.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
+		queue.Texts = make([]string, len(snapshot.InputQueue))
+	}
+	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
+	for id, pending := range snapshot.PendingExecutions {
+		if pending.ExecutionState == "incorporated" &&
+			(pending.Method == clientMutationMethodStart || pending.Method == clientMutationMethodQueue) {
+			continue
+		}
+		pending.Input = cloneClientMutationInput(pending.Input)
+		pending.QueueEntryIDs = append([]string(nil), pending.QueueEntryIDs...)
+		pendingByID[id] = pending
+	}
+	for i, entry := range snapshot.InputQueue {
+		queued := queuedInputFromClientMutation(entry)
+		queue.Preview[i] = queuedEntryPreviewLine(queued)
+		queue.IDs[i] = entry.ID
+		queue.ClientMutationIDs[i] = entry.ClientMutationID
+		queue.Texts[i] = queued.Text
+		if _, exists := pendingByID[entry.ClientMutationID]; exists {
+			continue
+		}
+		record := snapshot.Journal[entry.ClientMutationID]
+		pendingByID[entry.ClientMutationID] = appwire.PendingMutation{
+			ClientMutationID: entry.ClientMutationID,
+			Method:           record.Method,
+			Input:            cloneClientMutationInput(entry.Input),
+			ExecutionState:   record.ExecutionState,
+			QueueEntryIDs:    []string{entry.ID},
+			ProjectionState:  record.ProjectionState,
+		}
+	}
+	pending := make([]appwire.PendingMutation, 0, len(pendingByID))
+	for _, mutation := range pendingByID {
+		pending = append(pending, mutation)
+	}
+	slices.SortFunc(pending, func(a, b appwire.PendingMutation) int {
+		return strings.Compare(a.ClientMutationID, b.ClientMutationID)
+	})
+	return queue, pending
+}
+
 func (s *Session) ensureClientMutationStore() error {
 	s.clientMutationsInitMu.Lock()
 	defer s.clientMutationsInitMu.Unlock()
@@ -85,7 +141,7 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 		snapshot.BudgetReservations[params.ClientMutationID] = clientMutationBudgetReservation{Slots: 1}
 		return nil
 	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		response = appwire.TurnQueueResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied)}
+		response = appwire.TurnQueueResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -96,7 +152,7 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 			Input:            cloneClientMutationInput(params.Input),
 		})
 		snapshot.QueueRevision++
-		applyClientMutationRecord(record, result)
+		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
 	if err != nil {
@@ -278,13 +334,13 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 		record.ExecutionState = "accepted"
 		return nil
 	}, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		response = appwire.TurnSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied)}
+		response = appwire.TurnSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
 		}
 		addPendingSteering(snapshot, record, params.Input)
-		applyClientMutationRecord(record, result)
+		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
 	if err != nil {
@@ -367,13 +423,13 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		steeringInput := combineClientMutationInputs(entries, params.Input)
 		snapshot.InputQueue = remaining
 		snapshot.QueueRevision++
-		response = appwire.TurnDrainAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied)}
+		response = appwire.TurnDrainAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
 		}
 		addPendingSteering(snapshot, record, steeringInput)
-		applyClientMutationRecord(record, result)
+		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
 	if err != nil {
@@ -469,13 +525,13 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")
-		response = appwire.TurnPromoteQueuedAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied)}
+		response = appwire.TurnPromoteQueuedAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
 		}
 		addPendingSteering(snapshot, record, entry.Input)
-		applyClientMutationRecord(record, result)
+		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
 	if err != nil {
@@ -542,9 +598,8 @@ func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (a
 		response = appwire.TurnCancelQueuedResponse{
 			RemovedText:   queued.Text,
 			RemovedImages: len(queued.Images),
-			Receipt:       mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied),
+			Receipt:       mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method)),
 		}
-		response.Receipt.ProjectionState = appwire.MutationProjectionRemoved
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -589,21 +644,58 @@ func reserveClientMutationTurnID(snapshot *clientMutationSnapshot, record *clien
 	record.StableTurnID = fmt.Sprintf("turn_%d", snapshot.NextTurnSequence)
 }
 
-func mutationReceipt(threadID string, record clientMutationRecord, disposition appwire.MutationDisposition) appwire.MutationReceipt {
+// acceptedClientMutationProjection reports the projection state a mutation
+// carries the moment it is accepted. Accepted input is durable, but nothing in
+// authoritative state describes it until transcript incorporation, so the
+// input-bearing methods report pending: a client told `reflected` here would
+// drop its optimistic copy while no authoritative item had replaced it.
+// Interrupt and cancel are terminal at acceptance -- their whole effect is
+// already carried by state the client can read.
+//
+// This is the only place the method-to-state mapping lives. Call sites pass the
+// result rather than repeating the switch.
+func acceptedClientMutationProjection(method string) appwire.MutationProjectionState {
+	switch method {
+	case clientMutationMethodStart,
+		clientMutationMethodSteer,
+		clientMutationMethodQueue,
+		clientMutationMethodDrain,
+		clientMutationMethodPromote:
+		return appwire.MutationProjectionPending
+	case clientMutationMethodInterrupt:
+		return appwire.MutationProjectionReflected
+	case clientMutationMethodCancel:
+		return appwire.MutationProjectionRemoved
+	default:
+		// An unrecognized method has not proven its effect is visible.
+		return appwire.MutationProjectionPending
+	}
+}
+
+func mutationReceipt(
+	threadID string,
+	record clientMutationRecord,
+	disposition appwire.MutationDisposition,
+	projectionState appwire.MutationProjectionState,
+) appwire.MutationReceipt {
 	return appwire.MutationReceipt{
 		ClientMutationID: record.ClientMutationID,
 		Disposition:      disposition,
 		ThreadID:         threadID,
 		TurnID:           record.StableTurnID,
 		QueueEntryIDs:    append([]string(nil), record.StableQueueEntryIDs...),
-		ProjectionState:  appwire.MutationProjectionReflected,
+		ProjectionState:  projectionState,
 	}
 }
 
-func applyClientMutationRecord(record *clientMutationRecord, result json.RawMessage) {
+func applyClientMutationRecord(
+	record *clientMutationRecord,
+	result json.RawMessage,
+	projectionState appwire.MutationProjectionState,
+) {
 	record.OperationState = clientMutationOperationApplied
 	record.ExecutionState = "accepted"
-	record.ProjectionState = appwire.MutationProjectionReflected
+	record.ProjectionState = projectionState
 	record.Result = append(json.RawMessage(nil), result...)
 }
 
@@ -614,7 +706,7 @@ func addPendingSteering(snapshot *clientMutationSnapshot, record *clientMutation
 		Input:            cloneClientMutationInput(input),
 		ExecutionState:   "accepted",
 		TurnID:           record.StableTurnID,
-		ProjectionState:  appwire.MutationProjectionReflected,
+		ProjectionState:  acceptedClientMutationProjection(record.Method),
 	}
 	snapshot.SteeringOrder = append(snapshot.SteeringOrder, record.ClientMutationID)
 }
@@ -784,7 +876,11 @@ func (s *Session) restoreDurableClientMutationQueues() {
 				}
 				snapshot.BudgetReservations[id] = clientMutationBudgetReservation{TurnID: pending.TurnID, Slots: 1}
 				delete(snapshot.PendingExecutions, id)
-				record.ProjectionState = appwire.MutationProjectionReflected
+				// This claim crashed before its transcript item landed, so
+				// restore reconstitutes it back onto the plain input queue --
+				// the same not-yet-visible state a fresh queue entry starts
+				// in, not the reflected state a genuine incorporation earns.
+				record.ProjectionState = acceptedClientMutationProjection(record.Method)
 			} else {
 				pending.ExecutionState = "accepted"
 				snapshot.PendingExecutions[id] = pending

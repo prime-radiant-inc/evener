@@ -2,8 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
-	"sort"
 	"strings"
 	"sync"
 
@@ -13,58 +13,86 @@ import (
 	"primeradiant.com/serf/internal/apptranscript"
 )
 
-func useTranscriptTurns(transcriptTurns, notificationTurns []appwire.Turn) bool {
-	if len(transcriptTurns) == 0 {
-		return false
-	}
-	if len(notificationTurns) == 0 {
-		return true
-	}
-	if len(transcriptTurns) > len(notificationTurns) {
-		return true
-	}
-	return notificationTurns[0].ID != "turn_1"
-}
-
-// transcriptTurnCache memoizes transcript-file parsing by file identity so the
-// repeated reads driven by lazy turn paging don't re-parse the whole transcript
-// each page. One daemon serves one session, so a small cache suffices.
-var transcriptTurnCache = apptranscript.NewTurnCache()
+// appTranscriptMaxLineBytes bounds a single transcript line. It is the same
+// ceiling the hub's reader uses; a line beyond it is a corrupt file, not a
+// large turn.
+const appTranscriptMaxLineBytes = 128 << 20
 
 var (
 	appTurnsEnsureTurnHook   func(string) bool
 	appTurnsItemForDeltaHook func(*appwire.ThreadItem)
 )
 
-func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, error) {
+// appTurnsFromTranscriptFile projects a whole session transcript into AppWire
+// turns. This runs once per identity, at PrepareAppIdentity time, and never on
+// a read: the installed snapshot is the sole authority for every daemon turn
+// read, so nothing reopens this file to answer an RPC.
+//
+// It also reports the highest entry index the projection consumed. Persisted
+// turn ids are "turn_<entry index>", so that figure is the floor a live
+// projector's own turn counter has to start above.
+func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 	toolNames := map[string]string{}
-	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return projectTranscriptTurn(turn, turnID, entryIndex, toolNames)
+	entries := 0
+	turns, err := apptranscript.TurnsFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		if entryIndex > entries {
+			entries = entryIndex
+		}
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, nil)
 	})
-}
-
-// projectTranscriptTurn projects an already-decoded transcript turn (decoded
-// once by apptranscript's own reader, not here — kata j13r) into AppWire
-// items.
-func projectTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, nil)
-}
-
-func projectBoundedDaemonTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return projectTranscriptTurn(turn, turnID, entryIndex, toolNames)
+	return turns, entries, err
 }
 
 type appTurnSnapshot struct {
-	mu            sync.Mutex
-	threadID      string
-	limit         int
-	cursor        uint64
-	retainedLower uint64
-	records       []appserver.SequencedNotification
-	turns         []appwire.Turn
-	turnIndex     map[string]int
+	mu        sync.Mutex
+	threadID  string
+	turns     []appwire.Turn
+	turnIndex map[string]int
+	// activeTurnID names the turn steering ITEMS attach to. Steering is the one
+	// notification that does not carry its own turn ID, so the reducer has to
+	// remember which turn is in flight.
+	//
+	// This deliberately answers a different question from the daemon's
+	// s.appActiveTurnID, published as thread.serf.activeTurnId. That field
+	// answers "is a turn in flight or reserved?" and is set from
+	// AppEventProjector.ReserveTurnID before any turn/started notification
+	// exists, so it can name a RESERVED turn that is absent from turns
+	// entirely -- it gates capabilities, not item placement. A steering item
+	// cannot attach to a reserved turn: there is no turn object to append to,
+	// and fabricating one would publish a turn the daemon never started. Do
+	// not collapse the two fields into one.
+	activeTurnID string
 }
 
+// Seed installs a full projection as the snapshot's starting state, replacing
+// anything already reduced. The caller keeps ownership of turns: every turn and
+// nested item is deep-cloned, so later mutation of the argument cannot reach
+// installed state.
+func (s *appTurnSnapshot) Seed(turns []appwire.Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.turns = make([]appwire.Turn, len(turns))
+	s.turnIndex = make(map[string]int, len(turns))
+	s.activeTurnID = ""
+	for i := range turns {
+		s.turns[i] = cloneAppTurn(turns[i])
+		s.turnIndex[s.turns[i].ID] = i
+		// The last in-progress turn wins. This does not arise from a transcript
+		// projection -- apptranscript stamps every turn completed or failed, so
+		// a transcript seed always leaves activeTurnID empty -- but a seed taken
+		// from a wire snapshot (thread.turns) can carry one, and there the most
+		// recent in-progress turn is the one still streaming.
+		if s.turns[i].Status == appwire.TurnStatusInProgress {
+			s.activeTurnID = s.turns[i].ID
+		}
+	}
+}
+
+// Apply reduces committed notification records into snapshot state, in the
+// order they were committed. Notification retention is transport replay only:
+// a record evicted from the notifier's replay window has already been reduced
+// here and stays part of the thread.
 func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,45 +100,8 @@ func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 }
 
 func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification) {
-	var appended []appserver.SequencedNotification
-	rebuild := false
-	for _, record := range records {
-		if s.retainedLower > 0 && record.Seq < s.retainedLower {
-			continue
-		}
-		if record.Seq <= s.cursor {
-			found := false
-			for _, retained := range s.records {
-				if retained.Seq == record.Seq {
-					found = true
-					break
-				}
-			}
-			if found {
-				continue
-			}
-			rebuild = true
-		} else {
-			s.cursor = record.Seq
-		}
-		s.records = append(s.records, record)
-		appended = append(appended, record)
-	}
-	if len(appended) == 0 {
+	if len(records) == 0 {
 		return
-	}
-	apply := appended
-	if rebuild {
-		sort.Slice(s.records, func(i, j int) bool { return s.records[i].Seq < s.records[j].Seq })
-		s.turns = nil
-		s.turnIndex = nil
-		apply = s.records
-	}
-	if s.limit > 0 && len(s.records) > s.limit {
-		s.records = append([]appserver.SequencedNotification(nil), s.records[len(s.records)-s.limit:]...)
-		s.turns = nil
-		s.turnIndex = nil
-		apply = s.records
 	}
 	if s.turnIndex == nil {
 		s.turnIndex = map[string]int{}
@@ -178,7 +169,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 		return &turn.Items[len(turn.Items)-1]
 	}
 
-	for _, record := range apply {
+	for _, record := range records {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
 			var params appwire.TurnStartedParams
@@ -189,6 +180,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			if turn == nil {
 				continue
 			}
+			s.activeTurnID = params.Turn.ID
 			if params.Turn.ItemsView != "" {
 				turn.ItemsView = params.Turn.ItemsView
 			}
@@ -254,40 +246,77 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 				turn.DurationMS = params.Turn.DurationMS
 			}
 			turn.Error = params.Turn.Error
+			if s.activeTurnID == params.Turn.ID {
+				s.activeTurnID = ""
+			}
 			for _, item := range params.Turn.Items {
 				upsertItem(params.Turn.ID, item)
 			}
-		}
-	}
-}
-
-func (s *appTurnSnapshot) Cursor() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cursor
-}
-
-func (s *appTurnSnapshot) ReconcileAndSnapshot(lowerSeq uint64, records []appserver.SequencedNotification) []appwire.Turn {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.retainedLower = lowerSeq
-	exact := len(s.records) == len(records)
-	if exact {
-		for i := range records {
-			if s.records[i].Seq != records[i].Seq {
-				exact = false
-				break
+		case appwire.NotifyAgentMessageReset:
+			// A retried model call discards the partial it already streamed.
+			// Only the named item on the named turn goes; an unknown turn is
+			// left alone rather than fabricated, since there would be nothing
+			// to remove from it.
+			//
+			// This trusts params.TurnID, where the frontend's findItemTurnId
+			// falls back to the active turn and then scans every turn. The
+			// stricter lookup is safe because the projector stamps the reset
+			// with its own activeTurnID and only emits one while an assistant
+			// item is open (internal/appprojector/appwire_projection.go), and
+			// every site that clears activeTurnID clears that item too -- so a
+			// reset naming an absent or empty turn is not reachable.
+			var params appwire.AgentMessageResetParams
+			if json.Unmarshal(record.Notification.Params, &params) != nil || params.ItemID == "" {
+				continue
 			}
+			idx, ok := s.turnIndex[params.TurnID]
+			if !ok {
+				continue
+			}
+			turn := &s.turns[idx]
+			for i := range turn.Items {
+				if turn.Items[i].ID == params.ItemID {
+					turn.Items = append(turn.Items[:i], turn.Items[i+1:]...)
+					break
+				}
+			}
+		case appwire.NotifySerfSteeringInjected:
+			// Steering carries no turn ID: the daemon only injects into the
+			// turn already in flight. With no active turn there is nowhere
+			// wire-true to put it, and inventing one would publish a turn the
+			// daemon never started -- that race is recovered by the next
+			// authoritative snapshot instead.
+			var params appwire.SerfSteeringInjectedParams
+			if json.Unmarshal(record.Notification.Params, &params) != nil {
+				continue
+			}
+			idx, ok := s.turnIndex[s.activeTurnID]
+			if s.activeTurnID == "" || !ok {
+				continue
+			}
+			turn := &s.turns[idx]
+			// Index per turn, not globally, matching the frontend reducer
+			// (cmd/serf-hub/frontend/src/protocol/reducer.ts:777-790) and the
+			// transcript reload shape it mirrors.
+			steeringCount := 0
+			for i := range turn.Items {
+				if turn.Items[i].Type == "steering" {
+					steeringCount++
+				}
+			}
+			turn.Items = append(turn.Items, appwire.ThreadItem{
+				Type:             "steering",
+				ID:               fmt.Sprintf("item_steering_live_%s_%d", s.activeTurnID, steeringCount),
+				TurnID:           s.activeTurnID,
+				Text:             params.Text,
+				Images:           params.Images,
+				Status:           appwire.TurnStatusCompleted,
+				Source:           params.Source,
+				SteeringKind:     params.Kind,
+				ClientMutationID: params.ClientMutationID,
+			})
 		}
 	}
-	if !exact {
-		s.cursor = 0
-		s.records = nil
-		s.turns = nil
-		s.turnIndex = nil
-		s.applyLocked(records)
-	}
-	return s.snapshotLocked()
 }
 
 func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
@@ -333,6 +362,8 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone := item
 	clone.StartedAt = cloneInt64(item.StartedAt)
 	clone.CompletedAt = cloneInt64(item.CompletedAt)
+	clone.DurationMS = cloneInt64(item.DurationMS)
+	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
 	clone.OutputImages = append([]appwire.OutputImage(nil), item.OutputImages...)
 	clone.Images = make([]appwire.InputItem, len(item.Images))
@@ -370,15 +401,12 @@ func cloneJSONCompatible(value any) any {
 	return clone
 }
 
+// appTurnsFromNotifications reduces records into a fresh snapshot, in the order
+// given. It is the reference reduction used to check a notification stream
+// independently of whatever the installed snapshot already holds.
 func appTurnsFromNotifications(records []appserver.SequencedNotification) []appwire.Turn {
-	// This is the legacy/reference input-order projector. Supplied sequence values
-	// are irrelevant here; production sequenced reduction uses Apply directly.
-	sequenced := append([]appserver.SequencedNotification(nil), records...)
-	for i := range sequenced {
-		sequenced[i].Seq = uint64(i + 1)
-	}
 	snapshot := &appTurnSnapshot{}
-	snapshot.Apply(sequenced)
+	snapshot.Apply(records)
 	return snapshot.Snapshot()
 }
 

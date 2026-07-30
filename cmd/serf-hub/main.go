@@ -321,6 +321,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	cfg.Addr = hubListener.Addr().String()
 
+	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("load deletion state: %w", err)
+	}
+
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
@@ -333,6 +339,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Archive:             archive,
 		Favorite:            favorite,
 		Spawner:             spawner,
+		DeletionStore:       deletionStore,
 		Models:              models,
 		PastPerPage:         cfg.PastResultsPerPage,
 		StateDir:            stateDir,

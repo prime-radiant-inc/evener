@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/rendezvous"
 )
 
 const webTestSessionID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -719,6 +720,286 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 }
 
+func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("stop deletion after durable fence")
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".future-artifact" {
+			return injected
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	cfg := hubcore.WebConfig{
+		HubStateRoot: root,
+		StateDir:     root,
+		Past:         past,
+		Roster:       hubcore.NewRosterWithEntries(),
+	}
+	web := NewWebServer(cfg)
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
+		t.Fatalf("failed cleanup removed later session state: %v", err)
+	}
+	deletionStatePath := filepath.Join(root, "deletions", "state.json")
+	raw, err := os.ReadFile(deletionStatePath)
+	if err != nil {
+		t.Fatalf("read durable deleting state: %v", err)
+	}
+	if !strings.Contains(string(raw), `"state":"deleting"`) {
+		t.Fatalf("durable state after cleanup failure = %s, want deleting", raw)
+	}
+
+	removeProjectSessionFile = oldRemove
+	restoredPast := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := restoredPast.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewWebServer(hubcore.WebConfig{
+		HubStateRoot: root,
+		StateDir:     root,
+		Past:         restoredPast,
+		Roster:       hubcore.NewRosterWithEntries(),
+	})
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("startup did not resume deleting target cleanup: %v", err)
+	}
+	raw, err = os.ReadFile(deletionStatePath)
+	if err != nil {
+		t.Fatalf("read durable deleted state: %v", err)
+	}
+	if !strings.Contains(string(raw), `"state":"deleted"`) {
+		t.Fatalf("durable state after resumed cleanup = %s, want deleted", raw)
+	}
+}
+
+func TestProjectDeleteRequestResumesCommittedDeletionWithoutPastEntry(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		HubStateRoot: root,
+		StateDir:     root,
+		Past:         past,
+		Roster:       hubcore.NewRosterWithEntries(),
+	})
+	oldRemoveDir := removeProjectSessionDir
+	removeProjectSessionDir = func(string) error {
+		return errors.New("stop after flat session cleanup")
+	}
+	t.Cleanup(func() { removeProjectSessionDir = oldRemoveDir })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	first := httptest.NewRecorder()
+	web.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first delete status=%d body=%s", first.Code, first.Body.String())
+	}
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := past.Find(webTestSessionID); ok {
+		t.Fatal("flat cleanup left deleted session in Past")
+	}
+
+	removeProjectSessionDir = oldRemoveDir
+	second := httptest.NewRecorder()
+	web.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
+	if second.Code != http.StatusOK {
+		t.Fatalf("retry delete status=%d body=%s", second.Code, second.Body.String())
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := store.TargetState(localAppRef(webTestSessionID), webTestSessionID)
+	if !ok || state != hubcore.DeletionStateDeleted {
+		t.Fatalf("retry deletion state = %q, %v, want deleted", state, ok)
+	}
+}
+
+func TestProjectDeleteDeletionStateResumesEveryCleanupArtifact(t *testing.T) {
+	for _, step := range []string{
+		"session-directory",
+		"mutation",
+		"queue",
+		"task",
+		"rendezvous",
+		"api-log",
+		"past-index",
+	} {
+		t.Run(step, func(t *testing.T) {
+			root := t.TempDir()
+			projectDir := filepath.Join(root, "work")
+			if err := os.MkdirAll(projectDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			project, err := identifier.ResolveProject(projectDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stateDir := filepath.Join(root, "projects", project.ID)
+			writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+			for _, kind := range []string{"mutations", "queues", "tasks"} {
+				if err := os.MkdirAll(filepath.Join(stateDir, kind), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(stateDir, kind, webTestSessionID+".json"), []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runDir := filepath.Join(root, "run")
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID:       4242,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws://127.0.0.1:1/rpc",
+				SourceID:  "local",
+				ThreadID:  webTestSessionID,
+				SessionID: webTestSessionID,
+			})
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+
+			oldRemoveFile := removeProjectSessionFile
+			oldRemoveDir := removeProjectSessionDir
+			oldRemoveRendezvous := removeProjectSessionRendezvousEntry
+			oldRebuildPast := rebuildProjectDeletionPast
+			t.Cleanup(func() {
+				removeProjectSessionFile = oldRemoveFile
+				removeProjectSessionDir = oldRemoveDir
+				removeProjectSessionRendezvousEntry = oldRemoveRendezvous
+				rebuildProjectDeletionPast = oldRebuildPast
+			})
+			failStep := true
+			injected := errors.New("stop deletion at " + step)
+			removeProjectSessionFile = func(path string) error {
+				if failStep {
+					switch step {
+					case "mutation":
+						if path == filepath.Join(stateDir, "mutations", webTestSessionID+".json") {
+							return injected
+						}
+					case "queue":
+						if path == filepath.Join(stateDir, "queues", webTestSessionID+".json") {
+							return injected
+						}
+					case "task":
+						if path == filepath.Join(stateDir, "tasks", webTestSessionID+".json") {
+							return injected
+						}
+					case "api-log":
+						if path == filepath.Join(stateDir, "sessions", webTestSessionID+".api.jsonl") {
+							return injected
+						}
+					}
+				}
+				return oldRemoveFile(path)
+			}
+			removeProjectSessionDir = func(path string) error {
+				if failStep && step == "session-directory" {
+					return injected
+				}
+				return oldRemoveDir(path)
+			}
+			removeProjectSessionRendezvousEntry = func(dir string, pid int) error {
+				if failStep && step == "rendezvous" {
+					return injected
+				}
+				return oldRemoveRendezvous(dir, pid)
+			}
+			rebuildProjectDeletionPast = func(past *hubcore.PastIndex) (bool, error) {
+				if failStep && step == "past-index" {
+					return false, injected
+				}
+				return oldRebuildPast(past)
+			}
+
+			cfg := hubcore.WebConfig{
+				HubStateRoot: root,
+				StateDir:     root,
+				RunDir:       runDir,
+				Past:         past,
+				Roster:       hubcore.NewRosterWithEntries(),
+			}
+			web := NewWebServer(cfg)
+			body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+			first := httptest.NewRecorder()
+			web.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
+			wantFirstStatus := http.StatusOK
+			if step == "past-index" {
+				wantFirstStatus = http.StatusInternalServerError
+			}
+			if first.Code != wantFirstStatus {
+				t.Fatalf("first delete status=%d body=%s", first.Code, first.Body.String())
+			}
+			store, err := hubcore.NewDeletionStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, ok := store.TargetState(localAppRef(webTestSessionID), webTestSessionID); !ok || state != hubcore.DeletionStateDeleting {
+				t.Fatalf("failed %s cleanup state = %q, %v, want deleting", step, state, ok)
+			}
+
+			failStep = false
+			restoredPast := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := restoredPast.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			_ = NewWebServer(hubcore.WebConfig{
+				HubStateRoot: root,
+				StateDir:     root,
+				RunDir:       runDir,
+				Past:         restoredPast,
+				Roster:       hubcore.NewRosterWithEntries(),
+			})
+			store, err = hubcore.NewDeletionStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, ok := store.TargetState(localAppRef(webTestSessionID), webTestSessionID); !ok || state != hubcore.DeletionStateDeleted {
+				t.Fatalf("resumed %s cleanup state = %q, %v, want deleted", step, state, ok)
+			}
+		})
+	}
+}
+
 func TestProjectDeletePreservesDecisionsWhenSessionDirectoryRemovalFails(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -939,6 +1220,8 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	favorite.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("favorite delete setup failure")})
 	pokes := 0
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		HubStateRoot:  root,
+		StateDir:      root,
 		Past:          past,
 		Archive:       archive,
 		Favorite:      favorite,
@@ -988,6 +1271,20 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	// that the removed artifact was restored.
 	assertProjectDeleteDecisionPresent(t, dbPath, "session", webTestSessionID, true)
 	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
+
+	favorite.SetFs(afero.NewOsFs())
+	if err := web.resumeProjectDeletions(); err != nil {
+		t.Fatalf("resume deletion after favorite recovery: %v", err)
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, ok := store.TargetState(localAppRef(webTestSessionID), webTestSessionID); !ok || state != hubcore.DeletionStateDeleted {
+		t.Fatalf("decision retry state = %q, %v, want deleted", state, ok)
+	}
+	assertProjectDeleteDecisionAbsent(t, dbPath, "session", webTestSessionID)
+	assertProjectDeleteDecisionAbsent(t, dbPath, "project", project.ID)
 }
 
 func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t *testing.T) {

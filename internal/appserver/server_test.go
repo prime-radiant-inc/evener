@@ -3,6 +3,10 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -392,6 +396,1020 @@ func TestReplaceSubscriptionsScopesConnectionToLatestThread(t *testing.T) {
 	}
 	if !conn.server.subs.IsSubscribed(conn.ID(), "th_new") {
 		t.Fatal("connection was not subscribed to new thread")
+	}
+}
+
+func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-snapshot")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	var projectedMu sync.Mutex
+	projectedText := ""
+	notifier := NewNotifier(10)
+	snapshotCloneEntered := make(chan struct{})
+	releaseSnapshotClone := make(chan struct{})
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				close(snapshotCloneEntered)
+				<-releaseSnapshotClone
+				projectedMu.Lock()
+				defer projectedMu.Unlock()
+				response = snapshotResponse{Text: projectedText}
+				return true
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}),
+		)
+	}()
+	<-snapshotCloneEntered
+
+	eventStarted := make(chan struct{})
+	eventCommitted := make(chan struct{})
+	go func() {
+		close(eventStarted)
+		server.CommitProjection(func() []SequencedNotification {
+			projectedMu.Lock()
+			projectedText += "delta"
+			projectedMu.Unlock()
+			record := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"})
+			return []SequencedNotification{record}
+		})
+		close(eventCommitted)
+	}()
+	<-eventStarted
+	close(releaseSnapshotClone)
+	<-eventCommitted
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+
+	conn.closeSend()
+	var messages []appwire.Message
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	combined := ""
+	for _, msg := range messages {
+		switch {
+		case msg.Response != nil:
+			got, ok := msg.Response.Result.(snapshotResponse)
+			if !ok {
+				t.Fatalf("snapshot result = %T, want snapshotResponse", msg.Response.Result)
+			}
+			combined += got.Text
+		case msg.Notification != nil:
+			var params appwire.AgentMessageDeltaParams
+			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
+				t.Fatalf("decode delta: %v", err)
+			}
+			combined += params.Delta
+		default:
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	}
+	if combined != "delta" {
+		t.Fatalf("snapshot plus released deltas = %q, want one append-only delta", combined)
+	}
+}
+
+func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-matching-response")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/matching-response", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	snapshotResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/matching-response", struct{}{}),
+	)
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+
+	unrelatedResponse := appwire.ResponseMessage(appwire.NewIntID(2), struct{}{})
+	if err := conn.enqueueResponse(context.Background(), unrelatedResponse); err != nil {
+		t.Fatalf("enqueue unrelated response: %v", err)
+	}
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after unrelated response = %d, want response only", got)
+	}
+	if unrelated := <-conn.send; unrelated.Response == nil || unrelated.IDString() != "2" {
+		t.Fatalf("unrelated delivery = %+v, want unrelated response", unrelated)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), snapshotResponse); err != nil {
+		t.Fatalf("enqueue snapshot response: %v", err)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Response == nil || first.IDString() != "1" {
+		t.Fatalf("first matching delivery = %+v, want snapshot response", first)
+	}
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("second matching delivery = %+v, want released post-cut delta", second)
+	}
+}
+
+func TestAtomicRejoinResponseEnqueueCancellationRestoresSubscription(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-canceled-response")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/canceled-response", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					resumed := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !resumed {
+						t.Error("abort ran before the previous live subscription was restored")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	snapshotResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/canceled-response", struct{}{}),
+	)
+	for i := 0; i < cap(conn.send); i++ {
+		if !conn.enqueue(appwire.NotificationMessage("fill", map[string]any{"i": i})) {
+			t.Fatal("fill enqueue failed")
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := conn.enqueueResponse(canceled, snapshotResponse); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enqueue canceled response = %v, want context canceled", err)
+	}
+	for len(conn.send) > 0 {
+		<-conn.send
+	}
+
+	server.Broadcast("th_1", "after-cancel", struct{}{})
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after canceled hydration = %d, want resumed live delivery", got)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), snapshotResponse); err != nil {
+		t.Fatalf("late enqueue response: %v", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after repeated terminal signal = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffCommitsAfterMatchingResponseEnqueue(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-commit")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-commit", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					released := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !released {
+						t.Error("commit ran before the hydration capture was released")
+					}
+					commits.Add(1)
+				},
+				Abort: func() {
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(11), "test/handoff-commit", struct{}{}),
+	)
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks before response enqueue = %d, want 0", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), appwire.ResponseMessage(appwire.NewIntID(12), struct{}{})); err != nil {
+		t.Fatalf("enqueue unrelated response: %v", err)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks after unrelated response = %d, want 0", got)
+	}
+	<-conn.send
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue matching response: %v", err)
+	}
+	if got := commits.Load(); got != 1 {
+		t.Fatalf("commit callbacks = %d, want 1", got)
+	}
+	if got := aborts.Load(); got != 0 {
+		t.Fatalf("abort callbacks = %d, want 0", got)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Response == nil || first.IDString() != "11" || second.Notification == nil {
+		t.Fatalf("matching delivery = [%+v, %+v], want response then released notification", first, second)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue repeated matching response: %v", err)
+	}
+	server.unregisterConnection(conn)
+	if got := commits.Load(); got != 1 {
+		t.Fatalf("commit callbacks after repeated terminal signals = %d, want 1", got)
+	}
+	if got := aborts.Load(); got != 0 {
+		t.Fatalf("abort callbacks after commit = %d, want 0", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffAbortsFailedCaptureAfterRestoringOwnership(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-capture-failure")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-capture-failure", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			func() uint64 { return 0 },
+			func() bool { return false },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					restored := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !restored {
+						t.Error("capture failure abort ran before ownership was restored")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("failed snapshot capture succeeded")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(21), "test/handoff-capture-failure", struct{}{}),
+	)
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response after capture failure: %v", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after response = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffRequiresResponseConnection(t *testing.T) {
+	var snapshotCalled atomic.Bool
+	var commits atomic.Int32
+	var aborts atomic.Int32
+
+	captured := CaptureSubscriptionWithHandoff(
+		context.Background(),
+		false,
+		func() string { return "th_1" },
+		func() uint64 { return 0 },
+		func() bool {
+			snapshotCalled.Store(true)
+			return true
+		},
+		CaptureSubscriptionHandoff{
+			Commit: func() { commits.Add(1) },
+			Abort:  func() { aborts.Add(1) },
+		},
+	)
+
+	if captured {
+		t.Fatal("handoff capture without a response connection succeeded")
+	}
+	if snapshotCalled.Load() {
+		t.Fatal("snapshot ran without a response connection")
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-legacy-error")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	HandleTyped(server.Router(), "test/legacy-error", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, appwire.InvalidRequest("snapshot unavailable")
+	})
+
+	errorResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(24), "test/legacy-error", struct{}{}),
+	)
+	if errorResponse.Error == nil {
+		t.Fatalf("handler response = %+v, want error", errorResponse)
+	}
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+		}
+	})
+
+	if err := conn.enqueueResponse(context.Background(), errorResponse); err != nil {
+		t.Fatalf("enqueue error response: %v", err)
+	}
+	if got := len(conn.send); got != 2 {
+		t.Fatalf("messages after legacy error response = %d, want error then released post-cut delta", got)
+	}
+	first := <-conn.send
+	second := <-conn.send
+	if first.Error == nil || first.IDString() != "24" {
+		t.Fatalf("first delivery = %+v, want matching error response", first)
+	}
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("second delivery = %+v, want released post-cut delta", second)
+	}
+}
+
+func TestCaptureSubscriptionHandoffAbortsMatchingErrorResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-error")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-error", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					server.subs.mu.RLock()
+					sub := server.subs.byConn[conn.id]["th_1"]
+					restored := sub != nil && !sub.buffering
+					server.subs.mu.RUnlock()
+					if !restored {
+						t.Error("error response abort ran before ownership was restored")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, appwire.InvalidRequest("snapshot unavailable")
+	})
+
+	errorResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(25), "test/handoff-error", struct{}{}),
+	)
+	if errorResponse.Error == nil {
+		t.Fatalf("handler response = %+v, want error", errorResponse)
+	}
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "held"}),
+		}
+	})
+
+	if err := conn.enqueueResponse(context.Background(), errorResponse); err != nil {
+		t.Fatalf("enqueue error response: %v", err)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after error response = %d, want error without held delta", got)
+	}
+	if msg := <-conn.send; msg.Error == nil || msg.IDString() != "25" {
+		t.Fatalf("error delivery = %+v, want matching error", msg)
+	}
+
+	server.Broadcast("th_1", "after-error", struct{}{})
+	if got := len(conn.send); got != 1 {
+		t.Fatalf("messages after error abort = %d, want resumed live delivery", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffUnregisterWithdrawsBeforeAbort(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-unregister")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	var commits atomic.Int32
+	var aborts atomic.Int32
+	HandleTyped(server.Router(), "test/handoff-unregister", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscriptionWithHandoff(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			func() uint64 { return 0 },
+			func() bool { return true },
+			CaptureSubscriptionHandoff{
+				Commit: func() {
+					commits.Add(1)
+				},
+				Abort: func() {
+					if server.subs.IsSubscribed(conn.id, "th_1") {
+						t.Error("unregister abort ran before subscription withdrawal")
+					}
+					aborts.Add(1)
+				},
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(31), "test/handoff-unregister", struct{}{}),
+	)
+	server.unregisterConnection(conn)
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("commit callbacks = %d, want 0", got)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks = %d, want 1", got)
+	}
+	if err := conn.enqueueResponse(context.Background(), response); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enqueue after unregister = %v, want context canceled", err)
+	}
+	if got := aborts.Load(); got != 1 {
+		t.Fatalf("abort callbacks after repeated terminal signal = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffSupersessionFencesStaleResponse(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-handoff-supersession")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	var firstCommits atomic.Int32
+	var firstAborts atomic.Int32
+	var secondCommits atomic.Int32
+	var firstGeneration uint64
+	install := func(method string, handoff CaptureSubscriptionHandoff) {
+		HandleTyped(server.Router(), method, func(ctx context.Context, _ struct{}) (struct{}, error) {
+			if !CaptureSubscriptionWithHandoff(
+				ctx,
+				false,
+				func() string { return "th_1" },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				handoff,
+			) {
+				t.Fatal("snapshot subscription was rejected")
+			}
+			return struct{}{}, nil
+		})
+	}
+	install("test/handoff-first", CaptureSubscriptionHandoff{
+		Commit: func() { firstCommits.Add(1) },
+		Abort: func() {
+			server.subs.mu.RLock()
+			sub := server.subs.byConn[conn.id]["th_1"]
+			firstWithdrawn := sub == nil || sub.generation != firstGeneration
+			server.subs.mu.RUnlock()
+			if !firstWithdrawn {
+				t.Error("superseded abort ran before the first generation was withdrawn")
+			}
+			firstAborts.Add(1)
+		},
+	})
+	install("test/handoff-second", CaptureSubscriptionHandoff{
+		Commit: func() { secondCommits.Add(1) },
+		Abort:  func() { t.Error("second handoff unexpectedly aborted") },
+	})
+
+	firstResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(41), "test/handoff-first", struct{}{}),
+	)
+	server.subs.mu.RLock()
+	firstGeneration = server.subs.byConn[conn.id]["th_1"].generation
+	server.subs.mu.RUnlock()
+	secondResponse := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(42), "test/handoff-second", struct{}{}),
+	)
+	if got := firstAborts.Load(); got != 1 {
+		t.Fatalf("first abort callbacks after supersession = %d, want 1", got)
+	}
+
+	if err := conn.enqueueResponse(context.Background(), firstResponse); err != nil {
+		t.Fatalf("enqueue stale first response: %v", err)
+	}
+	if got := firstCommits.Load(); got != 0 {
+		t.Fatalf("stale first commits = %d, want 0", got)
+	}
+	<-conn.send
+	if err := conn.enqueueResponse(context.Background(), secondResponse); err != nil {
+		t.Fatalf("enqueue second response: %v", err)
+	}
+	if got := secondCommits.Load(); got != 1 {
+		t.Fatalf("second commits = %d, want 1", got)
+	}
+}
+
+func TestCaptureSubscriptionHandoffCommitAbortRaceHasOneWinner(t *testing.T) {
+	for i := range 100 {
+		server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+		conn := server.NewConnection(fmt.Sprintf("conn-handoff-race-%d", i))
+		server.registerConnection(conn)
+		conn.setInitialized()
+
+		var commits atomic.Int32
+		var aborts atomic.Int32
+		HandleTyped(server.Router(), "test/handoff-race", func(ctx context.Context, _ struct{}) (struct{}, error) {
+			if !CaptureSubscriptionWithHandoff(
+				ctx,
+				false,
+				func() string { return "th_1" },
+				func() uint64 { return 0 },
+				func() bool { return true },
+				CaptureSubscriptionHandoff{
+					Commit: func() { commits.Add(1) },
+					Abort:  func() { aborts.Add(1) },
+				},
+			) {
+				t.Fatal("snapshot subscription was rejected")
+			}
+			return struct{}{}, nil
+		})
+		response := conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(51), "test/handoff-race", struct{}{}),
+		)
+
+		start := make(chan struct{})
+		var racers sync.WaitGroup
+		racers.Add(2)
+		go func() {
+			defer racers.Done()
+			<-start
+			_ = conn.enqueueResponse(context.Background(), response)
+		}()
+		go func() {
+			defer racers.Done()
+			<-start
+			server.unregisterConnection(conn)
+		}()
+		close(start)
+		racers.Wait()
+
+		if got := commits.Load() + aborts.Load(); got != 1 {
+			t.Fatalf("iteration %d terminal callbacks = %d (commit=%d abort=%d), want exactly 1", i, got, commits.Load(), aborts.Load())
+		}
+		if commits.Load() > 1 || aborts.Load() > 1 {
+			t.Fatalf("iteration %d repeated callback: commit=%d abort=%d", i, commits.Load(), aborts.Load())
+		}
+	}
+}
+
+func TestAtomicRejoinBeforeSubscriberInsertionIncludesDeltaOnceInSnapshot(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-before-insert")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	var projectedText string
+	notifier := NewNotifier(10)
+	beforeSubscriberInsertion := make(chan struct{})
+	releaseSubscriberInsertion := make(chan struct{})
+	server.beforeSubscriptionRegistration = func() {
+		close(beforeSubscriberInsertion)
+		<-releaseSubscriberInsertion
+	}
+	HandleTyped(server.Router(), "test/before-insert", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				response.Text = projectedText
+				return true
+			},
+		) {
+			t.Fatal("snapshot subscription was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/before-insert", struct{}{}),
+		)
+	}()
+	<-beforeSubscriberInsertion
+
+	server.CommitProjection(func() []SequencedNotification {
+		projectedText += "delta"
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"}),
+		}
+	})
+	close(releaseSubscriberInsertion)
+
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	conn.closeSend()
+	messages := make([]appwire.Message, 0)
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	if len(messages) != 1 || messages[0].Response == nil {
+		t.Fatalf("delivery = %+v, want snapshot response only", messages)
+	}
+	got, ok := messages[0].Response.Result.(snapshotResponse)
+	if !ok {
+		t.Fatalf("snapshot result = %T, want snapshotResponse", messages[0].Response.Result)
+	}
+	if got.Text != "delta" {
+		t.Fatalf("snapshot text = %q, want append-only delta once", got.Text)
+	}
+}
+
+func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
+	subscriptions := NewSubscriptions()
+	subscriptions.beginBuffered("conn", "th_1", false, 7)
+	for seq := uint64(1); seq <= 2; seq++ {
+		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	if !subscriptions.SetCut("conn", "th_1", 7, 2) {
+		t.Fatal("set snapshot cut failed")
+	}
+	for seq := uint64(3); seq <= 4; seq++ {
+		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	records, ok := subscriptions.Release("conn", "th_1", 7)
+	if !ok {
+		t.Fatal("release snapshot generation failed")
+	}
+	if len(records) != 2 || records[0].Seq != 3 || records[1].Seq != 4 {
+		t.Fatalf("released sequences = %#v, want [3 4] in producer order", records)
+	}
+}
+
+// TestSnapshotCutReleasesBroadcastToBufferingSubscriber pins the sequence
+// Broadcast allocates for itself. A relay frame, a serf/thread/resync, or the
+// synthesized failed turn/completed that replaces a dead spinner all reach a
+// subscriber through Broadcast, and each is silent when lost. With no sequence
+// of its own the record carries Seq 0, which never clears a non-zero cut, so
+// every one that lands inside a hydration window is discarded on release.
+func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-broadcast-cut")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	// Advance the notifier so the capture's cut is non-zero, which is the only
+	// state a live thread is ever in by the time a client rejoins it.
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "before"}),
+		}
+	})
+	if cut := notifier.CurrentSequence(); cut == 0 {
+		t.Fatal("cut is zero; the test cannot tell a dropped record from a released one")
+	}
+
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Error("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}),
+	)
+
+	server.Broadcast("th_1", appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{ThreadID: "th_1"})
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	conn.closeSend()
+
+	var methods []string
+	for msg := range conn.send {
+		if msg.Notification != nil {
+			methods = append(methods, msg.Notification.Method)
+		}
+	}
+	if len(methods) != 1 || methods[0] != appwire.NotifySerfThreadResync {
+		t.Fatalf("released notifications = %v, want one %s", methods, appwire.NotifySerfThreadResync)
+	}
+}
+
+// TestSnapshotCutAbortsCaptureWhoseRequestContextDied pins the pre-check that
+// runs between setting the cut and registering the response finalizer. A
+// request whose context died while the snapshot was being taken can never have
+// its response enqueued as a commit, so registering a hydration for it would
+// leave the connection buffering on the outcome of a race in enqueueResponse's
+// select. The capture must instead be rejected and the previous ownership --
+// here, live delivery -- restored.
+func TestSnapshotCutAbortsCaptureWhoseRequestContextDied(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-dead-request")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	captured := true
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		captured = CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				// The client goes away while the daemon is still cloning. This
+				// runs under the projection gate, so the cancellation is ordered
+				// strictly between the cut and the finalizer registration.
+				cancelRequest()
+				return true
+			},
+		)
+		return struct{}{}, nil
+	})
+
+	conn.HandleMessage(requestCtx, appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}))
+	if captured {
+		t.Fatal("capture succeeded for a request whose context was already cancelled")
+	}
+
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "after"}),
+		}
+	})
+	conn.closeSend()
+
+	delivered := 0
+	for msg := range conn.send {
+		if msg.Notification != nil {
+			delivered++
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("live notifications after aborted capture = %d, want 1", delivered)
+	}
+}
+
+// TestSnapshotCutWithdrawalFencesSupersededGeneration pins withdrawBuffered's
+// generation check. A withdrawal names the generation it opened; without the
+// check a late one would tear down whichever capture happens to be installed
+// now, restoring that older attempt's rollback over a newer, live hydration.
+func TestSnapshotCutWithdrawalFencesSupersededGeneration(t *testing.T) {
+	subscriptions := NewSubscriptions()
+	subscriptions.Subscribe("conn", "th_1")
+	stale := subscriptions.beginBuffered("conn", "th_1", false, 1)
+	subscriptions.beginBuffered("conn", "th_1", false, 2)
+
+	if subscriptions.withdrawBuffered("conn", "th_1", 1, stale) {
+		t.Fatal("superseded withdrawal reported success against a newer generation")
+	}
+
+	subscriptions.Route(SequencedNotification{Seq: 5, ThreadID: "th_1"})
+	records, ok := subscriptions.Release("conn", "th_1", 2)
+	if !ok {
+		t.Fatal("the newer generation is no longer buffering; the stale withdrawal tore it down")
+	}
+	if len(records) != 1 || records[0].Seq != 5 {
+		t.Fatalf("released records = %#v, want the one record routed after supersession", records)
+	}
+}
+
+func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-replace")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_old")
+
+	type snapshotResponse struct {
+		Text string `json:"text"`
+	}
+	notifier := NewNotifier(10)
+	var projectedMu sync.Mutex
+	projectedText := ""
+	snapshotCloneEntered := make(chan struct{})
+	releaseSnapshotClone := make(chan struct{})
+	HandleTyped(server.Router(), "test/replace-snapshot", func(ctx context.Context, _ struct{}) (snapshotResponse, error) {
+		var response snapshotResponse
+		if !CaptureSubscription(
+			ctx,
+			true,
+			func() string { return "th_new" },
+			notifier.CurrentSequence,
+			func() bool {
+				close(snapshotCloneEntered)
+				<-releaseSnapshotClone
+				projectedMu.Lock()
+				defer projectedMu.Unlock()
+				response.Text = projectedText
+				return true
+			},
+		) {
+			t.Fatal("replacement snapshot was rejected")
+		}
+		return response, nil
+	})
+
+	responseReady := make(chan appwire.Message, 1)
+	go func() {
+		responseReady <- conn.HandleMessage(
+			context.Background(),
+			appwire.RequestMessage(appwire.NewIntID(1), "test/replace-snapshot", struct{}{}),
+		)
+	}()
+	<-snapshotCloneEntered
+
+	eventStarted := make(chan struct{})
+	eventCommitted := make(chan struct{})
+	go func() {
+		close(eventStarted)
+		server.CommitProjection(func() []SequencedNotification {
+			projectedMu.Lock()
+			projectedText += "new"
+			projectedMu.Unlock()
+			return []SequencedNotification{
+				notifier.Record("th_new", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "new"}),
+			}
+		})
+		close(eventCommitted)
+	}()
+	<-eventStarted
+	close(releaseSnapshotClone)
+	<-eventCommitted
+
+	response := <-responseReady
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+
+	conn.closeSend()
+	var messages []appwire.Message
+	for msg := range conn.send {
+		messages = append(messages, msg)
+	}
+	if len(messages) != 2 || messages[0].Response == nil || messages[1].Notification == nil {
+		t.Fatalf("replacement delivery = %+v, want response then post-cut notification", messages)
+	}
+	if server.subs.IsSubscribed(conn.ID(), "th_old") || !server.subs.IsSubscribed(conn.ID(), "th_new") {
+		t.Fatalf("replacement ownership: old=%v new=%v", server.subs.IsSubscribed(conn.ID(), "th_old"), server.subs.IsSubscribed(conn.ID(), "th_new"))
 	}
 }
 

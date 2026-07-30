@@ -29,6 +29,7 @@ type Client struct {
 	pendingMu     sync.Mutex
 	pending       map[string]pendingRequest
 	notifications chan Notification
+	orderedFrames func(Message, error)
 	pendingCoord  PendingCoordinator
 	featuresMu    sync.RWMutex
 	features      FeatureSet
@@ -78,11 +79,18 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 		for {
 			msg, err := c.transport.Recv(ctx)
 			if err != nil {
+				if c.orderedFrames != nil {
+					c.orderedFrames(msg, err)
+				}
 				c.failPending(err)
 				close(c.notifications)
 				return
 			}
 			if msg.Notification != nil {
+				if c.orderedFrames != nil {
+					c.orderedFrames(msg, nil)
+					continue
+				}
 				if !c.enqueueNotification(*msg.Notification) {
 					c.failPending(ErrNotificationOverflow)
 					_ = c.transport.Close()
@@ -97,10 +105,21 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 			delete(c.pending, id)
 			c.pendingMu.Unlock()
 			if pending.ch != nil {
+				if c.orderedFrames != nil {
+					c.orderedFrames(msg, nil)
+				}
 				pending.ch <- msg
 			}
 		}
 	}()
+}
+
+// SetOrderedFrameHandler transfers notification delivery to a synchronous
+// receive-loop observer while retaining normal response correlation. It exists
+// for clients whose correctness depends on the response frame being an exact
+// cut marker in the same ordered feed. Set it before Start.
+func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
+	c.orderedFrames = handler
 }
 
 // runClientKeepalive pings the peer every interval and closes the transport if

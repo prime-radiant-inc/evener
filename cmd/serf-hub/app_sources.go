@@ -24,10 +24,81 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 }
 
 func sourceForThreadWithManagedLaunch(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	return withDeletionTargetOwnership(cfg, ref, threadID, "", func() (appsource.Source, error) {
+		return sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, ref, threadID)
+	})
+}
+
+func sourceForThreadWithManagedLaunchUnlocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
 	if sourceID, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
 	}
 	return sourceForThread(sources, ref, threadID)
+}
+
+func withDeletionTargetOwnership[R any](
+	cfg hubcore.WebConfig,
+	ref, threadID, clientMutationID string,
+	action func() (R, error),
+) (R, error) {
+	unlock := lockDeletionTarget(cfg, ref, threadID)
+	defer unlock()
+	if err := deletionFenceError(cfg, ref, threadID, clientMutationID); err != nil {
+		var zero R
+		return zero, err
+	}
+	return action()
+}
+
+func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {
+	if cfg.ResumeLocks == nil {
+		return func() {}
+	}
+	threadID = deletionThreadID(ref, threadID)
+	if threadID == "" {
+		return func() {}
+	}
+	lock := cfg.ResumeLocks.For(threadID)
+	lock.Lock()
+	return lock.Unlock
+}
+
+func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
+	if cfg.DeletionStore == nil {
+		return nil
+	}
+	if _, deleted := cfg.DeletionStore.TargetState(ref, threadID); !deleted {
+		return nil
+	}
+	if ref == "" {
+		ref = localAppRef(threadID)
+	}
+	return appwire.WireError{
+		Code:    appwire.CodeUnavailable,
+		Message: "target has been deleted: " + ref,
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    appwire.ErrorActionUnavailable,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+			RetryDisposition: appwire.RetryDispositionNone,
+		},
+	}
+}
+
+func isTargetDeletedError(err error) bool {
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		return false
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	return ok && data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+}
+
+func deletionThreadID(ref, threadID string) string {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" {
+		return parsed.ThreadID
+	}
+	return threadID
 }
 
 func managedLaunchSourceIDForRef(cfg hubcore.WebConfig, ref string) (string, bool) {

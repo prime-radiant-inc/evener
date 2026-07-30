@@ -410,48 +410,162 @@ Library.
 - Modify: `cmd/serf-hub/app_rpc.go`
 - Modify: `cmd/serf-hub/app_relay.go`
 - Modify: `cmd/serf-hub/internal/appsource/source.go`
+- Modify: `cmd/serf-hub/internal/appsource/local_daemon.go`
+- Create: `cmd/serf-hub/internal/appsource/relay_session.go`
 - Modify: `cmd/serf-hub/internal/appsource/codex_source.go`
 - Modify: `cmd/serf-hub/internal/appsource/codex_live_thread.go`
+- Modify: `internal/appserver/server.go`
 - Test: `cmd/serf-hub/app_rpc_test.go`
+- Test: `cmd/serf-hub/app_relay_test.go`
+- Test: `cmd/serf-hub/internal/appsource/relay_session_test.go`
 - Test: `cmd/serf-hub/internal/appsource/codex_source_test.go`
 - Test: `cmd/serf-hub/internal/appsource/transport_seams_test.go`
+- Test: `internal/appserver/server_test.go`
 
 **Interfaces:**
 
-- Source rejoin returns an atomic read/subscription stream for Serf sources
-  instead of Hub `ReadThread` then `SubscribeThread` calls with a gap.
-- Hub buffers relay notifications by hydration generation until its response
-  is installed, then releases them in source order.
+- The source layer owns exactly one canonical `RelaySession` actor for each
+  source/thread pair. Use a narrow Task 7 abstraction, not a generic actor
+  framework.
+- The actor owns the canonical AppWire connection, its ordered notification
+  feed, recovery, connection epochs, serialized snapshot commands, buffering
+  for downstream hydration installation, and idle cleanup.
+- The Hub relay is downstream fanout only. It never opens, merges, or
+  deduplicates a second upstream stream.
+- For an established healthy actor, rejoin issues
+  `thread/read(subscribe: true)` on the actor's canonical connection. The actor
+  buffers that same canonical feed and returns an already-materialized snapshot
+  with a one-shot, epoch-scoped, two-phase downstream hydration handoff token.
+  The token is bound to the source/thread, connection epoch, and serialized
+  snapshot command generation.
+- The actor holds its canonical feed while the handoff token is pending without
+  retaining a global, Hub, relay-map, deletion, appserver projection, or
+  appserver delivery lock. The Hub completes upstream snapshot I/O before it
+  begins downstream appserver capture.
+- Immediately before downstream capture, the Hub calls `Prepare` on the token.
+  `Prepare` validates and logically pins the actor's current connection epoch
+  and snapshot-command generation until the response finalizer resolves. It
+  retains no mutex across capture or response enqueue. Failure to prepare
+  aborts the token and fails the read before a successful response is possible.
+- A transport disconnect after `Prepare` closes the transport and records a
+  deferred epoch transition without invalidating the pinned token. `Commit` or
+  `Abort` applies that transition and starts canonical recovery if listeners
+  remain. The logical pin is per actor and cannot block unrelated threads.
+- The Hub installs the Task 6 downstream capture using only the materialized
+  actor snapshot; no source or network I/O may occur from the capture snapshot
+  callback while appserver projection or delivery locks are held.
+- Successful downstream response enqueue commits the handoff token exactly
+  once, releases only post-cut notifications in producer order, and resumes
+  direct fanout. Capture failure, response enqueue failure, downstream
+  cancellation, connection loss, or hydration supersession first withdraws or
+  invalidates the failed downstream capture and then aborts the token exactly
+  once, resuming the canonical feed for remaining downstream owners without
+  publishing into the failed hydration.
+- Token commit and abort are idempotent and race-safe: exactly one terminal
+  transition wins, the feed resumes or releases exactly once, and stale epoch
+  or superseded command tokens cannot publish. The appserver response finalizer
+  is the linearization point: a completed enqueue selects commit, while
+  failure, cancellation, or supersession that prevents enqueue selects abort;
+  a later competing signal cannot reverse the outcome.
+- Permit the smallest internal-only appserver API needed to register one
+  success-after-response-enqueue callback and one
+  failure/cancellation/supersession callback for the matching hydration
+  generation. Preserve current Task 6 `CaptureSubscription` behavior for
+  existing callers, resolve the callback pair exactly once from response
+  enqueue/unregister/supersession, and do not introduce a generic transaction
+  framework.
+- For a disconnected or recovering actor, rejoin establishes and initializes
+  a new atomic connection and performs `thread/read(subscribe: true)` there.
+  The connection becomes canonical as one epoch transition only when the
+  snapshot has a live subscribed continuation; a snapshot without that
+  continuation is not success.
+- A stale connection epoch cannot publish. Never retain an established normal
+  stream beside a temporary atomic stream, never overlap upstream
+  subscriptions for a source/thread pair, and never merge/deduplicate events
+  from independently ordered streams.
+- Preserve Task 6 appserver atomic capture and response-before-notification
+  ordering. Preserve Task 8 deletion fences during target acquisition,
+  recovery, publication, and idle cleanup.
+- Do not hold the global Hub lock, relay-map lock, deletion/ownership lock, or
+  any unrelated/global lock across network I/O. Independent thread actors must
+  continue to progress while one actor's snapshot is blocked.
 - Codex exposes no mutation or clear capability and forwards no raw
   append-only deltas.
 - Codex live events mark a cached thread dirty. A single-flight full-read loop
   commits a qualified replacement, stays dirty on failure, retries forever
-  with capped backoff, and performs an unconditional read after reconnect.
+  with capped backoff, and performs an unconditional full read after reconnect.
+  Keep its adapter-native initialize shape unchanged.
 
-- [ ] Add a Serf relay RED test in which a notification lands between source
-  subscription and Hub response; prove it is neither lost nor duplicated.
-
-- [ ] Add Codex RED tests for an event racing a read and for the final event's
-  read failing once then succeeding without another upstream event.
+- [ ] Before production changes, add deterministic behavioral RED tests. A
+  compile failure does not count as RED, and correctness assertions must use
+  barriers/channels rather than elapsed-time or timeout expectations. Cover:
+  - notifications immediately before and immediately after the snapshot cut,
+    proving the pre-cut state is represented only by the snapshot and the
+    post-cut notification is delivered exactly once in producer order;
+  - rejoin through an established healthy actor and its existing canonical
+    connection;
+  - between-subscriptions recovery without creating a second upstream stream;
+  - disconnect during rejoin, with no success unless recovery establishes a
+    live continuation;
+  - racing same-thread reads, serialized without overlapping subscriptions;
+  - cancellation before the cut and after the cut, without stranding the actor
+    or its buffered feed;
+  - response enqueue failure and downstream cancellation after capture,
+    proving the hydration capture is withdrawn before the actor handoff aborts,
+    remaining downstream owners resume, and the failed hydration receives no
+    held notification;
+  - a deterministic commit-versus-abort race, proving exactly one terminal
+    result and exactly-once feed release or resume even when either terminal
+    method is repeated;
+  - a late event from a stale connection epoch, proving it cannot publish;
+  - idle shutdown after the last downstream and command owner leave;
+  - unrelated-thread progress while one actor's snapshot command is blocked;
+    and
+  - downstream hydration response first, exactly once, before post-cut
+    notifications.
+- [ ] Add Codex RED tests for an event racing a full-state read and for the
+  final event's read failing once then succeeding without another upstream
+  event. Prove reconnect performs an unconditional full read.
 
   ```bash
-  go test ./cmd/serf-hub ./cmd/serf-hub/internal/appsource -run 'AtomicRejoin|Codex.*FullState|Codex.*Dirty' -count=1
+  go test ./cmd/serf-hub ./cmd/serf-hub/internal/appsource -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Idle|Codex.*FullState|Codex.*Dirty' -count=1
   ```
 
-- [ ] Introduce the smallest source-level atomic-rejoin interface and implement
-  it for `LocalDaemonSource`. Keep adapter-native Codex initialize unchanged.
+- [ ] Implement the per-source/thread `RelaySession` actor for
+  `LocalDaemonSource` and route both steady-state notification fanout and
+  snapshot commands through its one canonical connection. Use explicit
+  connection generations to reject stale publication and serialized commands
+  to define ownership; do not add a generic actor framework.
+
+- [ ] Change the Hub relay to install only downstream captures/fanout around
+  the materialized actor result. Complete upstream snapshot I/O before calling
+  appserver capture; the capture callback must not perform source I/O. Add the
+  narrow internal appserver response-finalization seam and focused tests for
+  success after enqueue, enqueue failure, cancellation/unregister,
+  supersession, and commit-versus-abort races while preserving existing Task 6
+  `CaptureSubscription` behavior. Queue the `thread/read` response before
+  committing the actor token and releasing its post-cut buffer. On failure,
+  withdraw the failed capture before aborting the token. Keep Task 8
+  deletion/ownership locks outside every network operation.
 
 - [ ] Replace Codex notification mapping with the dirty full-state loop and
-  cached qualified replacement/resync notification.
+  cached qualified replacement/resync notification. Keep dirty set until a
+  successful replacement commits; if another change arrives during the read,
+  read again before becoming clean; on failure, retry without requiring another
+  event.
 
 - [ ] Run:
 
   ```bash
+  go test ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=100
+  go test -race ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -run 'RelaySession|AtomicRejoin|SnapshotCut|ConnectionEpoch|Codex.*FullState|Codex.*Dirty' -count=20
   go test ./cmd/serf-hub/internal/appsource ./cmd/serf-hub -count=1
   git diff --check
   ```
 
-- [ ] Commit Hub/source convergence.
+- [ ] Commit the RelaySession actor, downstream-only Hub relay, and Codex
+  replacement convergence with the exact RED/GREEN evidence recorded in the
+  Task 7 report.
 
 ## Task 8: Add the irrevocable host deletion fence
 

@@ -270,6 +270,12 @@ func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	refText := appRefFromRouteID(id)
+	unlockDeletionTarget := lockDeletionTarget(s.cfg, refText, "")
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(s.cfg, refText, "", ""); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
 	source, err := sourceForThread(s.sources, refText, "")
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "session not live")
@@ -305,11 +311,6 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	ref := appRefFromRouteID(id)
-	source, err := sourceForThread(s.sources, ref, "")
-	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "session not live")
-		return
-	}
 	var body struct {
 		Model string `json:"model"`
 	}
@@ -323,6 +324,17 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 	}
 	if err := ensureAPIActionAvailable(s, id, "model"); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, "")
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(s.cfg, ref, "", ""); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
 	if err := source.SetThreadModel(r.Context(), appwire.ThreadModelSetParams{Ref: ref, ModelProvider: provider, Model: model}); err != nil {
@@ -343,16 +355,22 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ref := appRefFromRouteID(id)
-	source, err := sourceForThread(s.sources, ref, "")
-	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "session not live")
-		return
-	}
 	var body struct {
 		ReasoningEffort string `json:"reasoning_effort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, "")
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(s.cfg, ref, "", ""); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "session not live")
 		return
 	}
 	if err := source.SetThreadReasoningEffort(r.Context(), appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: strings.TrimSpace(body.ReasoningEffort)}); err != nil {

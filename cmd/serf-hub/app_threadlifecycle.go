@@ -240,9 +240,6 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 			return source.ResumeThread(ctx, params)
 		}
 	}
-	if cfg.Spawner == nil {
-		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
-	}
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
 		// A non-empty ref was parsed at function entry, so this cannot fail.
@@ -251,6 +248,17 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	if sessionID == "" {
 		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
+	}
+	if cfg.ResumeLocks != nil {
+		lock := cfg.ResumeLocks.For(sessionID)
+		lock.Lock()
+		defer lock.Unlock()
+	}
+	if err := deletionFenceError(cfg, params.Ref, sessionID, ""); err != nil {
+		return appwire.ThreadResumeResponse{}, err
+	}
+	if cfg.Spawner == nil {
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
 	if err != nil {
@@ -261,9 +269,6 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	// the lock, another RPC mutation that also decided to resume waits here
 	// rather than spawning a second daemon for the same exited session.
 	if cfg.ResumeLocks != nil {
-		lock := cfg.ResumeLocks.For(sessionID)
-		lock.Lock()
-		defer lock.Unlock()
 		// Double-check under the lock: a resume that completed while we waited
 		// has already put the session in the roster, so reuse it instead of
 		// spawning again. Only this Hub's exact flag-day protocol establishes
@@ -352,16 +357,23 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if params.Aside {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local serf threads")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.ThreadForkResponse{}, err
-		}
-		if threadForkRequiresTurnCapability(params) {
-			if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "fork"); err != nil {
+		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
+			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			if err != nil {
 				return appwire.ThreadForkResponse{}, err
 			}
-		}
-		return source.ForkThread(ctx, params)
+			if threadForkRequiresTurnCapability(params) {
+				if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "fork"); err != nil {
+					return appwire.ThreadForkResponse{}, err
+				}
+			}
+			return source.ForkThread(ctx, params)
+		})
+	}
+	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
 	}
 	if params.Aside {
 		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {

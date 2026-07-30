@@ -82,6 +82,9 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		lock := s.lockForSession(id)
 		lock.Lock()
 		defer lock.Unlock()
+		if err := deletionFenceError(s.cfg, ref, id, ""); err != nil {
+			return hubcore.LiveEntry{}, err
+		}
 		if le, ok := webRosterFind(s.cfg.Roster, id); ok && !forceResume {
 			return le, nil
 		}
@@ -122,6 +125,11 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			if _, rerr := resolve(forceResume); rerr != nil {
 				return rerr
 			}
+		}
+		unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, id)
+		defer unlockDeletionTarget()
+		if err := deletionFenceError(s.cfg, ref, id, clientMutationID); err != nil {
+			return err
 		}
 		source, err := webSourceForThread(s.sources, ref, "")
 		if err != nil {
@@ -195,12 +203,21 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !s.isLive(id) {
-		http.NotFound(w, r)
+	live := s.isLive(id)
+	if live {
+		if err := s.ensureSessionActionAvailable(id, action); err != nil {
+			writeSessionActionError(w, r, err)
+			return
+		}
+	}
+	unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, "")
+	defer unlockDeletionTarget()
+	if err := deletionFenceError(s.cfg, ref, "", ""); err != nil {
+		writeSessionActionError(w, r, err)
 		return
 	}
-	if err := s.ensureSessionActionAvailable(id, action); err != nil {
-		writeSessionActionError(w, r, err)
+	if !live {
+		http.NotFound(w, r)
 		return
 	}
 	source, err := sourceForThread(s.sources, ref, "")

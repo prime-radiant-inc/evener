@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/coder/websocket"
@@ -22,6 +23,16 @@ type LocalDaemonSource struct {
 	entries  func() []LocalDaemonEntry
 	client   *http.Client
 	dial     appwireDialFunc
+
+	relayMu       sync.Mutex
+	relaySessions map[string]*relaySession
+	legacyRelays  map[string]legacyRelayRead
+}
+
+type legacyRelayRead struct {
+	lease   RelaySessionLease
+	handoff RelayHandoff
+	stop    func() bool
 }
 
 type LocalDaemonEntry struct {
@@ -53,11 +64,86 @@ func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaem
 	if sourceID == "" {
 		sourceID = "local"
 	}
-	return &LocalDaemonSource{sourceID: sourceID, entries: entries, client: client, dial: defaultAppwireDial}
+	return &LocalDaemonSource{
+		sourceID:      sourceID,
+		entries:       entries,
+		client:        client,
+		dial:          defaultAppwireDial,
+		relaySessions: map[string]*relaySession{},
+		legacyRelays:  map[string]legacyRelayRead{},
+	}
 }
 
 func (s *LocalDaemonSource) ID() string {
 	return s.sourceID
+}
+
+func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return nil, err
+	}
+	threadID := entry.ThreadID
+	if entry.SessionID != "" {
+		threadID = entry.SessionID
+	}
+	key := appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
+
+	s.relayMu.Lock()
+	session := s.relaySessions[key]
+	if session != nil {
+		if lease := session.acquire(); lease != nil {
+			s.relayMu.Unlock()
+			return lease, nil
+		}
+		delete(s.relaySessions, key)
+		session = nil
+	}
+	if session == nil {
+		created := newRelaySession(
+			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
+				currentEntry, resolveErr := s.entryForRef(key, "")
+				if resolveErr != nil {
+					return nil, nil, resolveErr
+				}
+				transport, dialErr := s.dial(ctx, currentEntry.Endpoint, s.client, daemonAuthHeader(currentEntry.HubToken))
+				if dialErr != nil {
+					if callerErr := ctx.Err(); callerErr != nil {
+						return nil, nil, callerErr
+					}
+					return nil, nil, localDaemonDialError(dialErr)
+				}
+				client := appwire.NewClient(transport)
+				client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
+					observe(epoch, message, err)
+				})
+				client.Start(ctx)
+				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); initializeErr != nil {
+					_ = transport.Close()
+					if callerErr := ctx.Err(); callerErr != nil {
+						return nil, nil, callerErr
+					}
+					return nil, nil, localDaemonInitializeError(initializeErr)
+				}
+				return client, transport, nil
+			},
+			func(idle *relaySession) {
+				s.relayMu.Lock()
+				if s.relaySessions[key] == idle {
+					delete(s.relaySessions, key)
+				}
+				s.relayMu.Unlock()
+			},
+		)
+		session = created
+		s.relaySessions[key] = session
+	}
+	lease := session.acquire()
+	s.relayMu.Unlock()
+	if lease == nil {
+		return nil, appwire.SessionUnavailable("relay session retired during acquisition")
+	}
+	return lease, nil
 }
 
 func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -72,6 +158,46 @@ func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParam
 }
 
 func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if params.Subscribe {
+		lease, err := s.AcquireRelaySession(params)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		result, err := lease.Read(ctx, params)
+		if err != nil {
+			lease.Close()
+			return appwire.ThreadReadResponse{}, err
+		}
+		key := result.Response.Thread.Serf.Ref
+		if key == "" {
+			key = relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
+		}
+		s.relayMu.Lock()
+		previous := s.legacyRelays[key]
+		pending := legacyRelayRead{lease: lease, handoff: result.Handoff}
+		pending.stop = context.AfterFunc(ctx, func() {
+			s.relayMu.Lock()
+			current := s.legacyRelays[key]
+			if current.lease == lease {
+				delete(s.legacyRelays, key)
+			}
+			s.relayMu.Unlock()
+			if current.lease == lease {
+				current.handoff.Abort()
+				current.lease.Close()
+			}
+		})
+		s.legacyRelays[key] = pending
+		s.relayMu.Unlock()
+		if previous.handoff != nil {
+			if previous.stop != nil {
+				previous.stop()
+			}
+			previous.handoff.Abort()
+			previous.lease.Close()
+		}
+		return result.Response, nil
+	}
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
@@ -352,52 +478,62 @@ func (s *LocalDaemonSource) ListTasks(ctx context.Context, params appwire.TaskLi
 }
 
 func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
-	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	key := relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
+	s.relayMu.Lock()
+	pending := s.legacyRelays[key]
+	delete(s.legacyRelays, key)
+	s.relayMu.Unlock()
+	if pending.stop != nil {
+		pending.stop()
+	}
+
+	lease := pending.lease
+	handoff := pending.handoff
+	var err error
+	if lease == nil {
+		lease, err = s.AcquireRelaySession(params)
+		if err != nil {
+			return nil, err
+		}
+		result, readErr := lease.Read(ctx, params)
+		if readErr != nil {
+			lease.Close()
+			return nil, readErr
+		}
+		handoff = result.Handoff
+	}
+	deliveries, err := lease.Listen(ctx)
 	if err != nil {
+		handoff.Abort()
+		lease.Close()
 		return nil, err
 	}
-	transport, err := s.dial(ctx, entry.Endpoint, s.client, daemonAuthHeader(entry.HubToken))
-	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
-		}
-		return nil, localDaemonDialError(err)
-	}
-	client := appwire.NewClient(transport)
-	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {
-		_ = transport.Close()
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
-		}
-		return nil, localDaemonInitializeError(err)
-	}
-	readParams := params
-	readParams.Subscribe = true
-	if _, err := client.ThreadRead(ctx, readParams); err != nil {
-		_ = transport.Close()
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
-		}
-		return nil, localDaemonSubscribeReadError(err)
-	}
+	handoff.Commit()
 	out := make(chan appwire.Notification, 128)
 	go func() {
 		defer close(out)
-		defer transport.Close() //nolint:errcheck // transport cleanup; error is not actionable
+		defer lease.Close()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case notification, ok := <-client.Notifications():
+			case delivery, ok := <-deliveries:
 				if !ok {
 					return
 				}
-				forwardLocalDaemonNotification(ctx, out, notification)
+				forwardLocalDaemonNotification(ctx, out, delivery.Notification)
+				delivery.Acknowledge()
 			}
 		}
 	}()
 	return out, nil
+}
+
+func relaySessionKey(sourceID, rawRef, threadID string) string {
+	if ref, err := appwire.ParseRef(rawRef); err == nil {
+		return ref.String()
+	}
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 }
 
 func forwardLocalDaemonNotification(ctx context.Context, out chan<- appwire.Notification, notification appwire.Notification) {

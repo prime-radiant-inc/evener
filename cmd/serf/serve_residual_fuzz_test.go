@@ -29,7 +29,6 @@ import (
 type residualServeServer struct {
 	*server.Server
 	input              chan server.InputMessage
-	transcript         func() string
 	escalate           func(string, bool) error
 	compact            func(context.Context) error
 	steer              func(string)
@@ -66,8 +65,7 @@ func newResidualServeServer(cfg server.ServerConfig) *residualServeServer {
 	return &residualServeServer{Server: server.NewServer(cfg), input: make(chan server.InputMessage, 4)}
 }
 
-func (s *residualServeServer) InputCh() <-chan server.InputMessage   { return s.input }
-func (s *residualServeServer) SetTranscriptPathFunc(f func() string) { s.transcript = f }
+func (s *residualServeServer) InputCh() <-chan server.InputMessage { return s.input }
 func (s *residualServeServer) SetSandboxEscalationResolveFunc(f func(string, bool) error) {
 	s.escalate = f
 }
@@ -119,7 +117,6 @@ func (s *residualServeServer) SetShutdownFunc(f func())                         
 
 func exerciseResidualCallbacks(s *residualServeServer) {
 	ctx := context.Background()
-	_ = s.transcript()
 	_ = s.escalate("missing", false)
 	_ = s.compact(ctx)
 	s.steer("x")
@@ -254,16 +251,12 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		d.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) {}
 		d.subscriberCount = func(serveServer, string) int { return 1 }
 		d.observeCallbacks = func(c serveCallbackObserver) {
-			_ = c.transcript()
 			c.notify()
 			if c.subscriberCount() != 1 {
 				t.Fatal("subscriber callback")
 			}
 			_ = c.pendingEscalations()
 			c.setSession(nil)
-			if c.transcript() != "" {
-				t.Fatal("nil session transcript")
-			}
 			c.setSession(c.session)
 		}
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
@@ -298,6 +291,20 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		{"clear session error", func(d *serveDeps) {
 			d.newClearSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
 				return nil, boom
+			}
+		}},
+		// The daemon prepares an identity twice: once at startup, once per
+		// clear. Only the clear-time one may fail here -- a startup failure
+		// aborts runServe before there is a clear callback to drive.
+		{"clear prepare error", func(d *serveDeps) {
+			prepare := d.prepareAppIdentity
+			calls := 0
+			d.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+				calls++
+				if calls > 1 {
+					return server.PreparedAppIdentity{}, boom
+				}
+				return prepare(sourceID, threadID, transcriptPath)
 			}
 		}},
 		{"clear rendezvous error", func(d *serveDeps) { d.updateSessionID = func(*rvreg.Registration, string) error { return boom } }},

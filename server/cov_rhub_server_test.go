@@ -33,32 +33,6 @@ func TestAppStatus(t *testing.T) {
 	}
 }
 
-// useTranscriptTurns decides whether the transcript-file projection or the
-// live-notification projection is authoritative for a thread's turn list.
-func TestUseTranscriptTurns(t *testing.T) {
-	turn := func(id string) appwire.Turn { return appwire.Turn{ID: id} }
-
-	cases := []struct {
-		name        string
-		transcript  []appwire.Turn
-		notify      []appwire.Turn
-		wantUseTran bool
-	}{
-		{"no transcript", nil, []appwire.Turn{turn("turn_1")}, false},
-		{"transcript but no notifications", []appwire.Turn{turn("turn_1")}, nil, true},
-		{"transcript longer than notifications", []appwire.Turn{turn("a"), turn("b")}, []appwire.Turn{turn("turn_1")}, true},
-		{"equal length, notifications start at turn_1", []appwire.Turn{turn("a")}, []appwire.Turn{turn("turn_1")}, false},
-		{"equal length, notifications do not start at turn_1", []appwire.Turn{turn("a")}, []appwire.Turn{turn("turn_9")}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := useTranscriptTurns(tc.transcript, tc.notify); got != tc.wantUseTran {
-				t.Fatalf("useTranscriptTurns=%v, want %v", got, tc.wantUseTran)
-			}
-		})
-	}
-}
-
 // mergeAppThreadItem fills the incoming item's empty fields from the existing
 // one so an update notification never clobbers earlier-observed data.
 func TestMergeAppThreadItem(t *testing.T) {

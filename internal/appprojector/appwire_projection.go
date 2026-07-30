@@ -96,6 +96,24 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	}
 }
 
+// SeedPersistedTurns raises the projector's turn counter so no live turn it
+// mints can collide with a turn id the transcript projection already assigned.
+//
+// Both namespaces are "turn_%d": internal/apptranscript numbers a persisted
+// turn by its ENTRY INDEX, and a fresh projector starts at turn_1. Since the
+// in-memory snapshot became the daemon's only turn authority, a collision is
+// permanent -- the live turn merges into the seeded entry and replaces its
+// content for the life of the session, with nothing left to re-derive it from.
+//
+// It only ever raises the counter, so seeding twice (once from the prepared
+// transcript, once from a restored session's own entry count) is safe and the
+// higher figure wins.
+func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
+	if persistedEntries > p.nextTurn {
+		p.nextTurn = persistedEntries
+	}
+}
+
 func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
@@ -109,16 +127,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
-		// the reload path (internal/apptranscript) already assigned by entry
-		// index to the transcript's persisted entries (kata eptj): a client
-		// that hydrates a resumed thread from disk and then takes live
-		// notifications would otherwise see the first live turn mint an id —
-		// "turn_1" — that already names the session's first persisted entry.
-		// Seeding nextTurn to the persisted entry count (only ever higher than
-		// this fresh projector's zero value) guarantees every subsequently
-		// minted live id is unique against that reload-time snapshot.
-		if data.Restored && data.TranscriptEntries > p.nextTurn {
-			p.nextTurn = data.TranscriptEntries
+		// the transcript projection (internal/apptranscript) already assigned by
+		// entry index to the session's persisted entries (kata eptj). The
+		// daemon fences this when it prepares the identity, before any event
+		// arrives; this is the same fence for a projector whose seed count only
+		// the session knows.
+		if data.Restored {
+			p.SeedPersistedTurns(data.TranscriptEntries)
 		}
 		// A restored session carries its re-derived state on the event (spec
 		// §5.4's "two touchpoints"); a fresh session's State is empty and
@@ -809,9 +824,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// Live-only echo of the persisted TurnModelSwitch marker (N5): the
 		// same text SetModel wrote to the transcript, rendered as a
 		// systemMessage item so an already-connected client sees the marker
-		// immediately rather than waiting for a reload. thread/read prefers
-		// transcript turns on reload/restart, so this notification alone is
-		// not the source of truth — the persisted turn is.
+		// immediately rather than waiting for a reload. The transcript still
+		// carries the marker independently, which is what a daemon restart
+		// seeds its snapshot from; this notification only covers the clients
+		// already attached when the switch happened.
 		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindModelSwitch, "Model switch", data.MarkerText)...)
 		return out
 	case events.EventReasoningEffortChanged:
