@@ -46,10 +46,14 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // that is a lock-safety requirement, not a style choice. Three of its four
 // callers run under s.mu, and emit's first act is activeCausalProvenance(),
 // which takes s.mu — so emitting from in here self-deadlocks a non-reentrant
-// mutex with no concurrency involved at all. Returning the message makes the
-// callee incapable of that, so no present or future caller has to know: the
-// caller emits after it unlocks, and initSessionState buffers instead, because
-// nothing may reach the stream before SESSION_START.
+// mutex with no concurrency involved at all.
+//
+// This RELOCATES the rule, it does not retire it. What the callee can no longer
+// do, the caller now must: report only after unlocking (reportPromptRenderFailure),
+// or buffer instead, which is what initSessionState does because nothing may
+// reach the stream before SESSION_START. Each of the three locked call sites
+// carries its own regression test, because moving the report back inside any one
+// of those critical sections leaves the whole package green otherwise.
 //
 // The empty string means the render succeeded.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) string {
