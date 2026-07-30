@@ -54,24 +54,6 @@ func (tailCoverageTimer) C() <-chan time.Time      { return nil }
 func (tailCoverageTimer) Stop() bool               { return true }
 func (tailCoverageTimer) Reset(time.Duration) bool { return true }
 
-type tailCoverageFailFS struct {
-	afero.Fs
-	fail bool
-}
-
-func (fs *tailCoverageFailFS) Create(name string) (afero.File, error) {
-	f, err := fs.Fs.Create(name)
-	if err != nil {
-		return nil, err
-	}
-	return &tailCoverageFailFile{File: f, fs: fs}, nil
-}
-
-type tailCoverageFailFile struct {
-	afero.File
-	fs *tailCoverageFailFS
-}
-
 type tailCoverageAdapter struct{}
 
 func (tailCoverageAdapter) Name() string { return "google" }
@@ -100,13 +82,6 @@ func (a *tailCoverageBlockingLister) ListModels(context.Context) ([]llm.ModelInf
 	close(a.entered)
 	<-a.release
 	return nil, nil
-}
-
-func (f *tailCoverageFailFile) Write(p []byte) (int, error) {
-	if f.fs.fail {
-		return 0, errors.New("injected transcript write failure")
-	}
-	return f.File.Write(p)
 }
 
 func FuzzSessionGoTailCoverage(f *testing.F) {
@@ -220,7 +195,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 		})
 
 		t.Run("transcript warning branches", func(t *testing.T) {
-			fs := &tailCoverageFailFS{Fs: afero.NewMemMapFs()}
+			fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
 			w, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{})
 			if err != nil {
 				t.Fatalf("NewWriterWithFS: %v", err)
@@ -231,7 +206,9 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			if err := s.appendSteeringTurnDurably("durable", ""); err == nil {
 				t.Fatal("durable append unexpectedly succeeded")
 			}
-			s.appendAssistantTurn(llm.Response{Message: llm.Assistant("assistant")}, ModelAttemptMetadata{})
+			if err := s.appendAssistantTurn(llm.Response{Message: llm.Assistant("assistant")}, ModelAttemptMetadata{}); !errors.Is(err, errInjectedTranscriptWrite) {
+				t.Fatalf("assistant append error = %v, want injected transcript write failure", err)
+			}
 			if got := len(s.events); got != 3 {
 				t.Fatalf("warning events = %d, want 3", got)
 			}

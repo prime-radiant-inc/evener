@@ -1146,7 +1146,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
-func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) {
+func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
@@ -1164,12 +1164,14 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 	}
+	if err := s.writeTranscriptDurable(t); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return err
+	}
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
-	if err := s.writeTranscript(t); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
+	return nil
 }
 
 // maybeAutoSave persists the session metadata if StateDir is configured.

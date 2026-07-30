@@ -638,14 +638,18 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
 func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
-	return s.withResponseSideEffects(ctx, func() {
+	var persistErr error
+	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
 			s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{
 				Model: resp.Model,
 			})
 		}
 		if !skipHistory {
-			s.appendAssistantTurn(resp, finalAttempt)
+			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+			if persistErr != nil {
+				return
+			}
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
@@ -663,7 +667,10 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 		s.mu.Lock()
 		s.modelResponses++
 		s.mu.Unlock()
-	})
+	}); err != nil {
+		return err
+	}
+	return persistErr
 }
 
 // providerWebSearchEnabled reports whether provider-native web search — the
