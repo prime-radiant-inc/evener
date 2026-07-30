@@ -19,38 +19,72 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 		if observer != nil {
 			observer(ev)
 		}
+		// A cheap early-out for an event the daemon does not serve. It is not
+		// the guard: applySessionEventStatus and RecordAppEvent each re-test
+		// acceptance under the lock they mutate, because this one runs unlocked
+		// and an identity can be replaced between it and them.
 		if !srv.acceptsSessionEvent(ev.SessionID) {
 			continue
 		}
+		srv.applySessionEventStatus(ev)
 		srv.RecordAppEvent(ev)
+	}
+}
 
-		switch ev.Kind {
-		case events.EventSessionStart:
-			if d, ok := ev.Data.(events.SessionStartData); ok {
-				srv.UpdateSessionInfo(ev.SessionID, d.Model, d.Profile)
-				if d.State != "" {
-					srv.SetState(d.State)
-				} else {
-					srv.SetState(string(agent.SessionIdle))
-				}
-			}
-		case events.EventAssistantTextEnd:
-			srv.IncrementTurns()
-		case events.EventSessionEnd:
-			if d, ok := ev.Data.(events.SessionEndData); ok {
-				if d.Interrupted {
-					continue
-				}
-				srv.SetProcessing(false)
-				if d.State != "" {
-					srv.SetState(d.State)
-				} else {
-					srv.SetState(string(agent.SessionClosed))
-				}
-			} else {
-				srv.SetProcessing(false)
-				srv.SetState(string(agent.SessionClosed))
-			}
+// applySessionEventStatus writes the status an event announces, before the
+// projection commit that publishes the announcement.
+//
+// Two orderings ride on this one critical section.
+//
+// Status before notification. The two reach a client by different routes: the
+// notification arrives on the subscription, the status it describes is read
+// back from thread/read and /status. Projecting first leaves a window where a
+// client that reduces thread/started and immediately re-reads sees the
+// PREVIOUS session's model, profile and state — and across /clear that window
+// spans a whole identity, because ReplaceAppIdentity has already moved
+// status.SessionID to the replacement while the rest still describes what it
+// replaced.
+//
+// Acceptance with application. The bridge tests acceptance unlocked, so an
+// event admitted a moment before an identity replacement would otherwise write
+// the REPLACED session's metadata on top of the replacement's — a straggling
+// SESSION_START from the session /clear just retired renaming the thread that
+// retired it, with nothing to correct it afterwards. Re-testing here, in the
+// same hold as the writes, drops it instead.
+//
+// It takes only s.mu and notifies nothing: the single notification egress stays
+// RecordAppEvent's projection commit, which acquires projectionMu first.
+func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.acceptsSessionEventLocked(ev.SessionID) {
+		return
+	}
+	switch ev.Kind {
+	case events.EventSessionStart:
+		d, ok := ev.Data.(events.SessionStartData)
+		if !ok {
+			return
+		}
+		s.updateSessionInfoLocked(ev.SessionID, d.Model, d.Profile)
+		s.status.State = d.State
+		if d.State == "" {
+			s.status.State = string(agent.SessionIdle)
+		}
+	case events.EventAssistantTextEnd:
+		s.status.Turns++
+	case events.EventSessionEnd:
+		d, ok := ev.Data.(events.SessionEndData)
+		if ok && d.Interrupted {
+			// An interrupted end closes nothing: the session stays live and the
+			// cancelled turn is still unwinding. The event is still projected by
+			// the caller — only its status effects are skipped.
+			return
+		}
+		s.setProcessingLocked(false)
+		s.status.State = string(agent.SessionClosed)
+		if ok && d.State != "" {
+			s.status.State = d.State
 		}
 	}
 }

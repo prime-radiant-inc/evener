@@ -353,10 +353,14 @@ func (s *Server) GetStatus() StatusInfo {
 // UpdateSessionInfo sets session identity fields.
 func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Lock()
+	s.updateSessionInfoLocked(sessionID, model, profile)
+	s.mu.Unlock()
+}
+
+func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
 	s.status.Profile = profile
-	s.mu.Unlock()
 }
 
 // SetWorkingDir sets the working directory exposed in /status.
@@ -747,6 +751,11 @@ type InputRequest struct {
 // it — so the id minted here is the one the real turn goes on to use.
 func (s *Server) SetProcessing(processing bool) {
 	s.mu.Lock()
+	s.setProcessingLocked(processing)
+	s.mu.Unlock()
+}
+
+func (s *Server) setProcessingLocked(processing bool) {
 	s.processing = processing
 	if processing {
 		// The empty check is belt-and-braces, not load-bearing: ReserveTurnID
@@ -761,7 +770,6 @@ func (s *Server) SetProcessing(processing bool) {
 		}
 		s.appReservedTurnID = ""
 	}
-	s.mu.Unlock()
 }
 
 // InputCh returns the channel that receives user input messages.

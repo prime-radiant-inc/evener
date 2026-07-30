@@ -22,7 +22,7 @@ import (
 
 func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
 	t.Helper()
-	turns, err := appTurnsFromTranscriptFile(path)
+	turns, _, err := appTurnsFromTranscriptFile(path)
 	if err != nil {
 		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
 	}

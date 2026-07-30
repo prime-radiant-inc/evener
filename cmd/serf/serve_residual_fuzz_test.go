@@ -293,6 +293,20 @@ func TestRunServeResidualCoverage(t *testing.T) {
 				return nil, boom
 			}
 		}},
+		// The daemon prepares an identity twice: once at startup, once per
+		// clear. Only the clear-time one may fail here -- a startup failure
+		// aborts runServe before there is a clear callback to drive.
+		{"clear prepare error", func(d *serveDeps) {
+			prepare := d.prepareAppIdentity
+			calls := 0
+			d.prepareAppIdentity = func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error) {
+				calls++
+				if calls > 1 {
+					return server.PreparedAppIdentity{}, boom
+				}
+				return prepare(sourceID, threadID, transcriptPath)
+			}
+		}},
 		{"clear rendezvous error", func(d *serveDeps) { d.updateSessionID = func(*rvreg.Registration, string) error { return boom } }},
 	} {
 		t.Run(clearCase.name, func(t *testing.T) {

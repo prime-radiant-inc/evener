@@ -27,11 +27,20 @@ var (
 // turns. This runs once per identity, at PrepareAppIdentity time, and never on
 // a read: the installed snapshot is the sole authority for every daemon turn
 // read, so nothing reopens this file to answer an RPC.
-func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, error) {
+//
+// It also reports the highest entry index the projection consumed. Persisted
+// turn ids are "turn_<entry index>", so that figure is the floor a live
+// projector's own turn counter has to start above.
+func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 	toolNames := map[string]string{}
-	return apptranscript.TurnsFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	entries := 0
+	turns, err := apptranscript.TurnsFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		if entryIndex > entries {
+			entries = entryIndex
+		}
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, nil)
 	})
+	return turns, entries, err
 }
 
 type appTurnSnapshot struct {

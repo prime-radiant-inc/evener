@@ -57,7 +57,9 @@ var serveAttachSessionAPILogger = cmdutil.AttachSessionAPILogger
 
 type serveServer interface {
 	http.Handler
-	SetAppIdentity(string, string)
+	// ReplaceAppIdentity is the only way serve installs an identity: both the
+	// startup install and /clear publish a PreparedAppIdentity, so every
+	// fallible step has already happened by the time anything is announced.
 	ReplaceAppIdentity(server.PreparedAppIdentity, func())
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
 	SetCompactFunc(func(context.Context) error)
@@ -129,8 +131,13 @@ type serveDeps struct {
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
 	newClearSession  func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
-	updateSessionID  func(*rvreg.Registration, string) error
-	observeCallbacks func(serveCallbackObserver)
+	// prepareAppIdentity projects a session's transcript into an installable
+	// AppWire identity. It is the one fallible step of an identity swap, so it
+	// is injectable: a test needs a deterministic preparation failure to prove
+	// /clear abandons a half-built session instead of publishing it.
+	prepareAppIdentity func(sourceID, threadID, transcriptPath string) (server.PreparedAppIdentity, error)
+	updateSessionID    func(*rvreg.Registration, string) error
+	observeCallbacks   func(serveCallbackObserver)
 }
 
 type serveCallbackObserver struct {
@@ -160,11 +167,12 @@ func defaultServeDeps() serveDeps {
 		},
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		register:         func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
-		serveHTTP:        func(s *http.Server, l net.Listener) error { return s.Serve(l) },
-		provisionSandbox: provisionSandbox,
-		newClearSession:  agent.NewSession,
-		updateSessionID:  func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		register:           func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		serveHTTP:          func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		provisionSandbox:   provisionSandbox,
+		newClearSession:    agent.NewSession,
+		prepareAppIdentity: server.PrepareAppIdentity,
+		updateSessionID:    func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
@@ -459,7 +467,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// later notification advances. Preparation is the only fallible half; a
 	// transcript that cannot be projected is a session this daemon must not
 	// serve, because every read after it would silently start mid-conversation.
-	prepared, err := server.PrepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
+	prepared, err := deps.prepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
 	if err != nil {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable
@@ -704,14 +712,30 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			clearEnv.Cleanup()
 			return fmt.Errorf("new session: %w", err)
 		}
-		setSession(newSess, clearEnv)
-		srv.SetAppIdentity("local", newSess.ID())
+		// Everything that can fail happens before anything shared moves, so the
+		// swap itself is infallible and needs no rollback. A rollback is not
+		// merely inelegant here: undoing a published identity means emitting a
+		// second thread/closed, and every subscriber has already been told the
+		// thread it is watching ended.
+		prepared, err := deps.prepareAppIdentity("local", newSess.ID(), newSess.TranscriptPath())
+		if err != nil {
+			newSess.Close() // disposes clearEnv
+			return fmt.Errorf("prepare app identity: %w", err)
+		}
+		// The rendezvous is the last fallible step and the daemon's public
+		// address for this thread. Moving it before the replacement means a
+		// client that discovers the new session id can always reach a daemon
+		// already serving it; a failure here still names the old session, which
+		// is still the live one.
 		if err := deps.updateSessionID(rvRegistration, newSess.ID()); err != nil {
-			setSession(oldSess, oldEnv)
-			srv.SetAppIdentity("local", oldSess.ID())
 			newSess.Close() // disposes clearEnv
 			return fmt.Errorf("rendezvous update: %w", err)
 		}
+		// One projection commit swaps the live session, the daemon's identity
+		// and the turn snapshot, and closes the old thread's stream. No
+		// notification can be projected between the halves, so no client sees
+		// the old thread's authority answering for the new thread's id.
+		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
 		oldSess.Close() // disposes oldEnv
 		bridgeSession(newSess)
 		return nil

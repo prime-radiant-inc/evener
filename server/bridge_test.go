@@ -97,6 +97,98 @@ func TestBridge_UsesSessionStartStateWhenProvided(t *testing.T) {
 	}
 }
 
+// TestBridgeUpdatesSessionMetadataBeforeProjectionCommit pins the order the
+// bridge announces an identity in: the status a SessionStart carries -- session
+// id, model, profile and state -- must already be true by the time the
+// projection commit publishes the notification that announces it. Otherwise a
+// client that reduces thread/started and then reads thread/read can observe the
+// two disagreeing, and on /clear the disagreement spans a whole session swap.
+//
+// beforeAppProjectionCommit runs on the bridge's own goroutine immediately
+// before CommitProjection, so it samples exactly the window the notification is
+// published in.
+func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	var atCommit StatusInfo
+	sampled := false
+	srv.mu.Lock()
+	srv.beforeAppProjectionCommit = func() {
+		if sampled {
+			return
+		}
+		sampled = true
+		atCommit = srv.GetStatus()
+	}
+	srv.mu.Unlock()
+
+	evs := make(chan events.SessionEvent, 1)
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "s1",
+		Data: events.SessionStartData{
+			Profile: "openai",
+			Model:   "gpt-5",
+			State:   "awaiting",
+		},
+	}
+	close(evs)
+	Bridge(srv, evs)
+
+	if !sampled {
+		t.Fatal("projection commit never ran for the session start")
+	}
+	if atCommit.SessionID != "s1" || atCommit.Model != "gpt-5" || atCommit.Profile != "openai" || atCommit.State != "awaiting" {
+		t.Fatalf(
+			"status at projection commit = (session %q, model %q, profile %q, state %q); want (s1, gpt-5, openai, awaiting)",
+			atCommit.SessionID, atCommit.Model, atCommit.Profile, atCommit.State,
+		)
+	}
+}
+
+// TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement covers the
+// interleaving /clear opens and nothing else closes.
+//
+// The bridge tests acceptance without a lock and then applies the event's
+// status. An identity replacement landing between the two would let a
+// straggling SESSION_START from the session /clear just retired write that
+// retired session's id, model, profile and state over the replacement's --
+// permanently, since no later event re-derives them.
+//
+// The two calls here are literally the bridge's two steps, in order, with the
+// replacement placed between them. No goroutines, so the interleaving under
+// test is the one that runs, every time.
+func TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	srv.SetAppIdentity("local", "retired")
+	retiredStart := events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "retired",
+		Data: events.SessionStartData{
+			Profile: "retired-profile",
+			Model:   "retired-model",
+			State:   "awaiting",
+		},
+	}
+	if !srv.acceptsSessionEvent(retiredStart.SessionID) {
+		t.Fatal("the bridge would not have admitted the event this test is about")
+	}
+
+	srv.SetAppIdentity("local", "replacement")
+	srv.UpdateSessionInfo("replacement", "replacement-model", "replacement-profile")
+	srv.SetState("idle")
+
+	srv.applySessionEventStatus(retiredStart)
+
+	status := srv.GetStatus()
+	if status.SessionID != "replacement" || status.Model != "replacement-model" ||
+		status.Profile != "replacement-profile" || status.State != "idle" {
+		t.Fatalf(
+			"a retired session's admitted event rewrote the replacement's status: (session %q, model %q, profile %q, state %q)",
+			status.SessionID, status.Model, status.Profile, status.State,
+		)
+	}
+}
+
 func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -416,6 +417,57 @@ func TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent(t *testing.T) {
 	}
 	if answers != 1 {
 		t.Fatalf("assistant answer reduced into %d items after rejoin, want exactly 1\nturns: %+v", answers, rejoined.Snapshot())
+	}
+}
+
+// TestPreparedAppIdentityFencesLiveTurnIDsAboveSeededTranscript proves a live
+// turn cannot land on top of a seeded one.
+//
+// Both id spaces are "turn_%d": the transcript projection numbers a turn by its
+// ENTRY INDEX (internal/apptranscript), and a fresh projector mints turn_1 for
+// the first live turn. The snapshot is now the daemon's only turn authority, so
+// a collision is not a display glitch that the next read repairs -- the live
+// turn merges into the seeded entry and REPLACES its content for the life of
+// the session.
+//
+// Nothing orders SessionStart (which carries the persisted entry count) ahead
+// of the first turn-starting request: bridgeSession only spawns the drain
+// goroutine. So the fence has to be established when the identity is prepared,
+// not when an event happens to arrive. This drives the collision deterministically
+// by recording the live input with no SessionStart at all -- the worst case that
+// ordering leaves open.
+func TestPreparedAppIdentityFencesLiveTurnIDsAboveSeededTranscript(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	writeTranscriptPairs(t, path, 3)
+
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+	seeded := srv.appAllTurns("th_1")
+	if len(seeded) == 0 {
+		t.Fatal("transcript seeded no turns")
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data:      events.UserInputData{Text: "LIVE-INPUT"},
+	})
+
+	after := map[string]appwire.Turn{}
+	for _, turn := range srv.appAllTurns("th_1") {
+		after[turn.ID] = turn
+	}
+	for _, before := range seeded {
+		got, ok := after[before.ID]
+		if !ok {
+			t.Fatalf("seeded turn %s vanished from the snapshot", before.ID)
+		}
+		if !reflect.DeepEqual(before, got) {
+			t.Fatalf("live turn overwrote seeded turn %s\n before: %+v\n  after: %+v", before.ID, before, got)
+		}
+	}
+	if len(after) != len(seeded)+1 {
+		t.Fatalf("snapshot holds %d turns, want the %d seeded turns plus one live turn", len(after), len(seeded))
 	}
 }
 

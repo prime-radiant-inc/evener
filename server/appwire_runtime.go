@@ -54,24 +54,33 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 		return PreparedAppIdentity{}, errors.New("thread id is required")
 	}
 	var turns []appwire.Turn
+	persistedEntries := 0
 	if path := strings.TrimSpace(transcriptPath); path != "" {
 		header := transcriptHeader(path, appTranscriptMaxLineBytes)
 		if header.SessionID != "" && header.SessionID != threadID {
 			return PreparedAppIdentity{}, fmt.Errorf("transcript %s belongs to session %s, not %s", path, header.SessionID, threadID)
 		}
-		projected, err := appTurnsFromTranscriptFile(path)
+		projected, entries, err := appTurnsFromTranscriptFile(path)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return PreparedAppIdentity{}, err
 		}
 		turns = projected
+		persistedEntries = entries
 	}
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	snapshot := &appTurnSnapshot{threadID: threadID}
 	snapshot.Seed(turns)
+	// Fence the live turn ids above the seeded ones HERE, where the seed count
+	// is known, rather than waiting for the session's own SessionStart to carry
+	// it: nothing orders that event ahead of the first turn-starting request,
+	// and since this snapshot became the only turn authority a collision
+	// overwrites the seeded turn permanently.
+	projector := appprojector.NewAppEventProjector(threadID, ref)
+	projector.SeedPersistedTurns(persistedEntries)
 	return PreparedAppIdentity{
 		sourceID:  sourceID,
 		threadID:  threadID,
-		projector: appprojector.NewAppEventProjector(threadID, ref),
+		projector: projector,
 		turns:     snapshot,
 	}, nil
 }
@@ -124,8 +133,8 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 
 // SetAppIdentity installs an identity with no seeded history. Production serve
 // prepares from the session's transcript instead; this is the shorthand for a
-// thread that has none. It applies the same validation, so an identity
-// PrepareAppIdentity would refuse installs nothing here either.
+// thread that has none. It runs the same validation, so an identity
+// PrepareAppIdentity would reject installs nothing through this door either.
 func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
 	if err != nil {
