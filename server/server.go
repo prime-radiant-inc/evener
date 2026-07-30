@@ -176,16 +176,11 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu          sync.RWMutex
-	status      StatusInfo
-	appSourceID string
-	appThreadID string
-	// appIdentityGeneration counts identity replacements. It is not the read
-	// fence: ReplaceAppIdentity installs a whole new appTurns and appProjector,
-	// so a reader holding the previous snapshot pointer holds state nothing
-	// writes to again.
-	appIdentityGeneration uint64
-	appProjector          *appprojector.AppEventProjector
+	mu           sync.RWMutex
+	status       StatusInfo
+	appSourceID  string
+	appThreadID  string
+	appProjector *appprojector.AppEventProjector
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.

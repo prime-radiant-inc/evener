@@ -65,10 +65,6 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 		}
 		turns = projected
 	}
-	return newPreparedAppIdentity(sourceID, threadID, turns), nil
-}
-
-func newPreparedAppIdentity(sourceID, threadID string, turns []appwire.Turn) PreparedAppIdentity {
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 	snapshot := &appTurnSnapshot{threadID: threadID}
 	snapshot.Seed(turns)
@@ -77,7 +73,7 @@ func newPreparedAppIdentity(sourceID, threadID string, turns []appwire.Turn) Pre
 		threadID:  threadID,
 		projector: appprojector.NewAppEventProjector(threadID, ref),
 		turns:     snapshot,
-	}
+	}, nil
 }
 
 // ReplaceAppIdentity publishes a prepared identity. It runs inside one
@@ -103,7 +99,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		oldSourceID, oldThreadID := s.appSourceID, s.appThreadID
 		s.appSourceID = prepared.sourceID
 		s.appThreadID = prepared.threadID
-		s.appIdentityGeneration++
 		s.appProjector = prepared.projector
 		s.appTurns = prepared.turns
 		s.appActiveTurnID = ""
@@ -129,12 +124,14 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 
 // SetAppIdentity installs an identity with no seeded history. Production serve
 // prepares from the session's transcript instead; this is the shorthand for a
-// thread that has none.
+// thread that has none. It applies the same validation, so an identity
+// PrepareAppIdentity would refuse installs nothing here either.
 func (s *Server) SetAppIdentity(sourceID, threadID string) {
-	if sourceID == "" {
-		sourceID = "local"
+	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
+	if err != nil {
+		return
 	}
-	s.ReplaceAppIdentity(newPreparedAppIdentity(sourceID, threadID, nil), nil)
+	s.ReplaceAppIdentity(prepared, nil)
 }
 
 func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserver.SequencedNotification {

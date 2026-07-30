@@ -33,6 +33,18 @@ func seedTranscriptServer(t *testing.T, pairs int) *Server {
 func seedTranscriptServerPath(t *testing.T, pairs int) (*Server, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	writeTranscriptPairs(t, path, pairs)
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+	srv.SetSteerFunc(func(string) {})
+	srv.SetCancelFunc(func() {})
+	return srv, path
+}
+
+// writeTranscriptPairs writes (or overwrites) a valid th_1 transcript holding
+// `pairs` user/assistant exchanges.
+func writeTranscriptPairs(t testing.TB, path string, pairs int) {
+	t.Helper()
 	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-5.5"})
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
@@ -48,11 +60,6 @@ func seedTranscriptServerPath(t *testing.T, pairs int) (*Server, string) {
 	if err := tw.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	srv := NewServer(ServerConfig{})
-	installTranscriptIdentity(t, srv, "th_1", path)
-	srv.SetSteerFunc(func(string) {})
-	srv.SetCancelFunc(func() {})
-	return srv, path
 }
 
 // installTranscriptIdentity seeds srv from a real transcript the way production
@@ -242,21 +249,27 @@ func TestServerAppWireNotifierEvictionDoesNotTruncateMaterializedSnapshot(t *tes
 // a subscribing hydration observe entries the matching live event had not yet
 // projected, which is the duplicate-item race this design removes; it is also
 // per-request file work on the hot path.
+//
+// Two independent arms, because neither covers the other:
+//
+//   - The read observer instruments only the BOUNDED turn-index readers
+//     (apptranscript's observeIndexRead), and only on their success path. A
+//     regression that re-projected the whole file at read time reports nothing,
+//     and a bounded read that errors reports nothing either.
+//   - So the file is first replaced with a DIFFERENT but still-valid transcript
+//     for the same session. Any read that reopens it now succeeds and answers
+//     with content that is not this thread, which the equality assertions catch
+//     whichever reader it used.
+//
+// The observer check runs first so that a bounded-reader regression is named as
+// one rather than being reported as a content mismatch.
 func TestServerAppWireInstalledSnapshotNeedsNoTranscriptReads(t *testing.T) {
 	srv, path := seedTranscriptServerPath(t, 3)
 	installed := srv.appAllTurns("th_1")
 	if len(installed) != 6 {
 		t.Fatalf("installed turns = %v, want the transcript's 6", turnIDs(installed))
 	}
-
-	// Take the file away. The daemon claims it needs no transcript I/O to
-	// answer a read, so removing the file must change nothing. This catches a
-	// regression that reintroduces FULL projection at read time, which the
-	// observer below cannot see -- it instruments only the bounded index
-	// readers.
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("remove transcript: %v", err)
-	}
+	writeTranscriptPairs(t, path, 1)
 
 	var reads int
 	restore := apptranscript.InstallReadObserverForTesting(func(apptranscript.ReadStats) { reads++ })
@@ -268,16 +281,16 @@ func TestServerAppWireInstalledSnapshotNeedsNoTranscriptReads(t *testing.T) {
 		IncludeTurns: true,
 		TurnLimit:    40,
 	})
-	if !reflect.DeepEqual(read.Thread.Turns, installed) {
-		t.Fatalf("thread/read = %v, want the installed %v", turnIDs(read.Thread.Turns), turnIDs(installed))
-	}
 	page := srv.appPageTurns("th_1", "1", 30)
-	if !reflect.DeepEqual(page, appwire.PageTurns(installed, "1", 30)) {
-		t.Fatalf("thread/turns/list = %v, want the installed page", turnIDs(page.Data))
-	}
 
 	if reads != 0 {
 		t.Fatalf("bounded turn reads performed %d transcript read(s); the installed snapshot must answer from memory", reads)
+	}
+	if !reflect.DeepEqual(read.Thread.Turns, installed) {
+		t.Fatalf("thread/read = %v, want the installed %v", turnIDs(read.Thread.Turns), turnIDs(installed))
+	}
+	if !reflect.DeepEqual(page, appwire.PageTurns(installed, "1", 30)) {
+		t.Fatalf("thread/turns/list = %v, want the installed page", turnIDs(page.Data))
 	}
 }
 
@@ -400,14 +413,24 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 
 // TestServerAppWireReplacementLeavesNoActiveTurn pins that the daemon's two
 // active-turn answers agree on "none" the moment an identity is installed.
-// They answer different questions -- thread.serf.activeTurnId reports a turn in
-// flight OR RESERVED, the reducer's activeTurnID names the turn steering items
-// append to -- and only a reserved turn can make them differ. A fresh projector
-// has reserved nothing, so both must be empty together or steering could target
-// a turn that is not in the snapshot.
+//
+// They answer different questions and can legitimately hold different values at
+// once: thread.serf.activeTurnId reports a turn in flight OR RESERVED and gates
+// capabilities, while the reducer's activeTurnID names the turn steering ITEMS
+// append to. The setup below drives them apart on purpose -- an in-flight turn
+// for the reducer, a later reserved turn for the daemon -- so that the
+// post-replacement assertions have something real to clear. Both must land on
+// empty together, or steering could target a turn absent from the snapshot.
 func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
+	// An in-flight turn: the reducer now has a steering target.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "in flight"}})
+	inFlight := readReducerActiveTurnID(srv)
+	if inFlight == "" {
+		t.Fatal("reducer has no active turn before replacement, so clearing it would prove nothing")
+	}
+	// A reservation on top: the daemon's answer moves, the reducer's does not.
 	reserved, err := srv.reserveAppTurnIDForStart()
 	if err != nil {
 		t.Fatalf("reserveAppTurnIDForStart: %v", err)
@@ -415,24 +438,35 @@ func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	if srv.appThread().Serf.ActiveTurnID != reserved {
 		t.Fatalf("thread.serf.activeTurnId = %q, want the reserved %q", srv.appThread().Serf.ActiveTurnID, reserved)
 	}
+	if reserved == inFlight {
+		t.Fatalf("reserved turn %q equals the in-flight turn; the two answers are not being driven apart", reserved)
+	}
+	if got := readReducerActiveTurnID(srv); got != inFlight {
+		t.Fatalf("reserving a turn moved the reducer's steering target to %q; a reserved turn is not in the snapshot", got)
+	}
 
 	srv.SetAppIdentity("local", "th_2")
 	if got := srv.appThread().Serf.ActiveTurnID; got != "" {
 		t.Fatalf("thread.serf.activeTurnId = %q after replacement, want none", got)
 	}
 	srv.mu.RLock()
-	snapshot := srv.appTurns
 	reservedAfter := srv.appReservedTurnID
 	srv.mu.RUnlock()
 	if reservedAfter != "" {
 		t.Fatalf("reserved turn = %q after replacement, want none", reservedAfter)
 	}
-	snapshot.mu.Lock()
-	steeringTarget := snapshot.activeTurnID
-	snapshot.mu.Unlock()
-	if steeringTarget != "" {
-		t.Fatalf("reducer activeTurnID = %q after replacement, want none", steeringTarget)
+	if got := readReducerActiveTurnID(srv); got != "" {
+		t.Fatalf("reducer activeTurnID = %q after replacement, want none", got)
 	}
+}
+
+func readReducerActiveTurnID(srv *Server) string {
+	srv.mu.RLock()
+	snapshot := srv.appTurns
+	srv.mu.RUnlock()
+	snapshot.mu.Lock()
+	defer snapshot.mu.Unlock()
+	return snapshot.activeTurnID
 }
 
 func TestAppTurnSnapshotIsDeepDefensiveCopy(t *testing.T) {
@@ -526,48 +560,75 @@ func TestAppTurnsFromNotificationsPreservesInputOrderWithMixedSequences(t *testi
 // reduction now happen inside the SAME projection commit, so a record cannot
 // reach the snapshot before an earlier one -- the reducer needs no cursor,
 // retained window, or re-sort to get the order right.
+//
+// The order here is established by a real happens-before, not by racing two
+// goroutines and hoping: the first event is held INSIDE its commit callback,
+// where it owns the projection lock, while the second event is started and
+// blocks trying to enter. beforeAppProjectionCommit alone cannot do this -- it
+// runs before CommitProjection, so a goroutine parked there holds nothing and
+// either goroutine may win the lock. The failure-count stamp runs inside the
+// callback instead, which is where the lock actually is.
 func TestAppTurnSnapshotReducesInProducerOrderUnderConcurrentEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "prompt"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1"})
 
-	// Hold the first delta between its projection and its commit, then start a
-	// second delta behind it.
-	firstProjecting := make(chan struct{})
+	// Park the first event inside its commit, holding the projection lock.
+	insideCommit := make(chan struct{})
 	release := make(chan struct{})
-	var once sync.Once
-	srv.mu.Lock()
-	srv.beforeAppProjectionCommit = func() {
-		once.Do(func() {
-			close(firstProjecting)
+	var stamped sync.Once
+	srv.SetFailedToolCallsFunc(func() (int, bool) {
+		stamped.Do(func() {
+			close(insideCommit)
 			<-release
 		})
-	}
-	srv.mu.Unlock()
+		return 0, true
+	})
 
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
-		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "first"}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "first"}})
 	}()
-	<-firstProjecting
+	<-insideCommit
 
+	// The second event is genuinely in flight while the first owns the lock, so
+	// this is a concurrent commit -- it just cannot be the one that wins.
+	secondReached := make(chan struct{})
+	var reached sync.Once
+	srv.mu.Lock()
+	srv.beforeAppProjectionCommit = func() { reached.Do(func() { close(secondReached) }) }
+	srv.mu.Unlock()
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
-		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: " second"}})
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "second"}})
 	}()
+	<-secondReached
 	close(release)
 	<-firstDone
 	<-secondDone
 
 	turns := srv.appAllTurns("th_1")
-	if len(turns) != 1 || len(turns[0].Items) != 1 {
-		t.Fatalf("turns = %+v, want one turn with one streaming item", turns)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %v, want one turn", turnIDs(turns))
 	}
-	if got := turns[0].Items[0].Text; got != "first second" {
-		t.Fatalf("reduced text = %q, want %q", got, "first second")
+	// The completed assistant message committed first, so it precedes the item
+	// the later delta opened. A reducer that re-ordered would swap them.
+	var texts []string
+	for _, item := range turns[0].Items {
+		if item.Type == "agentMessage" {
+			texts = append(texts, item.Text)
+		}
 	}
+	if !reflect.DeepEqual(texts, []string{"first", "second"}) {
+		t.Fatalf("reduced assistant items = %v, want [first second] in commit order", texts)
+	}
+	// The invariant behind the ordering: the installed snapshot is exactly what
+	// reducing its own committed sequence produces. This holds whichever event
+	// wins, so it also guards the ordering assertion above against a fixture
+	// that stops establishing the order it claims.
 	if want := appTurnsFromNotifications(srv.AppNotificationsAfter(0, "th_1")); !reflect.DeepEqual(turns, want) {
 		t.Fatalf("installed snapshot diverged from its own notification stream\n got: %#v\nwant: %#v", turns, want)
 	}
@@ -675,10 +736,25 @@ func TestPreparedAppIdentitySeedsEmptyStateWithoutATranscript(t *testing.T) {
 	}
 }
 
+// TestPreparedAppIdentityRequiresAThreadID also covers SetAppIdentity, which
+// installs through the same validation. An identity with no thread cannot be
+// published half-way: it would blank status.SessionID while leaving the caller
+// believing a thread was installed.
 func TestPreparedAppIdentityRequiresAThreadID(t *testing.T) {
 	for _, threadID := range []string{"", "   "} {
 		if _, err := PrepareAppIdentity("local", threadID, ""); err == nil {
 			t.Fatalf("PrepareAppIdentity(%q) succeeded, want an error", threadID)
+		}
+
+		srv := NewServer(ServerConfig{})
+		srv.SetAppIdentity("local", "th_1")
+		srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai")
+		srv.SetAppIdentity("local", threadID)
+		if got := srv.GetStatus().SessionID; got != "01SESS001" {
+			t.Fatalf("SetAppIdentity(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
+		}
+		if got := srv.appThread().ID; got != "th_1" {
+			t.Fatalf("SetAppIdentity(%q) replaced the installed thread with %q", threadID, got)
 		}
 	}
 }
