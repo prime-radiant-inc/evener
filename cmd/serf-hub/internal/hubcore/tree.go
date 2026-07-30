@@ -25,8 +25,10 @@ import (
 //     project's sessions are split into Current / Recent / Archived tiers.
 //   - ArchivedProjects is the collapsed group at the bottom: projects that are
 //     manually archived or whose every session is archived.
-//   - Live is the flat live list still consumed by the /api/tree JSON endpoint;
-//     the sidebar no longer renders it.
+//   - Live is the flat live list consumed by the /api/tree JSON endpoint and
+//     rendered as the rail's "Live" section. Archived sessions are excluded:
+//     an archived-but-still-running session is reachable under its project's
+//     Archived tier instead, because archive is a clearing verb.
 type Tree struct {
 	NeedsYou         []TreeNode
 	Live             []TreeNode
@@ -972,9 +974,8 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
 
 	// Build the Live slice: every live session, flat, sorted by attention rank
-	// desc, then the Hub session ordering contract. The sidebar no longer
-	// renders this rail (it duplicated the active tier), but the /api/tree JSON
-	// endpoint still consumes it.
+	// desc, then the Hub session ordering contract. Archived sessions are
+	// filtered out after the sort, below.
 	liveNodes := make([]TreeNode, 0, len(live))
 	for _, le := range live {
 		if le.SessionID == "" {
@@ -1019,6 +1020,29 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
 	})
+
+	// Drop archived sessions from the Live tier: an explicit session
+	// decision, age-based auto-archive, or a manually archived project all
+	// clear the row. Archive is a clearing verb (spec v5, round-4 A4/B7), so
+	// an archived-but-still-running session must not linger in the live
+	// rail; it stays reachable under its project's Archived tier. This is
+	// the one exclusion rule favorite candidates already applied, so
+	// favoriteLive below is exactly the filtered Live slice.
+	unarchivedLive := make([]TreeNode, 0, len(liveNodes))
+	for _, node := range liveNodes {
+		entry := liveMap[node.ID]
+		if entry.Project.ID != "" && projectArchivedDecision(decisions, entry.Project.ID) {
+			continue
+		}
+		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
+			continue
+		}
+		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
+			continue
+		}
+		unarchivedLive = append(unarchivedLive, node)
+	}
+	liveNodes = unarchivedLive
 
 	// Build the NeedsYou triage tier: every top-level live session in the
 	// awaiting|warning|errored family, plus any other live session promoted by
@@ -1098,20 +1122,10 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
 	})
 
-	favoriteLive := make([]TreeNode, 0, len(liveNodes))
-	for _, node := range liveNodes {
-		entry := liveMap[node.ID]
-		if entry.Project.ID != "" && projectArchivedDecision(decisions, entry.Project.ID) {
-			continue
-		}
-		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
-			continue
-		}
-		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
-			continue
-		}
-		favoriteLive = append(favoriteLive, node)
-	}
+	// Live already excludes archived sessions (the filter right after the
+	// liveNodes sort above), which is exactly the candidate rule the pinned
+	// tier wants — one shared result, not a second copy of the rule.
+	favoriteLive := liveNodes
 
 	return Tree{
 		NeedsYou:         needsYou,
