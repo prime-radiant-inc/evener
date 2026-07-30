@@ -181,11 +181,12 @@ Run:
 
 ```bash
 go test ./cmd/serf-hub -run 'TestHubRPCTurnStart|TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates' -count=1
-go test ./cmd/serf-hub/internal/appsource -run 'Test.*Mutation' -count=1
+go test ./cmd/serf-hub/internal/appsource -run '^FuzzAppSourceProgram$' -count=1
 ```
 
 Expected: PASS. Successful auto-resume, non-resumable errors, managed refs, and
-existing unknown-outcome forwarding remain unchanged.
+the registered local-daemon unknown-outcome forwarding scenario remain
+unchanged.
 
 - [ ] **Step 7: Run package and repository verification**
 
