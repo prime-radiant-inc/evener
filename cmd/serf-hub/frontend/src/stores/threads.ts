@@ -874,9 +874,13 @@ function replayHydrationNotifications(
   return { model: hydrated, appliedAt };
 }
 
+// A snapshot may only publish into the ready generation it was cut on. The
+// epoch alone says that, for the client too: rewireClient bumps readyEpoch
+// before it assigns wiredClient, and the epoch only ever increases, so a
+// pending hydrate captured under a different client necessarily carries an
+// older epoch. There is no separate client check here for that reason.
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
-  if (wiredClient !== pending.client) return null;
   if (readyEpoch !== pending.epoch) return null;
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
     pendingThreadHydrations.delete(ref);
@@ -923,8 +927,9 @@ function publishWatchedHydration(
   includeTurns: boolean,
   generation: number,
 ): ThreadModel | null {
+  // Same ready-generation gate as publishThreadHydration, and the same reason
+  // there is no separate client check beside it.
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
-  if (wiredClient !== pending.client) return null;
   if (readyEpoch !== pending.epoch) return null;
   if ((watchRefCounts.get(ref) ?? 0) <= 0 || (watchGenerations.get(ref) ?? 0) !== generation) {
     pendingWatchedHydrations.delete(ref);
@@ -1355,7 +1360,13 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
   if (!targetedResync) {
     const alreadyHydrated = new Set(refs);
     const discovered = await discoveredPinnedRefs;
+    // A pin is a fact about storage, so record it whatever generation we are
+    // in. Rejoining is a fact about a connection: this scan is a real
+    // IndexedDB read and a reconnect can land inside it, so re-check before
+    // dispatching rather than letting a dead generation put reads on the wire
+    // and relying on the publish gate to throw their snapshots away.
     for (const ref of discovered) pinnedMutationRefs.add(ref);
+    if (wiredClient !== client || readyEpoch !== epoch || client.state !== "ready") return;
     await Promise.all(
       discovered.filter((ref) => !alreadyHydrated.has(ref)).map((ref) => handleReady(client, epoch, ref)),
     );

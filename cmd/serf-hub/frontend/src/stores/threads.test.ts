@@ -31,6 +31,7 @@ import {
   FRAME_TIMES_WINDOW_MS,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
+  setMutationStorageForTests,
   threadsStore,
   useThreadsStore,
 } from "./threads";
@@ -3776,6 +3777,41 @@ describe("useThreadsStore.watchThread", () => {
     await expect(threadsStore.getState().watchThread("ref_a")).rejects.toThrow(/no client connected/i);
   });
 
+  // A swap onto a client that is not ready yet bumps the ready epoch and wires
+  // the new client without running handleReady - nothing re-reads, so the old
+  // client's in-flight watched read still owns the current pending entry and
+  // its watcher still holds its claim. Both checks either side of the epoch
+  // fence therefore pass, and the epoch is the only thing left that says this
+  // snapshot was cut on a connection nobody is subscribed to any more.
+  test("a watched read resolving after a client swap publishes nothing until the live client answers", async () => {
+    const a = connectFakeClient();
+    const staleRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    a.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (staleRead.resolve = resolve)));
+
+    const watching = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushUntil(() => staleRead.resolve !== null);
+
+    const b = new FakeClient("connecting");
+    b.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_live", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    connectionStore.getState().connect(b);
+
+    staleRead.resolve?.(
+      readResponse("ref_a", { turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.has("ref_a"));
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    b.emitReady();
+    await watching;
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_live");
+    expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
   test("a failed watched read keeps the watcher claim and leaves the ref untracked until release", async () => {
     const fake = connectFakeClient();
     let readAttempts = 0;
@@ -4873,6 +4909,123 @@ describe("retry-safe mutation outbox integration", () => {
     reads[1]!.reject(new RequestTimeoutError("resync read timed out"));
     await flushIndexedDBUntil(() => scheduledHydrationRetries.length > 0);
     expect(scheduledHydrationRetries).toHaveLength(0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  // handleReady re-checks the ready epoch before its pinned-ref discovery scan
+  // and has nothing to say after it. The scan is a real IndexedDB read, so a
+  // reconnect landing inside it is not exotic: on a cold start nothing is
+  // tracked, the tracked-ref fan-out finishes in a microtask, and the scan is
+  // still outstanding tasks later. Its continuation must not dispatch rejoins
+  // for a ready generation that is already dead - a read issued there returns a
+  // snapshot cut on a connection nobody is subscribed to any more.
+  test("a reconnect during the pinned-ref discovery scan dispatches no rejoin on the dead epoch", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    // The scan is held open by a deferred rather than by timing luck. It is a
+    // real IndexedDB read either way - the outbox's own startup scan is the
+    // first one, and handleReady's is the second, issued only once that startup
+    // resolves - so this removes the race's variance, not its existence.
+    const storage = new MutationOutboxIndexedDB();
+    const discovery = deferred<string[]>();
+    const realListTargetRefs = storage.listTargetRefs.bind(storage);
+    let scans = 0;
+    vi.spyOn(storage, "listTargetRefs").mockImplementation(() => {
+      scans += 1;
+      return scans === 2 ? discovery.promise : realListTargetRefs();
+    });
+    setMutationStorageForTests(storage);
+
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a"));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // handleReady's own scan being ISSUED is the observable that puts this
+    // generation inside the window: its tracked-ref fan-out is empty here and
+    // settles in microtasks, while the scan cannot be issued until the outbox
+    // startup's IndexedDB read has resolved a task or more later.
+    fake.emitReady();
+    await flushIndexedDBUntil(() => scans >= 2);
+    expect(scans).toBe(2);
+
+    // The reconnect supersedes that generation while its scan is still open.
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+
+    // Releasing the scan resumes the dead generation. It may record the pin -
+    // that is a storage fact - but it must put nothing on the wire.
+    discovery.resolve(["ref_a"]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+  });
+
+  // The publish gate's ready-epoch fence, reached without any stale dispatch:
+  // this rejoin was started on the generation that was live at the time. What
+  // makes its snapshot stale is only that the connection came back underneath
+  // it, and what keeps its pending entry current is that the ref was unowned
+  // when the reconnect fanned out - so the reconnect skipped it rather than
+  // superseding it. A pane then adopts that in-flight read and re-owns the ref,
+  // which puts the attempt-identity and ownership checks either side of the
+  // epoch fence back into the permissive state.
+  test("a rejoin adopted across a reconnect publishes the live snapshot, not its own", async () => {
+    await seedPinnedIntent("ref_a", "mutation-a");
+    const reads: Array<{
+      resolve: (response: ThreadReadResponse) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => {
+      const read = deferred<ThreadReadResponse>();
+      reads.push(read);
+      return read.promise;
+    });
+    fake.on("turn/queue", () => new Promise<TurnQueueResponse>(() => {}));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length === 1);
+    expect(reads).toHaveLength(1);
+
+    // Settle the durable record: the pin was this ref's only owner, so the
+    // reconnect below finds nothing to refresh and leaves the in-flight read's
+    // pending entry standing.
+    fake.emitNotification(appliedItemNotification("ref_a", "mutation-a"));
+    const inspector = new MutationOutboxIndexedDB();
+    for (let attempt = 0; attempt < 20 && (await inspector.getOutbox("mutation-a")) !== undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(await inspector.getOutbox("mutation-a")).toBeUndefined();
+    inspector.close();
+    await flushIndexedDBUntil(() => false, 4);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushIndexedDBUntil(() => reads.length > 1);
+    // Still one read: had the ref still been owned, the reconnect's fan-out
+    // would have superseded that pending entry and this test would be covering
+    // the attempt-identity check instead of the epoch fence.
+    expect(reads).toHaveLength(1);
+
+    // A pane claims the ref and adopts the read already in flight for it.
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushIndexedDBUntil(() => reads.length > 1);
+    expect(reads).toHaveLength(1);
+
+    reads[0]!.resolve(
+      readResponse("ref_a", { turns: [{ id: "turn_stale", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushIndexedDBUntil(() => reads.length === 2);
+    expect(reads).toHaveLength(2);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    reads[1]!.resolve(
+      readResponse("ref_a", { turns: [{ id: "turn_live", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await ensuring;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_live");
+    threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
