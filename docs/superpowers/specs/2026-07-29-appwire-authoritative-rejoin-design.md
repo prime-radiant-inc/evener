@@ -412,14 +412,42 @@ whole envelope, so a dropped event is permanently absent from every
 `thread/read` for the life of the identity. No daemon code produces
 `serf/thread/resync`, so nothing repairs it and a page reload does not.
 
-That is the proven producer gap the paragraph above said did not exist. It
-is still open. Closing it is not the one-line change it looks like: the same
-channel is a deliberately unread sink for every subagent and delegate
-session, whose events reach the parent through synchronous callbacks
-instead, so an unconditional blocking send wedges every child on its 257th
-event while leaving the default suite green. Until the delivery contract is
-decided per consumer, the daemon's projection remains lossy under
-sustained bridge stall.
+That was the proven producer gap the paragraph above said did not exist, and
+for the daemon it is now CLOSED. Delivery discipline became a property of the
+consumer rather than of the channel: `Session.ConsumeEventsLossless` marks the
+session and starts the drain in one call, and is the only writer of that mark,
+so an attached authoritative consumer waits instead of dropping and "lossless
+with nobody reading" cannot be expressed. `cmd/serf/serve.go`'s bridge is the
+single caller.
+
+The drop remains for everything else, and correctly: the same channel is a
+deliberately unread sink for every subagent and delegate session, whose events
+reach the parent through synchronous callbacks instead. Blocking those would
+wedge each child on its 257th event, so best-effort is the only behaviour that
+is not a deadlock there.
+
+What remains, precisely:
+
+- **Events emitted before the daemon attaches are still best-effort.** A
+  session emits `SESSION_START` and its construction diagnostics from inside
+  `NewSession`, so nothing can be attached yet. They are buffered rather than
+  lost, and a regression test asserts construction stays well inside the
+  buffer, but the margin is a measured fact rather than a guarantee.
+- **`serf run` and the dev tools are unchanged**, deliberately: nothing there
+  keeps authoritative state.
+- **A wedged consumer now stalls the session instead of corrupting it.** The
+  emitter blocks holding `eventsMu.RLock`, which also blocks `Session.Close`,
+  so the failure mode is a visible hang rather than a silently wrong
+  `thread/read`. That is the intended trade; the consumer's per-event work is
+  bounded to keep it unreachable.
+- **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
+  Losslessness turns "emit under a lock" from a dropped event into a deadlock,
+  for every lock reachable from the bridge. Two violations were found and
+  fixed; there is no compiler or vet check for the next one.
+
+`serf/thread/resync` still has no producer. It is not needed for the daemon's
+own feed any more, but it remains the only repair path if a future consumer is
+added that can legitimately miss frames.
 
 ## Verification
 

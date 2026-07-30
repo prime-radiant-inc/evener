@@ -33,6 +33,26 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // than dropping, so anything slow in here becomes a stall on the session loop.
 // The observer is called through a non-blocking tee for exactly this reason
 // (see cmd/serf's verboseEventTee); do not add an unbounded wait here.
+//
+// THE LOCK RULE, which is wider than "do not block" and is the part that will
+// bite someone: because the feed blocks its emitter, a session goroutine that
+// emits WHILE HOLDING ANY LOCK THIS FUNCTION ACQUIRES deadlocks the pair once
+// the 256-deep buffer fills. Before losslessness that was a dropped event and
+// nobody noticed. The locks reachable from here today are the session's own
+// mutex, the job manager's (via the jobs.jsonl read behind DetailedStatus), the
+// client-mutation store's, the task store's, the tool registry's and
+// contextmgr's — and the set grows every time a facet sampler is added.
+//
+// So: EMIT WITH NO LOCK HELD. agent/session_prompts.go is the worked example —
+// renderSystemPrompt returns its diagnostic instead of emitting it, precisely
+// because three of its callers hold s.mu.
+//
+// Nothing enforces this. `go vet` cannot see it, and no fixture reaches it:
+// the default suite's scripted provider never fills the buffer, so a violation
+// is silent until production. A real enforcement would be an owner-tracking
+// mutex under a build tag asserting that no lock is held at the emit, which is
+// how both known violations were actually found; short of that this comment and
+// the per-site regression tests are the whole of the net.
 func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.SessionEvent)) {
 	if observer != nil {
 		observer(ev)

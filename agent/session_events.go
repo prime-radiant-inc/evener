@@ -306,6 +306,14 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 			// subagent and delegate has an unread channel by design, because a
 			// child reaches its parent through synchronous callbacks instead.
 			// For them the drop is the only behaviour that is not a deadlock.
+			//
+			// SCOPE OF THE WAIT, because it is wider than it looks: this blocks
+			// holding eventsMu.RLock, and Close() needs eventsMu.Lock to close
+			// the channel. So a consumer that stops draining does not merely
+			// stall emission — the session can no longer be TORN DOWN either,
+			// and Close()'s sendersWG.Wait() never returns. That is the trade
+			// against silent projection corruption, and it is why the consumer's
+			// per-event work is bounded on purpose (server.BridgeEvent).
 			if s.authoritativeConsumer {
 				s.events <- ev
 			}

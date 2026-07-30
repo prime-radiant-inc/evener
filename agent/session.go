@@ -75,12 +75,20 @@ type Session struct {
 	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
-	// authoritativeConsumer records that something is draining events and cannot
-	// be lied to. ConsumeEventsLossless is the ONLY writer, and it sets this in
-	// the same call that enters the drain loop, so the flag can never be true
-	// without a live consumer. Do not add another way to set it: "lossless with
-	// nobody reading" is a permanent wedge, and the point of this shape is that
-	// it cannot be spelled. Read under eventsMu.RLock in sendEvent.
+	// authoritativeConsumer records that something has UNDERTAKEN to drain
+	// events and cannot be lied to. ConsumeEventsLossless is the ONLY writer,
+	// and it sets this in the same call that starts the drain, so the flag
+	// cannot be set without a drain being started. Do not add another way to set
+	// it: "lossless with nobody reading" is a permanent wedge, and the point of
+	// this shape is that it cannot be spelled. Read under eventsMu.RLock in
+	// sendEvent.
+	//
+	// It is "undertook to drain", NOT "is draining", and the gap is real: the
+	// flag is never cleared, so a consume callback that blocks forever or exits
+	// via runtime.Goexit leaves the mark standing over a dead loop, and every
+	// emitter then wedges once the buffer fills. Nothing here can detect that —
+	// the contract is on the consumer, which is why there is exactly one and it
+	// is the bridge.
 	authoritativeConsumer bool
 	envInfo               schema.EnvironmentInfo
 
