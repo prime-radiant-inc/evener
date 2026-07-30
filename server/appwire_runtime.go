@@ -134,7 +134,8 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 // SetAppIdentity installs an identity with no seeded history. Production serve
 // prepares from the session's transcript instead; this is the shorthand for a
 // thread that has none. It runs the same validation, so an identity
-// PrepareAppIdentity would reject installs nothing through this door either.
+// PrepareAppIdentity would reject is not installed through this door either --
+// it is rejected here and nothing changes.
 func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
 	if err != nil {
@@ -385,6 +386,17 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // live event delivery, and a read that parsed the file there would return an
 // output whose matching notification is still on the other side of the cut --
 // the same answer twice, under two identities.
+//
+// It stays under the cut for a second reason, which is why sampling the session
+// envelope before CaptureSubscription would be wrong however tempting: queue,
+// status, active turn, escalations and the failure count are each announced by
+// a notification as well as carried here. A session writes its state before
+// emitting the event that announces it, so a sample taken inside the gate can
+// only lead its notifications. A sample taken outside can lag one -- an event
+// emitted after the sample and committed before the cut is discarded on release
+// as already-reflected, and the state it announced then never reaches the
+// client at all. Anything called from here must therefore be cheap AND must not
+// block on a lock another component holds across disk I/O.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
 	thread := s.appThread()
 	var olderCursor string

@@ -260,8 +260,24 @@ redundant notification, but a delivered notification can never lead the
 snapshot field it announces.
 
 `CaptureSubscription` remains the response-cut primitive. Its snapshot
-callback now clones memory, so it is bounded by projection size and performs
-no filesystem work.
+callback opens no file: the turn window is cloned from the installed
+snapshot, and the transcript is never parsed there.
+
+The callback does still read live session state through the daemon's injected
+callbacks, and that is required rather than incidental. Every envelope field
+that a notification also announces -- queue, status, active turn, escalations,
+the failure count -- must be sampled on the cut's side of the projection gate.
+Session state is written before the event that announces it (invariant 14), so
+a sample taken inside the gate can only lead its notifications, never lag
+them. A sample taken before the gate can lag: an event emitted after the
+sample but committed before the cut is dropped on release as pre-cut, and the
+field it announced never arrives. That is the gap invariant 6 exists to close,
+so the envelope is not sampled early.
+
+What the callback must therefore never do is block on a lock some other
+component holds across I/O. `clientMutationStore.snapshot`, the one such
+reader on this path, publishes its committed generation under a narrow mutex
+that is never held across the store's own durable write.
 
 ## Frontend owned hydration
 

@@ -824,9 +824,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// Live-only echo of the persisted TurnModelSwitch marker (N5): the
 		// same text SetModel wrote to the transcript, rendered as a
 		// systemMessage item so an already-connected client sees the marker
-		// immediately rather than waiting for a reload. thread/read prefers
-		// transcript turns on reload/restart, so this notification alone is
-		// not the source of truth — the persisted turn is.
+		// immediately rather than waiting for a reload. The transcript still
+		// carries the marker independently, which is what a daemon restart
+		// seeds its snapshot from; this notification only covers the clients
+		// already attached when the switch happened.
 		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindModelSwitch, "Model switch", data.MarkerText)...)
 		return out
 	case events.EventReasoningEffortChanged:
