@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"sort"
 	"strings"
@@ -63,6 +64,33 @@ type appTurnSnapshot struct {
 	records       []appserver.SequencedNotification
 	turns         []appwire.Turn
 	turnIndex     map[string]int
+	// activeTurnID names the turn steering attaches to. Steering is the one
+	// notification that does not carry its own turn ID, so the reducer has to
+	// remember which turn is in flight.
+	activeTurnID string
+}
+
+// Seed installs a full projection as the snapshot's starting state, replacing
+// anything already reduced. The caller keeps ownership of turns: every turn and
+// nested item is deep-cloned, so later mutation of the argument cannot reach
+// installed state.
+func (s *appTurnSnapshot) Seed(turns []appwire.Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.turns = make([]appwire.Turn, len(turns))
+	s.turnIndex = make(map[string]int, len(turns))
+	s.activeTurnID = ""
+	for i := range turns {
+		s.turns[i] = cloneAppTurn(turns[i])
+		s.turnIndex[s.turns[i].ID] = i
+		// The last in-progress turn wins: a transcript can contain an earlier
+		// turn that was never completed because the daemon died mid-turn, and
+		// steering belongs to the most recent one.
+		if s.turns[i].Status == appwire.TurnStatusInProgress {
+			s.activeTurnID = s.turns[i].ID
+		}
+	}
 }
 
 func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
@@ -189,6 +217,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			if turn == nil {
 				continue
 			}
+			s.activeTurnID = params.Turn.ID
 			if params.Turn.ItemsView != "" {
 				turn.ItemsView = params.Turn.ItemsView
 			}
@@ -254,9 +283,67 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 				turn.DurationMS = params.Turn.DurationMS
 			}
 			turn.Error = params.Turn.Error
+			if s.activeTurnID == params.Turn.ID {
+				s.activeTurnID = ""
+			}
 			for _, item := range params.Turn.Items {
 				upsertItem(params.Turn.ID, item)
 			}
+		case appwire.NotifyAgentMessageReset:
+			// A retried model call discards the partial it already streamed.
+			// Only the named item on the named turn goes; an unknown turn is
+			// left alone rather than fabricated, since there would be nothing
+			// to remove from it.
+			var params appwire.AgentMessageResetParams
+			if json.Unmarshal(record.Notification.Params, &params) != nil || params.ItemID == "" {
+				continue
+			}
+			idx, ok := s.turnIndex[params.TurnID]
+			if !ok {
+				continue
+			}
+			turn := &s.turns[idx]
+			for i := range turn.Items {
+				if turn.Items[i].ID == params.ItemID {
+					turn.Items = append(turn.Items[:i], turn.Items[i+1:]...)
+					break
+				}
+			}
+		case appwire.NotifySerfSteeringInjected:
+			// Steering carries no turn ID: the daemon only injects into the
+			// turn already in flight. With no active turn there is nowhere
+			// wire-true to put it, and inventing one would publish a turn the
+			// daemon never started -- that race is recovered by the next
+			// authoritative snapshot instead.
+			var params appwire.SerfSteeringInjectedParams
+			if json.Unmarshal(record.Notification.Params, &params) != nil {
+				continue
+			}
+			idx, ok := s.turnIndex[s.activeTurnID]
+			if s.activeTurnID == "" || !ok {
+				continue
+			}
+			turn := &s.turns[idx]
+			// Index per turn, not globally, matching the frontend reducer
+			// (cmd/serf-hub/frontend/src/protocol/reducer.ts:777-790) and the
+			// transcript reload shape it mirrors.
+			steeringCount := 0
+			for i := range turn.Items {
+				if turn.Items[i].Type == "steering" {
+					steeringCount++
+				}
+			}
+			turn.Items = append(turn.Items, appwire.ThreadItem{
+				Type:             "steering",
+				ID:               fmt.Sprintf("item_steering_live_%s_%d", s.activeTurnID, steeringCount),
+				TurnID:           s.activeTurnID,
+				Text:             params.Text,
+				Images:           params.Images,
+				Status:           appwire.TurnStatusCompleted,
+				Source:           params.Source,
+				SteeringKind:     params.Kind,
+				ClientMutationID: params.ClientMutationID,
+			})
 		}
 	}
 }
