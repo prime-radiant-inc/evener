@@ -1,8 +1,14 @@
 # AppWire Canonical Transcript Projection Design
 
-**Status:** Approved
+**Status:** Superseded
 
 **Date:** 2026-07-29
+
+**Superseded by:**
+`2026-07-29-appwire-authoritative-rejoin-design.md`. The replacement keeps
+the existing transcript and wire identities, materializes one daemon-owned
+snapshot, and makes client hydration self-healing without adding transcript
+format v3 or public stream epochs.
 
 **Scope:** Serf daemon transcript identity, live AppWire projection, transcript
 paging, and atomic subscribing hydration.
@@ -273,4 +279,3 @@ Additional gates cover:
 - response-before-post-cut-notification ordering;
 - focused stress and race repetition; and
 - full Go, frontend, generation-drift, lint, and build checks.
-
