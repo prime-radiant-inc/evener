@@ -12,8 +12,8 @@ func TestAppThread_CarriesPendingEscalationsSnapshot(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
 	s.SetAppIdentity("local", "th_1")
-	s.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
-		return []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}}
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) {
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file", DeniedPath: "/x", Mode: "read-only"}}
 	})
 	thread := s.appThread()
 	got := thread.Serf.PendingEscalations

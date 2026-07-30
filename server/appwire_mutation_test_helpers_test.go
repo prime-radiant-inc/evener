@@ -19,7 +19,6 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 	queueImages := s.queueWithImagesFunc
 	drain := s.drainSteerFunc
 	drainInput := s.drainSteerInputFunc
-	queueDepth := s.queueDepthFn
 	cancel := s.cancelFunc
 	s.mu.RUnlock()
 
@@ -79,7 +78,13 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 				if queueImages == nil {
 					return appwire.TurnQueueResponse{}, appwire.Unavailable("image queue not available")
 				}
-				return appwire.TurnQueueResponse{}, queueImages(text, images)
+				err := queueImages(text, images)
+				// Stand in for the bridge: a real session emits QUEUE_CHANGED
+				// here and the daemon re-samples the queue facet. A double that
+				// mutated the queue without republishing would leave the
+				// materialized depth at whatever it was before.
+				s.RefreshThreadEnvelope()
+				return appwire.TurnQueueResponse{}, err
 			}
 			if queue == nil {
 				return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
@@ -107,7 +112,7 @@ func installProjectedMutationCallbacksForTest(s *Server) {
 				}
 				return appwire.TurnDrainAsSteerResponse{}, drainInput(text, images)
 			}
-			if queueDepth != nil && queueDepth() == 0 {
+			if s.materializedQueueDepth() == 0 {
 				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("queue is empty")
 			}
 			return appwire.TurnDrainAsSteerResponse{}, drain()

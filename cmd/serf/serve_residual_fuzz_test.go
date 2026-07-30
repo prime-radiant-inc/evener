@@ -36,26 +36,16 @@ type residualServeServer struct {
 	queue              func(string) error
 	queueImages        func(string, []server.ImageAttachment) error
 	goal               func(string) (bool, error)
-	goalStatus         func() (string, int, bool)
 	drain              func() error
 	drainInput         func(string, []server.ImageAttachment) error
 	promote            func(int, string) error
 	cancel             func(int, string) (string, int, error)
-	queueDepth         func() int
-	queueIDs           func() []string
-	queuePreview       func() []string
-	queueTexts         func() []string
-	pressure           func() float64
-	contextMetrics     func() server.ContextMetrics
-	workMetrics        func() (int64, *appwire.SerfUsage, int64)
+	envelopeSource     server.ThreadEnvelopeSource
 	meta               func() schema.SessionMeta
-	pendingAsk         func() bool
-	pendingEscalation  func() bool
 	pendingEscalations func() []appwire.SandboxEscalationRequested
 	model              func(string) error
 	name               func(string)
 	effort             func(string)
-	detailed           func() server.DetailedStatus
 	tasks              func() any
 	clear              func(context.Context) error
 	shutdown           func()
@@ -78,9 +68,8 @@ func (s *residualServeServer) SetQueueFunc(f func(string) error) { s.queue = f }
 func (s *residualServeServer) SetQueueWithImagesFunc(f func(string, []server.ImageAttachment) error) {
 	s.queueImages = f
 }
-func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error))       { s.goal = f }
-func (s *residualServeServer) SetGoalStatusFunc(f func() (string, int, bool)) { s.goalStatus = f }
-func (s *residualServeServer) SetDrainAsSteerFunc(f func() error)             { s.drain = f }
+func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error)) { s.goal = f }
+func (s *residualServeServer) SetDrainAsSteerFunc(f func() error)       { s.drain = f }
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f
 }
@@ -90,30 +79,16 @@ func (s *residualServeServer) SetPromoteQueuedAsSteerFunc(f func(int, string) er
 func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, int, error)) {
 	s.cancel = f
 }
-func (s *residualServeServer) SetQueueDepthFunc(f func() int)          { s.queueDepth = f }
-func (s *residualServeServer) SetQueuePreviewFunc(f func() []string)   { s.queuePreview = f }
-func (s *residualServeServer) SetQueueIDsFunc(f func() []string)       { s.queueIDs = f }
-func (s *residualServeServer) SetQueueTextsFunc(f func() []string)     { s.queueTexts = f }
-func (s *residualServeServer) SetContextPressureFunc(f func() float64) { s.pressure = f }
-func (s *residualServeServer) SetContextMetricsFunc(f func() server.ContextMetrics) {
-	s.contextMetrics = f
+func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
+	s.envelopeSource = src
 }
-func (s *residualServeServer) SetWorkMetricsFunc(f func() (int64, *appwire.SerfUsage, int64)) {
-	s.workMetrics = f
-}
-func (s *residualServeServer) SetSessionMetaFunc(f func() schema.SessionMeta) { s.meta = f }
-func (s *residualServeServer) SetPendingAskFunc(f func() bool)                { s.pendingAsk = f }
-func (s *residualServeServer) SetPendingEscalationFunc(f func() bool)         { s.pendingEscalation = f }
-func (s *residualServeServer) SetPendingEscalationsSnapshotFunc(f func() []appwire.SandboxEscalationRequested) {
-	s.pendingEscalations = f
-}
-func (s *residualServeServer) SetModelFunc(f func(string) error)                    { s.model = f }
-func (s *residualServeServer) SetNameFunc(f func(string))                           { s.name = f }
-func (s *residualServeServer) SetReasoningEffortFunc(f func(string))                { s.effort = f }
-func (s *residualServeServer) SetDetailedStatusFunc(f func() server.DetailedStatus) { s.detailed = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)                            { s.tasks = f }
-func (s *residualServeServer) SetClearFunc(f func(context.Context) error)           { s.clear = f }
-func (s *residualServeServer) SetShutdownFunc(f func())                             { s.shutdown = f }
+func (s *residualServeServer) RefreshThreadEnvelope()                     {}
+func (s *residualServeServer) SetModelFunc(f func(string) error)          { s.model = f }
+func (s *residualServeServer) SetNameFunc(f func(string))                 { s.name = f }
+func (s *residualServeServer) SetReasoningEffortFunc(f func(string))      { s.effort = f }
+func (s *residualServeServer) SetTasksFunc(f func() any)                  { s.tasks = f }
+func (s *residualServeServer) SetClearFunc(f func(context.Context) error) { s.clear = f }
+func (s *residualServeServer) SetShutdownFunc(f func())                   { s.shutdown = f }
 
 func exerciseResidualCallbacks(s *residualServeServer) {
 	ctx := context.Background()
@@ -125,24 +100,27 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	_ = s.queueImages("queued", nil)
 	_, _ = s.goal(" ")
 	_, _ = s.goal("objective")
-	_, _, _ = s.goalStatus()
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
 	_ = s.promote(0, "q_1_x")
-	_ = s.queueDepth()
-	_ = s.queuePreview()
-	_ = s.queueIDs()
-	_ = s.pressure()
-	_ = s.contextMetrics()
-	_, _, _ = s.workMetrics()
-	_ = s.meta()
-	_ = s.pendingAsk()
-	_ = s.pendingEscalation()
+	// Every envelope facet now enters the daemon through one seam. Exercising
+	// each method keeps the residual sweep's coverage of the live producers.
+	_ = s.envelopeSource.ContextPressure()
+	_ = s.envelopeSource.ContextMetrics()
+	_ = s.envelopeSource.DetailedStatus()
+	_, _ = s.envelopeSource.ClientMutationProjection()
+	_ = s.envelopeSource.TaskAggregate()
+	_, _, _ = s.envelopeSource.GoalStatus()
+	_, _, _ = s.envelopeSource.WorkMetrics()
+	_, _ = s.envelopeSource.FailedToolCalls()
+	_ = s.envelopeSource.AskPending()
+	_ = s.envelopeSource.PendingEscalations()
+	_, _, _ = s.envelopeSource.ReasoningInfo()
+	_ = s.envelopeSource.SessionMeta()
 	_ = s.pendingEscalations()
 	_ = s.model("test2")
 	s.name("renamed")
 	s.effort("low")
-	_ = s.detailed()
 	_ = s.tasks()
 }
 

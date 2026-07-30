@@ -36,12 +36,13 @@ func TestHandleStatus_PendingAskTrueFalseTrueAfterRestart(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
 
 	asked := true
-	srv.SetPendingAskFunc(func() bool { return asked })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = asked })
 	if got := statusPendingAsk(t, srv); !got {
 		t.Fatal("expected pending_ask=true while the question is unanswered")
 	}
 
 	asked = false
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = asked })
 	if got := statusPendingAsk(t, srv); got {
 		t.Fatal("expected pending_ask=false once answered")
 	}
@@ -52,7 +53,7 @@ func TestHandleStatus_PendingAskTrueFalseTrueAfterRestart(t *testing.T) {
 	// with no post-restart grace period where it reads stale-false.
 	restarted := NewServer(ServerConfig{})
 	restarted.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
-	restarted.SetPendingAskFunc(func() bool { return true })
+	setEnvelope(restarted, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	if got := statusPendingAsk(t, restarted); !got {
 		t.Fatal("expected pending_ask=true immediately after restart, mirroring HasPendingAsk()'s restore rebuild")
 	}

@@ -33,11 +33,10 @@ func statusNotifications(t *testing.T, srv *Server, threadID string) []appwire.T
 func TestStatusChangeCarriesTheRunningFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	count := 0
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return count, true })
+	publishFailureCount(srv, 0)
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
-	count = 4
+	publishFailureCount(srv, 4)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
 	statuses := statusNotifications(t, srv, "th_1")
@@ -59,7 +58,7 @@ func TestStatusChangeOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	// notification means "no update" and leaves whatever the hydrate said.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return 0, false })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 

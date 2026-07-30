@@ -68,33 +68,20 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
-	SetGoalStatusFunc(func() (string, int, bool))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
 	SetCancelQueuedFunc(func(int, string) (string, int, error))
-	SetQueueIDsFunc(func() []string)
-	SetQueueDepthFunc(func() int)
-	SetQueuePreviewFunc(func() []string)
-	SetQueueTextsFunc(func() []string)
-	SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation))
-	SetContextPressureFunc(func() float64)
-	SetContextMetricsFunc(func() server.ContextMetrics)
-	SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64))
-	SetFailedToolCallsFunc(func() (int, bool))
-	SetSessionMetaFunc(func() schema.SessionMeta)
-	SetPendingAskFunc(func() bool)
-	SetPendingEscalationFunc(func() bool)
-	SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested)
+	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
+	// one seam the daemon samples at change time. See server/thread_envelope.go.
+	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
+	RefreshThreadEnvelope()
 	SetModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
-	SetReasoningInfoFunc(func() (effort string, levels []string, supportsReasoning bool))
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
-	SetDetailedStatusFunc(func() server.DetailedStatus)
 	SetTasksFunc(func() any)
-	SetTaskAggregateFunc(func() *appwire.TaskAggregate)
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -585,7 +572,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return getSession().SetGoal(ctx, objective)
 	})
-	srv.SetGoalStatusFunc(func() (string, int, bool) { return getSession().GoalStatus() })
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)
@@ -621,29 +607,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			})
 		},
 	})
-	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
-	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
-	srv.SetQueueIDsFunc(func() []string { return getSession().QueueIDs() })
-	srv.SetQueueTextsFunc(func() []string { return getSession().QueueTexts() })
-	srv.SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation) {
-		return getSession().ClientMutationProjection()
-	})
-	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
-	srv.SetContextMetricsFunc(func() server.ContextMetrics {
-		metrics := getSession().ContextMetrics()
-		return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
-	})
-	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
-		sess := getSession()
-		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
-	})
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return getSession().FailedToolCallsSnapshot() })
-	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
-	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
-	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
-	srv.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
-		return mapServePendingEscalations(getSession().PendingEscalations())
-	})
+	// One seam replaces sixteen read-time callbacks. The daemon samples session
+	// state through this at the moments it changes (server/thread_envelope.go's
+	// facetsByEvent) and never on a read.
+	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{session: getSession})
 	pendingEscalations := func() []appwire.SandboxEscalationRequested {
 		return mapServePendingEscalations(getSession().PendingEscalations())
 	}
@@ -662,31 +629,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
-	srv.SetReasoningInfoFunc(func() (string, []string, bool) {
-		sess := getSession()
-		p := sess.Profile()
-		return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
-	})
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
-	srv.SetDetailedStatusFunc(func() server.DetailedStatus {
-		return agentToServerDetailedStatus(getSession().DetailedStatus())
-	})
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
-	srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate {
-		tasks, err := getSession().TasksWithError()
-		if err != nil {
-			// A persisted-store failure is unavailable task state, not an
-			// authoritative empty list; keep the wire aggregate absent.
-			return nil
-		}
-		done := 0
-		for _, task := range tasks {
-			if task.Status == taskpkg.TaskDone {
-				done++
-			}
-		}
-		return &appwire.TaskAggregate{Total: len(tasks), Done: done}
-	})
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
 		currentMu.RLock()
@@ -736,6 +680,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// notification can be projected between the halves, so no client sees
 		// the old thread's authority answering for the new thread's id.
 		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
+		// The commit above zeroed the envelope with the identity it described.
+		// Re-seed from the replacement session here rather than inside the
+		// commit: sampling every facet reads jobs.jsonl and the task store, and
+		// the commit holds the projection gate. Nothing is lost by seeding
+		// after it -- the new session's own events are still queued in its
+		// channel, and its bridge has not started.
+		srv.RefreshThreadEnvelope()
 		oldSess.Close() // disposes oldEnv
 		bridgeSession(newSess)
 		return nil
@@ -746,6 +697,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		cancel()
 	})
 
+	// Seed the envelope from the live session before its bridge starts. Every
+	// envelope value changes at once when the session behind them changes, and
+	// no single event announces that; this is that moment for the first one.
+	srv.RefreshThreadEnvelope()
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
 	if deps.observeCallbacks != nil {
@@ -1088,4 +1043,82 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	out.Agents = ds.Agents
 
 	return out
+}
+
+// liveThreadEnvelopeSource is the daemon's one window onto live session state
+// for the materialized thread envelope. The server samples it at the moments
+// those values change (server/thread_envelope.go's facetsByEvent), never on a
+// read: every method here can take the session's mutex, the task store's, or
+// read jobs.jsonl, and a read path that could reach them would hold the
+// projection gate across that work.
+//
+// It resolves the session per call rather than capturing one, so it follows
+// /clear onto the replacement session exactly as the sixteen closures it
+// replaced did.
+type liveThreadEnvelopeSource struct {
+	session func() *agent.Session
+}
+
+func (l liveThreadEnvelopeSource) ContextPressure() float64 {
+	return l.session().ContextPressure()
+}
+
+func (l liveThreadEnvelopeSource) ContextMetrics() server.ContextMetrics {
+	metrics := l.session().ContextMetrics()
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
+}
+
+func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
+	return agentToServerDetailedStatus(l.session().DetailedStatus())
+}
+
+func (l liveThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
+	return l.session().ClientMutationProjection()
+}
+
+// TaskAggregate reports nil on a persisted-store failure. That is unavailable
+// task state, not an authoritative empty list, and the wire distinguishes them.
+func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
+	tasks, err := l.session().TasksWithError()
+	if err != nil {
+		return nil
+	}
+	done := 0
+	for _, task := range tasks {
+		if task.Status == taskpkg.TaskDone {
+			done++
+		}
+	}
+	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+}
+
+func (l liveThreadEnvelopeSource) GoalStatus() (string, int, bool) {
+	return l.session().GoalStatus()
+}
+
+func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+	sess := l.session()
+	return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
+}
+
+func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
+	return l.session().FailedToolCallsSnapshot()
+}
+
+func (l liveThreadEnvelopeSource) AskPending() bool {
+	return l.session().HasPendingAsk()
+}
+
+func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
+	return mapServePendingEscalations(l.session().PendingEscalations())
+}
+
+func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
+	sess := l.session()
+	p := sess.Profile()
+	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+}
+
+func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
+	return l.session().Meta()
 }

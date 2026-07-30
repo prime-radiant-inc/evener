@@ -27,6 +27,10 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 			continue
 		}
 		srv.applySessionEventStatus(ev)
+		// Sample the envelope facets this event can have moved, before the
+		// commit that publishes the event announcing them. Same ordering, and
+		// for the same reason, as applySessionEventStatus above.
+		srv.refreshThreadEnvelopeForEvent(ev)
 		srv.RecordAppEvent(ev)
 	}
 }

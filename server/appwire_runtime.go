@@ -14,7 +14,6 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
@@ -113,6 +112,14 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appActiveTurnID = ""
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
+		// The envelope describes the session that just stopped being this
+		// daemon's session, so it is replaced in the SAME commit as the identity
+		// it belongs to. Zeroing the whole struct rather than clearing named
+		// fields is what makes that structural: a field added to threadEnvelope
+		// later is reset here for free, and cannot survive an identity change by
+		// being forgotten. The caller re-seeds with RefreshThreadEnvelope once
+		// the replacement session is the live one.
+		s.appEnvelope = threadEnvelope{}
 		s.status.SessionID = prepared.threadID
 		s.mu.Unlock()
 
@@ -157,6 +164,18 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	}
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		var committed []appserver.SequencedNotification
+		// A test-only park INSIDE the commit, where projectionMu is actually
+		// held. beforeAppProjectionCommit above cannot serve that purpose: it
+		// runs before CommitProjection takes the gate, so a goroutine parked
+		// there holds nothing and any ordering it appears to establish is a
+		// coin toss. Deliberately called without s.mu, so a parked commit
+		// blocks a concurrent one on the projection gate rather than on s.mu.
+		s.mu.RLock()
+		insideCommit := s.insideAppProjectionCommit
+		s.mu.RUnlock()
+		if insideCommit != nil {
+			insideCommit()
+		}
 		s.mu.Lock()
 		if !s.acceptsSessionEventLocked(event.SessionID) {
 			s.mu.Unlock()
@@ -237,18 +256,25 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 	if !ok {
 		return params
 	}
-	s.mu.RLock()
-	fn := s.failedToolCallsFn
-	s.mu.RUnlock()
-	if fn == nil {
-		return params
-	}
-	count, measured := fn()
+	count, measured := s.envelopeFailedToolCalls()
 	if !measured {
 		return params
 	}
 	status.FailedToolCalls = &count
 	return status
+}
+
+// envelopeFailedToolCalls reads the running failure count out of the
+// materialized envelope. The bridge refreshes the failures facet BEFORE the
+// commit that projects the event being stamped, so the figure a notification
+// carries is at least as new as the event it rides on.
+func (s *Server) envelopeFailedToolCalls() (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.appEnvelope.FailedToolCalls == nil {
+		return 0, false
+	}
+	return *s.appEnvelope.FailedToolCalls, true
 }
 
 // stampFailureCountOnItemCompleted rides the running failure count on an
@@ -283,13 +309,7 @@ func (s *Server) stampFailureCountOnItemCompleted(method string, params any) any
 	if !isTyped && !isMap {
 		return params
 	}
-	s.mu.RLock()
-	fn := s.failedToolCallsFn
-	s.mu.RUnlock()
-	if fn == nil {
-		return params
-	}
-	count, measured := fn()
+	count, measured := s.envelopeFailedToolCalls()
 	if !measured {
 		return params
 	}
@@ -395,18 +415,13 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // only lead its notifications. A sample taken outside can lag one -- an event
 // emitted after the sample and committed before the cut is discarded on release
 // as already-reflected, and the state it announced then never reaches the
-// client at all. Anything called from here must therefore be cheap AND must not
-// block on a lock another component holds across disk I/O -- a rule this code
-// does not fully satisfy yet. clientMutationStore.snapshot was fixed; four
-// paths still block: failedToolCallsFn behind the transcript-append fsync (the
-// hottest, since it fires on every turn, not just client mutations),
-// detailedStatusFn behind jobstore's synchronous jobs.jsonl read and fsync,
-// taskAggregateFn behind TaskStore's save()/Load(), and eleven of these
-// sixteen callbacks behind Session.mu, which SetModel holds across rendering
-// the system prompt. See
-// docs/superpowers/specs/2026-07-29-appwire-authoritative-rejoin-design.md
-// for the full audit; the real fix is a cached envelope the session pushes
-// into, which does not exist yet.
+// client at all.
+//
+// Anything called from here must therefore be cheap AND must not block on a
+// lock another component holds across disk I/O. That is now structural rather
+// than a rule to remember: the envelope is materialized (server/thread_envelope.go),
+// this is a struct copy, and the Server holds no callback that could reach a
+// session from a read path.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
 	thread := s.appThread()
 	var olderCursor string
@@ -802,28 +817,23 @@ func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListPara
 	return appwire.ModelListResponse{Data: out}, nil
 }
 
+// appThread assembles the thread snapshot. It is a struct copy plus identity:
+// every live-session value comes from the materialized envelope, which the
+// bridge maintains at the moments those values change.
+//
+// It must stay that way. This runs under the response cut, which holds
+// projectionMu AND deliveryMu, so anything reached from here blocks every other
+// connection's capture, every projection commit, and the whole event bridge for
+// as long as it takes. It used to pull sixteen live session callbacks from
+// here; four of them could block behind a transcript fsync, a synchronous
+// jobs.jsonl read, or the session's own mutex.
 func (s *Server) appThread() appwire.Thread {
 	s.mu.RLock()
 	status := s.status
 	sourceID := s.appSourceID
 	threadID := s.appThreadID
 	processing := s.processing
-	pfn := s.pressureFn
-	cmfn := s.contextMetricsFn
-	dfn := s.detailedStatusFn
-	qpfn := s.queuePreviewFn
-	qdfn := s.queueDepthFn
-	qifn := s.queueIDsFn
-	qtfn := s.queueTextsFn
-	cmpfn := s.clientMutationProjectionFn
-	gsfn := s.goalStatusFn
-	wmfn := s.workMetricsFn
-	ftcfn := s.failedToolCallsFn
-	tafn := s.taskAggregateFn
-	metafn := s.sessionMetaFn
-	pafn := s.pendingAskFn
-	pesfn := s.pendingEscalationsSnapshotFn
-	rifn := s.reasoningInfoFn
+	envelope := s.appEnvelope
 	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
@@ -834,104 +844,27 @@ func (s *Server) appThread() appwire.Thread {
 		threadID = status.SessionID
 	}
 	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
-	pressure := status.ContextPressure
-	if pfn != nil {
-		pressure = pfn()
-	}
-	metrics := ContextMetrics{
-		Used:      status.ContextUsed,
-		Window:    status.ContextWindow,
-		Remaining: status.ContextRemaining,
-	}
-	if cmfn != nil {
-		metrics = cmfn()
-	}
+	pressure := envelope.ContextPressure
+	metrics := envelope.ContextMetrics
 	var diagnostics *appwire.SerfDiagnostics
-	if dfn != nil {
-		ds := dfn()
-		diagnostics = appDiagnosticsFromDetailedStatus(ds)
+	if envelope.Detailed != nil {
+		diagnostics = appDiagnosticsFromDetailedStatus(*envelope.Detailed)
 	}
-	queue := appwire.QueueState{}
-	var pendingMutations []appwire.PendingMutation
-	if cmpfn != nil {
-		queue, pendingMutations = cmpfn()
-	} else {
-		if qpfn != nil {
-			if preview := qpfn(); len(preview) > 0 {
-				queue.Preview = append([]string(nil), preview...)
-				queue.Depth = len(preview)
-			}
-		}
-		if qifn != nil && queue.Depth > 0 {
-			if ids := qifn(); len(ids) == queue.Depth {
-				queue.IDs = append([]string(nil), ids...)
-			}
-		}
-		if qtfn != nil && queue.Depth > 0 {
-			if texts := qtfn(); len(texts) == queue.Depth {
-				queue.Texts = append([]string(nil), texts...)
-			}
-		}
-		// Fall back to depthFn when preview isn't wired (some tests stub only
-		// the depth callback). Without this we'd silently drop authoritative
-		// depth information.
-		if queue.Depth == 0 && qdfn != nil {
-			queue.Depth = qdfn()
-		}
-	}
-	var goalState *appwire.GoalState
-	if gsfn != nil {
-		if status, iterations, ok := gsfn(); ok {
-			goalState = &appwire.GoalState{Status: status, Iterations: iterations}
-		}
-	}
-	var taskAggregate *appwire.TaskAggregate
-	if tafn != nil {
-		taskAggregate = tafn()
-	}
-	var workMillis int64
-	var usage *appwire.SerfUsage
-	var activeTurnStartedAt int64
-	if wmfn != nil {
-		workMillis, usage, activeTurnStartedAt = wmfn()
-	}
-	// The live session's own running failure count. Absent unless the daemon
-	// actually measured it — the strip must not vouch for a session nobody
-	// counted, and an unmeasured zero would read as "nothing went wrong".
-	failedToolCalls := status.FailedToolCalls
-	if ftcfn != nil {
-		if count, measured := ftcfn(); measured {
-			failedToolCalls = &count
-		} else {
-			failedToolCalls = nil
-		}
-	}
-	askPending := status.PendingAsk
-	if pafn != nil {
-		askPending = pafn()
-	}
-	var pendingEscalations []appwire.SandboxEscalationRequested
-	if pesfn != nil {
-		pendingEscalations = pesfn()
-		// Stamp each snapshot card with this thread's identifiers so the client can
-		// route it exactly like a live notification.
-		for i := range pendingEscalations {
-			pendingEscalations[i].ThreadID = threadID
-			pendingEscalations[i].Ref = ref
-		}
-	}
-	var reasoningEffort string
-	var reasoningEffortLevels []string
-	var supportsReasoning bool
-	if rifn != nil {
-		reasoningEffort, reasoningEffortLevels, supportsReasoning = rifn()
-	}
-	var meta schema.SessionMeta
-	if metafn != nil {
-		meta = metafn()
-	}
-	threadName := strings.TrimSpace(meta.Name)
-	threadPreview := strings.TrimSpace(schema.SessionDisplayName(meta))
+	queue := envelope.Queue
+	pendingMutations := envelope.PendingMutations
+	goalState := envelope.Goal
+	taskAggregate := envelope.Tasks
+	workMillis := envelope.WorkMillis
+	usage := envelope.Usage
+	activeTurnStartedAt := envelope.ActiveTurnStartedAt
+	failedToolCalls := envelope.FailedToolCalls
+	askPending := envelope.AskPending
+	pendingEscalations := envelope.PendingEscalations
+	reasoningEffort := envelope.ReasoningEffort
+	reasoningEffortLevels := envelope.ReasoningEffortLevels
+	supportsReasoning := envelope.SupportsReasoning
+	threadName := envelope.Name
+	threadPreview := envelope.Preview
 	if threadPreview == "" {
 		threadPreview = status.SessionID
 	}

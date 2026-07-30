@@ -77,7 +77,7 @@ func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	fn := s.drainSteerFunc
 	inputFn := s.drainSteerInputFunc
-	depthFn := s.queueDepthFn
+	queueDepth := s.appEnvelope.Queue.Depth
 	s.mu.RUnlock()
 	if closed {
 		http.Error(w, "session is closed", http.StatusConflict)
@@ -104,7 +104,10 @@ func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "drain-as-steer with input not available", http.StatusServiceUnavailable)
 		return
 	}
-	if !hasInput && depthFn != nil && depthFn() == 0 {
+	// A preflight courtesy, not the authority: the session's own drain rejects an
+	// empty queue. Reading the materialized depth keeps this endpoint on the one
+	// queue value the daemon publishes rather than a second live read.
+	if !hasInput && queueDepth == 0 {
 		http.Error(w, "queue is empty", http.StatusConflict)
 		return
 	}
@@ -278,13 +281,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RLock()
 	status := s.status
-	pfn := s.pressureFn
-	cmfn := s.contextMetricsFn
-	dfn := s.detailedStatusFn
-	wmfn := s.workMetricsFn
-	ftcfn := s.failedToolCallsFn
-	pafn := s.pendingAskFn
-	pefn := s.pendingEscalationFn
+	envelope := s.appEnvelope
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
@@ -300,36 +297,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 
-	if pfn != nil {
-		status.ContextPressure = pfn()
-	}
-	if cmfn != nil {
-		metrics := cmfn()
-		status.ContextUsed = metrics.Used
-		status.ContextWindow = metrics.Window
-		status.ContextRemaining = metrics.Remaining
-	}
-	if dfn != nil {
-		ds := dfn()
-		status.Detailed = &ds
-	}
-	if wmfn != nil {
-		workMillis, usage, activeTurnStartedAt := wmfn()
-		status.WorkMillis = workMillis
-		status.Usage = usage
-		status.ActiveTurnStartedAt = activeTurnStartedAt
-	}
-	if ftcfn != nil {
-		if count, measured := ftcfn(); measured {
-			status.FailedToolCalls = &count
-		}
-	}
-	if pafn != nil {
-		status.PendingAsk = pafn()
-	}
-	if pefn != nil {
-		status.PendingEscalation = pefn()
-	}
+	// /status answers from the same materialized envelope thread/read does. The
+	// two used to pull the same seven session callbacks independently, which is
+	// two sources for one value; now there is one, and the endpoints cannot
+	// disagree.
+	status.ContextPressure = envelope.ContextPressure
+	status.ContextUsed = envelope.ContextMetrics.Used
+	status.ContextWindow = envelope.ContextMetrics.Window
+	status.ContextRemaining = envelope.ContextMetrics.Remaining
+	status.Detailed = envelope.Detailed
+	status.WorkMillis = envelope.WorkMillis
+	status.Usage = envelope.Usage
+	status.ActiveTurnStartedAt = envelope.ActiveTurnStartedAt
+	status.FailedToolCalls = envelope.FailedToolCalls
+	status.PendingAsk = envelope.AskPending
+	// The pending-escalation BIT is the snapshot's own emptiness. Keeping a
+	// separate callback for it would be a second source for one fact.
+	status.PendingEscalation = len(envelope.PendingEscalations) > 0
 	status.Capabilities = capabilities
 
 	w.Header().Set("Content-Type", "application/json")

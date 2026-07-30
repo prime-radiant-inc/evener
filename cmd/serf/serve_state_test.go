@@ -17,7 +17,6 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/llm"
@@ -326,7 +325,10 @@ type clearIdentityServer struct {
 	state    *clearTestState
 	clear    func(context.Context) error
 	shutdown func()
-	meta     func() schema.SessionMeta
+	// envelopeSource is the one seam the daemon reads live session state
+	// through. Capturing it lets this test observe WHICH session the daemon
+	// resolves after /clear, which is what the meta callback used to prove.
+	envelopeSource server.ThreadEnvelopeSource
 }
 
 func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIdentity, activate func()) {
@@ -351,9 +353,9 @@ func (s *clearIdentityServer) SetShutdownFunc(fn func()) {
 	s.Server.SetShutdownFunc(fn)
 }
 
-func (s *clearIdentityServer) SetSessionMetaFunc(fn func() schema.SessionMeta) {
-	s.meta = fn
-	s.Server.SetSessionMetaFunc(fn)
+func (s *clearIdentityServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
+	s.envelopeSource = src
+	s.Server.SetThreadEnvelopeSource(src)
 }
 
 // newClearServeDeps builds a real serve run whose LLM boundary is scripted and
@@ -465,8 +467,8 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		obs.clearErr = state.srv.clear(context.Background())
 		obs.steps = state.recorded()[before:]
 
-		if state.srv.meta != nil {
-			obs.currentSessionID = state.srv.meta().ID
+		if state.srv.envelopeSource != nil {
+			obs.currentSessionID = state.srv.envelopeSource.SessionMeta().ID
 		}
 		obs.statusSessionID = state.srv.GetStatus().SessionID
 		obs.oldSessionState = oldSess.State()

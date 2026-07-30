@@ -112,7 +112,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 		return sess.EnqueueWithImages(context.Background(), text, images)
 	})
 	srv.SetDrainAsSteerFunc(func() error { return sess.DrainAsSteer(context.Background()) })
-	srv.SetQueueDepthFunc(sess.QueueDepth)
+	publishSessionQueueEnvelope(srv, sess)
 	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")

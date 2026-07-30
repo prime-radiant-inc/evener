@@ -48,13 +48,12 @@ func itemCompletedNotifications(t *testing.T, srv *Server, threadID string) []st
 func TestItemCompletedCarriesTheRunningFailureCountWhenItChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	count := 0
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return count, true })
+	publishFailureCount(srv, 0)
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "first"}})
 
-	count = 1
+	publishFailureCount(srv, 1)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "second"}})
 
 	// Unchanged: must not resend the same figure on every later item.
@@ -83,7 +82,7 @@ func TestItemCompletedCarriesTheRunningFailureCountWhenItChanges(t *testing.T) {
 func TestItemCompletedOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return 0, false })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "first"}})
@@ -116,14 +115,17 @@ func TestItemCompletedOmitsTheCountOnADaemonThatNeverWiredIt(t *testing.T) {
 func TestItemCompletedLastStampResetsOnNewIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	count := 3
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return count, true })
+	publishFailureCount(srv, 3)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "first"}})
 
 	srv.SetAppIdentity("local", "th_2")
-	// Same count as the outgoing session's last stamp - must still stamp,
-	// since this is a different session's first observation.
+	// The identity swap zeroed the envelope along with the identity it
+	// described, so the replacement session publishes its own count -- which is
+	// what serve.go's RefreshThreadEnvelope does immediately after
+	// ReplaceAppIdentity. Same count as the outgoing session's last stamp:
+	// must still stamp, since this is a different session's first observation.
+	publishFailureCount(srv, 3)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_2", Data: events.UserInputData{Text: "go"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_2", Data: events.AssistantTextEndData{Text: "first"}})
 

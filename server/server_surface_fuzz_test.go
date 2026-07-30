@@ -196,8 +196,8 @@ func exerciseServerFuzzResiduals(t *testing.T) {
 
 	s := NewServer(ServerConfig{})
 	s.SetAppIdentity("local", "th_1")
-	s.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
-		return []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}}
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) {
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}}
 	})
 	_ = s.appThread()
 
@@ -299,13 +299,15 @@ func exerciseAppWireResiduals() {
 	s.SetListModelsFunc(func(context.Context) ([]ModelsResponseItem, error) { return nil, errors.New("models") })
 	_, _ = s.handleAppModelList(ctx, appwire.ModelListParams{})
 
-	s.SetGoalStatusFunc(func() (string, int, bool) { return "active", 1, true })
-	s.SetQueuePreviewFunc(func() []string { return []string{"queued"} })
-	s.SetPendingEscalationFunc(func() bool { return true })
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) { e.goalStatus = "active"; e.goalIterations = 1; e.goalSet = true })
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) { e.queue.Preview = []string{"queued"}; e.queue.Depth = 1 })
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) {
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_probe"}}
+	})
 	_ = s.appThread()
 	plain := NewServer(ServerConfig{})
 	plain.appSourceID = ""
-	plain.SetQueueDepthFunc(func() int { return 2 })
+	setEnvelope(plain, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 	_ = plain.appThread()
 	s.ensureAppProjectorLocked("thread")
 	s.releaseAppTurnID("missing")
@@ -362,6 +364,8 @@ func exerciseHTTPResiduals() {
 	call(http.MethodPost, "/drain-as-steer", `{"text":"x"}`)
 	call(http.MethodPost, "/clear", "")
 	call(http.MethodPost, "/model", `{}`)
-	s.SetPendingEscalationFunc(func() bool { return true })
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) {
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_probe"}}
+	})
 	call(http.MethodGet, "/status", "")
 }

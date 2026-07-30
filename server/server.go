@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
@@ -184,10 +183,22 @@ type Server struct {
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.
-	appTurns                  *appTurnSnapshot
-	appActiveTurnID           string
+	appTurns        *appTurnSnapshot
+	appActiveTurnID string
+	// appEnvelope is the daemon's one materialized thread envelope: every value
+	// a thread snapshot reports about the live session other than its identity
+	// and its turns. Reads copy it; nothing on a read path reaches the session.
+	// See server/thread_envelope.go.
+	appEnvelope threadEnvelope
+	// appEnvelopeSource is the seam the bridge samples session state through at
+	// the moments it changes. It is NEVER consulted by a read.
+	appEnvelopeSource         ThreadEnvelopeSource
 	appReservedTurnID         string
 	beforeAppProjectionCommit func()
+	// insideAppProjectionCommit is a test seam invoked from within
+	// RecordAppEvent's commit callback, i.e. while the projection gate is held.
+	// Production leaves it nil.
+	insideAppProjectionCommit func()
 	// appLastStampedFailedToolCalls is the failure count most recently
 	// stamped onto an item/completed notification (kata 895d) — nil means
 	// nothing has been stamped yet for the current identity. It exists so
@@ -207,50 +218,18 @@ type Server struct {
 	queueFunc                     func(string) error
 	queueWithImagesFunc           func(string, []ImageAttachment) error
 	goalFunc                      func(objective string) (bool, error)
-	goalStatusFn                  func() (status string, iterations int, ok bool)
 	drainSteerFunc                func() error
 	drainSteerInputFunc           func(string, []ImageAttachment) error
 	promoteSteerFunc              func(int, string) error
 	cancelQueuedFunc              func(int, string) (string, int, error)
-	queueDepthFn                  func() int
-	queueIDsFn                    func() []string
-	queuePreviewFn                func() []string
-	queueTextsFn                  func() []string
-	clientMutationProjectionFn    func() (appwire.QueueState, []appwire.PendingMutation)
 	compactFunc                   func(context.Context) error
 	clearFunc                     func(context.Context) error
-	pressureFn                    func() float64
-	pendingAskFn                  func() bool
-	pendingEscalationFn           func() bool
-	pendingEscalationsSnapshotFn  func() []appwire.SandboxEscalationRequested
-	contextMetricsFn              func() ContextMetrics
-	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
-	// accumulated wall-clock work time, cumulative token usage (nil when
-	// there is none to report), and the in-flight turn's start time (0 when
-	// idle). Read by both /status and the appwire appThread() projection.
-	workMetricsFn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
-	// failedToolCallsFn returns how many of the session's tool calls have
-	// failed, and whether anyone counted. Separate from workMetricsFn because
-	// the answer can be genuinely absent (no transcript to count), and a
-	// daemon that never wired this reports absent rather than a clean zero.
-	// Read by both /status and the appwire appThread() projection.
-	failedToolCallsFn func() (count int, measured bool)
-	// reasoningInfoFn returns the live reasoning-effort settings for the
-	// session's current profile: the configured effort, the profile's valid
-	// effort levels, and whether the profile supports reasoning control at
-	// all. Read by the appwire thread projection (appThread) so a
-	// cold-attached client can render both settings and populate pickers
-	// with no prior notification.
-	reasoningInfoFn     func() (effort string, levels []string, supportsReasoning bool)
-	sessionMetaFn       func() schema.SessionMeta
-	detailedStatusFn    func() DetailedStatus
-	modelFunc           func(string) error
-	nameFunc            func(string)
-	reasoningEffortFunc func(string)
-	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
-	tasksFn             func() any
-	taskAggregateFn     func() *appwire.TaskAggregate
-	shutdownFunc        func()
+	modelFunc                     func(string) error
+	nameFunc                      func(string)
+	reasoningEffortFunc           func(string)
+	listModelsFunc                func(context.Context) ([]ModelsResponseItem, error)
+	tasksFn                       func() any
+	shutdownFunc                  func()
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
@@ -434,15 +413,6 @@ func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 	s.mu.Unlock()
 }
 
-// SetGoalStatusFunc sets the callback that reports the session's current /goal
-// state for the thread-read projection (the SerfThread.Goal field). ok is false
-// when no goal is set.
-func (s *Server) SetGoalStatusFunc(fn func() (status string, iterations int, ok bool)) {
-	s.mu.Lock()
-	s.goalStatusFn = fn
-	s.mu.Unlock()
-}
-
 // SetQueueWithImagesFunc sets the function called when the appwire
 // turn/queue request carries image attachments (kata t5j6). The callback
 // should append a queued entry that pairs the text with the attached
@@ -496,146 +466,6 @@ func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int, string) error) {
 func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
 	s.mu.Lock()
 	s.cancelQueuedFunc = fn
-	s.mu.Unlock()
-}
-
-// SetQueueDepthFunc sets a callback returning the current queue depth so
-// capability projection can advertise Queue accurately.
-func (s *Server) SetQueueDepthFunc(fn func() int) {
-	s.mu.Lock()
-	s.queueDepthFn = fn
-	s.mu.Unlock()
-}
-
-// SetQueuePreviewFunc sets a callback returning a FIFO snapshot of queued
-// user messages (first-line truncated). Used by appwire ReadThread to
-// populate SerfThread.Queue so clients can render the queue preview
-// without maintaining their own mirror (kata r80p).
-func (s *Server) SetQueuePreviewFunc(fn func() []string) {
-	s.mu.Lock()
-	s.queuePreviewFn = fn
-	s.mu.Unlock()
-}
-
-// SetQueueIDsFunc sets a callback returning the stable per-entry ids of the
-// queued user messages in FIFO order (aligned with QueuePreview). Used by
-// appwire ReadThread to populate QueueState.IDs so a promote request can
-// carry the expected entry identity (review F1, issue #22).
-func (s *Server) SetQueueIDsFunc(fn func() []string) {
-	s.mu.Lock()
-	s.queueIDsFn = fn
-	s.mu.Unlock()
-}
-
-// SetQueueTextsFunc sets a callback returning the full untruncated texts of
-// the queued user messages in FIFO order (aligned with QueuePreview). Used
-// by appwire ReadThread to populate QueueState.Texts so the edit affordance
-// (issue #23) can restore the complete message into the composer before
-// canceling the queued copy.
-func (s *Server) SetQueueTextsFunc(fn func() []string) {
-	s.mu.Lock()
-	s.queueTextsFn = fn
-	s.mu.Unlock()
-}
-
-// SetClientMutationProjectionFunc installs the durable retry-safe mutation
-// snapshot used by thread/read. Queue revision and pending mutations must come
-// from one store generation.
-func (s *Server) SetClientMutationProjectionFunc(fn func() (appwire.QueueState, []appwire.PendingMutation)) {
-	s.mu.Lock()
-	s.clientMutationProjectionFn = fn
-	s.mu.Unlock()
-}
-
-// SetContextPressureFunc sets a callback to retrieve live context pressure.
-func (s *Server) SetContextPressureFunc(fn func() float64) {
-	s.mu.Lock()
-	s.pressureFn = fn
-	s.mu.Unlock()
-}
-
-// SetPendingAskFunc sets a callback to retrieve the live pending-ask bit
-// (Track A §2). Read by both /status (handleStatus) and the appwire thread
-// projection (appThread).
-func (s *Server) SetPendingAskFunc(fn func() bool) {
-	s.mu.Lock()
-	s.pendingAskFn = fn
-	s.mu.Unlock()
-}
-
-// SetPendingEscalationFunc sets a callback to retrieve the live pending-escalation
-// bit (M7): true while a sandbox-exemption escalation is blocked awaiting a human.
-// Read by /status so the hub's prober can raise the owning session's needs-you badge.
-func (s *Server) SetPendingEscalationFunc(fn func() bool) {
-	s.mu.Lock()
-	s.pendingEscalationFn = fn
-	s.mu.Unlock()
-}
-
-// SetPendingEscalationsSnapshotFunc sets a callback returning the redacted approval
-// cards for the session's currently-blocked sandbox escalations (M7). appThread()
-// puts them on thread/read so a client surfaces the card(s) on entry/reconnect. A
-// HUMAN-CLIENT field only — never entering the model's transcript.
-func (s *Server) SetPendingEscalationsSnapshotFunc(fn func() []appwire.SandboxEscalationRequested) {
-	s.mu.Lock()
-	s.pendingEscalationsSnapshotFn = fn
-	s.mu.Unlock()
-}
-
-// SetWorkMetricsFunc sets a callback to retrieve the live working-state/token
-// metrics (WS2 A7): accumulated wall-clock work time, cumulative token usage
-// (nil when there is none to report), and the in-flight turn's Unix start
-// time (0 when idle). Read by both /status (handleStatus) and the appwire
-// thread projection (appThread).
-func (s *Server) SetWorkMetricsFunc(fn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)) {
-	s.mu.Lock()
-	s.workMetricsFn = fn
-	s.mu.Unlock()
-}
-
-// SetFailedToolCallsFunc sets a callback to retrieve the session's live
-// failure count and whether it was measured at all (kata 12rq). Read by both
-// /status (handleStatus) and the appwire thread projection (appThread).
-//
-// Unset leaves the figure ABSENT everywhere downstream, which is the honest
-// report for a daemon that cannot count: absence renders nothing, whereas a
-// zero would state in the session's own chrome that the run was clean.
-func (s *Server) SetFailedToolCallsFunc(fn func() (count int, measured bool)) {
-	s.mu.Lock()
-	s.failedToolCallsFn = fn
-	s.mu.Unlock()
-}
-
-// SetReasoningInfoFunc sets a callback to retrieve the live reasoning-effort
-// settings for the session's current profile (configured effort, valid effort
-// levels, and whether the profile supports reasoning at all). Read by the
-// appwire thread projection (appThread) so a cold-attached client can render
-// both settings and populate pickers with no prior notification.
-func (s *Server) SetReasoningInfoFunc(fn func() (effort string, levels []string, supportsReasoning bool)) {
-	s.mu.Lock()
-	s.reasoningInfoFn = fn
-	s.mu.Unlock()
-}
-
-// SetSessionMetaFunc sets a callback returning current session metadata for
-// appwire thread snapshots, including generated/user-chosen display titles.
-func (s *Server) SetSessionMetaFunc(fn func() schema.SessionMeta) {
-	s.mu.Lock()
-	s.sessionMetaFn = fn
-	s.mu.Unlock()
-}
-
-// SetContextMetricsFunc sets a callback to retrieve live context size metrics.
-func (s *Server) SetContextMetricsFunc(fn func() ContextMetrics) {
-	s.mu.Lock()
-	s.contextMetricsFn = fn
-	s.mu.Unlock()
-}
-
-// SetDetailedStatusFunc sets a callback to retrieve detailed session status.
-func (s *Server) SetDetailedStatusFunc(fn func() DetailedStatus) {
-	s.mu.Lock()
-	s.detailedStatusFn = fn
 	s.mu.Unlock()
 }
 
@@ -712,15 +542,6 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseIte
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
 	s.tasksFn = fn
-	s.mu.Unlock()
-}
-
-// SetTaskAggregateFunc sets the authoritative task progress callback used by
-// AppWire thread snapshots. A nil callback means the source cannot report
-// task state; a non-nil callback may return a present zero aggregate.
-func (s *Server) SetTaskAggregateFunc(fn func() *appwire.TaskAggregate) {
-	s.mu.Lock()
-	s.taskAggregateFn = fn
 	s.mu.Unlock()
 }
 
