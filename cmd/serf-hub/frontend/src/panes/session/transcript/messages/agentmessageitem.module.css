@@ -12,7 +12,34 @@
  * size bump fired on every mid-turn narrative fragment, dozens per
  * session, and cancelled itself. */
 .message {
-  padding: var(--space-2) 0;
+  /* --space-1, not --space-2: with prose now in a per-fragment bubble (see
+   * .bubble), consecutive agent messages stack like chat rows - tight. */
+  padding: var(--space-1) 0;
+}
+
+/* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
+ * 1-3): every agent fragment - opener and continuation alike - sits in a
+ * neutral ink wash, hugging its content (width: fit-content + max-width).
+ * The fill is a color-mix over --ink-mid, NOT --surface-2: in the light
+ * theme --surface-1 and --surface-2 measure identical to the pane, so a
+ * surface token would be invisible exactly where the transcript is densest
+ * (the same trap toolcallitem.module.css's hover note records). The 4px
+ * corner faces the avatar (top-left, the chat "tail") on openers; .column
+ * is a flex column and this is a flex item, so align-self keeps it hugged
+ * there too. */
+.bubble {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 92%;
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in oklab, var(--ink-mid) 6%, transparent);
+  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+}
+
+/* Continuation fragments (no avatar, no header): fully rounded - with no
+ * tile beside them there is nothing for a tail to point at. */
+.continuation {
+  border-radius: var(--radius-pane);
 }
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The

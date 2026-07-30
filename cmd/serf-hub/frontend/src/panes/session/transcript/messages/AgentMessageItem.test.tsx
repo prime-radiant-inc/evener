@@ -254,14 +254,55 @@ test("sets --prose-font-size once, on the .message ancestor the live and settled
   expect(css).not.toContain("--prose-font-size");
 });
 
-test("the agent message keeps the approved unlabelled hero surface without a card frame", () => {
+test("the agent message keeps .message a bare layout row - the bubble treatment lives on .bubble, not the row", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--space-2\)\s+0;/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--space-1\)\s+0;/);
   expect(css).not.toMatch(/\.message\s*\{[\s\S]*--prose-font-size:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
   expect(css).not.toMatch(/\.tag\s*\{/);
+});
+
+// --- the chat bubble (2026-07-30-transcript-chat-bubbles-design.md) --------
+// Every fragment bubbles: opener tailed toward the avatar, continuations
+// fully rounded, the SAME wrapper live and settled.
+
+test("every fragment renders its prose inside the bubble wrapper, live and settled", () => {
+  const { rerender } = render(<AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />);
+  const liveBubble = screen.getByTestId("agent-bubble");
+  expect(liveBubble.contains(screen.getByTestId("streaming-text"))).toBe(true);
+  rerender(<AgentMessageItem item={item({ text: "x", pendingText: undefined })} turn={turn} live={false} />);
+  const settledBubble = screen.getByTestId("agent-bubble");
+  expect(settledBubble.textContent).toContain("x");
+});
+
+test("an opener bubble sits in the column under the speaker header; a continuation bubbles with no header and no avatar", () => {
+  render(
+    <AgentMessageItem item={item({ text: "the reply" })} turn={turn} live={false} opensExchange agentLabel="k3" />,
+  );
+  const root = screen.getByTestId("agent-message-item");
+  const header = screen.getByTestId("agent-speaker-header");
+  const bubble = screen.getByTestId("agent-bubble");
+  expect(header.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(root.className).not.toBe(bubble.className);
+});
+
+test("a continuation fragment's bubble carries the uniform-radius continuation class", () => {
+  render(<AgentMessageItem item={item({ text: "more work" })} turn={turn} live={false} agentLabel="k3" />);
+  const bubble = screen.getByTestId("agent-bubble");
+  expect(bubble.className).toContain("continuation");
+  expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
+});
+
+test("the bubble fills are token color-mixes and the continuation radius is uniform", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const bubble = /\.bubble\s*\{([^}]*)\}/.exec(css);
+  expect(bubble).not.toBeNull();
+  expect(bubble![1]).toMatch(/background:\s*color-mix\(in oklab, var\(--ink-mid\)/);
+  expect(bubble![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  expect(css).toMatch(/\.continuation\s*\{[^}]*border-radius:\s*var\(--radius-pane\);/);
 });
 
 test("Markdown and StreamingText read --prose-font-size with the identical fallback, so live and settled can never disagree on size", () => {

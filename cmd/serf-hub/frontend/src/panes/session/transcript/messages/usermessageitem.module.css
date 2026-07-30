@@ -14,24 +14,12 @@
  * exchange boundary scannable - that the new speaker header now does better;
  * the boundary no longer needs the words themselves muted.
  *
- * The exchange boundary, and the transcript's only structural break.
- *
- * Space rather than a rule, for two measured reasons. The transcript's whole
- * vertical alphabet is 8/12/16px and every one of those values already appears
- * BOTH inside a turn and across a turn boundary, so spacing currently carries
- * no structural meaning at all - which means a break has to clear 16px by
- * enough to be unmistakable, and 32px does. And a hairline was the obvious
- * alternative until it was measured: --edge against --surface-1 is 1.26:1 in
- * the dark theme and 1.35:1 in the light one, so a rule drawn in it is
- * invisible in exactly the theme where the transcript is densest. The app
- * spends --edge on framing boxes, not on separating prose, and this follows
- * that.
- *
- * Deliberately NOT on every turn: a turn is one LLM round-trip, and a real
- * session runs dozens of them per thing the user asked (measured: 84 turns
- * against 4 accepted inputs). Marking each would slice one continuous piece of
- * agent work into arbitrary slabs. This fires a handful of times per session,
- * at the boundaries a reader is actually looking for. */
+ * The exchange boundary is marked by the speaker header alone (avatar +
+ * "You" + time) - deliberately NOT by extra vertical space above the
+ * message: a turn is one LLM round-trip and a real session runs dozens of
+ * them per accepted input, but even at true exchange boundaries added
+ * margin read as dead air (Jesse's call, 2026-07-30). The boundary fires a
+ * handful of times per session, and the header is signal enough. */
 .message {
   display: flex;
   /* 24px avatar + 10px gap = the 34px content column the TurnBlock gutter
@@ -42,11 +30,10 @@
    * constant elsewhere - so the 24+10=34 arithmetic can never silently drift
    * between this avatar row and the gutter's indent rule. */
   gap: var(--speaker-gap);
-  padding: var(--space-2) 0;
-}
-
-.message[data-opens-exchange] {
-  margin-top: var(--space-6);
+  /* --space-1, not --space-2: with the body now a bubble (see .body), the
+   * message is a chat row, and chat rows sit tight - the bubble's own fill
+   * carries the separation the old document rhythm bought with air. */
+  padding: var(--space-1) 0;
 }
 
 /* flex: none - the tile keeps its 24px edge when the row is squeezed; the
@@ -100,10 +87,22 @@
   opacity: 1;
 }
 
+/* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
+ * 1-3): the user's own words sit in an accent wash - --accent-bg, the
+ * existing token (15% --accent on --surface-1, both themes) - hugging the
+ * content rather than spanning the column (width: fit-content + max-width,
+ * so a one-word message gets a one-word bubble). The 4px corner is the one
+ * TOWARD the avatar (top-left): the chat "tail"; the other corners take the
+ * pane radius. */
 .body {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  width: fit-content;
+  max-width: 92%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-bg);
+  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
 }
 
 .text {

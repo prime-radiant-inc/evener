@@ -41,10 +41,12 @@ per exchange, not bubbles around tool runs).
    the transcript's interleaving (prose, tool row, prose) keeps its current
    structure; only the prose fragments change shape.
 
-6. **Code blocks inside a bubble flip to the pane surface + hairline.**
-   Inside a bubble, surfaced blocks (code) use `--surface-1` with a 1px
-   `--edge` border instead of the default fill, fixing grey-on-grey in both
-   themes.
+6. **Code blocks inside a bubble keep their existing surface.** No override
+   was needed: the CodeBlock widget already renders `--surface-1` with a 1px
+   `--edge` hairline and inline code is an underline (never a filled chip),
+   so both already read as pane-surface elements against the tinted bubble —
+   the grey-on-grey trap the mockups showed does not exist in the real
+   widgets.
 
 7. **Streaming keeps the same shape.** Live text (StreamingText) renders
    inside the same bubble wrapper as settled markdown, so a sub-second
@@ -55,6 +57,18 @@ per exchange, not bubbles around tool runs).
 8. **The 32px exchange margin stays killed.** The speaker header and the
    bubble now mark the exchange boundary; extra vertical space above "You"
    messages read as dead air (removed in this branch's first commit).
+
+## Implementation notes (recorded at build time)
+
+- User bubble fill: `--accent-bg` (the existing token: 15% `--accent` on
+  `--surface-1`, defined per theme).
+- Agent bubble fill: `color-mix(in oklab, var(--ink-mid) 6%, transparent)`.
+- Radii stay in the token alphabet: tail corner `--radius-control` (4px),
+  other corners `--radius-pane` (8px); continuations uniform `--radius-pane`.
+- Bubbles hug content via `width: fit-content; max-width: 92%`.
+- Row rhythm tightens from `--space-2` to `--space-1` vertical padding on
+  both message components: bubbles are chat rows and sit tight; the fills
+  carry the separation padding used to buy.
 
 ## Non-goals
 
