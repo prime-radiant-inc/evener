@@ -343,9 +343,9 @@ test("the exit code is reachable WITHOUT a mouse - via the raw output's own trai
   expect(screen.queryByTestId("tool-call-detail")).toBe(null);
 });
 
-// --- the kind icon: a per-family glyph rides the tool-use line --------------
+// --- the kind icon: a per-family glyph in the rail beside the rationale -----
 
-test("a descriptor with an icon rides it INLINE at the start of the tool-use line, not the rationale line", () => {
+test("a descriptor with an icon puts it in the RAIL as the row's first flex item, beside the rationale - not inside either text line", () => {
   registerToolRenderer({ match: "trg_icon", summary: () => "Ran ls", icon: "terminal" });
   render(
     <ToolCallItem
@@ -354,22 +354,23 @@ test("a descriptor with an icon rides it INLINE at the start of the tool-use lin
       live={false}
     />,
   );
+  const row = screen.getByTestId("tool-row");
   const purpose = screen.getByTestId("tool-row-purpose");
   const summary = screen.getByTestId("tool-row-summary");
   const icon = screen.getByTestId("tool-row-icon");
-  expect(summary.contains(icon)).toBe(true);
+  expect(row.firstElementChild).toBe(icon);
   expect(purpose.contains(icon)).toBe(false);
-  expect(summary.firstElementChild).toBe(icon);
+  expect(summary.contains(icon)).toBe(false);
 });
 
-test("a summary-less row (a delegate's purpose-only row) rides the icon on the purpose line instead", () => {
+test("a summary-less row (a delegate's purpose-only row) also rails the icon beside its rationale line", () => {
   render(
     <ToolRow summary="" purpose="Scout the repo" icon="delegate" failed={false} expandable={false} expanded={false} />,
   );
-  const purpose = screen.getByTestId("tool-row-purpose");
+  const row = screen.getByTestId("tool-row");
   const icon = screen.getByTestId("tool-row-icon");
-  expect(purpose.contains(icon)).toBe(true);
-  expect(purpose.firstElementChild).toBe(icon);
+  expect(row.firstElementChild).toBe(icon);
+  expect(screen.getByTestId("tool-row-purpose").contains(icon)).toBe(false);
 });
 
 test("a descriptor WITHOUT an icon renders no icon element - the icon-less grammar is unchanged", () => {
@@ -389,15 +390,21 @@ test("the kind icon is decorative - the row's text already names the action", ()
   expect(icon.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("the icon is inline with the tool-use text - no outdented gutter, no reserved column", () => {
+test("the rail icon is 50% opacity in the speaker-avatar column, pulled into the gutter only above the breakpoint", () => {
   const css = rowCss();
-  const iconRule = css.match(/\.summaryIcon\s*\{([^}]*)\}/);
+  const iconRule = css.match(/\.rowIcon\s*\{([^}]*)\}/);
   expect(iconRule).not.toBe(null);
-  expect(iconRule?.[1]).toContain("display: inline-flex");
-  expect(iconRule?.[1]).toContain("vertical-align: middle");
-  // The retired gutter grammar (a data-icon row attribute driving an indent
-  // override) is gone entirely.
-  expect(css).not.toContain("data-icon");
+  expect(iconRule?.[1]).toContain("opacity: 0.5");
+  expect(iconRule?.[1]).toContain("width: var(--speaker-avatar-size)");
+  expect(iconRule?.[1]).toContain("margin-right: var(--speaker-gap)");
+  // The gutter pull shares the runContent indent's media query (the negative
+  // margin is only safe when the wrapper's reserved padding exists).
+  const mediaRule = css.match(/@media \(min-width: 700px\) \{\s*\.rowIcon\s*\{([^}]*)\}/);
+  expect(mediaRule).not.toBe(null);
+  expect(mediaRule?.[1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  // The retired inline grammar (the icon inside the summary's text flow) is
+  // gone entirely.
+  expect(css).not.toContain(".summaryIcon");
 });
 
 // --- the summary face: sans by default, fixed-width for shell only ----------

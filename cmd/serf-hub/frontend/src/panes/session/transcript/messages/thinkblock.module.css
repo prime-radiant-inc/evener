@@ -24,23 +24,44 @@
    * only a flex row centres the glyph against the caption text. */
   display: flex;
   align-items: center;
-  column-gap: var(--space-2);
   margin-bottom: var(--space-1);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 
-/* The kind glyph leading the thought row - the same leading-icon grammar the
- * tool rows use (widgets/toolicon at 14px), in the row's own quiet ink: the
- * widget strokes currentColor, and both .label and .summary set --ink-low,
- * so no colour is declared here. align-self: center because .summary's
- * baseline alignment would seat the icon's box on its bottom edge instead of
- * centring the glyph on the text. */
+/* The kind glyph leading the thought row - in the RAIL beside the line, at
+ * 50% opacity (Jesse's review call: tool-use and thought icons out of the
+ * text, into the gutter; the kind is ambient context, not content). The slot
+ * is --speaker-avatar-size wide so the glyph centres on the same column the
+ * speaker avatars occupy; the widget strokes currentColor, and both .label
+ * and .summary set --ink-low, so no colour is declared here. align-self:
+ * center because .summary's baseline alignment would seat the icon's box on
+ * its bottom edge instead of centring the glyph on the text. */
 .icon {
   flex: none;
   align-self: center;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: var(--speaker-gap);
+  opacity: 0.5;
+}
+
+/* Above the breakpoint the block sits inside runContent's --speaker-gutter
+ * of reserved padding. The gutter pull goes on the CONTAINERS, not on
+ * .icon: .summary's overflow: hidden (qrv1 - the ellipsizing guard below)
+ * clips at its own border box, so a negatively-margined icon INSIDE it
+ * would be clipped away entirely; pulling the whole summary instead seats
+ * the icon (its first child, inside the box) in the rail while the label
+ * text lands exactly at the content edge, 24px + 10px in. Same mechanism
+ * for the live eyebrow's block-level flex row. */
+@media (min-width: 700px) {
+  .label,
+  .summary {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
 }
 
 .liveBody {
@@ -85,7 +106,6 @@
 .summary {
   display: inline-flex;
   align-items: baseline;
-  column-gap: var(--space-2);
   max-width: 100%;
   cursor: pointer;
   overflow: hidden;

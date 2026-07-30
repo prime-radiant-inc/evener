@@ -101,21 +101,35 @@ summary.row:focus-visible {
   gap: var(--space-1);
 }
 
-/* The tool-KIND glyph, riding INLINE at the START of the tool-use line
- * (ToolRow's icon prop - Jesse's review call: with the call, not the
- * rationale, and inline rather than outdented). Same inline idiom as the
- * chevron: an inline-level box in the text flow in the plain cases, and
- * simply the first flex item in the collapsed middle-truncation line (which
- * is a flex row of its own) - align-self/flex cover that context,
- * vertical-align the inline one. --ink-mid: a scannability aid, not the
- * row's headline, matching the summary text it precedes. */
-.summaryIcon {
-  display: inline-flex;
-  vertical-align: middle;
-  align-self: center;
+/* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
+ * call: icons out of the text, into the gutter, at 50% opacity - the kind is
+ * ambient context, not content). The row's first flex item: the slot is
+ * --speaker-avatar-size wide so the glyph centres on the same column the
+ * speaker avatars occupy; align-self flex-start + 1lh pins it to line 1
+ * (the rationale) no matter how the rest of the row wraps. Below the
+ * breakpoint there is no gutter, so it simply leads the line inline. */
+.rowIcon {
   flex: none;
-  margin-right: var(--space-2);
+  align-self: flex-start;
+  height: 1lh;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: var(--speaker-gap);
+  opacity: 0.5;
   color: var(--ink-mid);
+}
+
+/* Above the breakpoint the row sits inside runContent's --speaker-gutter of
+ * reserved padding: pulling the icon one gutter to the left seats it in the
+ * rail while the row's text stays at the content edge. The negative margin
+ * would push the row out of the pane if the padding were not there, which is
+ * why this rule and the indent share one media query. */
+@media (min-width: 700px) {
+  .rowIcon {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
 }
 
 /* With a purpose above it the summary is a glanceable detail, not the story:

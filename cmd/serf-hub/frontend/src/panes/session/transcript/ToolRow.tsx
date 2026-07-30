@@ -5,19 +5,20 @@
 //
 // THE ROW GRAMMAR, two lines when a purpose exists (one otherwise):
 //
+//     rail:   [kind icon, 50%]            (in the gutter, beside line 1)
 //     line 1: [✗ failure glyph?] [status?] purpose[chevron inline] [affordances]
-//     line 2: [kind icon inline] verb target [· meta]
+//     line 2: verb target [· meta]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
 //   being merged - and the full text on the hover title); EXPANDED it wraps
 //   in full, so an open row always shows the whole call.
 //
-//   - the kind icon rides INLINE at the START of the tool-use line (Jesse's
-//     review call: the icon belongs with the call, not with the rationale,
-//     and inline rather than outdented in a gutter). A row with no summary
-//     text at all (a delegate's purpose-only row) rides it inline at the
-//     start of the purpose line instead, so every row keeps its glyph;
+//   - the kind icon sits in the RAIL beside the rationale line (Jesse's
+//     review call): pulled --speaker-gutter left into the padding the
+//     runContent wrapper reserves, at 50% opacity - the kind is ambient
+//     context, not content. Below the breakpoint (no gutter) it leads the
+//     rationale line inline, same 50%;
 //   - a COLLAPSED row with both a purpose and a summary STACKS them: the
 //     purpose (the agent's stated rationale, italic) on the first line, the
 //     verb/target summary demoted to a quiet second line (truncation
@@ -53,7 +54,7 @@ const CLASS = {
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
-  summaryIcon: requireClass(styles.summaryIcon, "toolcallitem.module.css", "summaryIcon"),
+  rowIcon: requireClass(styles.rowIcon, "toolcallitem.module.css", "rowIcon"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
@@ -142,20 +143,22 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
-  // The kind icon rides INLINE at the START of the tool-use line (see the
-  // grammar above): the first child of the summary, the same inline idiom as
-  // the chevron - in the collapsed middle-truncation line (a flex row of its
-  // own) that makes it simply the first flex item, in every other case an
-  // inline box in the text flow. A row with no summary text at all rides it
-  // on the purpose line instead, so the glyph is never dropped.
+  // The kind icon sits in the RAIL beside the rationale line (Jesse's review
+  // call: pull the tool-use and thought icons into the gutter, at 50%
+  // opacity, on the rationale's line - not inline in the text). It is the
+  // row's first flex item: the .rowIcon rules pull it --speaker-gutter to the
+  // left, into the padding the runContent wrapper reserves, and pin it to the
+  // first line (the rationale) at all times. Below the breakpoint the gutter
+  // is gone and the icon simply leads the line inline, at the same 50%.
   const iconNode =
     icon !== undefined ? (
-      <span className={CLASS.summaryIcon} data-testid="tool-row-icon" aria-hidden="true">
+      <span className={CLASS.rowIcon} data-testid="tool-row-icon" aria-hidden="true">
         <ToolIcon kind={icon} />
       </span>
     ) : null;
   const content = (
     <>
+      {iconNode}
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.
           That is the OPPOSITE of the rail's signal gutter (shell/rail, which
           always reserves 6px) and it is deliberate: the rail needs one stable
@@ -170,7 +173,6 @@ export function ToolRow({
       )}
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
-          {!hasSummary && iconNode}
           {statedPurpose}
           {chevron}
         </span>
@@ -185,7 +187,6 @@ export function ToolRow({
         >
           {hasPurpose && !expanded ? (
             <>
-              {iconNode}
               <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
                 {middleSplit(summary)[0]}
               </span>
@@ -194,10 +195,7 @@ export function ToolRow({
               </span>
             </>
           ) : (
-            <>
-              {iconNode}
-              {summary}
-            </>
+            summary
           )}
           {!hasPurpose && chevron}
         </span>
