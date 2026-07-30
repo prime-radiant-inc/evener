@@ -33,6 +33,8 @@ import { formatClockTime } from "./format";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
+  bubble: requireClass(styles.bubble, "agentmessageitem.module.css", "bubble"),
+  continuation: requireClass(styles.continuation, "agentmessageitem.module.css", "continuation"),
   opener: requireClass(styles.opener, "agentmessageitem.module.css", "opener"),
   column: requireClass(styles.column, "agentmessageitem.module.css", "column"),
   header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
@@ -71,8 +73,20 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   // is decorative (SpeakerAvatar is aria-hidden; the header names the
   // speaker in words). Mid-exchange items skip the row entirely and render
   // as they always have: TurnBlock's content-column indent puts them under
-  // the opener's prose.
+  // the opener's prose. EITHER WAY the prose itself sits in a bubble (the
+  // chat-bubbles spec, decisions 1-3): the SAME wrapper in the live and
+  // settled branches, so a stream that starts and settles within a frame
+  // never changes shape - tailed toward the avatar on openers, fully
+  // rounded on continuations, which have no tile to point at.
   function wrap(prose: ReactNode, liveFlag: "true" | "false") {
+    const bubble = (
+      <div
+        className={opensExchange ? CLASS.bubble : `${CLASS.bubble} ${CLASS.continuation}`}
+        data-testid="agent-bubble"
+      >
+        {prose}
+      </div>
+    );
     const root = (children: ReactNode, className: string) => (
       <div
         className={className}
@@ -83,13 +97,13 @@ export const AgentMessageItem = memo(function AgentMessageItem({
         {children}
       </div>
     );
-    if (!opensExchange) return root(prose, CLASS.message);
+    if (!opensExchange) return root(bubble, CLASS.message);
     return root(
       <>
         <SpeakerAvatar speaker="agent" />
         <div className={CLASS.column}>
           {speaker}
-          {prose}
+          {bubble}
         </div>
       </>,
       `${CLASS.message} ${CLASS.opener}`,

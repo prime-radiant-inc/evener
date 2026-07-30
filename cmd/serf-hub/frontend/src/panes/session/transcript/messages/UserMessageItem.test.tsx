@@ -171,6 +171,30 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
+// --- the chat bubble (2026-07-30-transcript-chat-bubbles-design.md) --------
+
+test("the body renders as a bubble wrapping the text and attachments", () => {
+  render(<UserMessageView item={item({ text: "hi", images: [{ src: "data:image/png;base64,x" }] })} />);
+  const bubble = screen.getByTestId("user-bubble");
+  expect(bubble.textContent).toContain("hi");
+  expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
+});
+
+test("the user bubble is an accent-wash token fill, hugging its content, tailed toward the avatar", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const body = /\.body\s*\{([^}]*)\}/.exec(css);
+  expect(body).not.toBeNull();
+  expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
+  expect(body![1]).toMatch(/width:\s*fit-content/);
+  expect(body![1]).toMatch(/max-width:\s*92%/);
+  expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  // The 4px (control-radius) corner is the top-left one - toward the avatar.
+  expect(body![1]).toMatch(
+    /border-radius:\s*var\(--radius-control\) var\(--radius-pane\) var\(--radius-pane\) var\(--radius-pane\)/,
+  );
+});
+
 test("no gallery thumbnails when the item carries no images", () => {
   render(<UserMessageItem item={item({ text: "no pictures here" })} turn={turn} live={false} />);
   expect(screen.queryAllByTestId("image-gallery-thumb")).toHaveLength(0);

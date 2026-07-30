@@ -120,7 +120,7 @@ export function UserMessageView({
           {time !== undefined && <span className={CLASS.time}>{time}</span>}
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
-        <div className={CLASS.body}>
+        <div className={CLASS.body} data-testid="user-bubble">
           <div className={CLASS.text}>{item.text}</div>
           <ImageGallery images={item.images} />
         </div>
