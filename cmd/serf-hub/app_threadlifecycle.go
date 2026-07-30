@@ -181,7 +181,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
-		clientMutationID, err := identifier.NewSessionID()
+		clientMutationID, err := identifier.NewClientMutationID()
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())
 		}

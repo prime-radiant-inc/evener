@@ -16,12 +16,6 @@ import "primeradiant.com/serf/identifier"
 // exists because a browser tab can reload mid-mutation and must recover its
 // identity from storage; a TUI talking to a local daemon dies with its
 // mutations, so a fresh id per action is the whole requirement.
-//
-// identifier.NewSessionID is the hub's own choice for this
-// (cmd/serf-hub/web_session.go, app_threadlifecycle.go): an unprefixed UUIDv7
-// payload. Matching it keeps one convention rather than two, though the name
-// reads oddly for a mutation and a dedicated identifier domain would read
-// better across all three call sites.
 func newClientMutationID() (string, error) {
-	return identifier.NewSessionID()
+	return identifier.NewClientMutationID()
 }

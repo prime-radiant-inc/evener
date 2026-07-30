@@ -103,7 +103,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	clientMutationID, err := identifier.NewSessionID()
+	clientMutationID, err := identifier.NewClientMutationID()
 	if err != nil {
 		writeSessionActionError(w, r, appwire.InternalError("create turn mutation id: "+err.Error()))
 		return
@@ -231,7 +231,7 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 	}
 	switch action {
 	case "interrupt":
-		clientMutationID, mutationIDErr := identifier.NewSessionID()
+		clientMutationID, mutationIDErr := identifier.NewClientMutationID()
 		if mutationIDErr != nil {
 			err = appwire.InternalError("create interrupt mutation id: " + mutationIDErr.Error())
 			break
