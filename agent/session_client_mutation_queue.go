@@ -2,7 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -116,8 +119,8 @@ func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (app
 }
 
 func rejectClientMutation(record *clientMutationRecord, err error) {
-	wireErr, ok := err.(appwire.WireError)
-	if !ok {
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
 		wireErr = appwire.Conflict(err.Error())
 	}
 	data, _ := wireErr.Data.(appwire.ErrorData)
@@ -652,10 +655,8 @@ func clientMutationQueueEntryReserved(snapshot *clientMutationSnapshot, entryID 
 		if record.OperationState != clientMutationOperationInFlight {
 			continue
 		}
-		for _, reservedID := range record.StableQueueEntryIDs {
-			if reservedID == entryID {
-				return true
-			}
+		if slices.Contains(record.StableQueueEntryIDs, entryID) {
+			return true
 		}
 	}
 	return false
@@ -705,7 +706,8 @@ func (s *Session) reflectDurableClientSteering() {
 			daemon = append(daemon, entry)
 		}
 	}
-	s.steeringQueue = append(daemon, client...)
+	daemon = append(daemon, client...)
+	s.steeringQueue = daemon
 	s.mu.Unlock()
 }
 
@@ -733,9 +735,7 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 // reconnect projections read the already-restored fields.
 func (s *Session) restoreDurableClientMutationQueues() {
 	incorporated := make(map[string]string, len(s.restoredClientMutationTurns))
-	for id, turnID := range s.restoredClientMutationTurns {
-		incorporated[id] = turnID
-	}
+	maps.Copy(incorporated, s.restoredClientMutationTurns)
 	for _, turn := range s.history {
 		if turn.ClientMutationID != "" {
 			incorporated[turn.ClientMutationID] = turn.StableTurnID

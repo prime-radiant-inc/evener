@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/spf13/afero"
@@ -86,7 +87,7 @@ type clientMutationRecord struct {
 	ClientMutationID    string                          `json:"client_mutation_id"`
 	Method              string                          `json:"method"`
 	Payload             json.RawMessage                 `json:"payload,omitempty"`
-	Preconditions       clientMutationPreconditions     `json:"preconditions,omitempty"`
+	Preconditions       clientMutationPreconditions     `json:"preconditions,omitzero"`
 	StableTurnID        string                          `json:"stable_turn_id,omitempty"`
 	StableQueueEntryIDs []string                        `json:"stable_queue_entry_ids,omitempty"`
 	PayloadHash         string                          `json:"payload_hash"`
@@ -260,10 +261,10 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	return response, nil
 }
 
-// ClaimClientMutationStart returns the next user turn owned by the durable
+// claimClientMutationStart returns the next user turn owned by the durable
 // start lifecycle. In addition to accepted starts, restore may expose a queued
 // turn that crashed after claim under the same stable turn identity.
-func (s *Session) ClaimClientMutationStart() (queuedInput, bool, error) {
+func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return queuedInput{}, false, err
 	}
@@ -363,7 +364,7 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	if onRunnable != nil {
 		onRunnable()
 	}
-	claimed, ok, err := s.ClaimClientMutationStart()
+	claimed, ok, err := s.claimClientMutationStart()
 	if err != nil || !ok {
 		return "", ok, err
 	}
@@ -1061,9 +1062,7 @@ func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnaps
 		dst.InputQueue[i].Input = cloneClientMutationInput(entry.Input)
 	}
 	dst.BudgetReservations = make(map[string]clientMutationBudgetReservation, len(src.BudgetReservations))
-	for id, reservation := range src.BudgetReservations {
-		dst.BudgetReservations[id] = reservation
-	}
+	maps.Copy(dst.BudgetReservations, src.BudgetReservations)
 	if src.InterruptFence != nil {
 		fence := *src.InterruptFence
 		dst.InterruptFence = &fence
@@ -1111,9 +1110,7 @@ func cloneClientMutationInput(src []appwire.InputItem) []appwire.InputItem {
 		dst[i].Data = append([]byte(nil), item.Data...)
 		if item.Metadata != nil {
 			dst[i].Metadata = make(map[string]string, len(item.Metadata))
-			for key, value := range item.Metadata {
-				dst[i].Metadata[key] = value
-			}
+			maps.Copy(dst[i].Metadata, item.Metadata)
 		}
 	}
 	return dst

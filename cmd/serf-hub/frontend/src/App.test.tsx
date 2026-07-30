@@ -76,10 +76,18 @@ function stubTreeFetch(): void {
 // findBy budget that defaults to 1000ms, leaving each assertion racing the
 // machine for what's left. Measured here: a route costs ~635ms the first
 // time it renders and ~20ms every time after.
+// The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than the 1000ms default
+// named above. Moving the throttle out of the per-test assertion windows was
+// only half the job: the warm-up's own findBy still raced that same default,
+// with ~635ms of it already spent. A warm-up has no responsiveness bar to hold,
+// and the throttle publishes no completion signal to await, so the deadline
+// here is a tripwire for a hung render.
+const WARM_ROUTE_TRIPWIRE_MS = 10_000;
+
 async function warmRoute(path: string, text: string | RegExp): Promise<void> {
   window.history.pushState({}, "", path);
   render(<App />);
-  await screen.findByText(text);
+  await screen.findByText(text, undefined, { timeout: WARM_ROUTE_TRIPWIRE_MS });
   cleanup();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");

@@ -214,9 +214,17 @@ func fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 	}
 }
 
-func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
+// The outbound codex input wire shape is asserted here and in
+// fuzzScenarioCodexSourceStartThreadAcceptsCodexNativeInputItems below, and
+// nowhere else. Both used to drive CodexSource.StartTurn, which serf-appwire-v2
+// reduced to an Unavailable stub; they reach the same startTurnWithClient path
+// through StartThread's initial prompt turn instead, which is how a codex turn
+// now starts at all.
+func fuzzScenarioCodexSourceStartThreadMapsPromptToInput(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	handleCodexResume(server)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
 	var captured map[string]any
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		captured = params
@@ -231,9 +239,9 @@ func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	resp, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
-		t.Fatalf("StartTurn: %v", err)
+		t.Fatalf("StartThread: %v", err)
 	}
 	if resp.Turn.ID != "turn_codex" || resp.Turn.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("turn=%+v", resp.Turn)
@@ -251,9 +259,11 @@ func fuzzScenarioCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 	}
 }
 
-func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) {
+func fuzzScenarioCodexSourceStartThreadAcceptsCodexNativeInputItems(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	handleCodexResume(server)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": codexThreadMap("th_codex")}, nil
+	})
 	var captured map[string]any
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
 		captured = params
@@ -279,8 +289,8 @@ func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) 
 	}
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: items}); err != nil {
-		t.Fatalf("StartTurn: %v", err)
+	if _, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project", Input: items}); err != nil {
+		t.Fatalf("StartThread: %v", err)
 	}
 	input, ok := captured["input"].([]any)
 	if !ok || len(input) != 5 {
@@ -307,61 +317,6 @@ func fuzzScenarioCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) 
 		"type": "mention",
 		"name": "Demo App",
 		"path": "app://demo-app",
-	})
-}
-
-func fuzzScenarioCodexSourceStartTurnResumesThreadBeforeStreaming(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var resumed bool
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
-		ThreadID string `json:"threadId"`
-	}) (map[string]any, error) {
-		if params.ThreadID != "th_codex" {
-			t.Fatalf("threadId=%q", params.ThreadID)
-		}
-		resumed = true
-		appserver.Subscribe(ctx, params.ThreadID)
-		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if !resumed {
-			t.Fatal("turn/start called before thread/resume")
-		}
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("threadId=%v", params["threadId"])
-		}
-		server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_codex",
-			Delta:    "direct streamed",
-		})
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("SubscribeThread: %v", err)
-	}
-
-	assertDelta(t, notifications, "direct streamed")
-}
-
-func handleCodexResume(server *appserver.Server) {
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(ctx context.Context, params struct {
-		ThreadID string `json:"threadId"`
-	}) (map[string]any, error) {
-		appserver.Subscribe(ctx, params.ThreadID)
-		return map[string]any{"thread": codexThreadMap(params.ThreadID)}, nil
 	})
 }
 
@@ -989,128 +944,6 @@ func fuzzScenarioCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveCon
 	}
 }
 
-func fuzzScenarioCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testing.T) {
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.Close(websocket.StatusNormalClosure, "")
-		transport := appwire.NewWSTransport(ws)
-		for {
-			msg, err := transport.Recv(context.Background())
-			if err != nil {
-				return
-			}
-			if msg.Notification != nil {
-				continue
-			}
-			if msg.Request == nil {
-				continue
-			}
-			req := *msg.Request
-			switch req.Method {
-			case appwire.MethodInitialize:
-				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
-					ServerInfo: appwire.ServerInfo{Name: "codex-test"},
-					SourceID:   "codex",
-				}))
-			case appwire.MethodThreadResume:
-				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
-			case appwire.MethodTurnStart:
-				_ = transport.Send(context.Background(), appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-					ThreadID: "th_codex",
-					Delta:    "follow-up live",
-				}))
-				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"turn": map[string]any{
-					"id":        "turn_codex",
-					"items":     []any{},
-					"itemsView": "full",
-					"status":    "inProgress",
-				}}))
-			default:
-				_ = transport.Send(context.Background(), appwire.ErrorMessage(req.ID, appwire.MethodNotFound(req.Method)))
-			}
-		}
-	}))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("SubscribeThread: %v", err)
-	}
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-
-	assertDelta(t, notifications, "follow-up live")
-}
-
-func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	handleCodexResume(server)
-	var calls int
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
-		calls++
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("threadId=%v", params["threadId"])
-		}
-		if calls == 2 {
-			return nil, appwire.InternalError("websocket: close 1006: abnormal closure")
-		}
-		appserver.Subscribe(ctx, "th_codex")
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
-		t.Fatalf("first StartTurn: %v", err)
-	}
-	if source.liveThread("th_codex") == nil {
-		t.Fatal("first StartTurn did not cache live thread")
-	}
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "second"}}})
-	assertSessionUnavailable(t, err, t.Name())
-	if source.liveThread("th_codex") != nil {
-		t.Fatal("transport-shaped live StartTurn failure left stale live thread cached")
-	}
-}
-
-func fuzzScenarioCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
-	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	handleCodexResume(server)
-	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("threadId=%v", params["threadId"])
-		}
-		appserver.Subscribe(ctx, "th_codex")
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-
-	waitForNoLiveThread(t, source, "th_codex")
-}
-
 func withCodexLiveNoSubscriberTimeout(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	previous := codexLiveNoSubscriberTimeout
@@ -1462,86 +1295,6 @@ func fuzzScenarioCodexSourceCallErrorPassesThroughApplicationErrors(t *testing.T
 	}
 	if got := codexSourceCallError(context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
 		t.Fatalf("context.DeadlineExceeded remapped: %v", got)
-	}
-}
-
-func fuzzScenarioCodexSourceStartTurnMapsDialRefusedToSessionUnavailable(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	endpoint := "ws://" + listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: endpoint}, nil)
-	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
-	assertSessionUnavailable(t, err, t.Name())
-}
-
-func fuzzScenarioCodexSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("accept websocket: %v", err)
-			return
-		}
-		transport := appwire.NewWSTransport(conn)
-		// Reply to initialize so connect() succeeds, then drop the connection
-		// mid-call to simulate the codex daemon dying.
-		for {
-			msg, err := transport.Recv(r.Context())
-			if err != nil {
-				return
-			}
-			if msg.Request == nil {
-				continue
-			}
-			req := *msg.Request
-			switch req.Method {
-			case appwire.MethodInitialize:
-				_ = transport.Send(r.Context(), appwire.ResponseMessage(req.ID, appwire.InitializeResponse{
-					ServerInfo: appwire.ServerInfo{Name: "codex-test"},
-					SourceID:   "codex",
-				}))
-			default:
-				_ = conn.Close(websocket.StatusAbnormalClosure, "dropped")
-				return
-			}
-		}
-	}))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
-	assertSessionUnavailable(t, err, t.Name())
-}
-
-func fuzzScenarioCodexSourceStartTurnPassesThroughApplicationErrors(t *testing.T) {
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ struct {
-		ThreadID string `json:"threadId"`
-	}) (map[string]any, error) {
-		return nil, appwire.InvalidParams("400 bad request: malformed threadId")
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer httpServer.Close()
-
-	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
-	if err == nil {
-		t.Fatal("StartTurn unexpectedly succeeded")
-	}
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
-		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)
-	}
-	if wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("wire code=%d, want CodeInvalidParams (application error must not be remapped)", wire.Code)
-	}
-	if data, ok := wire.Data.(appwire.ErrorData); ok && data.SerfErrorInfo == appwire.ErrorSessionUnavailable {
-		t.Fatalf("application error was remapped to SessionUnavailable: %+v", wire)
 	}
 }
 

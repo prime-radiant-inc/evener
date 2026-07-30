@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -72,10 +73,8 @@ func cloneMutationInputItem(item InputItem) InputItem {
 	item.Data = append([]byte(nil), item.Data...)
 	if item.Metadata != nil {
 		metadata := item.Metadata
-		item.Metadata = make(map[string]string, len(item.Metadata))
-		for key, value := range metadata {
-			item.Metadata[key] = value
-		}
+		item.Metadata = make(map[string]string, len(metadata))
+		maps.Copy(item.Metadata, metadata)
 	}
 	return item
 }

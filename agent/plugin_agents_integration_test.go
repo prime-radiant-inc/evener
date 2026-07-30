@@ -211,25 +211,25 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 			c := llm.NewClient()
 
 			var subagentModel string
-			adapter := fakeAdapter{
-				name: "openai",
-				steps: []func(req llm.Request) llm.Response{
-					func(req llm.Request) llm.Response {
-						subagentModel = req.Model
-						return llm.Response{Message: llm.Assistant("done")}
-					},
+			// Built in place at each registration rather than copied from one
+			// value: fakeAdapter carries a sync.Mutex, and only the closure
+			// (which captures subagentModel) has to be shared between them.
+			steps := []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					subagentModel = req.Model
+					return llm.Response{Message: llm.Assistant("done")}
 				},
 			}
 			if tc.name == "override" {
 				c.Register(&fakeEnumerableAdapter{
-					fakeAdapter: adapter,
+					fakeAdapter: fakeAdapter{name: "openai", steps: steps},
 					models: []llm.ModelInfo{
 						{ID: "gpt-5.2"},
 						{ID: "gpt-4.1-nano"},
 					},
 				})
 			} else {
-				c.Register(&adapter)
+				c.Register(&fakeAdapter{name: "openai", steps: steps})
 			}
 
 			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

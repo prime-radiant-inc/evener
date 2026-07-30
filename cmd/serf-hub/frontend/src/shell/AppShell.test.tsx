@@ -191,10 +191,25 @@ class MemoryStorage {
 // ~654ms for the two-boundary welcome route and ~310-380ms per additional
 // pane the first time, ~10-20ms every time after. Mirrors App.test.tsx's own
 // warmRoute (commit c1a8616ea) for the same reason.
-async function warmRoute(path: string, findLandmark: () => Promise<unknown>): Promise<void> {
+//
+// The landmark wait gets WARM_ROUTE_TRIPWIRE_MS rather than findBy's 1000ms
+// default. That default is an assertion window - it exists to hold a test to a
+// responsiveness bar - and a warm-up has no such bar to hold: its whole job is
+// to absorb the variable cost so the real assertions don't. At ~654ms of a
+// 1000ms budget the warm-up had under 40% headroom and failed roughly one full
+// suite run in two. The awaitable half of the cost is already awaited (the
+// beforeAll imports below); what remains is react-dom's fixed per-boundary
+// flicker throttle, which publishes no completion signal to wait on, so a
+// deadline here can only ever be a tripwire for a hung render.
+const WARM_ROUTE_TRIPWIRE_MS = 10_000;
+
+async function warmRoute(
+  path: string,
+  findLandmark: (options: { timeout: number }) => Promise<unknown>,
+): Promise<void> {
   window.history.pushState({}, "", path);
   render(<AppShell client={new FakeClient("ready")} />);
-  await findLandmark();
+  await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
   // Unmounting also clears DockHost's pending debounced layout save (its own
   // effect cleanup), so no warm render leaks a write into a later test.
   cleanup();
@@ -232,10 +247,10 @@ beforeAll(async () => {
   // Then render each pane once, for the React.lazy half of the cost - see
   // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
   // tripwire, rather than spending it inside a test's assertion window.
-  await warmRoute("/", () => screen.findByText("No session open"));
-  await warmRoute("/new", () => screen.findByRole("button", { name: "Spawn" }));
-  await warmRoute("/s/local:ref_warm", () => screen.findByText(/loading transcript/i));
-  await warmRoute("/settings/general", () => screen.findByRole("navigation", { name: "Settings sections" }));
+  await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
+  await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Spawn" }, wait));
+  await warmRoute("/s/local:ref_warm", (wait) => screen.findByText(/loading transcript/i, undefined, wait));
+  await warmRoute("/settings/general", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
 });
 
 beforeEach(() => {
