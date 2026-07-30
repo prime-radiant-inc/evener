@@ -488,6 +488,128 @@ func TestClientMutationPersist_RejectsIncompleteSnapshot(t *testing.T) {
 	}
 }
 
+func TestNewSessionMutationSnapshotUsesSnakeCaseStorageKeys(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newQueuePersistTestSession(t, stateDir)
+	defer sess.Close()
+
+	const mutationID = "fresh-session-mutation"
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "persist me"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	const queuedMutationID = "fresh-session-queue"
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		Ref:              sess.ID(),
+		ClientMutationID: queuedMutationID,
+		ExpectedTurnID:   started.Turn.ID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "queue me"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationQueue: %v", err)
+	}
+	const rejectedMutationID = "fresh-session-rejection"
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: rejectedMutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "reject me"}},
+	}); err == nil {
+		t.Fatal("second AcceptClientMutationStart succeeded while a turn was active")
+	}
+	if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		pending := snapshot.PendingExecutions[mutationID]
+		pending.QueueEntryIDs = []string{"queue-1"}
+		snapshot.PendingExecutions[mutationID] = pending
+		return nil
+	}); err != nil {
+		t.Fatalf("add pending queue identity: %v", err)
+	}
+
+	data, err := os.ReadFile(clientMutationFilePath(stateDir, sess.ID()))
+	if err != nil {
+		t.Fatalf("read fresh session mutation snapshot: %v", err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("decode fresh session mutation snapshot: %v", err)
+	}
+	assertSnakeCaseStorageKeys(t, "snapshot", snapshot)
+	pendingExecutions, ok := snapshot["pending_executions"].(map[string]any)
+	if !ok {
+		t.Fatalf("pending_executions = %#v, want object", snapshot["pending_executions"])
+	}
+	pending, ok := pendingExecutions[mutationID].(map[string]any)
+	if !ok {
+		t.Fatalf("pending execution %q = %#v, want object", mutationID, pendingExecutions[mutationID])
+	}
+	assertSnakeCaseStorageKeys(t, "pending execution", pending)
+	journal, ok := snapshot["journal"].(map[string]any)
+	if !ok {
+		t.Fatalf("journal = %#v, want object", snapshot["journal"])
+	}
+	for mutationID, raw := range journal {
+		record, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("journal record %q = %#v, want object", mutationID, raw)
+		}
+		assertSnakeCaseStorageKeys(t, "journal record", record)
+		if preconditions, present := record["preconditions"]; present {
+			object, ok := preconditions.(map[string]any)
+			if !ok {
+				t.Fatalf("journal preconditions %q = %#v, want object", mutationID, preconditions)
+			}
+			assertSnakeCaseStorageKeys(t, "journal preconditions", object)
+		}
+	}
+	rejected, ok := journal[rejectedMutationID].(map[string]any)
+	if !ok {
+		t.Fatalf("journal rejection %q = %#v, want object", rejectedMutationID, journal[rejectedMutationID])
+	}
+	rejection, ok := rejected["rejection"].(map[string]any)
+	if !ok {
+		t.Fatalf("rejection = %#v, want object", rejected["rejection"])
+	}
+	assertSnakeCaseStorageKeys(t, "rejection", rejection)
+	rejectionData, ok := rejection["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("rejection data = %#v, want object", rejection["data"])
+	}
+	assertSnakeCaseStorageKeys(t, "rejection data", rejectionData)
+	inputQueue, ok := snapshot["input_queue"].([]any)
+	if !ok || len(inputQueue) != 1 {
+		t.Fatalf("input_queue = %#v, want one entry", snapshot["input_queue"])
+	}
+	queueEntry, ok := inputQueue[0].(map[string]any)
+	if !ok {
+		t.Fatalf("input_queue entry = %#v, want object", inputQueue[0])
+	}
+	assertSnakeCaseStorageKeys(t, "input queue entry", queueEntry)
+	budgetReservations, ok := snapshot["budget_reservations"].(map[string]any)
+	if !ok {
+		t.Fatalf("budget_reservations = %#v, want object", snapshot["budget_reservations"])
+	}
+	for mutationID, raw := range budgetReservations {
+		reservation, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("budget reservation %q = %#v, want object", mutationID, raw)
+		}
+		assertSnakeCaseStorageKeys(t, "budget reservation", reservation)
+	}
+}
+
+func assertSnakeCaseStorageKeys(t *testing.T, scope string, object map[string]any) {
+	t.Helper()
+	for key := range object {
+		for _, char := range key {
+			if char != '_' && (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+				t.Errorf("%s emitted non-snake-case key %q", scope, key)
+				break
+			}
+		}
+	}
+}
+
 func TestClientMutationPersist_RestoreRejectsMalformedSnapshot(t *testing.T) {
 	stateDir := t.TempDir()
 	client := llm.NewClient()

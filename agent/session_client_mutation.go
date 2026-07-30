@@ -120,6 +120,8 @@ type clientMutationInterruptFence struct {
 	ExpectedTurnID   string `json:"expected_turn_id"`
 }
 
+type clientMutationPendingExecutions map[string]appwire.PendingMutation
+
 type clientMutationSnapshot struct {
 	Version   int    `json:"version"`
 	SessionID string `json:"session_id"`
@@ -135,7 +137,7 @@ type clientMutationSnapshot struct {
 	NextQueueEntrySequence uint64                                     `json:"next_queue_entry_sequence"`
 	BudgetReservations     map[string]clientMutationBudgetReservation `json:"budget_reservations"`
 	InterruptFence         *clientMutationInterruptFence              `json:"interrupt_fence,omitempty"`
-	PendingExecutions      map[string]appwire.PendingMutation         `json:"pending_executions"`
+	PendingExecutions      clientMutationPendingExecutions            `json:"pending_executions"`
 	SteeringOrder          []string                                   `json:"steering_order,omitempty"`
 }
 
@@ -1108,7 +1110,7 @@ func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnaps
 		fence := *src.InterruptFence
 		dst.InterruptFence = &fence
 	}
-	dst.PendingExecutions = make(map[string]appwire.PendingMutation, len(src.PendingExecutions))
+	dst.PendingExecutions = make(clientMutationPendingExecutions, len(src.PendingExecutions))
 	for id, pending := range src.PendingExecutions {
 		pending.Input = cloneClientMutationInput(pending.Input)
 		pending.QueueEntryIDs = append([]string(nil), pending.QueueEntryIDs...)

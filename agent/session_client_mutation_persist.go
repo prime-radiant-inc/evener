@@ -133,8 +133,127 @@ func newEmptyClientMutationSnapshot(sessionID string) clientMutationSnapshot {
 		SessionID:          sessionID,
 		Journal:            make(map[string]clientMutationRecord),
 		BudgetReservations: make(map[string]clientMutationBudgetReservation),
-		PendingExecutions:  make(map[string]appwire.PendingMutation),
+		PendingExecutions:  make(clientMutationPendingExecutions),
 	}
+}
+
+type clientMutationPendingExecutionJSON struct {
+	ClientMutationID string                          `json:"client_mutation_id"`
+	Method           string                          `json:"method"`
+	Input            []appwire.InputItem             `json:"input,omitempty"`
+	ExecutionState   string                          `json:"execution_state"`
+	TurnID           string                          `json:"turn_id,omitempty"`
+	QueueEntryIDs    []string                        `json:"queue_entry_ids,omitempty"`
+	ProjectionState  appwire.MutationProjectionState `json:"projection_state"`
+}
+
+type clientMutationErrorDataJSON struct {
+	SerfErrorInfo    appwire.ErrorInfo        `json:"serf_error_info"`
+	ClientMutationID string                   `json:"client_mutation_id,omitempty"`
+	MutationOutcome  appwire.MutationOutcome  `json:"mutation_outcome,omitempty"`
+	RetryDisposition appwire.RetryDisposition `json:"retry_disposition,omitempty"`
+	Cause            string                   `json:"cause,omitempty"`
+}
+
+type clientMutationRejectionJSON struct {
+	Code    int                         `json:"code"`
+	Message string                      `json:"message"`
+	Data    clientMutationErrorDataJSON `json:"data"`
+}
+
+func (rejection clientMutationRejection) MarshalJSON() ([]byte, error) {
+	return json.Marshal(clientMutationRejectionJSON{
+		Code:    rejection.Code,
+		Message: rejection.Message,
+		Data: clientMutationErrorDataJSON{
+			SerfErrorInfo:    rejection.Data.SerfErrorInfo,
+			ClientMutationID: rejection.Data.ClientMutationID,
+			MutationOutcome:  rejection.Data.MutationOutcome,
+			RetryDisposition: rejection.Data.RetryDisposition,
+			Cause:            rejection.Data.Cause,
+		},
+	})
+}
+
+func (rejection *clientMutationRejection) UnmarshalJSON(data []byte) error {
+	var stored clientMutationRejectionJSON
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&stored); err != nil {
+		return err
+	}
+	if err := rejectTrailingClientMutationJSON(decoder); err != nil {
+		return err
+	}
+	*rejection = clientMutationRejection{
+		Code:    stored.Code,
+		Message: stored.Message,
+		Data: appwire.ErrorData{
+			SerfErrorInfo:    stored.Data.SerfErrorInfo,
+			ClientMutationID: stored.Data.ClientMutationID,
+			MutationOutcome:  stored.Data.MutationOutcome,
+			RetryDisposition: stored.Data.RetryDisposition,
+			Cause:            stored.Data.Cause,
+		},
+	}
+	return nil
+}
+
+func (pending clientMutationPendingExecutions) MarshalJSON() ([]byte, error) {
+	if pending == nil {
+		return []byte("null"), nil
+	}
+	encoded := make(map[string]clientMutationPendingExecutionJSON, len(pending))
+	for id, mutation := range pending {
+		encoded[id] = clientMutationPendingExecutionJSON{
+			ClientMutationID: mutation.ClientMutationID,
+			Method:           mutation.Method,
+			Input:            mutation.Input,
+			ExecutionState:   mutation.ExecutionState,
+			TurnID:           mutation.TurnID,
+			QueueEntryIDs:    mutation.QueueEntryIDs,
+			ProjectionState:  mutation.ProjectionState,
+		}
+	}
+	return json.Marshal(encoded)
+}
+
+func (pending *clientMutationPendingExecutions) UnmarshalJSON(data []byte) error {
+	var encoded map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&encoded); err != nil {
+		return err
+	}
+	if err := rejectTrailingClientMutationJSON(decoder); err != nil {
+		return err
+	}
+	if encoded == nil {
+		*pending = nil
+		return nil
+	}
+	decoded := make(clientMutationPendingExecutions, len(encoded))
+	for id, raw := range encoded {
+		var stored clientMutationPendingExecutionJSON
+		entryDecoder := json.NewDecoder(bytes.NewReader(raw))
+		entryDecoder.DisallowUnknownFields()
+		if err := entryDecoder.Decode(&stored); err != nil {
+			return fmt.Errorf("decode pending execution %q: %w", id, err)
+		}
+		if err := rejectTrailingClientMutationJSON(entryDecoder); err != nil {
+			return fmt.Errorf("decode pending execution %q: %w", id, err)
+		}
+		decoded[id] = appwire.PendingMutation{
+			ClientMutationID: stored.ClientMutationID,
+			Method:           stored.Method,
+			Input:            stored.Input,
+			ExecutionState:   stored.ExecutionState,
+			TurnID:           stored.TurnID,
+			QueueEntryIDs:    stored.QueueEntryIDs,
+			ProjectionState:  stored.ProjectionState,
+		}
+	}
+	*pending = decoded
+	return nil
 }
 
 func validateClientMutationSnapshot(snapshot clientMutationSnapshot, sessionID string) error {
