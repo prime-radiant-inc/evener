@@ -116,7 +116,13 @@ summary.row:focus-visible {
   align-items: center;
   justify-content: center;
   width: var(--speaker-avatar-size);
-  margin-right: var(--speaker-gap);
+  /* The row's own column-gap (--space-2) also lands between this slot and
+   * the rationale text, so the margin-right is the speaker-gap MINUS the
+   * column-gap: slot (24) + margin (2) + row gap (8) = one speaker-gutter
+   * (34), and the rationale lands exactly on the content edge, aligned with
+   * the summary line beneath it. Measured, not aesthetic: before this the
+   * rationale sat 8px right of its own summary. */
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
   opacity: 0.5;
   color: var(--ink-mid);
 }

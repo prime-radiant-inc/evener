@@ -143,6 +143,16 @@ const snapshot: ThreadReadResponse = {
           },
           {
             type: "steering",
+            id: "i6b",
+            turnId: "turn_1",
+            // A labelled steering divider (NOT the notification kind, which
+            // routes to a card): exercises the rail-icon treatment and the
+            // body-size steering row inside the run column.
+            steeringKind: "loop-detected",
+            text: "You seem to be repeating the same action. Consider a different approach.",
+          },
+          {
+            type: "steering",
             id: "i7",
             turnId: "turn_1",
             steeringKind: "notification",

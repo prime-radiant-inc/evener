@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
@@ -354,12 +357,28 @@ test("an observer callback with no steeringKind still renders its notification c
 
 // --- structure: glyph leading, chevron trailing, one ink for the row -------
 
-test("the chevron trails the label", () => {
+test("the chevron trails the label, and the diamond leads inside its rail slot", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "loop-detected" })} turn={turn} live={false} />);
   const summary = screen.getByTestId("steering-item").querySelector("summary");
   const kids = Array.from(summary?.children ?? []);
-  expect(kids[0]?.getAttribute("data-testid")).toBe("steering-glyph");
+  expect(kids[0]?.getAttribute("data-testid")).toBe("steering-rail-icon");
+  expect(kids[0]?.querySelector('[data-testid="steering-glyph"]')).not.toBeNull();
   expect(kids[kids.length - 1]?.getAttribute("data-testid")).toBe("steering-chevron");
+});
+
+test("the diamond rails at 50% opacity in the speaker-avatar column, gutter-pulled on the summary above the breakpoint", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "steeringitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const slot = /\.railIcon\s*\{([^}]*)\}/.exec(css);
+  expect(slot).not.toBeNull();
+  expect(slot![1]).toContain("opacity: 0.5");
+  expect(slot![1]).toContain("width: var(--speaker-avatar-size)");
+  // slot + margin + the row's own gap = one speaker-gutter, so the label
+  // lands exactly on the content edge (same arithmetic as ToolRow's rail).
+  expect(slot![1]).toContain("margin-right: calc(var(--speaker-gap) - var(--space-2))");
+  const media = /@media \(min-width: 700px\) \{\s*\.summary\s*\{([^}]*)\}/.exec(css);
+  expect(media).not.toBeNull();
+  expect(media![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
 });
 
 test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {

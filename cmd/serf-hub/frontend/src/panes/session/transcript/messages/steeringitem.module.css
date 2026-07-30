@@ -34,6 +34,36 @@
   min-width: 0;
 }
 
+/* The steering diamond rails with the thought/tool kind icons (Jesse's
+ * unification call: a run row with an empty rail reads as "weirdly
+ * indented"). Same geometry as toolcallitem.module.css's .rowIcon: an
+ * --speaker-avatar-size slot centred on the avatar column at 50% opacity,
+ * with the margin-right eating the row's own gap so slot (24) + margin (2)
+ * + row gap (8) = one speaker-gutter (34) and the label lands exactly on
+ * the content edge. */
+.railIcon {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+  opacity: 0.5;
+}
+
+/* Above the breakpoint the item sits inside runContent's reserved gutter
+ * padding: the pull goes on the summary (the row's container - same
+ * container-pull mechanism as thinkblock's, though nothing here clips like
+ * .summary does there), seating the diamond in the rail while the label
+ * stays at the content edge. Below the breakpoint the diamond simply leads
+ * the line inline, at the same 50%. */
+@media (min-width: 700px) {
+  .summary {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}
+
 /* Trailing, and on the row's own colour rather than a step down: it reads as
  * the end of the label line, not as a leading affordance. */
 .chevron {
