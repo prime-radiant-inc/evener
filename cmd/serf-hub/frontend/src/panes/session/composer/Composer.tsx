@@ -23,6 +23,7 @@
 import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -31,8 +32,9 @@ import {
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { openPalette } from "../../../shell/palette/paletteController";
+import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import {
   Button,
   Chip,
@@ -49,11 +51,17 @@ import { ImageGallery } from "../transcript/flow/ImageGallery";
 import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
-import { type TextEditor, useAttachments } from "./attachments/useAttachments";
+import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
-import { RecoveryTray } from "./recovery/RecoveryTray";
+import {
+  discardRecoveryPendingTurn,
+  resendRecoveryPendingTurn,
+  updateRecoveryPendingTurn,
+  useRecoveryEntries,
+} from "./queue/pendingTurnsStore";
+import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -76,6 +84,12 @@ function RemoveIcon() {
     <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
       <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
+  );
+}
+
+function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
+  return items.flatMap((item) =>
+    item.data === undefined ? [] : [{ name: item.name, mediaType: item.mediaType, data: item.data }],
   );
 }
 
@@ -125,6 +139,11 @@ export function Composer({ ref }: ComposerProps) {
   // ever observe here, unlike the legacy DOM-morph world drafts.ts's own
   // isOtherSessionsDraft guarded against.
   const [text, setText] = useState(() => readDraft(ref));
+  const [activeRecoveryId, setActiveRecoveryIdState] = useState<string | null>(null);
+  const activeRecoveryIdRef = useRef<string | null>(null);
+  const recoveryWrites = useRef<Promise<void>>(Promise.resolve());
+  const recoveryWriteVersionRef = useRef(0);
+  const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
@@ -150,10 +169,15 @@ export function Composer({ ref }: ComposerProps) {
   // the second one asks.
   const textRef = useRef(text);
 
-  function updateText(nextText: string): void {
+  const setActiveRecoveryId = useCallback((clientMutationId: string | null): void => {
+    activeRecoveryIdRef.current = clientMutationId;
+    setActiveRecoveryIdState(clientMutationId);
+  }, []);
+
+  const updateText = useCallback((nextText: string): void => {
     textRef.current = nextText;
     setText(nextText);
-  }
+  }, []);
 
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
@@ -188,11 +212,82 @@ export function Composer({ ref }: ComposerProps) {
     }),
     write: (nextText, cursor) => {
       updateText(nextText);
-      writeDraft(ref, nextText);
+      if (activeRecoveryIdRef.current === null) writeDraft(ref, nextText);
       cursorToRestoreRef.current = cursor;
     },
   };
   const attachments = useAttachments(textEditor);
+  const attachmentItemsRef = useRef(attachments.items);
+  attachmentItemsRef.current = attachments.items;
+  const recoveryEntries = useRecoveryEntries(ref);
+
+  const queueRecoveryPersistence = useCallback(
+    (
+      clientMutationId: string,
+      nextText: string,
+      nextAttachments: ReturnType<typeof attachments.toInputAttachments>,
+    ): Promise<void> => {
+      const version = ++recoveryWriteVersionRef.current;
+      const operation = recoveryWrites.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (activeRecoveryIdRef.current !== clientMutationId) return;
+          if (nextText.trim() === "" && nextAttachments.length === 0) {
+            if (textRef.current.trim() !== "" || attachmentItemsRef.current.length > 0) return;
+            await discardRecoveryPendingTurn(clientMutationId, ref);
+            if (
+              activeRecoveryIdRef.current === clientMutationId &&
+              textRef.current.trim() === "" &&
+              attachmentItemsRef.current.length === 0
+            ) {
+              recoveryOwnsLocalDraftRef.current = false;
+              setActiveRecoveryId(null);
+              clearDraft(ref);
+            }
+            return;
+          }
+          const updated = await updateRecoveryPendingTurn(clientMutationId, ref, nextText, nextAttachments);
+          if (
+            updated &&
+            recoveryOwnsLocalDraftRef.current &&
+            recoveryWriteVersionRef.current === version &&
+            activeRecoveryIdRef.current === clientMutationId
+          ) {
+            recoveryOwnsLocalDraftRef.current = false;
+            clearDraft(ref);
+          }
+        });
+      recoveryWrites.current = operation;
+      void operation.catch((error) => {
+        toasts.push(
+          "error",
+          `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+      return operation;
+    },
+    [ref, setActiveRecoveryId, toasts],
+  );
+
+  useEffect(() => {
+    if (activeRecoveryId === null || attachments.hasPending) return;
+    void queueRecoveryPersistence(activeRecoveryId, text, attachments.toInputAttachments());
+  }, [activeRecoveryId, attachments.hasPending, attachments.toInputAttachments, queueRecoveryPersistence, text]);
+
+  useEffect(() => {
+    if (activeRecoveryId !== null || textRef.current.trim() !== "" || attachmentItemsRef.current.length > 0) {
+      return;
+    }
+    const record = recoveryEntries.find((entry) => entry.recoveryKind === "rejected");
+    if (!record) return;
+    const recovered = recoveryComposerDraft(record);
+    recoveryOwnsLocalDraftRef.current = false;
+    setActiveRecoveryId(record.clientMutationId);
+    updateText(recovered.text);
+    attachments.replaceWithSettled(recovered.attachments);
+    clearDraft(ref);
+    cursorToRestoreRef.current = recovered.text.length;
+  }, [activeRecoveryId, attachments.replaceWithSettled, recoveryEntries, ref, setActiveRecoveryId, updateText]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
   // seam - see AskDock.tsx's header comment: "that is the composer's own
@@ -323,7 +418,7 @@ export function Composer({ ref }: ComposerProps) {
 
   function handleTextChange(event: { target: { value: string } }): void {
     updateText(event.target.value);
-    writeDraft(ref, event.target.value);
+    if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
   }
 
   // clearIfUnchanged mirrors clearComposerDraftIfUnchanged (parity-m5-
@@ -393,6 +488,33 @@ export function Composer({ ref }: ComposerProps) {
     textareaRef.current?.focus();
   }
 
+  function activateRecovery(record: MutationRecoveryRecord): void {
+    if (attachments.hasPending) {
+      toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    const merged = mergeRecoveryComposerDraft(textRef.current, attachments.items, recoveryComposerDraft(record));
+    const currentRecoveryId = activeRecoveryIdRef.current;
+    if (currentRecoveryId === null) {
+      recoveryOwnsLocalDraftRef.current = true;
+      setActiveRecoveryId(record.clientMutationId);
+    }
+    updateText(merged.text);
+    attachments.replaceWithSettled(merged.attachments);
+    cursorToRestoreRef.current = merged.text.length;
+    textareaRef.current?.focus();
+
+    const ownerId = currentRecoveryId ?? record.clientMutationId;
+    const persistence = queueRecoveryPersistence(ownerId, merged.text, settledInputAttachments(merged.attachments));
+    if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
+      void persistence
+        .then(async () => {
+          await discardRecoveryPendingTurn(record.clientMutationId, ref);
+        })
+        .catch(() => undefined);
+    }
+  }
+
   // getComposerText is QueueStrip's own seam for reading this composer's
   // CURRENT text/attachments/hasPending at the moment its drain affordance
   // is used - textRef.current (not the `text` state closure) for the
@@ -438,9 +560,11 @@ export function Composer({ ref }: ComposerProps) {
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
-    const submittedText = text;
+    const submittedText = textRef.current;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
     const payload = attachments.toInputAttachments();
+    const submittedRecoveryId = activeRecoveryIdRef.current;
+    let wonRecoveryResend = true;
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
     try {
       await submitWithPendingTracking(
@@ -454,13 +578,24 @@ export function Composer({ ref }: ComposerProps) {
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
-        () => {
+        async () => {
+          if (submittedRecoveryId !== null) {
+            await queueRecoveryPersistence(submittedRecoveryId, submittedText, payload);
+            wonRecoveryResend = await resendRecoveryPendingTurn(submittedRecoveryId, ref, kind, submittedText, payload);
+            return;
+          }
           if (kind === "send") return threadsStore.getState().send(ref, submittedText, payload);
           if (kind === "queue") return threadsStore.getState().queue(ref, submittedText, payload);
           if (kind === "steer") return threadsStore.getState().steer(ref, submittedText, payload);
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload);
         },
       );
+      if (submittedRecoveryId !== null && activeRecoveryIdRef.current === submittedRecoveryId) {
+        recoveryOwnsLocalDraftRef.current = false;
+        setActiveRecoveryId(null);
+        if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+        if (textRef.current !== submittedText) writeDraft(ref, textRef.current);
+      }
       clearIfUnchanged(submittedText);
       attachments.clearSubmitted(submittedMarkers);
     } catch {
@@ -597,7 +732,6 @@ export function Composer({ ref }: ComposerProps) {
       <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
         {readyAnnouncement}
       </div>
-      <RecoveryTray sessionRef={ref} threadId={model?.threadId} />
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
@@ -607,6 +741,8 @@ export function Composer({ ref }: ComposerProps) {
         ref={ref}
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
+        activeRecoveryId={activeRecoveryId ?? undefined}
+        onEditRecovery={activateRecovery}
         onDrainSuccess={handleDrainSuccess}
         busy={busyAction !== null}
         onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}

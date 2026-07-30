@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -17,7 +17,7 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
-import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -113,17 +113,79 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
   }
 }
 
-async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
+async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
-  render(
+  const view = render(
     <>
       <Toast />
       <Composer ref={ref} />
     </>,
   );
-  return fake;
+  return { fake, ...view };
+}
+
+async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
+  return (await mountComposerWithHandle(ref, overrides)).fake;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function notAcceptedError(clientMutationId: string): WireError {
+  return new WireError("validation failed", -32602, {
+    clientMutationId,
+    mutationOutcome: "notAccepted",
+    retryDisposition: "none",
+  });
+}
+
+async function seedRejectedRecovery(storage: MutationOutboxIndexedDB, ref: string, text: string) {
+  const input = [{ type: "text", text }];
+  const outbox = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref, input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovered) throw new Error("failed to seed recovery");
+  return recovered;
+}
+
+async function seedRejectedRecoveryWithAttachment(storage: MutationOutboxIndexedDB, ref: string) {
+  const input = [
+    { type: "text" as const, text: "edit me [image 1]" },
+    { type: "image" as const, mediaType: "image/png", data: "AQID", name: "proof.png" },
+  ];
+  const outbox = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref, input },
+    attachments: [
+      {
+        presentationId: "presentation-1",
+        name: "proof.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovered) throw new Error("failed to seed attachment recovery");
+  return recovered;
 }
 
 // --- ask-pending fixture ----------------------------------------------------
@@ -932,7 +994,7 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
   expect(screen.queryByText(/reload/i)).toBeNull();
 });
 
-test("an explicit rejection appears in the recovery tray without replacing a nonempty composer", async () => {
+test("an explicit rejection returns to the sole Composer textarea", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
@@ -947,14 +1009,150 @@ test("an explicit rejection appears in the recovery tray without replacing a non
 
   await user.type(textarea(), "rejected draft");
   await user.click(submitButton());
+
+  await waitFor(() => expect(textarea().value).toBe("rejected draft"));
+  expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
+  expect(screen.queryByText("Recovery drafts")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Recovered message" })).toBeNull();
+});
+
+test("an occupied Composer is not overwritten by a later rejection", async () => {
+  const rejection = deferred<never>();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "idle" } });
+  let clientMutationId = "";
+  fake.on("turn/start", (params) => {
+    clientMutationId = String(params.clientMutationId);
+    return rejection.promise;
+  });
+
+  await user.type(textarea(), "rejected draft");
+  await user.click(submitButton());
   await waitFor(() => expect(textarea().value).toBe(""));
   await user.type(textarea(), "current work");
+  act(() => rejection.reject(notAcceptedError(clientMutationId)));
 
-  await waitFor(() => expect(screen.getByRole("region", { name: "Recovery drafts" })).toBeTruthy());
-  expect((screen.getByRole("textbox", { name: "Recovered message" }) as HTMLTextAreaElement).value).toBe(
-    "rejected draft",
-  );
+  await waitFor(() => expect(screen.getByText("rejected draft")).toBeTruthy());
   expect(textarea().value).toBe("current work");
+});
+
+test("editing a rejected queue row merges it through the normal Composer", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await user.type(textarea(), "current work");
+  await seedRejectedRecovery(storage, "ref_a", "rejected draft");
+  await refreshPendingTurnsProjection("ref_a");
+
+  const row = screen.getByText("rejected draft").closest("li");
+  if (!row) throw new Error("missing rejected queue row");
+  await user.click(within(row).getByRole("button", { name: "Edit message" }));
+
+  await waitFor(() => expect(textarea().value).toBe("current work\n\nrejected draft"));
+  expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
+  expect(screen.queryByText("rejected draft")).toBeNull();
+});
+
+test("sending recovered text uses current Composer routing and consumes the recovery record", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      activeTurnId: "turn-current",
+      queue: { revision: 4 },
+    },
+  });
+  fake.on("turn/queue", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await waitFor(() => expect(textarea().value).toBe("retry me"));
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
+    expectedTurnId: "turn-current",
+    input: [{ type: "text", text: "retry me" }],
+  });
+  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
+});
+
+test("a losing cross-tab recovered send does not issue a second request", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "one winner");
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "idle" } });
+  await waitFor(() => expect(textarea().value).toBe("one winner"));
+  const otherTab = new MutationOutboxIndexedDB();
+  await otherTab.resendRecovery(recovered.clientMutationId, {
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "one winner" }] },
+    attachments: [],
+    optimisticDisplay: {
+      method: "turn/start",
+      input: [{ type: "text", text: "one winner" }],
+    },
+  });
+
+  await user.click(submitButton());
+
+  await waitFor(() => expect(textarea().value).toBe(""));
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  otherTab.close();
+});
+
+test("recovered edits and attachment removal survive Composer remount", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  const user = userEvent.setup();
+  const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
+  await waitFor(() => expect(textarea().value).toBe("edit me [image 1]"));
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+
+  await user.clear(textarea());
+  await user.type(textarea(), "edited");
+  await user.click(screen.getByRole("button", { name: "Remove proof.png" }));
+  await waitFor(async () => {
+    expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
+      { type: "text", text: "edited" },
+    ]);
+  });
+  first.unmount();
+
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await waitFor(() => expect(textarea().value).toBe("edited"));
+  expect(screen.queryByText("proof.png")).toBeNull();
+});
+
+test("blanking an attachment-free recovered draft discards it durably", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "discard me");
+  const user = userEvent.setup();
+  const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
+  await waitFor(() => expect(textarea().value).toBe("discard me"));
+  await user.clear(textarea());
+  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
+  first.unmount();
+
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(textarea().value).toBe("");
+  expect(screen.queryByText("discard me")).toBeNull();
 });
 
 // --- which controls the row shows ------------------------------------------
