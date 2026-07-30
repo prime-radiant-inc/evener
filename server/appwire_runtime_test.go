@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -329,6 +330,8 @@ func TestAppTurnSnapshotReducesSteeringIntoActiveTurn(t *testing.T) {
 // already read.
 func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 	started := int64(1700000000)
+	duration := int64(4200)
+	exitCode := int64(0)
 	cause := appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 500}
 	seed := []appwire.Turn{{
 		ID:        "turn_1",
@@ -337,11 +340,16 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 		StartedAt: &started,
 		Error:     &appwire.TurnError{Message: "original", Cause: &cause},
 		Items: []appwire.ThreadItem{{
-			Type:   "agentMessage",
-			ID:     "item_1",
-			TurnID: "turn_1",
-			Text:   "original text",
-			Raw:    json.RawMessage(`{"k":"original"}`),
+			Type: "agentMessage",
+			ID:   "item_1",
+			// DurationMS and ExitCode are pointers the transcript projector
+			// populates on tool-call items, and they were the two fields the
+			// clone helper missed.
+			TurnID:     "turn_1",
+			Text:       "original text",
+			DurationMS: &duration,
+			ExitCode:   &exitCode,
+			Raw:        json.RawMessage(`{"k":"original"}`),
 			Images: []appwire.InputItem{{
 				Type:      "image",
 				MediaType: "image/png",
@@ -367,10 +375,94 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 	seed[0].Items[0].Images[0].Data[0] = 'X'
 	seed[0].Items[0].Images[0].Metadata["source"] = "mutated"
 	seed[0].Items[0].Images[0].Name = "mutated.png"
+	*seed[0].Items[0].DurationMS = 9999
+	*seed[0].Items[0].ExitCode = 137
 
 	after := snapshot.Snapshot()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("Seed aliased caller state:\nbefore=%+v\nafter=%+v", before, after)
+	}
+
+	// Two reads must not hand back the same pointers either, or one caller
+	// mutating its copy would rewrite another's.
+	a, b := snapshot.Snapshot(), snapshot.Snapshot()
+	if a[0].Items[0].DurationMS == b[0].Items[0].DurationMS {
+		t.Fatal("Snapshot shares one *DurationMS across reads")
+	}
+	if a[0].Items[0].ExitCode == b[0].Items[0].ExitCode {
+		t.Fatal("Snapshot shares one *ExitCode across reads")
+	}
+}
+
+// TestAppTurnSnapshotSteeringIndexIsPerTurn pins the per-turn steering counter.
+// A global counter satisfies every single-turn assertion, so without a second
+// turn nothing distinguishes the two -- and a global one would produce IDs that
+// disagree with both the frontend reducer and the transcript reload shape.
+func TestAppTurnSnapshotSteeringIndexIsPerTurn(t *testing.T) {
+	snapshot := &appTurnSnapshot{threadID: "th_1"}
+	snapshot.Apply([]appserver.SequencedNotification{
+		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
+		}),
+		appTurnSnapshotRecord(t, 2, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+			ThreadID: "th_1", Text: "steer turn 1",
+		}),
+		appTurnSnapshotRecord(t, 3, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
+			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted},
+		}),
+		appTurnSnapshotRecord(t, 4, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+			ThreadID: "th_1", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress},
+		}),
+		appTurnSnapshotRecord(t, 5, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+			ThreadID: "th_1", Text: "steer turn 2",
+		}),
+	})
+
+	turns := snapshot.Snapshot()
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(turns))
+	}
+	if len(turns[0].Items) != 1 || turns[0].Items[0].ID != "item_steering_live_turn_1_0" {
+		t.Fatalf("turn_1 items = %+v, want item_steering_live_turn_1_0", turns[0].Items)
+	}
+	// The second turn's first steer restarts at index 0. A counter shared
+	// across turns would name this one _1.
+	if len(turns[1].Items) != 1 || turns[1].Items[0].ID != "item_steering_live_turn_2_0" {
+		t.Fatalf("turn_2 items = %+v, want item_steering_live_turn_2_0", turns[1].Items)
+	}
+}
+
+// TestAppTurnSnapshotSeedClearsReplayBookkeeping guards the ordering hazard in
+// finding 3: while applyLocked still rebuilds from a retained record window,
+// a seed that left the old records in place would be erased by the next window
+// trim, and activeTurnID would survive pointing at a turn no longer indexed.
+func TestAppTurnSnapshotSeedClearsReplayBookkeeping(t *testing.T) {
+	snapshot := &appTurnSnapshot{threadID: "th_1", limit: 2}
+	// Fill the retained window from a previous identity.
+	for seq := uint64(1); seq <= 3; seq++ {
+		snapshot.Apply([]appserver.SequencedNotification{
+			appTurnSnapshotRecord(t, seq, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: "th_1",
+				Turn:     appwire.Turn{ID: fmt.Sprintf("old_turn_%d", seq), Status: appwire.TurnStatusCompleted},
+			}),
+		})
+	}
+
+	snapshot.Seed([]appwire.Turn{{ID: "seeded_turn", Status: appwire.TurnStatusInProgress}})
+
+	// One more record trims the window and triggers a rebuild.
+	snapshot.Apply([]appserver.SequencedNotification{
+		appTurnSnapshotRecord(t, 9, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+			ThreadID: "th_1", Text: "after seed",
+		}),
+	})
+
+	turns := snapshot.Snapshot()
+	if len(turns) != 1 || turns[0].ID != "seeded_turn" {
+		t.Fatalf("turns = %v, want the seeded turn to survive a window trim", turnIDs(turns))
+	}
+	if len(turns[0].Items) != 1 || turns[0].Items[0].ID != "item_steering_live_seeded_turn_0" {
+		t.Fatalf("seeded turn items = %+v, want steering to still reach the seeded active turn", turns[0].Items)
 	}
 }
 

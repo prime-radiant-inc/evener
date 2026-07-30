@@ -74,19 +74,35 @@ type appTurnSnapshot struct {
 // anything already reduced. The caller keeps ownership of turns: every turn and
 // nested item is deep-cloned, so later mutation of the argument cannot reach
 // installed state.
+//
+// The replay bookkeeping is reset alongside the turns. Until Task 4 removes it,
+// applyLocked rebuilds turn state from the retained record window whenever that
+// window trims or a record arrives out of order -- which would discard the
+// seeded turns entirely and leave activeTurnID naming a turn no longer in the
+// index, after which every steer is silently dropped.
 func (s *appTurnSnapshot) Seed(turns []appwire.Turn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.records = nil
+	s.cursor = 0
+	s.retainedLower = 0
 	s.turns = make([]appwire.Turn, len(turns))
 	s.turnIndex = make(map[string]int, len(turns))
 	s.activeTurnID = ""
 	for i := range turns {
 		s.turns[i] = cloneAppTurn(turns[i])
 		s.turnIndex[s.turns[i].ID] = i
-		// The last in-progress turn wins: a transcript can contain an earlier
-		// turn that was never completed because the daemon died mid-turn, and
-		// steering belongs to the most recent one.
+		// The last in-progress turn wins. This does not arise from a transcript
+		// projection -- apptranscript stamps every turn completed or failed, so
+		// a transcript seed always leaves activeTurnID empty -- but a seed taken
+		// from a wire snapshot (thread.turns) can carry one, and there the most
+		// recent in-progress turn is the one still streaming.
+		//
+		// Note this does not consult thread.serf.activeTurnId, which the daemon
+		// publishes separately and which can name a reserved turn absent from
+		// turns entirely; the frontend prefers that field and falls back to the
+		// FIRST in-progress turn.
 		if s.turns[i].Status == appwire.TurnStatusInProgress {
 			s.activeTurnID = s.turns[i].ID
 		}
@@ -294,6 +310,14 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			// Only the named item on the named turn goes; an unknown turn is
 			// left alone rather than fabricated, since there would be nothing
 			// to remove from it.
+			//
+			// This trusts params.TurnID, where the frontend's findItemTurnId
+			// falls back to the active turn and then scans every turn. The
+			// stricter lookup is safe because the projector stamps the reset
+			// with its own activeTurnID and only emits one while an assistant
+			// item is open (internal/appprojector/appwire_projection.go), and
+			// every site that clears activeTurnID clears that item too -- so a
+			// reset naming an absent or empty turn is not reachable.
 			var params appwire.AgentMessageResetParams
 			if json.Unmarshal(record.Notification.Params, &params) != nil || params.ItemID == "" {
 				continue
@@ -420,6 +444,8 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone := item
 	clone.StartedAt = cloneInt64(item.StartedAt)
 	clone.CompletedAt = cloneInt64(item.CompletedAt)
+	clone.DurationMS = cloneInt64(item.DurationMS)
+	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
 	clone.OutputImages = append([]appwire.OutputImage(nil), item.OutputImages...)
 	clone.Images = make([]appwire.InputItem, len(item.Images))
