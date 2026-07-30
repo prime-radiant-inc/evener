@@ -57,6 +57,7 @@ import { clearDraft, readDraft, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
 import {
   discardRecoveryPendingTurn,
+  refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   updateRecoveryPendingTurn,
   useRecoveryEntries,
@@ -140,6 +141,7 @@ export function Composer({ ref }: ComposerProps) {
   // isOtherSessionsDraft guarded against.
   const [text, setText] = useState(() => readDraft(ref));
   const [activeRecoveryId, setActiveRecoveryIdState] = useState<string | null>(null);
+  const [freshRecoveryRef, setFreshRecoveryRef] = useState<string | null>(null);
   const activeRecoveryIdRef = useRef<string | null>(null);
   const recoveryWrites = useRef<Promise<void>>(Promise.resolve());
   const recoveryWriteVersionRef = useRef(0);
@@ -221,6 +223,20 @@ export function Composer({ ref }: ComposerProps) {
   attachmentItemsRef.current = attachments.items;
   const recoveryEntries = useRecoveryEntries(ref);
 
+  // A shared projection can outlive a Composer remount while its durable
+  // discard is still being projected. Only auto-activate after this mount
+  // has observed a successful IndexedDB refresh for the current session.
+  useEffect(() => {
+    let mounted = true;
+    setFreshRecoveryRef(null);
+    void refreshPendingTurnsProjection(ref).then((refreshed) => {
+      if (mounted && refreshed) setFreshRecoveryRef(ref);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [ref]);
+
   const queueRecoveryPersistence = useCallback(
     (
       clientMutationId: string,
@@ -275,7 +291,12 @@ export function Composer({ ref }: ComposerProps) {
   }, [activeRecoveryId, attachments.hasPending, attachments.toInputAttachments, queueRecoveryPersistence, text]);
 
   useEffect(() => {
-    if (activeRecoveryId !== null || textRef.current.trim() !== "" || attachmentItemsRef.current.length > 0) {
+    if (
+      freshRecoveryRef !== ref ||
+      activeRecoveryId !== null ||
+      textRef.current.trim() !== "" ||
+      attachmentItemsRef.current.length > 0
+    ) {
       return;
     }
     const record = recoveryEntries.find((entry) => entry.recoveryKind === "rejected");
@@ -287,7 +308,15 @@ export function Composer({ ref }: ComposerProps) {
     attachments.replaceWithSettled(recovered.attachments);
     clearDraft(ref);
     cursorToRestoreRef.current = recovered.text.length;
-  }, [activeRecoveryId, attachments.replaceWithSettled, recoveryEntries, ref, setActiveRecoveryId, updateText]);
+  }, [
+    activeRecoveryId,
+    attachments.replaceWithSettled,
+    freshRecoveryRef,
+    recoveryEntries,
+    ref,
+    setActiveRecoveryId,
+    updateText,
+  ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
   // seam - see AskDock.tsx's header comment: "that is the composer's own

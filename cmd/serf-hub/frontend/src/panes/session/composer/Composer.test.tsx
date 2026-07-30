@@ -113,6 +113,27 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class PausedRecoveryReadStorage extends MutationOutboxIndexedDB {
+  private recoveryReadGate: Promise<void> = Promise.resolve();
+  private resumeRecoveryReads: (() => void) | undefined;
+
+  pauseRecoveryReads(): void {
+    this.recoveryReadGate = new Promise((resolve) => {
+      this.resumeRecoveryReads = resolve;
+    });
+  }
+
+  resume(): void {
+    this.resumeRecoveryReads?.();
+    this.resumeRecoveryReads = undefined;
+  }
+
+  override async listRecovery(targetRef?: string): ReturnType<MutationOutboxIndexedDB["listRecovery"]> {
+    await this.recoveryReadGate;
+    return super.listRecovery(targetRef);
+  }
+}
+
 async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
@@ -1153,6 +1174,23 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(textarea().value).toBe("");
   expect(screen.queryByText("discard me")).toBeNull();
+});
+
+test("a remounted Composer does not activate a stale recovery projection", async () => {
+  const storage = new PausedRecoveryReadStorage();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "already discarded");
+  await refreshPendingTurnsProjection("ref_a");
+  await storage.discardRecovery(recovered.clientMutationId);
+  storage.pauseRecoveryReads();
+
+  try {
+    await mountComposer("ref_a", { status: { type: "idle" } });
+    expect(textarea().value).toBe("");
+  } finally {
+    storage.resume();
+  }
+  await waitFor(() => expect(screen.queryByText("already discarded")).toBeNull());
 });
 
 // --- which controls the row shows ------------------------------------------

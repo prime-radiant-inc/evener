@@ -52,23 +52,26 @@ function replaceTargetRecords<T extends { clientMutationId: string; targetRef: s
   return next;
 }
 
-export async function refreshPendingTurnsProjection(ref?: string): Promise<void> {
+export async function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
   const key = ref ?? "*";
   const generation = (refreshGenerations.get(key) ?? 0) + 1;
   refreshGenerations.set(key, generation);
   try {
     const snapshot = await readMutationPersistence(ref);
-    if (refreshEpoch !== epoch || generation < (appliedRefreshGenerations.get(key) ?? 0)) return;
+    if (refreshEpoch !== epoch) return false;
+    if (generation < (appliedRefreshGenerations.get(key) ?? 0)) return true;
     appliedRefreshGenerations.set(key, generation);
     pendingTurnsStore.setState((state) => ({
       outbox: replaceTargetRecords(state.outbox, ref, snapshot.outbox),
       optimistic: replaceTargetRecords(state.optimistic, ref, snapshot.optimistic),
       recovery: replaceTargetRecords(state.recovery, ref, snapshot.recovery),
     }));
+    return true;
   } catch {
     // A read failure cannot discard the last durable projection. Lifecycle
     // discovery or the next explicit action retries the same IndexedDB read.
+    return false;
   }
 }
 
