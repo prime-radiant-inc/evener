@@ -85,6 +85,8 @@ func FuzzAppSourceProgram(f *testing.F) {
 		fuzzScenarioCodexSourceListThreadsTranslatesSerfStatusFilters,
 		fuzzScenarioMapCodexTurnPreservesErrorDetails,
 		fuzzScenarioCodexSourceLoadedThreadAdvertisesTurnActions,
+		fuzzScenarioCodexSourceStartThreadMapsPromptToInput,
+		fuzzScenarioCodexSourceStartThreadAcceptsCodexNativeInputItems,
 		fuzzScenarioMapCodexItemUserMessagePreservesImageContent,
 		fuzzScenarioMapCodexItemUserMessagePreservesImageOnlyContent,
 		fuzzScenarioMapCodexNotificationPreservesUserMessageImages,

@@ -42,19 +42,6 @@ func withSessionResume[R any](
 	return once()
 }
 
-func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.ThreadClearResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		return source.ClearThread(ctx, params)
-	})
-}
-
 func setThreadNameWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
