@@ -1,14 +1,15 @@
 import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { InputItem } from "../../../../protocol/types.gen";
 import type {
   MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
-import type { InputAttachment } from "../../../../stores/threads";
 import {
+  type ComposerMutationRoute,
+  discardRecoveryMutation,
+  type InputAttachment,
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
@@ -171,26 +172,31 @@ export async function retryBlockedPendingTurn(clientMutationId: string, ref: str
   return retried;
 }
 
-export async function updateRecoveryText(record: MutationRecoveryRecord, text: string): Promise<boolean> {
-  const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
-  const nextInput = input.filter((item) => item.type !== "text");
-  if (text.trim()) nextInput.unshift({ type: "text", text });
-  const payload = { ...record.payload, input: nextInput };
-  const display =
-    record.optimisticDisplay && typeof record.optimisticDisplay === "object"
-      ? { ...record.optimisticDisplay, input: nextInput }
-      : { method: record.method, input: nextInput };
-  const updated = await updateRecoveryMutation(record.clientMutationId, payload, display);
-  await refreshPendingTurnsProjection(record.targetRef);
+export async function updateRecoveryPendingTurn(
+  clientMutationId: string,
+  ref: string,
+  text: string,
+  attachments: InputAttachment[],
+): Promise<boolean> {
+  const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments);
+  await refreshPendingTurnsProjection(ref);
   return updated;
+}
+
+export async function discardRecoveryPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
+  const discarded = await discardRecoveryMutation(clientMutationId, ref);
+  await refreshPendingTurnsProjection(ref);
+  return discarded;
 }
 
 export async function resendRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
-  threadId?: string,
+  route: ComposerMutationRoute,
+  text: string,
+  attachments: InputAttachment[],
 ): Promise<boolean> {
-  const resent = await resendRecoveryMutation(clientMutationId, ref, threadId);
+  const resent = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments);
   await refreshPendingTurnsProjection(ref);
   return resent !== undefined;
 }

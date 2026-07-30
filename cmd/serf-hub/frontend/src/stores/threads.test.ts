@@ -30,7 +30,9 @@ import {
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
   installHydrationRetrySchedulerForTests,
+  resendRecoveryMutation,
   resetThreadsStoreForTests,
+  setMutationStorageForTests,
   threadsStore,
   useThreadsStore,
 } from "./threads";
@@ -2521,6 +2523,46 @@ describe("useThreadsStore.send", () => {
       clientMutationId: expect.any(String),
       input: [{ type: "text", text: "hello" }],
     });
+  });
+});
+
+test("recovery resend rebuilds queue CAS values from the current thread", async () => {
+  let mutationId = 0;
+  const storage = new MutationOutboxIndexedDB({
+    createMutationId: () => `mutation-${++mutationId}`,
+  });
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "stale" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stale" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "active" },
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        activeTurnId: "turn-current",
+        queue: { revision: 7 },
+      },
+    }),
+  );
+  fake.on("turn/queue", () => new Promise<never>(() => undefined));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  expect(await resendRecoveryMutation(original.clientMutationId, "ref_a", "queue", "edited", [])).toBeDefined();
+  expect((await storage.listOutbox("ref_a"))[0]).toMatchObject({
+    method: "turn/queue",
+    payload: {
+      expectedTurnId: "turn-current",
+      input: [{ type: "text", text: "edited" }],
+    },
   });
 });
 

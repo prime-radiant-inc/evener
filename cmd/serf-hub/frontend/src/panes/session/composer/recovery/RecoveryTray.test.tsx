@@ -94,8 +94,8 @@ test("simultaneous recovery sends have one durable winner", async () => {
   const outbox = await seedRecovery();
 
   const results = await Promise.all([
-    resendRecoveryPendingTurn(outbox.clientMutationId, "ref_a", "thread_a"),
-    resendRecoveryPendingTurn(outbox.clientMutationId, "ref_a", "thread_a"),
+    resendRecoveryPendingTurn(outbox.clientMutationId, "ref_a", "send", "recover this", []),
+    resendRecoveryPendingTurn(outbox.clientMutationId, "ref_a", "send", "recover this", []),
   ]);
 
   expect(results.filter(Boolean)).toHaveLength(1);

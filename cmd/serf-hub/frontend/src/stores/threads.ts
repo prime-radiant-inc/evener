@@ -61,6 +61,8 @@ export interface InputAttachment {
   name?: string;
 }
 
+export type ComposerMutationRoute = "send" | "queue" | "steer" | "drain";
+
 // ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
 // 692-711) minus ref (a separate positional argument, like every other
 // action here). Fork and aside are the SAME wire method with mutually
@@ -468,43 +470,40 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
 
 export async function updateRecoveryMutation(
   clientMutationId: string,
-  payload: Record<string, unknown>,
-  optimisticDisplay: unknown,
+  targetRef: string,
+  text: string,
+  attachments: InputAttachment[],
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const optimisticInput =
-    optimisticDisplay && typeof optimisticDisplay === "object" && "input" in optimisticDisplay
-      ? optimisticDisplay.input
-      : undefined;
-  const input = Array.isArray(payload.input)
-    ? (payload.input as InputItem[])
-    : Array.isArray(optimisticInput)
-      ? (optimisticInput as InputItem[])
-      : [];
-  const record = await runtime.storage.updateRecoveryInput(clientMutationId, input);
+  const record = await runtime.storage.updateRecoveryInput(
+    clientMutationId,
+    buildInput(text, attachments),
+    durableAttachments(attachments),
+  );
   if (!record) return false;
-  notifyMutationPersistence([record.targetRef]);
+  notifyMutationPersistence([targetRef]);
   return true;
+}
+
+export async function discardRecoveryMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const discarded = await runtime.storage.discardRecovery(clientMutationId);
+  if (discarded) notifyMutationPersistence([targetRef]);
+  return discarded;
 }
 
 export async function resendRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
-  threadId?: string,
+  route: ComposerMutationRoute,
+  text: string,
+  attachments: InputAttachment[],
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const recovery = await runtime.storage.getRecovery(clientMutationId);
-  if (!recovery) return undefined;
-  const intent: MutationIntent = {
-    targetRef,
-    threadId,
-    method: recovery.method,
-    payload: { ...recovery.payload, ref: targetRef, threadId },
-    attachments: recovery.attachments,
-    optimisticDisplay: recovery.optimisticDisplay,
-  };
+  const intent = composerMutationIntent(targetRef, route, text, attachments);
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
@@ -689,13 +688,48 @@ function durableAttachments(attachments?: InputAttachment[]): MutationAttachment
   }));
 }
 
-async function enqueueMutation(
+function composerMutationIntent(
   ref: string,
-  method: MutationIntent["method"],
-  payload: Record<string, unknown>,
-  optimisticDisplay: unknown,
+  route: ComposerMutationRoute,
+  text: string,
   attachments?: InputAttachment[],
-): Promise<void> {
+): MutationIntent {
+  const model = threadsStore.getState().threads.get(ref);
+  const input = buildInput(text, attachments);
+  const base = {
+    targetRef: ref,
+    threadId: model?.threadId,
+    attachments: durableAttachments(attachments),
+  };
+  if (route === "send") {
+    return {
+      ...base,
+      method: "turn/start",
+      payload: { ref, input },
+      optimisticDisplay: { method: "turn/start", input },
+    };
+  }
+  const expectedTurnId = model?.activeTurnId ?? "";
+  if (route === "queue" || route === "steer") {
+    const method = route === "queue" ? "turn/queue" : "turn/steer";
+    return {
+      ...base,
+      method,
+      payload: { ref, expectedTurnId, input },
+      optimisticDisplay: { method, input },
+    };
+  }
+  const expectedQueueRevision = model?.queue?.revision ?? 0;
+  return {
+    ...base,
+    method: "turn/drainAsSteer",
+    payload: { ref, expectedTurnId, expectedQueueRevision, input },
+    optimisticDisplay: { method: "turn/drainAsSteer", input },
+  };
+}
+
+async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
+  const ref = intent.targetRef;
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
@@ -705,7 +739,18 @@ async function enqueueMutation(
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  await runtime.outbox.enqueueIntent({
+  await runtime.outbox.enqueueIntent(intent);
+  notifyMutationPersistence([ref]);
+}
+
+async function enqueueMutation(
+  ref: string,
+  method: MutationIntent["method"],
+  payload: Record<string, unknown>,
+  optimisticDisplay: unknown,
+  attachments?: InputAttachment[],
+): Promise<void> {
+  await enqueueMutationIntent({
     targetRef: ref,
     threadId: threadsStore.getState().threads.get(ref)?.threadId,
     method,
@@ -1781,32 +1826,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments) {
-    const input = buildInput(text, attachments);
-    await enqueueMutation(ref, "turn/start", { ref, input }, { method: "turn/start", input }, attachments);
+    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments));
   },
 
   async steer(ref, text, attachments) {
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
-    const input = buildInput(text, attachments);
-    await enqueueMutation(
-      ref,
-      "turn/steer",
-      { ref, expectedTurnId, input },
-      { method: "turn/steer", input },
-      attachments,
-    );
+    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments));
   },
 
   async queue(ref, text, attachments) {
-    const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId ?? "";
-    const input = buildInput(text, attachments);
-    await enqueueMutation(
-      ref,
-      "turn/queue",
-      { ref, expectedTurnId, input },
-      { method: "turn/queue", input },
-      attachments,
-    );
+    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments));
   },
 
   async interrupt(ref) {
@@ -1815,17 +1843,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async drainAsSteer(ref, text, attachments) {
-    const model = threadsStore.getState().threads.get(ref);
-    const expectedTurnId = model?.activeTurnId ?? "";
-    const expectedQueueRevision = model?.queue?.revision ?? 0;
-    const input = buildInput(text, attachments);
-    await enqueueMutation(
-      ref,
-      "turn/drainAsSteer",
-      { ref, expectedTurnId, expectedQueueRevision, input },
-      { method: "turn/drainAsSteer", input },
-      attachments,
-    );
+    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments));
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId) {

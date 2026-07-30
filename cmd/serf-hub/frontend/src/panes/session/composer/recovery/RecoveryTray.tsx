@@ -2,15 +2,17 @@ import { type ChangeEvent, type JSX, useEffect, useRef, useState } from "react";
 import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+import type { InputAttachment } from "../../../../stores/threads";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
-  updateRecoveryText,
+  updateRecoveryPendingTurn,
   useBlockedMutationEntries,
   useRecoveryEntries,
 } from "../queue/pendingTurnsStore";
+import { recoveryComposerDraft } from "./recoveryDraft";
 import styles from "./recoverytray.module.css";
 
 export interface RecoveryTrayProps {
@@ -39,6 +41,14 @@ function recordText(record: MutationOutboxRecord): string {
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
     .join("\n");
+}
+
+function recordAttachments(record: MutationRecoveryRecord): InputAttachment[] {
+  return recoveryComposerDraft(record).attachments.flatMap((attachment) =>
+    attachment.data === undefined
+      ? []
+      : [{ name: attachment.name, mediaType: attachment.mediaType, data: attachment.data }],
+  );
 }
 
 function exportRecord(record: MutationOutboxRecord): void {
@@ -102,7 +112,7 @@ function PayloadActions({ record }: { record: MutationOutboxRecord }): JSX.Eleme
   );
 }
 
-function RecoveryDraft({ record, threadId }: { record: MutationRecoveryRecord; threadId?: string }): JSX.Element {
+function RecoveryDraft({ record }: { record: MutationRecoveryRecord }): JSX.Element {
   const [text, setText] = useState(() => recordText(record));
   const [sending, setSending] = useState(false);
   const writes = useRef(Promise.resolve());
@@ -116,7 +126,7 @@ function RecoveryDraft({ record, threadId }: { record: MutationRecoveryRecord; t
     const nextText = event.target.value;
     setText(nextText);
     writes.current = writes.current.then(async () => {
-      await updateRecoveryText(record, nextText);
+      await updateRecoveryPendingTurn(record.clientMutationId, record.targetRef, nextText, recordAttachments(record));
     });
   }
 
@@ -124,7 +134,13 @@ function RecoveryDraft({ record, threadId }: { record: MutationRecoveryRecord; t
     setSending(true);
     try {
       await writes.current;
-      const won = await resendRecoveryPendingTurn(record.clientMutationId, record.targetRef, threadId);
+      const won = await resendRecoveryPendingTurn(
+        record.clientMutationId,
+        record.targetRef,
+        "send",
+        text,
+        recordAttachments(record),
+      );
       if (!won) toasts.push("info", "This recovery draft was already sent in another tab.");
     } catch (error) {
       toasts.push("error", `Couldn't send recovery draft: ${error instanceof Error ? error.message : String(error)}`);
@@ -200,7 +216,7 @@ function BlockedMutation({ record }: { record: MutationOutboxRecord }): JSX.Elem
   );
 }
 
-export function RecoveryTray({ sessionRef, threadId }: RecoveryTrayProps): JSX.Element | null {
+export function RecoveryTray({ sessionRef }: RecoveryTrayProps): JSX.Element | null {
   const recovery = useRecoveryEntries(sessionRef);
   const blocked = useBlockedMutationEntries(sessionRef);
   if (recovery.length === 0 && blocked.length === 0) return null;
@@ -215,7 +231,7 @@ export function RecoveryTray({ sessionRef, threadId }: RecoveryTrayProps): JSX.E
           <BlockedMutation key={record.clientMutationId} record={record} />
         ))}
         {recovery.map((record) => (
-          <RecoveryDraft key={record.clientMutationId} record={record} threadId={threadId} />
+          <RecoveryDraft key={record.clientMutationId} record={record} />
         ))}
       </ul>
     </section>

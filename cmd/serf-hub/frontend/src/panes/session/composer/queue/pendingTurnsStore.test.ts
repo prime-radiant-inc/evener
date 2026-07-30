@@ -7,11 +7,15 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
+  discardRecoveryPendingTurn,
+  refreshPendingTurnsProjection,
+  resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
+  updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   usePendingTurnEntries,
 } from "./pendingTurnsStore";
@@ -96,6 +100,43 @@ test("a local commit failure reports the exact error and never creates optimisti
 
   expect(onFailure).toHaveBeenCalledWith(failure);
   expect(pending.result.current).toEqual([]);
+});
+
+test("recovery action wrappers refresh the durable projection", async () => {
+  let mutationId = 0;
+  const storage = new MutationOutboxIndexedDB({
+    createMutationId: () => `mutation-${++mutationId}`,
+  });
+  setMutationStorageForTests(storage);
+  const records = [];
+  for (const text of ["edit", "discard", "resend"]) {
+    records.push(
+      await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thread_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input: [{ type: "text", text }] },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+      }),
+    );
+  }
+  for (const record of records) {
+    await storage.transferToRecovery(record.clientMutationId, "rejected");
+  }
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await refreshPendingTurnsProjection("ref_a");
+
+  expect(await updateRecoveryPendingTurn(records[0]!.clientMutationId, "ref_a", "edited", [])).toBe(true);
+  expect(await discardRecoveryPendingTurn(records[1]!.clientMutationId, "ref_a")).toBe(true);
+  expect(await resendRecoveryPendingTurn(records[2]!.clientMutationId, "ref_a", "send", "resent", [])).toBe(true);
+
+  expect((await storage.getRecovery(records[0]!.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "edited" },
+  ]);
+  expect(await storage.getRecovery(records[1]!.clientMutationId)).toBeUndefined();
+  expect(await storage.getRecovery(records[2]!.clientMutationId)).toBeUndefined();
 });
 
 test("authoritative pendingMutations reconstruct accepted steering without a browser registry", async () => {
