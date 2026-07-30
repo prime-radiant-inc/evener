@@ -1572,3 +1572,214 @@ func testClientMutationRequest(t *testing.T, method, id string, payload any) cli
 	}
 	return request
 }
+
+// clientMutationProjectionCase drives one mutation method to acceptance and
+// reports the receipt it produced.
+type clientMutationProjectionCase struct {
+	method string
+	want   appwire.MutationProjectionState
+	accept func(t *testing.T, sess *Session) appwire.MutationReceipt
+	// projected is false for the two terminal methods. Interrupt and cancel
+	// describe an effect that is already complete, so neither leaves a pending
+	// entry for ClientMutationProjection to report.
+	projected bool
+}
+
+func clientMutationProjectionCases() []clientMutationProjectionCase {
+	const activeTurn = "turn_1"
+	text := []appwire.InputItem{{Type: "text", Text: "projection state under test"}}
+
+	// queueOne parks one entry so promote and cancel have something to act on,
+	// under an ID distinct from the mutation whose receipt is asserted.
+	queueOne := func(t *testing.T, sess *Session, id string) {
+		t.Helper()
+		if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+			ClientMutationID: id,
+			ExpectedTurnID:   activeTurn,
+			Input:            text,
+		}); err != nil {
+			t.Fatalf("seed queue entry: %v", err)
+		}
+	}
+
+	return []clientMutationProjectionCase{
+		{
+			method: "start", want: appwire.MutationProjectionPending, projected: true,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				resp, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+					ClientMutationID: "subject", Input: text,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "steer", want: appwire.MutationProjectionPending, projected: true,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				setTestClientMutationActiveTurn(t, sess, activeTurn)
+				resp, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Input: text,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationSteer: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "queue", want: appwire.MutationProjectionPending, projected: true,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				setTestClientMutationActiveTurn(t, sess, activeTurn)
+				resp, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Input: text,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationQueue: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "drain", want: appwire.MutationProjectionPending, projected: true,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				setTestClientMutationActiveTurn(t, sess, activeTurn)
+				resp, err := sess.AcceptClientMutationDrainAsSteer(appwire.TurnDrainAsSteerParams{
+					ClientMutationID:      "subject",
+					ExpectedTurnID:        activeTurn,
+					ExpectedQueueRevision: 0,
+					Input:                 text,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationDrainAsSteer: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "promote", want: appwire.MutationProjectionPending, projected: true,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				setTestClientMutationActiveTurn(t, sess, activeTurn)
+				queueOne(t, sess, "queued-for-promote")
+				resp, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{
+					ClientMutationID: "subject", ExpectedTurnID: activeTurn, Index: 0,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationPromoteQueuedAsSteer: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "interrupt", want: appwire.MutationProjectionReflected, projected: false,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+					ClientMutationID: "start-before-interrupt", Input: text,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				resp, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "subject", ExpectedTurnID: started.Turn.ID,
+				}, func() {})
+				if err != nil {
+					t.Fatalf("InterruptClientMutation: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+		{
+			method: "cancel", want: appwire.MutationProjectionRemoved, projected: false,
+			accept: func(t *testing.T, sess *Session) appwire.MutationReceipt {
+				t.Helper()
+				setTestClientMutationActiveTurn(t, sess, activeTurn)
+				queueOne(t, sess, "queued-for-cancel")
+				resp, err := sess.AcceptClientMutationCancelQueued(appwire.TurnCancelQueuedParams{
+					ClientMutationID: "subject", Index: 0,
+				})
+				if err != nil {
+					t.Fatalf("AcceptClientMutationCancelQueued: %v", err)
+				}
+				return resp.Receipt
+			},
+		},
+	}
+}
+
+// TestClientMutation_InitialReceiptProjectionState pins the projection state a
+// mutation reports at acceptance, before any transcript incorporation. Accepted
+// input is durable but not yet visible in authoritative state, so it must read
+// `pending`; a client that saw `reflected` here would drop its optimistic copy
+// while nothing had replaced it. Only interrupt and cancel describe an effect
+// the authoritative state already carries.
+func TestClientMutation_InitialReceiptProjectionState(t *testing.T) {
+	for _, tc := range clientMutationProjectionCases() {
+		t.Run(tc.method, func(t *testing.T) {
+			sess := newQueuePersistTestSession(t, t.TempDir())
+			defer sess.Close()
+
+			receipt := tc.accept(t, sess)
+			if receipt.ProjectionState != tc.want {
+				t.Fatalf("%s receipt projection state = %q, want %q", tc.method, receipt.ProjectionState, tc.want)
+			}
+			if !tc.projected {
+				return
+			}
+			_, pending := sess.ClientMutationProjection()
+			var found *appwire.PendingMutation
+			for i := range pending {
+				if pending[i].ClientMutationID == "subject" {
+					found = &pending[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("%s left no pending projection entry for the accepted mutation: %#v", tc.method, pending)
+			}
+			if found.ProjectionState != tc.want {
+				t.Fatalf("%s projected state = %q, want %q", tc.method, found.ProjectionState, tc.want)
+			}
+		})
+	}
+}
+
+// TestClientMutation_PendingReceiptReplaysAfterRestart proves the pending state
+// is durable rather than a property of the live acceptance path: a client that
+// retries the same mutation ID after a daemon restart, still before
+// incorporation, must be told the same thing it was told the first time.
+func TestClientMutation_PendingReceiptReplaysAfterRestart(t *testing.T) {
+	for _, tc := range clientMutationProjectionCases() {
+		if !tc.projected {
+			continue
+		}
+		t.Run(tc.method, func(t *testing.T) {
+			dir := t.TempDir()
+			sess := newQueuePersistTestSession(t, dir)
+			id := sess.ID()
+
+			first := tc.accept(t, sess)
+			if first.ProjectionState != tc.want {
+				t.Fatalf("%s first receipt projection state = %q, want %q", tc.method, first.ProjectionState, tc.want)
+			}
+			sess.Close()
+
+			restored := restoreQueuePersistTestSession(t, dir, id)
+			defer restored.Close()
+
+			replayed := tc.accept(t, restored)
+			if replayed.Disposition != appwire.MutationDispositionReplayed {
+				t.Fatalf("%s restart disposition = %q, want %q", tc.method, replayed.Disposition, appwire.MutationDispositionReplayed)
+			}
+			if replayed.ProjectionState != tc.want {
+				t.Fatalf("%s replayed projection state = %q, want %q", tc.method, replayed.ProjectionState, tc.want)
+			}
+		})
+	}
+}

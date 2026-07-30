@@ -224,7 +224,7 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 				ID:     record.StableTurnID,
 				Status: appwire.TurnStatusInProgress,
 			},
-			Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied),
+			Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method)),
 		}
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
@@ -237,9 +237,9 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			Input:            cloneClientMutationInput(params.Input),
 			ExecutionState:   "accepted",
 			TurnID:           record.StableTurnID,
-			ProjectionState:  appwire.MutationProjectionReflected,
+			ProjectionState:  acceptedClientMutationProjection(record.Method),
 		}
-		applyClientMutationRecord(record, result)
+		applyClientMutationRecord(record, result, acceptedClientMutationProjection(record.Method))
 		return nil
 	})
 	if err != nil {
@@ -518,7 +518,7 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	}
 	record.StableTurnID = fence.ExpectedTurnID
 	response := appwire.TurnInterruptResponse{
-		Receipt: mutationReceipt(threadID, record, appwire.MutationDispositionApplied),
+		Receipt: mutationReceipt(threadID, record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method)),
 	}
 	result, err := json.Marshal(response)
 	if err != nil {
