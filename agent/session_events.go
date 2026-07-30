@@ -22,8 +22,8 @@ import (
 // instead.
 func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 
-// ConsumeEventsLossless delivers every event to consume, in order, until the
-// session closes. It blocks, so callers run it on their own goroutine.
+// ConsumeEventsLossless makes consume the session's authoritative consumer:
+// every event is delivered to it, in order, until the session closes.
 //
 // It exists because the daemon's in-memory projection is the sole authority for
 // turn reads. An event the daemon never sees is absent from every thread/read
@@ -31,13 +31,21 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 // not help, only a daemon restart. Best-effort delivery to that consumer is
 // silent, permanent corruption.
 //
-// The registration and the drain loop are ONE call on purpose. Losslessness is
-// a promise about the consumer, not a setting on the session: a session marked
-// lossless with nobody reading wedges its emitters forever the moment its
-// buffer fills. Making the mark inseparable from the loop means that state is
-// unreachable rather than merely discouraged -- which matters because the
-// sessions with no reader are the common case (every subagent and delegate),
-// and because no test in this repo drives a session hard enough to notice.
+// It RETURNS ONCE THE REGISTRATION IS IN EFFECT and drains on its own
+// goroutine, so no event emitted after the call can be dropped. Returning
+// before the mark took hold would leave a startup window in which the feed is
+// still lossy -- narrow, since a session emits far fewer than a bufferful
+// before its consumer attaches, but narrow-by-luck is what this design exists
+// to replace. Callers must NOT wrap it in `go`; that puts the window back.
+//
+// The registration and the drain loop are ONE call for the same reason.
+// Losslessness is a promise about the consumer, not a setting on the session: a
+// session marked lossless with nobody reading wedges its emitters forever the
+// moment its buffer fills. Making the mark inseparable from the loop means that
+// state is unreachable rather than merely discouraged -- which matters because
+// the sessions with no reader are the common case (every subagent and
+// delegate), and because no test in this repo drives a session hard enough to
+// notice.
 //
 // One consumer per session. A second would silently split the stream between
 // them, so it panics rather than corrupting both.
@@ -54,9 +62,11 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) {
 	s.authoritativeConsumer = true
 	s.eventsMu.Unlock()
 
-	for ev := range s.events {
-		consume(ev)
-	}
+	go func() {
+		for ev := range s.events {
+			consume(ev)
+		}
+	}()
 }
 
 // emitSessionStartEnvelope emits EventSessionStart and then flushes every

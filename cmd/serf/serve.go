@@ -109,6 +109,10 @@ type serveDeps struct {
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
 	listen           func(context.Context, string, string) (net.Listener, error)
 	newServer        func(server.ServerConfig) serveServer
+	// bridge attaches the daemon's event consumer to a session. It MUST return
+	// once the attachment is in effect, draining on its own goroutine -- the
+	// caller does not spawn it. A blocking implementation would leave the
+	// session live with a feed that still drops.
 	bridge           func(serveServer, *agent.Session, func(events.SessionEvent))
 	subscriberCount  func(serveServer, string) int
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
@@ -552,7 +556,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// the current session's id across /clear.
 		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
 		s.SetSubscriberCountFunc(subscriberCallback)
-		go deps.bridge(srv, s, eventObserver)
+		// Called synchronously, NOT with `go`: the bridge registers as the
+		// session's authoritative consumer and then drains on its own
+		// goroutine, so returning here means the registration has taken effect.
+		// Spawning this would reopen the window in which the session is live
+		// and its feed is still best-effort.
+		deps.bridge(srv, s, eventObserver)
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {

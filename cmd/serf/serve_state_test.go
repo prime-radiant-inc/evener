@@ -132,8 +132,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		observedServer = newIdlePublicationServer(cfg)
 		return observedServer
 	}
+	// The dep must return once attached and drain on its own goroutine; see
+	// serveDeps.bridge.
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent)) {
-		server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
+		go server.BridgeWithObserver(observedServer.Server, session.Events(), observer)
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return observedServer.AppServer().SubscriberCount(id)
@@ -390,7 +392,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		return state.srv
 	}
 	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
-		server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+		go server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
 		return state.srv.AppServer().SubscriberCount(id)
@@ -693,7 +695,7 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 			// after the identity commit can refresh the envelope.
 			return
 		}
-		server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+		go server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
 	}
 
 	var diagnostics bool
