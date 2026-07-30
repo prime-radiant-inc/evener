@@ -136,7 +136,7 @@ Expected: PASS.
 - Consumes: the local source's `SessionUnavailable("thread not found: ...")` error and `pastThreadReadResponse`
 - Produces: `isDeadSessionError(error) bool` shared by task and transcript persisted fallbacks
 
-- [ ] **Step 1: Add the subscribed crash-marker regression**
+- [x] **Step 1: Add the subscribed crash-marker regression**
 
 Create a real saved transcript with `buildRPCParentSession`, index it with
 `PastIndex`, and configure the Hub with this roster entry:
@@ -144,7 +144,7 @@ Create a real saved transcript with `buildRPCParentSession`, index it with
 ```go
 roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
 	Entry: rendezvous.Entry{
-		PID:       53841,
+		PID:       104,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
@@ -175,7 +175,7 @@ if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
 }
 ```
 
-- [ ] **Step 2: Run the integration regression and verify RED**
+- [x] **Step 2: Run the integration regression and verify RED**
 
 Run:
 
@@ -187,7 +187,7 @@ Expected: FAIL. Before the routing change it reports a refused stale endpoint;
 with Task 1 applied it reports `thread not found` because the generic atomic
 fallback guard still rejects the saved transcript.
 
-- [ ] **Step 3: Generalize the precise dead-session predicate**
+- [x] **Step 3: Generalize the precise dead-session predicate**
 
 Rename `isDeadSessionTasksError` to `isDeadSessionError`, keeping its strict
 wire-code and message-prefix checks:
@@ -205,7 +205,7 @@ func isDeadSessionError(err error) bool {
 
 Update `hubTasksList` and its tests to use the shared name.
 
-- [ ] **Step 4: Narrow the atomic fallback guard**
+- [x] **Step 4: Narrow the atomic fallback guard**
 
 Pass the live-read error into the policy:
 
@@ -230,7 +230,7 @@ if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
 This permits fallback before a relay exists and continues rejecting every
 failure after a live entry was selected.
 
-- [ ] **Step 5: Prove the boundary is GREEN**
+- [x] **Step 5: Prove the boundary is GREEN**
 
 Run:
 

@@ -1524,6 +1524,48 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
+	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       103,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID: sessionID,
+		Status:    "errored",
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("thread = %+v, want reachable errored daemon", response.Thread)
+	}
+}
+
 func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
@@ -1552,6 +1594,50 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	}
 	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agentMessage" || got.Text != "first reply" {
 		t.Fatalf("second item=%+v", got)
+	}
+}
+
+func TestHubRPCSubscribedReadReturnsPastForCrashMarker(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-crashed-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       104,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID: sessionID,
+		Status:    "errored",
+		Crashed:   true,
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          "local:" + sessionID,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+		TurnLimit:    40,
+	})
+	if err != nil {
+		t.Fatalf("subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("saved thread = %+v", response.Thread)
 	}
 }
 
@@ -7907,8 +7993,8 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
 	roster := hubcore.NewRoster(runDir, prober)
 	roster.Refresh()
-	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" {
-		t.Fatalf("stale roster entry = %+v, %v; want retained errored tombstone", stale, ok)
+	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
 	}
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{

@@ -92,12 +92,15 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
-func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appwire.ThreadReadParams) bool {
+// allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
+// relay is available. A subscribed local read with no rendezvous entry never
+// acquired a relay, so it may still hydrate the persisted transcript.
+func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appwire.ThreadReadParams, err error) bool {
 	if !params.Subscribe {
 		return true
 	}
 	_, requiresLiveHandoff := source.(appsource.RelaySessionSource)
-	return !requiresLiveHandoff
+	return !requiresLiveHandoff || isDeadSessionError(err)
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
@@ -183,7 +186,7 @@ func registerThreadHandlers(
 		}
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
-			if allowsPastFallbackAfterLiveReadFailure(source, params) {
+			if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
 				saved, ok, pastErr := pastThreadReadResponse(cfg, params)
 				if pastErr != nil {
 					return appwire.ThreadReadResponse{}, pastErr

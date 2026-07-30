@@ -433,7 +433,7 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
 // --- dead-daemon "thread not found": must not contradict the trigger -------
 //
 // isThreadNotFound fires ONLY for entryForRef finding no rendezvous entry at
-// all (local_daemon.go:551/isDeadSessionTasksError) - the hub tries a
+// all (local_daemon.go:551/isDeadSessionError) - the hub tries a
 // persisted past-index fallback first (app_tasks.go's hubTasksList) and only
 // reaches this branch when THAT also comes up empty, i.e. a session the hub
 // never tracked and therefore can never resume (withSessionResume gates on

@@ -25,7 +25,7 @@ import (
 // a LIVE entry — i.e. a daemon that has NOT exited (ECONNREFUSED, ECONNRESET,
 // EPIPE, EOF, timeouts, websocket-close) — so isSessionUnavailableError alone
 // would also match those and silently mask a real, retryable connectivity
-// error behind a stale or empty past read. isDeadSessionTasksError adds the
+// error behind a stale or empty past read. isDeadSessionError adds the
 // message-prefix check that only entryForRef's dead-session error satisfies.
 func hubTasksList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
 	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
@@ -36,7 +36,7 @@ func hubTasksList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err == nil {
 		return resp, nil
 	}
-	if !isDeadSessionTasksError(err) {
+	if !isDeadSessionError(err) {
 		return appwire.TaskListResponse{}, err
 	}
 	pastResp, ok, pastErr := pastTasksListResponse(cfg, params)
@@ -59,16 +59,12 @@ func hubTasksList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 // message, "local daemon unavailable: ...".
 const threadNotFoundMessagePrefix = "thread not found: "
 
-// isDeadSessionTasksError reports whether err is specifically entryForRef's
-// dead-session condition, as opposed to any other SessionUnavailable-shaped
-// error. isSessionUnavailableError (app_compact.go) checks only Code and
-// SerfErrorInfo, which both the dead-session error and a transient dial/call
-// failure share; only the message tells them apart. Other callers of
-// isSessionUnavailableError (app_compact.go/app_model.go) gate an ACTIVE
-// recovery attempt (hubThreadResume) that fails loudly if the predicate is
-// wrong; this gates a PASSIVE disk read that fails silently if wrong, so it
-// needs the narrower, unambiguous signal.
-func isDeadSessionTasksError(err error) bool {
+// isDeadSessionError reports the precise no-live-rendezvous-entry condition,
+// as opposed to another SessionUnavailable-shaped error. The wire code and
+// SerfErrorInfo are shared with transient failures against a selected live
+// daemon, so the message prefix is required before a passive persisted-state
+// fallback can safely hide the live-source error.
+func isDeadSessionError(err error) bool {
 	if !isSessionUnavailableError(err) {
 		return false
 	}

@@ -157,7 +157,7 @@ func TestHubTasksList_UnknownRefReturnsNotFoundError(t *testing.T) {
 	sources := newExitedLocalRegistry()
 
 	_, err = hubTasksList(context.Background(), cfg, sources, appwire.TaskListParams{Ref: "local:" + sessionID})
-	if !isDeadSessionTasksError(err) {
+	if !isDeadSessionError(err) {
 		t.Fatalf("err = %v, want entryForRef's thread-not-found SessionUnavailable error", err)
 	}
 }
@@ -213,7 +213,7 @@ func TestHubTasksList_InternalErrorFromLiveSourceIsNotMaskedByPast(t *testing.T)
 // SessionUnavailable Code+SerfErrorInfo shape entryForRef's own dead-session
 // error uses — only the message differs ("local daemon unavailable: ..." vs
 // "thread not found: ..."). isSessionUnavailableError alone cannot tell these
-// apart; isDeadSessionTasksError must, and hubTasksList must propagate this
+// apart; isDeadSessionError must, and hubTasksList must propagate this
 // as an error rather than silently serving the stale past-index task list —
 // the daemon has not exited, it just failed to dial.
 func TestHubTasksList_LiveDialFailureIsNotMaskedByPast(t *testing.T) {
@@ -240,7 +240,7 @@ func TestHubTasksList_LiveDialFailureIsNotMaskedByPast(t *testing.T) {
 	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
 		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
 	}
-	if isDeadSessionTasksError(err) {
+	if isDeadSessionError(err) {
 		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
 	}
 }
