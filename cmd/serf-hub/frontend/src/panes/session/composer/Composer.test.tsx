@@ -500,12 +500,12 @@ test("Send's tooltip says it sends now when nothing is running", async () => {
 // (plain caption text), and it never touches the Send/Steer labels
 // themselves (additive only, per Composer.tsx's own top-of-file reasoning
 // for keeping one label).
-test("an always-visible caption states Send's timing while a turn runs - no hover required", async () => {
+test("the timing caption is absent when a turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  expect(screen.getByText(/send queues until the agent stops/i)).toBeTruthy();
+  expect(screen.queryByText(/send queues until the agent stops/i)).toBeNull();
 });
 
 // Idle Send is unambiguous (there's no Steer beside it, and no timing
@@ -547,16 +547,9 @@ test("the timing caption is absent when busy but the source advertises no queue 
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
 });
 
-// kata yh13: the caption's own showSendTiming gate is
-// `busy && availability.canQueue && !askPending` (Composer.tsx), but until
-// pendingAskTurns() existed nothing in this file could ever make askPending
-// true, so the !askPending clause was untested in both directions - deleting
-// it from the gate survived mutation. This is otherwise the exact same
-// busy+canQueue shape as "an always-visible caption states Send's timing
-// while a turn runs" above, plus pendingAskTurns() layered on top: if the
-// clause is gone, this is the one case that still shows a caption over a
-// hidden, inert input row - a timing hint for a control the reader cannot
-// currently reach.
+// The timing caption has been removed entirely (kata mx43), but this test
+// verifies the removal is complete by confirming it does not appear even in
+// scenarios where it previously would have shown.
 test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
