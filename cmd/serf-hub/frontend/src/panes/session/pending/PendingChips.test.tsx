@@ -78,6 +78,23 @@ test("chips the send/steer/drain methods but not queue (QueueStrip already chips
   expect(screen.queryByText("a queued one")).toBeNull();
 });
 
+test("blocked unknown is owned by QueueStrip rather than PendingChips", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain" }] },
+  });
+  await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+
+  render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.queryByText("uncertain")).toBeNull();
+});
+
 test("shows only the entries for the given sessionRef", async () => {
   await seedPending("send", "mine", "ref_a");
   await seedPending("send", "theirs", "ref_b");

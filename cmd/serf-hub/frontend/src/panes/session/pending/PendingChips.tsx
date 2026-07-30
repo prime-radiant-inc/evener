@@ -24,7 +24,7 @@ type OptimisticMethod = Exclude<PendingMethod, "queue">;
 type OptimisticEntry = PendingTurnEntry & { method: OptimisticMethod };
 
 function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
-  return entry.method !== "queue";
+  return entry.method !== "queue" && entry.state !== "blockedUnknown";
 }
 
 const CLASS = {

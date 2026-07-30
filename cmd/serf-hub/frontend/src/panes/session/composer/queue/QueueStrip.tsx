@@ -9,11 +9,20 @@
 // integration merge (T6), not here.
 import { type ReactNode, useState } from "react";
 import { errorText, sessionActionError } from "../../../../protocol/errors";
+import type { InputItem } from "../../../../protocol/types.gen";
+import { copyToClipboard } from "../../../../shell/palette/commands";
+import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { submitWithPendingTracking, usePendingTurnEntries } from "./pendingTurnsStore";
+import {
+  retryBlockedPendingTurn,
+  submitWithPendingTracking,
+  useBlockedMutationEntries,
+  usePendingTurnEntries,
+  useRecoveryEntries,
+} from "./pendingTurnsStore";
 import { queueEntryPreviewText, truncateForDisplay } from "./queueDisplay";
 import styles from "./queuestrip.module.css";
 
@@ -57,6 +66,8 @@ export interface QueueStripProps {
   // parameter is kept for signature symmetry with a general "restore to
   // composer" seam the integration may reuse for other callers.
   onRestoreToComposer(text: string, attachments?: InputAttachment[]): void;
+  activeRecoveryId?: string;
+  onEditRecovery?(record: MutationRecoveryRecord): void;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
   // integration can clear the unchanged composer text/attachment snapshot.
   onDrainSuccess(): void;
@@ -90,6 +101,20 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
 
+function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number } {
+  const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
+  const text = input
+    .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
+  return { text, imageCount: input.filter((item) => item.type === "image").length };
+}
+
+function recordPreview(record: MutationOutboxRecord): string {
+  const { text, imageCount } = recordContent(record);
+  return truncateForDisplay(queueEntryPreviewText(text, imageCount));
+}
+
 function editDisabledReason(opts: {
   actionsAvailable: boolean;
   hasTexts: boolean;
@@ -105,12 +130,24 @@ export function QueueStrip({
   ref: sessionRef,
   getComposerText,
   onRestoreToComposer,
+  activeRecoveryId,
+  onEditRecovery,
   onDrainSuccess,
   busy,
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
-  const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue");
+  const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
+    (entry) => entry.state !== "blockedUnknown",
+  );
+  const recoveryEntries = useRecoveryEntries(sessionRef).filter(
+    (record) => record.clientMutationId !== activeRecoveryId,
+  );
+  const blockedEntries = useBlockedMutationEntries(sessionRef);
+  const durableEntries = [
+    ...recoveryEntries.map((record) => ({ kind: "recovery" as const, record })),
+    ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
+  ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
   // indices shift), not row index - mirrors the legacy renderer's own
@@ -119,10 +156,8 @@ export function QueueStrip({
 
   const queue = model?.queue ?? null;
   const depth = queue?.depth ?? 0;
-  // The wrap is hidden at depth 0 UNLESS an optimistic pending queue entry
-  // is still in flight, so a just-submitted message doesn't visually
-  // disappear before the daemon confirms it (parity §B).
-  const visible = depth > 0 || pendingQueueEntries.length > 0;
+  const hasQueuedWork = depth > 0 || pendingQueueEntries.length > 0;
+  const visible = hasQueuedWork || durableEntries.length > 0;
 
   if (!model || !visible) return null;
 
@@ -214,15 +249,40 @@ export function QueueStrip({
     }
   }
 
+  async function handleRetry(record: MutationOutboxRecord): Promise<void> {
+    setRowBusy(record.clientMutationId, true);
+    try {
+      await retryBlockedPendingTurn(record.clientMutationId, sessionRef);
+    } catch (error) {
+      toasts.push("error", `Retry failed: ${errorText(error)}`);
+    } finally {
+      setRowBusy(record.clientMutationId, false);
+    }
+  }
+
+  async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
+    setRowBusy(record.clientMutationId, true);
+    try {
+      await copyToClipboard(recordContent(record).text);
+      toasts.push("success", "Copied message");
+    } catch (error) {
+      toasts.push("error", `Couldn't copy message: ${errorText(error)}`);
+    } finally {
+      setRowBusy(record.clientMutationId, false);
+    }
+  }
+
   return (
     <section className={CLASS.strip}>
       <div className={CLASS.header}>
-        <h3 className={CLASS.title}>Queued messages ({depth})</h3>
-        <Tooltip label="Send your message and everything queued into the current turn">
-          <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
-            Steer queue now
-          </Button>
-        </Tooltip>
+        <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
+        {hasQueuedWork && (
+          <Tooltip label="Send your message and everything queued into the current turn">
+            <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
+              Steer queue now
+            </Button>
+          </Tooltip>
+        )}
       </div>
       <ul className={CLASS.list}>
         {Array.from({ length: rowCount }, (_, index) => {
@@ -282,6 +342,58 @@ export function QueueStrip({
             <span className={CLASS.rowText}>{queueEntryPreviewText(entry.text, entry.imageCount)}</span>
           </li>
         ))}
+        {durableEntries.map(({ kind, record }) => {
+          const rowBusy = busyEntryIds.has(record.clientMutationId);
+          if (kind === "blocked") {
+            return (
+              <li key={record.clientMutationId} className={CLASS.row}>
+                <span className={CLASS.rowText}>
+                  <span>Delivery uncertain</span>
+                  {" — "}
+                  <span>{recordPreview(record)}</span>
+                </span>
+                <div className={CLASS.rowActions}>
+                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleRetry(record)}>
+                    Retry
+                  </Button>
+                </div>
+              </li>
+            );
+          }
+          if (record.recoveryKind === "orphaned") {
+            return (
+              <li key={record.clientMutationId} className={CLASS.row}>
+                <span className={CLASS.rowText}>
+                  <span>Destination deleted</span>
+                  {" — "}
+                  <span>{recordPreview(record)}</span>
+                </span>
+                <div className={CLASS.rowActions}>
+                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
+                    Copy
+                  </Button>
+                </div>
+              </li>
+            );
+          }
+          return (
+            <li key={record.clientMutationId} className={CLASS.row}>
+              <span className={CLASS.rowText}>{recordPreview(record)}</span>
+              <div className={CLASS.rowActions}>
+                <ActionButton
+                  label="Edit message"
+                  icon={<span aria-hidden="true">✎</span>}
+                  size="sm"
+                  disabled={rowBusy || onEditRecovery === undefined}
+                  disabledReason={
+                    onEditRecovery === undefined ? "Open the session Composer to edit this message" : undefined
+                  }
+                  onClick={() => onEditRecovery?.(record)}
+                />
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

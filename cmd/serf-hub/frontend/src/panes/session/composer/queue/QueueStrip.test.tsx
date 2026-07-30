@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -6,11 +7,19 @@ import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
+import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { resetPendingTurnsStoreForTests, submitWithPendingTracking } from "./pendingTurnsStore";
+import {
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+  submitWithPendingTracking,
+} from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
+
+const originalClipboard = navigator.clipboard;
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -75,11 +84,46 @@ function defaultProps(overrides: Partial<Parameters<typeof QueueStrip>[0]> = {})
     ref: "ref_a",
     getComposerText: () => ({ text: "composer text", attachments: undefined, hasPending: false }),
     onRestoreToComposer: vi.fn(),
+    onEditRecovery: vi.fn(),
     onDrainSuccess: vi.fn(),
     busy: false,
     onDrainBusyChange: vi.fn(),
     ...overrides,
   };
+}
+
+async function seedRecovery(recoveryKind: MutationRecoveryKind, text: string): Promise<MutationRecoveryRecord> {
+  const storage = new MutationOutboxIndexedDB();
+  const input = [{ type: "text", text }];
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const recovery = await storage.transferToRecovery(outbox.clientMutationId, recoveryKind);
+  storage.close();
+  if (!recovery) throw new Error("failed to seed recovery");
+  await refreshPendingTurnsProjection("ref_a");
+  return recovery;
+}
+
+async function seedBlockedUnknown(text: string): Promise<void> {
+  const storage = new MutationOutboxIndexedDB();
+  const input = [{ type: "text", text }];
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
 }
 
 function renderStrip(props: ReturnType<typeof defaultProps>) {
@@ -116,6 +160,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -151,6 +196,82 @@ describe("visibility", () => {
     });
     renderStrip(defaultProps());
     expect(await screen.findByText(/queued messages/i)).toBeTruthy();
+  });
+});
+
+describe("durable recovery rows", () => {
+  test("a rejected record renders as an ordinary editable queued row", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("rejected", "not sent");
+    const onEditRecovery = vi.fn();
+    renderStrip(defaultProps({ onEditRecovery }));
+
+    const text = await screen.findByText("not sent");
+    const row = text.closest("li");
+    if (!row) throw new Error("missing rejected row");
+    await user.click(within(row).getByRole("button", { name: "Edit message" }));
+
+    expect(onEditRecovery).toHaveBeenCalledWith(expect.objectContaining({ recoveryKind: "rejected" }));
+    expect(screen.getByText("Queued messages (1)")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+    expect(screen.queryByText("Recovery drafts")).toBeNull();
+  });
+
+  test("blocked unknown has Retry but no sendable action", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    await seedBlockedUnknown("uncertain");
+    renderStrip(defaultProps());
+
+    const status = await screen.findByText("Delivery uncertain");
+    const row = status.closest("li");
+    if (!row) throw new Error("missing blocked row");
+    expect(within(row).getByText("uncertain")).toBeTruthy();
+    const retry = within(row).getByRole("button", { name: "Retry" });
+    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+
+    await user.click(retry);
+    const storage = new MutationOutboxIndexedDB();
+    await waitFor(async () => {
+      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
+    });
+    storage.close();
+  });
+
+  test("active recovery is omitted while later and orphaned records retain order", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const first = await seedRecovery("rejected", "active");
+    await seedRecovery("rejected", "later");
+    await seedRecovery("orphaned", "copy me");
+    renderStrip(defaultProps({ activeRecoveryId: first.clientMutationId }));
+
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("later"),
+      expect.stringContaining("Destination deleted"),
+    ]);
+    expect(within(rows[1]!).getByText("copy me")).toBeTruthy();
+    expect(within(rows[1]!).getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(within(rows[1]!).queryByRole("button", { name: /edit|send|retry/i })).toBeNull();
+  });
+
+  test("orphaned Copy preserves the full unnormalized message text", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedRecovery("orphaned", "first line\n  second line");
+    renderStrip(defaultProps());
+
+    await user.click(await screen.findByRole("button", { name: "Copy" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("first line\n  second line"));
   });
 });
 
