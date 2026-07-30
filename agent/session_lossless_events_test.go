@@ -51,7 +51,7 @@ func awaitWithin(t *testing.T, budget time.Duration, what string, fn func()) {
 func registerConsumer(t *testing.T, s *Session, consume func(events.SessionEvent)) {
 	t.Helper()
 	awaitWithin(t, 10*time.Second, "ConsumeEventsLossless returning once registered", func() {
-		s.ConsumeEventsLossless(consume)
+		s.ConsumeEventsLossless(consume, func() {})
 	})
 	s.eventsMu.RLock()
 	defer s.eventsMu.RUnlock()
@@ -146,7 +146,7 @@ func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
 	recovered := make(chan any, 1)
 	awaitWithin(t, 10*time.Second, "a second registration", func() {
 		defer func() { recovered <- recover() }()
-		s.ConsumeEventsLossless(func(events.SessionEvent) {})
+		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
 	})
 	if <-recovered == nil {
 		t.Fatal("a second authoritative consumer was accepted; the stream would be split silently")
@@ -170,7 +170,7 @@ func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 	s.eventsMu.Unlock()
 
 	awaitWithin(t, 10*time.Second, "registering on a closed session", func() {
-		s.ConsumeEventsLossless(func(events.SessionEvent) {})
+		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
 	})
 
 	s.eventsMu.RLock()

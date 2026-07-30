@@ -226,10 +226,8 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		d, args := base(t)
 		var captured *residualServeServer
 		d.newServer = func(cfg server.ServerConfig) serveServer { captured = newResidualServeServer(cfg); return captured }
-		d.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{} {
-			drained := make(chan struct{})
-			close(drained)
-			return drained
+		d.bridge = func(_ serveServer, _ *agent.Session, _ func(events.SessionEvent), onDrained func()) {
+			onDrained()
 		}
 		d.subscriberCount = func(serveServer, string) int { return 1 }
 		d.observeCallbacks = func(c serveCallbackObserver) {
@@ -295,10 +293,8 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			d, args := base(t)
 			var captured *residualServeServer
 			d.newServer = func(cfg server.ServerConfig) serveServer { captured = newResidualServeServer(cfg); return captured }
-			d.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{} {
-				drained := make(chan struct{})
-				close(drained)
-				return drained
+			d.bridge = func(_ serveServer, _ *agent.Session, _ func(events.SessionEvent), onDrained func()) {
+				onDrained()
 			}
 			clearCase.mutate(&d)
 			d.serveHTTP = func(*http.Server, net.Listener) error {

@@ -30,14 +30,12 @@ func TestServeInstallsANonBlockingVerboseObserver(t *testing.T) {
 	deps.verboseOut = stalled
 
 	observed := make(chan func(events.SessionEvent), 1)
-	deps.bridge = func(_ serveServer, _ *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
+	deps.bridge = func(_ serveServer, _ *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		select {
 		case observed <- observer:
 		default:
 		}
-		drained := make(chan struct{})
-		close(drained)
-		return drained
+		onDrained()
 	}
 
 	var blocked bool

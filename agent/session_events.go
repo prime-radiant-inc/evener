@@ -50,20 +50,32 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 // One consumer per session. A second would silently split the stream between
 // them, so it panics rather than corrupting both.
 //
-// The returned channel closes when the drain has finished, AFTER the last event
-// has been handed to consume. Anything whose lifetime is shorter than the
-// session's -- a log sink, a tee, a file handle the consumer writes to -- must
-// wait on it before tearing down. Session.Close() closes the event channel but
-// does NOT wait for the tail to be delivered, so "the session is closed" is not
-// "the consumer is done", and a closer that assumes otherwise is racing a
-// goroutine it never joined.
-func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) <-chan struct{} {
-	drained := make(chan struct{})
+// onDrained runs once the drain has finished, AFTER the last event has been
+// handed to consume. Anything whose lifetime is shorter than the session's -- a
+// log sink, a tee, a file handle the consumer writes to -- must tear down from
+// there. Session.Close() closes the event channel but does NOT wait for the tail
+// to be delivered, so "the session is closed" is not "the consumer is done".
+//
+// It is a CALLBACK rather than a returned channel on purpose. A channel can be
+// discarded: Go permits ignoring a non-error return, errcheck does not cover it,
+// and no linter here flags it, so `ConsumeEventsLossless(consume)` compiled
+// cleanly and put the shutdown crash straight back. A parameter cannot be
+// omitted, so the sink's teardown has nowhere to live except inside the
+// contract. Same principle as authoritativeConsumer above: the unsafe state is
+// made unspellable rather than discouraged.
+//
+// onDrained must not be nil. A caller with nothing to tear down passes an empty
+// function, which is a visible decision; nil would be the discardable return in
+// another costume.
+func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDrained func()) {
+	if onDrained == nil {
+		panic("agent: ConsumeEventsLossless requires an onDrained callback; pass func() {} if nothing needs tearing down")
+	}
 	s.eventsMu.Lock()
 	if s.eventsClosed {
 		s.eventsMu.Unlock()
-		close(drained)
-		return drained
+		onDrained()
+		return
 	}
 	if s.authoritativeConsumer {
 		s.eventsMu.Unlock()
@@ -73,12 +85,11 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent)) <-cha
 	s.eventsMu.Unlock()
 
 	go func() {
-		defer close(drained)
+		defer onDrained()
 		for ev := range s.events {
 			consume(ev)
 		}
 	}()
-	return drained
 }
 
 // emitSessionStartEnvelope emits EventSessionStart and then flushes every

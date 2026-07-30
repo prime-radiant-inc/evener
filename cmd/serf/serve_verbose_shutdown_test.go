@@ -45,7 +45,9 @@ func verboseTeeShutdownRound(t *testing.T) {
 	}
 
 	tee := newVerboseEventTee(newDiscardWriter(), verboseEventTeeBuffer)
-	drain := defaultServeDeps().bridge(server.NewServer(server.ServerConfig{}), sess, tee.observe)
+	drain := make(chan struct{})
+	defaultServeDeps().bridge(server.NewServer(server.ServerConfig{}), sess, tee.observe,
+		func() { close(drain) })
 
 	// Leave a tail in the buffer that the drain has not delivered yet, which is
 	// the state a real daemon is in when a turn was in flight at shutdown.
@@ -56,7 +58,14 @@ func verboseTeeShutdownRound(t *testing.T) {
 	// serve.go's shutdown order: close the session, then let serve return and
 	// run `defer tee.close()`.
 	sess.Close()
-	<-drain
+	// Budgeted, not a bare park: this branch's own rule. An unbudgeted receive
+	// here made two drain-signal mutations hang the package instead of naming
+	// themselves.
+	select {
+	case <-drain:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the bridge drain never reported completion; the tee cannot be closed safely")
+	}
 	tee.close()
 }
 
@@ -80,11 +89,12 @@ func TestBridgeDrainSignalsCompletion(t *testing.T) {
 	}
 	var delivered int
 	var mu sync.Mutex
-	drain := defaultServeDeps().bridge(server.NewServer(server.ServerConfig{}), sess, func(events.SessionEvent) {
+	drain := make(chan struct{})
+	defaultServeDeps().bridge(server.NewServer(server.ServerConfig{}), sess, func(events.SessionEvent) {
 		mu.Lock()
 		delivered++
 		mu.Unlock()
-	})
+	}, func() { close(drain) })
 
 	select {
 	case <-drain:

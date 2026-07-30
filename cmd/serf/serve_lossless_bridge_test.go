@@ -57,7 +57,7 @@ func TestDefaultBridgeRegistersAsTheAuthoritativeConsumer(t *testing.T) {
 			if n < 32 {
 				time.Sleep(time.Millisecond)
 			}
-		})
+		}, func() {})
 	}
 	// The dep must RETURN once attached; a blocking implementation would hang
 	// here until the package timeout instead of naming the broken contract.

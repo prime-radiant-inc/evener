@@ -114,11 +114,12 @@ type serveDeps struct {
 	// caller does not spawn it. A blocking implementation would leave the
 	// session live with a feed that still drops.
 	//
-	// The returned channel closes when that drain has FINISHED. Anything the
-	// observer writes to must outlive it: Session.Close() closes the event
-	// channel but does not wait for the buffered tail to be delivered, so
-	// "the session is closed" is not "the consumer is done".
-	bridge func(serveServer, *agent.Session, func(events.SessionEvent)) <-chan struct{}
+	// onDrained runs when that drain has FINISHED. Anything the observer writes
+	// to must outlive it: Session.Close() closes the event channel but does not
+	// wait for the buffered tail to be delivered, so "the session is closed" is
+	// not "the consumer is done". It is a parameter rather than a return so a
+	// caller cannot silently skip the wait.
+	bridge func(serveServer, *agent.Session, func(events.SessionEvent), func())
 	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
@@ -168,11 +169,11 @@ func defaultServeDeps() serveDeps {
 		// turn reads, so an event it misses is absent from every thread/read
 		// for the life of the identity. Registering is what makes the feed
 		// lossless -- there is no separate switch, and there must not be one.
-		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) <-chan struct{} {
+		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 			srv := s.(*server.Server)
-			return sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 				server.BridgeEvent(srv, ev, observer)
-			})
+			}, onDrained)
 		},
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
@@ -529,6 +530,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// on the drain's own goroutine, which kills the process and skips every
 	// defer registered above this one. Waiting and closing live in ONE defer so
 	// the order cannot be broken by inserting another defer between them.
+	//
+	// THE WAIT IS UNBUDGETED, AND THAT IS A NEW FAILURE MODE, deliberately
+	// chosen. A drain wedged inside BridgeEvent -- on a lock, or on a
+	// subsystem that stopped answering -- now makes the daemon hang on
+	// shutdown instead of crashing on it. A daemon that ignores SIGTERM has
+	// to be killed, and a supervisor will eventually SIGKILL it.
+	//
+	// A deadline was rejected rather than overlooked: expiring it would mean
+	// closing the tee under a live drain, which is precisely the crash this
+	// exists to prevent, so the timeout would trade a hang for the bug. The
+	// real remedy is keeping BridgeEvent bounded (see its doc); this is the
+	// backstop, and a hang at least leaves a stack to read.
 	defer func() {
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
@@ -599,10 +612,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// goroutine, so returning here means the registration has taken effect.
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
-		drained := deps.bridge(srv, s, eventObserver)
+		drained := make(chan struct{})
 		drainsMu.Lock()
 		bridgeDrains = append(bridgeDrains, drained)
 		drainsMu.Unlock()
+		deps.bridge(srv, s, eventObserver, func() { close(drained) })
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
