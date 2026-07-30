@@ -432,13 +432,13 @@ func TestAppTurnSnapshotSteeringIndexIsPerTurn(t *testing.T) {
 	}
 }
 
-// TestAppTurnSnapshotSeedClearsReplayBookkeeping guards the ordering hazard in
-// finding 3: while applyLocked still rebuilds from a retained record window,
-// a seed that left the old records in place would be erased by the next window
-// trim, and activeTurnID would survive pointing at a turn no longer indexed.
-func TestAppTurnSnapshotSeedClearsReplayBookkeeping(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_1", limit: 2}
-	// Fill the retained window from a previous identity.
+// TestAppTurnSnapshotSeedReplacesPriorReducedState pins that a seed is a
+// replacement, not a merge: whatever the snapshot had already reduced is gone,
+// and activeTurnID is re-derived from the seed rather than left naming a turn
+// no longer in the index (after which every steer would be silently dropped).
+func TestAppTurnSnapshotSeedReplacesPriorReducedState(t *testing.T) {
+	snapshot := &appTurnSnapshot{threadID: "th_1"}
+	// Reduce state from a previous identity.
 	for seq := uint64(1); seq <= 3; seq++ {
 		snapshot.Apply([]appserver.SequencedNotification{
 			appTurnSnapshotRecord(t, seq, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
@@ -450,7 +450,6 @@ func TestAppTurnSnapshotSeedClearsReplayBookkeeping(t *testing.T) {
 
 	snapshot.Seed([]appwire.Turn{{ID: "seeded_turn", Status: appwire.TurnStatusInProgress}})
 
-	// One more record trims the window and triggers a rebuild.
 	snapshot.Apply([]appserver.SequencedNotification{
 		appTurnSnapshotRecord(t, 9, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
 			ThreadID: "th_1", Text: "after seed",
@@ -459,7 +458,7 @@ func TestAppTurnSnapshotSeedClearsReplayBookkeeping(t *testing.T) {
 
 	turns := snapshot.Snapshot()
 	if len(turns) != 1 || turns[0].ID != "seeded_turn" {
-		t.Fatalf("turns = %v, want the seeded turn to survive a window trim", turnIDs(turns))
+		t.Fatalf("turns = %v, want only the seeded turn", turnIDs(turns))
 	}
 	if len(turns[0].Items) != 1 || turns[0].Items[0].ID != "item_steering_live_seeded_turn_0" {
 		t.Fatalf("seeded turn items = %+v, want steering to still reach the seeded active turn", turns[0].Items)

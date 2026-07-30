@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 )
@@ -52,6 +51,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestCompactEndpoint_NoFunc", TestCompactEndpoint_NoFunc)
 	t.Run("TestDaemonRouterMatchesCatalog", TestDaemonRouterMatchesCatalog)
 	t.Run("TestDaemonThreadReadWindowsAndTurnsListPagesToHead", TestDaemonThreadReadWindowsAndTurnsListPagesToHead)
+	t.Run("TestDaemonTranscriptPreparationPropagatesUnsupportedFormat", TestDaemonTranscriptPreparationPropagatesUnsupportedFormat)
 	t.Run("TestDrainAsSteerEndpoint_ClosedSession", TestDrainAsSteerEndpoint_ClosedSession)
 	t.Run("TestDrainAsSteerEndpoint_InvalidJSON", TestDrainAsSteerEndpoint_InvalidJSON)
 	t.Run("TestDrainAsSteerEndpoint_NoContent", TestDrainAsSteerEndpoint_NoContent)
@@ -105,7 +105,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestServerAppWireThreadList", TestServerAppWireThreadList)
 	t.Run("TestServerAppWireThreadModelSetQualifiesProvider", TestServerAppWireThreadModelSetQualifiesProvider)
 	t.Run("TestServerAppWireThreadReadDoesNotSubscribeByDefault", TestServerAppWireThreadReadDoesNotSubscribeByDefault)
-	t.Run("TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins", TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins)
+	t.Run("TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns", TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns)
 	t.Run("TestServerAppWireThreadReadIncludesInProgressDeltas", TestServerAppWireThreadReadIncludesInProgressDeltas)
 	t.Run("TestServerAppWireThreadReadIncludesProjectedTurns", TestServerAppWireThreadReadIncludesProjectedTurns)
 	t.Run("TestServerAppWireThreadReadIncludesWorkMetrics", TestServerAppWireThreadReadIncludesWorkMetrics)
@@ -114,7 +114,7 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestServerAppWireThreadReadReturnsStatus", TestServerAppWireThreadReadReturnsStatus)
 	t.Run("TestServerAppWireThreadReadSubscribesForNotifications", TestServerAppWireThreadReadSubscribesForNotifications)
 	t.Run("TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage", TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage)
-	t.Run("TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix", TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix)
+	t.Run("TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns", TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns)
 	t.Run("TestServerAppWireThreadShutdownInvokesCallback", TestServerAppWireThreadShutdownInvokesCallback)
 	t.Run("TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically", TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically)
 	t.Run("TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued", TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued)
@@ -166,7 +166,6 @@ func exerciseServerFuzzSurface(t *testing.T) {
 	t.Run("TestTasksEndpoint", TestTasksEndpoint)
 	t.Run("TestTasksEndpoint_MethodNotAllowed", TestTasksEndpoint_MethodNotAllowed)
 	t.Run("TestTasksEndpoint_NoFunc", TestTasksEndpoint_NoFunc)
-	t.Run("TestUseTranscriptTurns", TestUseTranscriptTurns)
 }
 
 func exerciseServerFuzzResiduals(t *testing.T) {
@@ -231,8 +230,7 @@ func exerciseAppWireResiduals() {
 	s.SetAppIdentity("", "")
 	_ = s.acceptsSessionEvent("other")
 	s.SetStatus(StatusInfo{})
-	s.SetTranscriptPathFunc(func() string { return " " })
-	_, _ = s.appTurnsFromTranscript()
+	_ = s.appAllTurns("thread")
 
 	_, _ = s.handleAppTurnStart(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 	for i := 0; i < cap(s.inputCh); i++ {
@@ -340,7 +338,6 @@ func exerciseProjectionResiduals() {
 		record(appwire.NotifyAgentMessageDelta, `{"turnId":"t","itemId":"i","delta":"x"}`),
 	})
 	appTurnsItemForDeltaHook = nil
-	_ = projectTranscriptTurn(schema.Turn{}, "turn", 0, nil)
 	ch := make(chan events.SessionEvent, 1)
 	ch <- events.SessionEvent{Kind: events.EventSessionEnd}
 	close(ch)

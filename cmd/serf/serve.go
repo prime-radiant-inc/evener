@@ -57,8 +57,8 @@ var serveAttachSessionAPILogger = cmdutil.AttachSessionAPILogger
 
 type serveServer interface {
 	http.Handler
-	SetTranscriptPathFunc(func() string)
 	SetAppIdentity(string, string)
+	ReplaceAppIdentity(server.PreparedAppIdentity, func())
 	SetSandboxEscalationResolveFunc(func(string, bool) error)
 	SetCompactFunc(func(context.Context) error)
 	SetSteerFunc(func(string))
@@ -134,7 +134,6 @@ type serveDeps struct {
 }
 
 type serveCallbackObserver struct {
-	transcript         func() string
 	notify             func()
 	subscriberCount    func() int
 	pendingEscalations func() []appwire.SandboxEscalationRequested
@@ -455,7 +454,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		HubToken:      hubToken,
 		AllowedHost:   listener.Addr().String(),
 	})
-	srv.SetAppIdentity("local", sess.ID())
+	// Seed the daemon's turn snapshot from this session's transcript BEFORE the
+	// event bridge starts, so the first read answers from the same memory every
+	// later notification advances. Preparation is the only fallible half; a
+	// transcript that cannot be projected is a session this daemon must not
+	// serve, because every read after it would silently start mid-conversation.
+	prepared, err := server.PrepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
+	if err != nil {
+		sess.Close()
+		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable
+		return fmt.Errorf("prepare app identity: %w", err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
 	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
@@ -470,13 +480,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		defer currentMu.RUnlock()
 		return currentSess
 	}
-	transcriptCallback := func() string {
-		if current := getSession(); current != nil {
-			return current.TranscriptPath()
-		}
-		return ""
-	}
-	srv.SetTranscriptPathFunc(transcriptCallback)
 	setSession := func(next *agent.Session, nextEnv *execenv.LocalExecutionEnvironment) {
 		currentMu.Lock()
 		currentSess = next
@@ -723,7 +726,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	bridgeSession(sess)
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
-			transcript: transcriptCallback, notify: notifyCallback,
+			notify:          notifyCallback,
 			subscriberCount: subscriberCallback, pendingEscalations: pendingEscalations,
 			setSession: func(next *agent.Session) { setSession(next, currentEnv) },
 			session:    sess,

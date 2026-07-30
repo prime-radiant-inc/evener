@@ -176,12 +176,19 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                        sync.RWMutex
-	status                    StatusInfo
-	appSourceID               string
-	appThreadID               string
-	appIdentityGeneration     uint64
-	appProjector              *appprojector.AppEventProjector
+	mu          sync.RWMutex
+	status      StatusInfo
+	appSourceID string
+	appThreadID string
+	// appIdentityGeneration counts identity replacements. It is not the read
+	// fence: ReplaceAppIdentity installs a whole new appTurns and appProjector,
+	// so a reader holding the previous snapshot pointer holds state nothing
+	// writes to again.
+	appIdentityGeneration uint64
+	appProjector          *appprojector.AppEventProjector
+	// appTurns is the daemon's one materialized turn authority. Every turn read
+	// -- thread/read, the latest window, an older page -- clones or windows this
+	// and nothing else.
 	appTurns                  *appTurnSnapshot
 	appActiveTurnID           string
 	appReservedTurnID         string
@@ -249,7 +256,6 @@ type Server struct {
 	tasksFn             func() any
 	taskAggregateFn     func() *appwire.TaskAggregate
 	shutdownFunc        func()
-	transcriptPathFn    func() string
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
@@ -293,9 +299,13 @@ func NewServer(cfg ServerConfig) *Server {
 				DirectoryComplete: false,
 			},
 		}),
+		// AppReplaySize bounds notification RETENTION, which is transport
+		// replay for a reconnecting subscriber. It does not bound the turn
+		// snapshot: eviction changes how far a client can catch up from
+		// deltas, never what the thread contains.
 		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
-		appTurns:    &appTurnSnapshot{limit: replaySize},
+		appTurns:    &appTurnSnapshot{},
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
 		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),

@@ -3,11 +3,18 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/llm"
@@ -185,8 +192,7 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 			<-adapter.blocked
 
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", sess.ID())
-			srv.SetTranscriptPathFunc(sess.TranscriptPath)
+			installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
 			srv.SetClientMutationProjectionFunc(sess.ClientMutationProjection)
 			response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
 			if err != nil {
@@ -293,6 +299,124 @@ func requestHasTool(req llm.Request, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent pins the response cut
+// against the file the daemon must not consult while holding it.
+//
+// Transcript persistence can lead live event delivery: the entry for an
+// assistant answer can already be durable while the matching event is still
+// short of its projection commit. A read that parses the file under the cut
+// therefore answers with that output under TRANSCRIPT identity, and the same
+// output arrives again after the cut under the LIVE projector's identity. The
+// client reduces one answer into two items and the pane shows it twice.
+func TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "th_1",
+		CreatedAt: time.Unix(1700000000, 0),
+		ProfileID: "openai",
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("question"))); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+
+	// Install the snapshot from the transcript as it stands NOW -- before the
+	// assistant entry exists.
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+	// A restored session seeds the live projector above the persisted entry
+	// count, so the live turn id cannot collide with the reload path's.
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: 1, Profile: "openai", Model: "gpt-5"},
+	})
+
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv.mu.Lock()
+	srv.beforeAppProjectionCommit = func() {
+		once.Do(func() {
+			close(blocked)
+			<-release
+		})
+	}
+	srv.mu.Unlock()
+
+	recorded := make(chan struct{})
+	go func() {
+		defer close(recorded)
+		srv.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventAssistantTextEnd,
+			SessionID: "th_1",
+			Data:      events.AssistantTextEndData{Text: "answer"},
+		})
+	}()
+	<-blocked
+
+	// The answer is durable on disk before its event reaches the commit.
+	if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))); err != nil {
+		t.Fatalf("append assistant: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test transport teardown
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	cut := srv.appNotifier.CurrentSequence()
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          "local:th_1",
+		Subscribe:    true,
+		IncludeTurns: true,
+		TurnLimit:    40,
+	})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	// Nothing committed between the sampled sequence and the response, so cut
+	// is the response's own cut and everything after it is post-cut delivery.
+	if pending := srv.AppNotificationsAfter(cut, "th_1"); len(pending) != 0 {
+		t.Fatalf("sampled cut is not the response cut: %d record(s) already committed", len(pending))
+	}
+
+	close(release)
+	<-recorded
+
+	// Reduce exactly what a rejoining client reduces: the response snapshot,
+	// then the post-cut records in wire order.
+	rejoined := &appTurnSnapshot{threadID: "th_1"}
+	rejoined.Seed(response.Thread.Turns)
+	rejoined.Apply(srv.AppNotificationsAfter(cut, "th_1"))
+
+	answers := 0
+	for _, turn := range rejoined.Snapshot() {
+		for _, item := range turn.Items {
+			if strings.Contains(item.Text, "answer") {
+				answers++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("assistant answer reduced into %d items after rejoin, want exactly 1\nturns: %+v", answers, rejoined.Snapshot())
+	}
 }
 
 func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.T) {

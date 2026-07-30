@@ -142,7 +142,12 @@ func TestServerAppWireProcessingKeepsAnAlreadyReservedTurnID(t *testing.T) {
 	}
 }
 
-func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing.T) {
+// TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns
+// pins that thread.serf.activeTurnId and the snapshot's turns answer different
+// questions. turn/start RESERVES a turn id before any turn/started exists, so
+// the id it reports is deliberately absent from turns -- which is why nothing
+// downstream may treat it as "the turn to append items to".
+func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	tw, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "th_1",
@@ -164,8 +169,10 @@ func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.SetTranscriptPathFunc(func() string { return path })
+	installTranscriptIdentity(t, srv, "th_1", path)
+	// Production restores before it bridges: SessionStart carries the persisted
+	// entry count so live ids start above the seeded ones.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
 	srv.SetSteerFunc(func(string) {})
 	srv.SetCancelFunc(func() {})
 	installProjectedMutationCallbacksForTest(srv)
@@ -193,11 +200,14 @@ func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing
 		t.Fatalf("read response=%T", read.Response.Result)
 	}
 	if len(out.Thread.Turns) < 2 {
-		t.Fatalf("thread turns=%d, want transcript turns", len(out.Thread.Turns))
+		t.Fatalf("thread turns=%d, want the seeded transcript turns", len(out.Thread.Turns))
 	}
 	for _, turn := range out.Thread.Turns {
 		if turn.Status == appwire.TurnStatusInProgress {
-			t.Fatalf("transcript turn unexpectedly in progress: %+v", turn)
+			t.Fatalf("seeded transcript turn unexpectedly in progress: %+v", turn)
+		}
+		if turn.ID == startResp.Turn.ID {
+			t.Fatalf("reserved turn %q appears in turns; nothing started it yet", turn.ID)
 		}
 	}
 	if out.Thread.Serf.ActiveTurnID != startResp.Turn.ID {
@@ -1257,7 +1267,11 @@ func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 	}
 }
 
-func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *testing.T) {
+// TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns pins that the
+// seed and the live stream compose into one ordered thread: seeded transcript
+// turns stay at the head, live turns append after them, and a replay buffer far
+// too small to hold the whole session changes neither.
+func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
@@ -1274,8 +1288,8 @@ func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *t
 	}
 
 	srv := NewServer(ServerConfig{AppReplaySize: 2})
-	srv.SetAppIdentity("local", "th_1")
-	srv.SetTranscriptPathFunc(func() string { return path })
+	installTranscriptIdentity(t, srv, "th_1", path)
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "tail"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "only tail"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{State: appwire.ThreadStatusIdle}})
@@ -1284,11 +1298,18 @@ func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *t
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 2 {
-		t.Fatalf("turns=%+v, want full transcript", resp.Thread.Turns)
+	if len(resp.Thread.Turns) != 3 {
+		t.Fatalf("turns=%v, want the 2 seeded turns plus the live one", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("first turn text=%q", got)
+		t.Fatalf("first turn text=%q, want the seeded head", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
+		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	}
+	live := resp.Thread.Turns[2]
+	if len(live.Items) == 0 || live.Items[0].Text != "tail" {
+		t.Fatalf("live turn items=%+v, want the live user input", live.Items)
 	}
 }
 
