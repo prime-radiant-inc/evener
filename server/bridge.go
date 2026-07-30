@@ -38,21 +38,45 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // bite someone: because the feed blocks its emitter, a session goroutine that
 // emits WHILE HOLDING ANY LOCK THIS FUNCTION ACQUIRES deadlocks the pair once
 // the 256-deep buffer fills. Before losslessness that was a dropped event and
-// nobody noticed. The locks reachable from here today are the session's own
-// mutex, the job manager's (via the jobs.jsonl read behind DetailedStatus), the
-// client-mutation store's, the task store's, the tool registry's and
-// contextmgr's — and the set grows every time a facet sampler is added.
+// nobody noticed.
 //
 // So: EMIT WITH NO LOCK HELD. agent/session_prompts.go is the worked example —
 // renderSystemPrompt returns its diagnostic instead of emitting it, precisely
 // because three of its callers hold s.mu.
 //
-// Nothing enforces this. `go vet` cannot see it, and no fixture reaches it:
-// the default suite's scripted provider never fills the buffer, so a violation
-// is silent until production. A real enforcement would be an owner-tracking
-// mutex under a build tag asserting that no lock is held at the emit, which is
-// how both known violations were actually found; short of that this comment and
-// the per-site regression tests are the whole of the net.
+// DO NOT READ THE LIST BELOW AS COMPLETE. The reachable set spans at least four
+// packages and two module boundaries, and an earlier version of this comment
+// named six locks and got one of them wrong; the useful statement is the rule,
+// not the inventory. What is verified:
+//
+//   - Taken on EVERY accepted event, not per facet: Server.mu (below, via
+//     acceptsSessionEvent and applySessionEventStatus) and appserver's
+//     projectionMu, deliveryMu and mu, plus Subscriptions.mu, Notifier.mu,
+//     Connection.sendMu and appTurnSnapshot.mu inside the commit. That is the
+//     bulk of the exposure, and it does not shrink by adding fewer facets.
+//   - Outside this package AND outside agent/: cmd/serf/serve.go's currentMu,
+//     which every facet sample passes through because the envelope source
+//     resolves the live session per call. Anyone auditing from here alone will
+//     not see it.
+//   - Inside agent/ and its subsystems: Session.mu, jobstore.Store.mu,
+//     jobstore.OutputStore.mu, jobManager.mu, the task store's, the goal
+//     store's, transcript.Writer.mu, the MCP connection's, and the sync.Once
+//     guards around the lazily built stores.
+//
+// One correction worth keeping, because it is the kind of detail that makes an
+// inventory worse than useless: the jobs.jsonl read behind DetailedStatus runs
+// under jobstore.Store.mu, NOT jobManager.mu — listWithError calls store.Load()
+// BEFORE taking jm.mu (agent/jobs.go). An earlier version of this comment named
+// the lock that does not do the I/O.
+//
+// Nothing enforces any of this. `go vet` cannot see it, and no fixture reaches
+// it: the default suite's scripted provider never fills the buffer, so a
+// violation is silent until production. The cheapest real enforcement is not a
+// full audit but a single owner-tracked mutex — wrap Session.mu and assert at
+// sendEvent's blocking branch, which covers both violation classes found so far;
+// sasha-s/go-deadlock is a build-tagged drop-in if wider coverage is ever
+// wanted. Until then this comment and the per-site regression tests are the
+// whole of the net.
 func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.SessionEvent)) {
 	if observer != nil {
 		observer(ev)

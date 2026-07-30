@@ -442,8 +442,11 @@ What remains, precisely:
   bounded to keep it unreachable.
 - **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
   Losslessness turns "emit under a lock" from a dropped event into a deadlock,
-  for every lock reachable from the bridge. Two violations were found and
-  fixed; there is no compiler or vet check for the next one.
+  for every lock reachable from the bridge. Three call sites were found and
+  fixed, all of them the same callee reached from three different locked
+  callers; there is no compiler or vet check for the next one. The cheapest
+  real enforcement is one owner-tracked mutex — wrap `Session.mu` and assert at
+  `sendEvent`'s blocking branch — not an audit of every lock.
 
 `serf/thread/resync` still has no producer. It is not needed for the daemon's
 own feed any more, but it remains the only repair path if a future consumer is
