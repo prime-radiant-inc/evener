@@ -135,6 +135,31 @@ func TestAuthoritativeConsumerReceivesEveryEventPastTheBuffer(t *testing.T) {
 // TestConsumeEventsLosslessRejectsASecondConsumer pins the one-consumer rule.
 // Two receivers on one channel split the stream, so each would silently see
 // part of the history and believe it saw all of it.
+// TestConsumeEventsLosslessRejectsANilOnDrained pins the guard that keeps the
+// teardown wait from being skippable.
+//
+// The wait was a returned channel first, and a returned channel can be dropped:
+// Go permits ignoring a non-error return, no linter here flags it, and
+// `ConsumeEventsLossless(consume)` compiled cleanly while putting the shutdown
+// crash straight back. Making it a parameter fixes that -- but only while nil is
+// refused, because nil is the same omission wearing a different hat.
+func TestConsumeEventsLosslessRejectsANilOnDrained(t *testing.T) {
+	s := losslessTestSession("nil-ondrained")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a nil onDrained was accepted; the drain wait is skippable again")
+		}
+		// The session must not be left marked by a rejected registration: a
+		// mark with no drain behind it wedges every emitter at 257.
+		s.eventsMu.RLock()
+		defer s.eventsMu.RUnlock()
+		if s.authoritativeConsumer {
+			t.Fatal("a rejected registration still marked the session")
+		}
+	}()
+	s.ConsumeEventsLossless(func(events.SessionEvent) {}, nil)
+}
+
 func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
 	s := losslessTestSession("double")
 	registerConsumer(t, s, func(events.SessionEvent) {})
