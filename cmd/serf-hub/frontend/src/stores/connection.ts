@@ -44,10 +44,17 @@ export interface ConnectionStoreState {
 // overwrites the state of a client that is perfectly healthy — the banner
 // reports a dead connection while requests keep succeeding.
 //
-// Detaching is only the cooperative half of the fence. A client may already
-// have captured the callback into an in-flight dispatch, where unsubscribing
-// cannot un-invoke it, so the callback below re-checks ownership before it
-// publishes. Either half alone leaves a window; both together do not.
+// Detaching is only the cooperative half of the fence, and it is genuinely
+// insufficient: AppwireClient.setState dispatches over a snapshot of its
+// handler set (protocol/client.ts), so a handler unsubscribed mid-dispatch
+// is still invoked for that dispatch. The callback therefore re-checks that
+// it is still the store's client before publishing.
+//
+// The two halves cover different failures rather than backing each other up.
+// The identity check is what keeps state correct; the detach is what keeps
+// replaced clients from accumulating live subscriptions. Neither substitutes
+// for the other, and each is covered by a test that fails when only that half
+// is removed.
 //
 // This is connection-state listener ownership only. It is deliberately
 // separate from the notification/ready listener ownership threads.ts manages:
@@ -64,11 +71,29 @@ export const connectionStore = createStore<ConnectionStoreState>(() => ({
     if (connectionStore.getState().client === client) return;
     unwireStateChange?.();
     unwireStateChange = null;
-    connectionStore.setState({ client, state: client.state });
-    unwireStateChange = client.onStateChange((s) => {
+    // Register before publishing. setState dispatches to subscribers
+    // synchronously, and the real client transitions synchronously too
+    // (AppwireClient.connect enters "connecting", close() enters "closed",
+    // both without awaiting), so publishing first leaves a window where a
+    // transition has no listener and is lost until the client's next one.
+    const unwire = client.onStateChange((s) => {
       if (connectionStore.getState().client !== client) return;
       connectionStore.setState({ state: s });
     });
+    // Read client.state here, not before registering: a transition that
+    // landed during registration is already reflected in it, and the
+    // callback above could not have published it while this client was
+    // still not the store's.
+    connectionStore.setState({ client, state: client.state });
+    // The synchronous dispatch above can re-enter connect() with a different
+    // client. That frame completed and owns the slot, so this one is stale:
+    // retire its own listener instead of clobbering the newer entry, which
+    // would leak the newer client's subscription for the life of the page.
+    if (connectionStore.getState().client === client) {
+      unwireStateChange = unwire;
+    } else {
+      unwire();
+    }
   },
 }));
 

@@ -206,6 +206,23 @@ describe("FakeClient", () => {
 });
 
 describe("useConnectionStore", () => {
+  // Counts BOTH halves of the listener lifecycle. A live-listener count alone
+  // cannot tell "connect returned early" apart from "connect detached and
+  // re-attached" — both leave exactly one — so the idempotency check needs the
+  // registration and unsubscribe tallies to mean anything.
+  class CountingClient extends FakeClient {
+    registrations = 0;
+    unsubscribes = 0;
+    override onStateChange(cb: (s: ConnectionState) => void): () => void {
+      this.registrations++;
+      const detach = super.onStateChange(cb);
+      return () => {
+        this.unsubscribes++;
+        detach();
+      };
+    }
+  }
+
   test("connect captures the client's current state immediately", () => {
     const fake = new FakeClient("connecting");
     connectionStore.getState().connect(fake);
@@ -223,8 +240,16 @@ describe("useConnectionStore", () => {
   });
 
   test("connect is idempotent: a second call with the same client does not double-subscribe", () => {
-    const fake = connectFakeClient("idle");
+    const fake = new CountingClient("idle");
+    connectionStore.getState().connect(fake);
     connectionStore.getState().connect(fake); // second call, same client instance
+
+    // Assert the early return itself. Counting live listeners (or setState
+    // calls) cannot: once connect() detaches the previous listener before
+    // wiring a replacement, dropping the early return still leaves exactly
+    // one listener, and the assertion passes against the broken code.
+    expect(fake.registrations).toBe(1);
+    expect(fake.unsubscribes).toBe(0);
 
     const setStateSpy = vi.spyOn(connectionStore, "setState");
     fake.emitStateChange("connecting");
@@ -262,6 +287,11 @@ describe("useConnectionStore", () => {
 
     expect(connectionStore.getState().client).toBe(b);
     expect(connectionStore.getState().state).toBe("ready");
+
+    // The fence must not over-fire: the client that replaced a still owns the
+    // store and its own transitions have to land.
+    b.emitStateChange("reconnecting");
+    expect(connectionStore.getState().state).toBe("reconnecting");
   });
 
   // The detach half, proven on its own. The identity check below would keep
@@ -269,22 +299,51 @@ describe("useConnectionStore", () => {
   // unsubscribe is dropped — and a replaced client would then keep a live
   // subscription for the rest of the page's life.
   test("wiring a replacement invokes the outgoing client's unsubscribe", () => {
-    let unsubscribes = 0;
-    class CountingClient extends FakeClient {
-      override onStateChange(cb: (s: ConnectionState) => void): () => void {
-        const detach = super.onStateChange(cb);
-        return () => {
-          unsubscribes++;
-          detach();
-        };
-      }
-    }
-
-    connectionStore.getState().connect(new CountingClient("ready"));
-    expect(unsubscribes).toBe(0);
+    const outgoing = new CountingClient("ready");
+    connectionStore.getState().connect(outgoing);
+    expect(outgoing.unsubscribes).toBe(0);
 
     connectionStore.getState().connect(new FakeClient("ready"));
-    expect(unsubscribes).toBe(1);
+    expect(outgoing.unsubscribes).toBe(1);
+  });
+
+  // A subscriber can call connect() from inside the synchronous setState
+  // dispatch of an outer connect(). The inner frame completes first and owns
+  // the module slot; if the outer frame then overwrote it, the inner client's
+  // subscription would never be detachable again.
+  test("a connect re-entered during publication keeps the inner client's unsubscribe", () => {
+    const outer = new CountingClient("ready");
+    const inner = new CountingClient("ready");
+
+    const stopWatching = connectionStore.subscribe(() => {
+      if (connectionStore.getState().client === outer) {
+        connectionStore.getState().connect(inner);
+      }
+    });
+    connectionStore.getState().connect(outer);
+    stopWatching();
+
+    expect(connectionStore.getState().client).toBe(inner);
+    // The outer frame must retire its own listener rather than clobber the
+    // slot, so replacing inner later still detaches inner.
+    connectionStore.getState().connect(new FakeClient("ready"));
+    expect(inner.unsubscribes).toBe(1);
+  });
+
+  // The real client transitions synchronously inside connect()/close(), so a
+  // subscriber that drives it during publication must not have its transition
+  // dropped on the floor.
+  test("a state change during publication is not lost", () => {
+    const client = new FakeClient("idle");
+    const stopWatching = connectionStore.subscribe(() => {
+      if (connectionStore.getState().client === client && client.state === "idle") {
+        client.emitStateChange("connecting");
+      }
+    });
+    connectionStore.getState().connect(client);
+    stopWatching();
+
+    expect(connectionStore.getState().state).toBe("connecting");
   });
 
   // The unsubscribe returned by onStateChange is the cooperative half of the
