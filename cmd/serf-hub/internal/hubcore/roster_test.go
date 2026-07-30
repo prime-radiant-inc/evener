@@ -441,6 +441,10 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 	if rosterFingerprint(base) == rosterFingerprint(changed) {
 		t.Fatal("roster fingerprint must change when only running IDs change")
 	}
+	crashed := map[string]LiveEntry{"parent": {RunningSubagentIDs: []string{"child-a"}, Crashed: true}}
+	if rosterFingerprint(base) == rosterFingerprint(crashed) {
+		t.Fatal("roster fingerprint must change when only crash provenance changes")
+	}
 }
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }

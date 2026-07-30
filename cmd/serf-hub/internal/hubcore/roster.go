@@ -178,7 +178,8 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 }
 
 // SetOnChange registers a callback fired by Refresh only when the live set's
-// membership or per-session status actually changes. Nil disables the hook.
+// membership or observable per-session state actually changes. Nil disables
+// the hook.
 func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
 
 // SetOnStatusChange registers a callback fired once per session id, by
@@ -197,6 +198,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		_, _ = h.Write([]byte(id))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(bySess[id].Status))
+		_, _ = h.Write([]byte{0})
+		if bySess[id].Crashed {
+			_, _ = h.Write([]byte{1})
+		}
 		_, _ = h.Write([]byte{0})
 		if bySess[id].PendingAsk {
 			_, _ = h.Write([]byte{1})
