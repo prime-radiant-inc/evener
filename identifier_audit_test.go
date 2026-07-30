@@ -214,8 +214,18 @@ var identifierSHA256Inventory = map[string]map[string]map[string]bool{
 	"agent/internal/tool/registry.go": {"shortHash": {"Sum256(b)": true}},
 	"agent/job_watch.go":              {"normalizedWatchConfigHash": {"Sum256(b)": true}},
 	"agent/runtime_dir.go":            {"nonProjectHash": {"Sum256([]byte(input))": true}},
-	"auth/openai/pkce.go":             {"GeneratePKCE": {"Sum256([]byte(verifier))": true}},
-	"cmd/serf-fuzz-harvest/emit.go":   {"write": {"Sum256(encoded)": true}},
+	// The durable mutation store hashes a mutation's canonical JSON payload to
+	// detect same-ID replays carrying different payloads. Content integrity
+	// only — no identifier is derived from these digests.
+	"agent/session_client_mutation.go": {
+		"newClientMutationRequest":      {"Sum256(canonical)": true},
+		"validateClientMutationRequest": {"Sum256(request.Payload)": true},
+	},
+	"agent/session_client_mutation_persist.go": {
+		"validateClientMutationSnapshot": {"Sum256(record.Payload)": true},
+	},
+	"auth/openai/pkce.go":           {"GeneratePKCE": {"Sum256([]byte(verifier))": true}},
+	"cmd/serf-fuzz-harvest/emit.go": {"write": {"Sum256(encoded)": true}},
 	"cmd/serf-hub/image_serve.go": {"findImageInTranscript": {
 		"Sum256(p.Image.Data)": true, "Sum256(p.ToolResult.ImageData)": true,
 	}, "imageSha": {"Sum256(data)": true}},
