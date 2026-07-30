@@ -110,8 +110,16 @@ func remainingPromptCoverage(t *testing.T) {
 		projectPromptDir = oldProjectDir
 		globalPromptDir = oldGlobalDir
 	})
-	if got := s.renderSystemPrompt(execenv.NewLocalExecutionEnvironment(t.TempDir())); !strings.Contains(got, "forced render failure") {
+	got, warning := s.renderSystemPrompt(execenv.NewLocalExecutionEnvironment(t.TempDir()))
+	if !strings.Contains(got, "forced render failure") {
 		t.Fatalf("render failure prompt = %q", got)
+	}
+	// The diagnostic is RETURNED, never emitted from in here: renderSystemPrompt
+	// runs under s.mu at three call sites and emit takes s.mu to stamp
+	// provenance, so emitting would self-deadlock. Assert the caller is actually
+	// handed something to report, or the failure would be silent.
+	if !strings.Contains(warning, "forced render failure") {
+		t.Fatalf("render failure warning = %q, want it to name the failure", warning)
 	}
 }
 

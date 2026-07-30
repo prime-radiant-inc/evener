@@ -384,8 +384,12 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
 	sess.refreshSystemPromptCache(env)
-	prompt := sess.renderSystemPrompt(env)
-	if prompt != sess.renderSystemPrompt(env) || prompt != sess.cachedSystemPrompt {
+	prompt, warning := sess.renderSystemPrompt(env)
+	if warning != "" {
+		t.Fatalf("unexpected render warning: %q", warning)
+	}
+	again, _ := sess.renderSystemPrompt(env)
+	if prompt != again || prompt != sess.cachedSystemPrompt {
 		t.Fatal("system prompt cache/render was not deterministic")
 	}
 	for _, want := range []string{token, "append " + token} {
