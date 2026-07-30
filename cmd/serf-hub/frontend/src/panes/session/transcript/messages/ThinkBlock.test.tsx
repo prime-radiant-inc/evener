@@ -95,6 +95,21 @@ test("the thought icon is a centred flex-none glyph (baseline alignment would se
   expect(rule![1]).toContain("align-self: center");
 });
 
+test("the thought icon rails at 50% opacity in the speaker-avatar column, gutter-pulled only above the breakpoint", () => {
+  const css = thinkCss();
+  const rule = /\.icon\s*\{([^}]*)\}/.exec(css);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("opacity: 0.5");
+  expect(rule![1]).toContain("width: var(--speaker-avatar-size)");
+  expect(rule![1]).toContain("margin-right: var(--speaker-gap)");
+  // The pull is on the CONTAINERS, never on the icon: .summary's overflow:
+  // hidden would clip a negatively-margined child away entirely (qrv1).
+  expect(rule![1]).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  const mediaRule = /@media \(min-width: 700px\) \{\s*\.label,\s*\.summary\s*\{([^}]*)\}/.exec(css);
+  expect(mediaRule).not.toBeNull();
+  expect(mediaRule![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+});
+
 test("an expanded thought renders as a full-width row below its summary - no column chrome", () => {
   const css = thinkCss();
   // No [open] flex row squeezing the body beside the label...
