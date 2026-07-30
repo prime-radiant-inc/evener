@@ -465,6 +465,38 @@ func TestAppTurnSnapshotSeedReplacesPriorReducedState(t *testing.T) {
 	}
 }
 
+// TestAppTurnSnapshotSeedWithoutLiveTurnClearsSteeringTarget pins the other
+// half of Seed's replacement contract: a seed that names no in-progress turn
+// leaves no steering target at all. Turn ids are projector-local and restart
+// at turn_1 for a new identity, so an activeTurnID carried across a seed can
+// name a live id that now belongs to a completed turn from a different
+// conversation, and steering would be welded onto it.
+func TestAppTurnSnapshotSeedWithoutLiveTurnClearsSteeringTarget(t *testing.T) {
+	snapshot := &appTurnSnapshot{threadID: "th_1"}
+	snapshot.Apply([]appserver.SequencedNotification{
+		appTurnSnapshotRecord(t, 1, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+			ThreadID: "th_1",
+			Turn:     appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusInProgress},
+		}),
+	})
+
+	snapshot.Seed([]appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}})
+
+	snapshot.Apply([]appserver.SequencedNotification{
+		appTurnSnapshotRecord(t, 2, appwire.NotifySerfSteeringInjected, appwire.SerfSteeringInjectedParams{
+			ThreadID: "th_1", Text: "steer nothing",
+		}),
+	})
+
+	turns := snapshot.Snapshot()
+	if len(turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(turns))
+	}
+	if len(turns[0].Items) != 0 {
+		t.Fatalf("seeded completed turn items = %+v, want steering dropped with no live turn", turns[0].Items)
+	}
+}
+
 // TestAppTurnSnapshotSeedFindsLastInProgressTurn pins which turn steering
 // attaches to after a seed. A transcript can hold an earlier turn that never
 // completed because the daemon died mid-turn, so "the first in-progress turn"

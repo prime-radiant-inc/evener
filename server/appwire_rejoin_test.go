@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
+	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/llm"
 )
 
@@ -496,5 +497,119 @@ func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.
 	}
 	if params.ThreadID != "authoritative" || params.Ref != "local:authoritative" {
 		t.Fatalf("notification target = (%q, %q), want authoritative identity", params.ThreadID, params.Ref)
+	}
+}
+
+// TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription pins the one
+// thing that makes a subscribing thread/read authoritative: the response and
+// the cut are produced inside the same projection transition that registers
+// the subscription. Take the snapshot beside the registration rather than with
+// it -- the shape this branch replaced -- and a commit landing in between is in
+// neither the response nor the delivered stream, which is a pane that is
+// permanently wrong with nothing left to correct it.
+//
+// The read is parked at the projection gate, a commit is driven to completion
+// while it waits there, and the assertions read the response and the frames the
+// SUBSCRIPTION actually delivered. Nothing consults the notifier's replay.
+func TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	atGate := make(chan struct{})
+	openGate := make(chan struct{})
+	var once sync.Once
+	srv.AppServer().SetBeforeSubscriptionGate(func() {
+		once.Do(func() {
+			close(atGate)
+			<-openGate
+		})
+	})
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test transport teardown
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	type readOutcome struct {
+		response appwire.ThreadReadResponse
+		err      error
+	}
+	reads := make(chan readOutcome, 1)
+	go func() {
+		response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+			Ref:          "local:th_1",
+			Subscribe:    true,
+			IncludeTurns: true,
+			TurnLimit:    40,
+		})
+		reads <- readOutcome{response: response, err: err}
+	}()
+	<-atGate
+
+	// A turn opens while the read waits for the gate. This commit runs to
+	// completion here: the read holds no lock at the gate barrier, in either
+	// the atomic shape or the one it replaced.
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1"})
+	close(openGate)
+
+	outcome := <-reads
+	if outcome.err != nil {
+		t.Fatalf("ThreadRead: %v", outcome.err)
+	}
+
+	// The response is on the cut's side of that commit, envelope included. An
+	// envelope sampled before the commit would report no active turn while
+	// listing the turn it opened, and nothing after the cut would ever say
+	// otherwise.
+	if got := outcome.response.Thread.Serf.ActiveTurnID; got != "turn_1" {
+		t.Fatalf("response activeTurnId = %q, want turn_1: the snapshot is not on the cut's side of the commit", got)
+	}
+	if turns := outcome.response.Thread.Turns; len(turns) != 1 || turns[0].ID != "turn_1" {
+		t.Fatalf("response turns = %+v, want the one turn opened before the cut", turns)
+	}
+
+	// The subscription is live and post-cut frames reach it. This reads the
+	// delivered stream, not the notifier's replay window.
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
+		SessionID: "th_1",
+		Data:      events.AssistantTextDeltaData{Delta: "answer"},
+	})
+
+	rejoined := &appTurnSnapshot{threadID: "th_1"}
+	rejoined.Seed(outcome.response.Thread.Turns)
+	delivered := uint64(0)
+	deltas := 0
+	for deltas == 0 {
+		notification := <-client.Notifications()
+		delivered++
+		rejoined.Apply([]appserver.SequencedNotification{{
+			Seq:          delivered,
+			ThreadID:     "th_1",
+			Notification: notification,
+		}})
+		if notification.Method == appwire.NotifyAgentMessageDelta {
+			deltas++
+		}
+	}
+
+	answers := 0
+	for _, turn := range rejoined.Snapshot() {
+		for _, item := range turn.Items {
+			if strings.Contains(item.Text, "answer") {
+				answers++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("assistant answer reduced into %d items, want exactly 1\nturns: %+v", answers, rejoined.Snapshot())
 	}
 }

@@ -1250,6 +1250,88 @@ func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
 	}
 }
 
+// TestSnapshotCutAbortsCaptureWhoseRequestContextDied pins the pre-check that
+// runs between setting the cut and registering the response finalizer. A
+// request whose context died while the snapshot was being taken can never have
+// its response enqueued as a commit, so registering a hydration for it would
+// leave the connection buffering on the outcome of a race in enqueueResponse's
+// select. The capture must instead be rejected and the previous ownership --
+// here, live delivery -- restored.
+func TestSnapshotCutAbortsCaptureWhoseRequestContextDied(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-dead-request")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	conn.Subscribe("th_1")
+
+	notifier := NewNotifier(10)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	captured := true
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		captured = CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool {
+				// The client goes away while the daemon is still cloning. This
+				// runs under the projection gate, so the cancellation is ordered
+				// strictly between the cut and the finalizer registration.
+				cancelRequest()
+				return true
+			},
+		)
+		return struct{}{}, nil
+	})
+
+	conn.HandleMessage(requestCtx, appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}))
+	if captured {
+		t.Fatal("capture succeeded for a request whose context was already cancelled")
+	}
+
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "after"}),
+		}
+	})
+	conn.closeSend()
+
+	delivered := 0
+	for msg := range conn.send {
+		if msg.Notification != nil {
+			delivered++
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("live notifications after aborted capture = %d, want 1", delivered)
+	}
+}
+
+// TestSnapshotCutWithdrawalFencesSupersededGeneration pins withdrawBuffered's
+// generation check. A withdrawal names the generation it opened; without the
+// check a late one would tear down whichever capture happens to be installed
+// now, restoring that older attempt's rollback over a newer, live hydration.
+func TestSnapshotCutWithdrawalFencesSupersededGeneration(t *testing.T) {
+	subscriptions := NewSubscriptions()
+	subscriptions.Subscribe("conn", "th_1")
+	stale := subscriptions.beginBuffered("conn", "th_1", false, 1)
+	subscriptions.beginBuffered("conn", "th_1", false, 2)
+
+	if subscriptions.withdrawBuffered("conn", "th_1", 1, stale) {
+		t.Fatal("superseded withdrawal reported success against a newer generation")
+	}
+
+	subscriptions.Route(SequencedNotification{Seq: 5, ThreadID: "th_1"})
+	records, ok := subscriptions.Release("conn", "th_1", 2)
+	if !ok {
+		t.Fatal("the newer generation is no longer buffering; the stale withdrawal tore it down")
+	}
+	if len(records) != 1 || records[0].Seq != 5 {
+		t.Fatalf("released records = %#v, want the one record routed after supersession", records)
+	}
+}
+
 func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-replace")

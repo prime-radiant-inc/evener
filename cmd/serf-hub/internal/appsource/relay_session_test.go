@@ -115,6 +115,33 @@ func relaySnapshot(threadID, text string) appwire.ThreadReadResponse {
 	}}
 }
 
+// relaySessionFor reaches the single live actor a test source owns. Frames can
+// then be handed to its ordered observer directly, which is the only way to
+// know a notification has actually landed in the open capture: the scripted
+// transport's receive channel is buffered, so writing to it proves nothing
+// about when -- or whether -- the actor consumed the frame.
+func relaySessionFor(t *testing.T, source *LocalDaemonSource) *relaySession {
+	t.Helper()
+	source.relayMu.Lock()
+	defer source.relayMu.Unlock()
+	for _, session := range source.relaySessions {
+		return session
+	}
+	t.Fatal("no relay session")
+	return nil
+}
+
+// observeRelayFrame delivers a notification through the actor's ordered frame
+// handler and returns only once it has been accepted, so the caller can order
+// what follows against it.
+func observeRelayFrame(t *testing.T, session *relaySession, notification appwire.Notification) {
+	t.Helper()
+	session.mu.Lock()
+	epoch := session.epoch
+	session.mu.Unlock()
+	session.observe(epoch, appwire.Message{Notification: &notification}, nil)
+}
+
 func relayDelta(threadID, delta string) appwire.Notification {
 	return *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 		ThreadID: threadID,
@@ -394,7 +421,12 @@ func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *te
 	readCtx, cancelRead := context.WithCancel(context.Background())
 	first := readRelayAsync(readCtx, lease, params)
 	firstCall := <-daemon.reads
-	firstCall.transport.recv <- appwire.Message{Notification: notificationPointer(relayDelta("thread-1", "before cancel"))}
+	// The frame is handed to the actor synchronously: it is in the open
+	// capture's pre-cut buffer before the cancellation below, which is the
+	// whole point. Queueing it on the transport instead would let the
+	// cancellation win the race, and the notification would then be published
+	// by the ordinary no-capture path rather than requeued by the cancellation.
+	observeRelayFrame(t, relaySessionFor(t, source), relayDelta("thread-1", "before cancel"))
 	cancelRead()
 	firstResult := <-first
 	if firstResult.err == nil {

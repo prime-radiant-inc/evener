@@ -197,6 +197,17 @@ func (s *Server) SubscriberCount(threadID string) int {
 	return s.subs.ConnectionCount(threadID)
 }
 
+// SetBeforeSubscriptionGate installs a callback run immediately before a
+// subscribe, a subscription replacement, or a capture acquires the projection
+// gate. It holds no lock, so a test outside this package can park there to
+// order a concurrent commit against exactly that boundary -- which is the one
+// boundary that tells an atomic capture apart from a snapshot taken beside the
+// subscription rather than with it. Production leaves it nil. Install it before
+// the server serves anything.
+func (s *Server) SetBeforeSubscriptionGate(fn func()) {
+	s.beforeSubscriptionRegistration = fn
+}
+
 func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
 	if !s.cfg.AdapterNativeInitialize && params.ProtocolVersion != appwire.ProtocolVersion {
 		return appwire.InitializeResponse{}, appwire.InvalidRequest(
