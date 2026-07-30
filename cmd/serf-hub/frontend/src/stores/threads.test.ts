@@ -43,6 +43,30 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 
+// settleCallerContinuations yields to the task queue exactly once, which the
+// hydration-retry tests use to park an ensureThread/watchThread caller on its
+// lifecycle before firing the retry that lifecycle scheduled.
+//
+// Why a task yield and not `flushUntil(() => false, N)`: a count is an
+// assumption about how many microtask turns separate the failed read from the
+// caller's own catch, and nothing fails when that assumption stops holding -
+// the caller instead converges through the "adopt a replacement read already in
+// flight" arm and the test silently stops covering the owner's wait. A task
+// callback, by contrast, is specified to run only after the microtask
+// checkpoint has drained completely, including microtasks queued by other
+// microtasks. So this holds however many turns that path grows.
+//
+// Its one boundary: it does not cover a future change that parks the caller
+// behind a task or I/O of its own (an IndexedDB read on the rejection path,
+// say). That would need its own awaited condition, and the mutation proof in
+// this task's report - which fires each owner-wait arm and requires the
+// matching test to fail - is what would catch it.
+function settleCallerContinuations(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -1627,7 +1651,7 @@ describe("useThreadsStore.ensureThread", () => {
     // Drain the rejection all the way through the caller before the retry
     // fires, so this covers an owner already WAITING on its lifecycle rather
     // than one that happens to find a replacement read already in flight.
-    await flushUntil(() => false, 5);
+    await settleCallerContinuations();
 
     // Nothing below emits ready, focuses the window, remounts a pane, or swaps
     // the client: the retry is the store's own, scheduled by the failed read.
@@ -1783,7 +1807,7 @@ describe("useThreadsStore.ensureThread", () => {
     await flushUntil(() => scheduledHydrationRetries.length === 1);
     // Both owners must be waiting on the one lifecycle before it produces a
     // read - see the initial-hydration case above for why this drain matters.
-    await flushUntil(() => false, 5);
+    await settleCallerContinuations();
 
     // Two owners, one failed read, one scheduled retry.
     expect(readAttempts).toBe(1);
@@ -3595,6 +3619,9 @@ describe("useThreadsStore.watchThread", () => {
 
     const watching = threadsStore.getState().watchThread("ref_a");
     await flushUntil(() => scheduledHydrationRetries.length === 1);
+    // The watcher must be parked on its lifecycle before the retry fires - see
+    // the ensureThread cases for why, and what happens without this.
+    await settleCallerContinuations();
 
     expect(readAttempts).toBe(1);
     expect(scheduledHydrationRetries).toHaveLength(1);
