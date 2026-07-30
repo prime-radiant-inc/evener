@@ -152,3 +152,16 @@ test("the caret rides the text ink, not a semantic accent - streaming is not an 
   const css = readFileSync(join(here, "streamingtext.module.css"), "utf8");
   expect(css).not.toMatch(/var\(\s*--(attention|alive|danger|accent)\b/);
 });
+
+// Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
+// 5): the live stream must wrap long tokens exactly like settled markdown -
+// break-word only soft-wraps at layout time while still counting the whole
+// token toward min-content sizing, which is what let fit-content bubbles
+// over-read their width. anywhere matches markdown.module.css's .root.
+test("the root rule wraps long unbreakable tokens anywhere", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "streamingtext.module.css"), "utf8");
+  const root = css.match(/\.root \{([^}]*)\}/);
+  expect(root).not.toBeNull();
+  expect(root![1]).toContain("overflow-wrap: anywhere");
+});

@@ -7,11 +7,16 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* Same containment chain as .turn's own min-width: 0 - every flex link
+   * between PaneScaffold's clipped body and the virtual list must be able
+   * to shrink below its widest child. */
+  min-width: 0;
 }
 
 .transcriptList {
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .coldStart {

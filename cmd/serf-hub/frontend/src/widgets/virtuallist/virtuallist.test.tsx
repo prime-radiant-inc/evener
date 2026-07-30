@@ -373,3 +373,16 @@ test("ref.current.getVisibleRange() returns null before mount (no ref attached)"
   const ref = createRef<VirtualListHandle>();
   expect(ref.current).toBeNull();
 });
+
+// Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
+// 5): the list's own scroller never pans sideways. overflow-y: auto makes
+// overflow-x compute to auto by default, which is exactly the page-level
+// horizontal scrollbar the spec exists to kill. jsdom has no layout - read
+// the CSS source, the same pattern panescaffold.test.tsx uses.
+test("the list scroller clips horizontal overflow instead of panning", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "virtuallist.module.css"), "utf8");
+  const root = css.match(/\.root \{([^}]*)\}/);
+  expect(root).not.toBeNull();
+  expect(root![1]).toContain("overflow-x: clip");
+});

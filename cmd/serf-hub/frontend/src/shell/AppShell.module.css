@@ -26,3 +26,14 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* Mobile full-bleed (2026-07-30-mobile-session-layout-design.md, decision 1):
+ * the desktop frame's padding/gap would inset the whole workspace as a
+ * floating card on a 390px screen. On the phone the host (StackHost) sits
+ * flush against the screen edges; the surface steps carry the structure. */
+@media (max-width: 899px) {
+  .content {
+    padding: 0;
+    gap: 0;
+  }
+}

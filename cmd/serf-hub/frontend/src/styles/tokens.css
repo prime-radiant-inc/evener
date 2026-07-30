@@ -218,6 +218,11 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
   body {
     --density-scale: 1;
     --line-height-body: calc(1.5 * var(--density-scale));
+    /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
+     * decision 4): 44px per the platform HIG. Declared here, consumed by
+     * button.module.css / iconbutton.module.css's own phone blocks as
+     * min-width/min-height so desktop sizing rules stay untouched. */
+    --tap-min: 44px;
   }
   body[data-phone-density="comfortable"] { --density-scale: 1.25; }
 }

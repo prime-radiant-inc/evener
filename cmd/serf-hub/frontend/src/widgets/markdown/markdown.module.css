@@ -13,6 +13,11 @@
  * Every other caller takes the --font-size-body default, unchanged. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
+  /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
+   * escaping the bubble/turn/pane (2026-07-30-mobile-session-layout-design.md,
+   * decision 5) - anywhere, not break-word, so the token also stops counting
+   * toward min-content sizing inside fit-content bubbles. */
+  overflow-wrap: anywhere;
   font-family: var(--font-sans);
   font-size: var(--prose-font-size, var(--font-size-body));
   line-height: var(--line-height-body);

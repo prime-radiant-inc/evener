@@ -542,3 +542,15 @@ test("the speaker geometry is declared once on .turn: 34px gutter = 24px avatar 
     /\.turn\s*\{[\s\S]*--speaker-avatar-size:\s*24px;[\s\S]*--speaker-gap:\s*10px;[\s\S]*--speaker-gutter:\s*34px;/,
   );
 });
+
+// Overflow containment (2026-07-30-mobile-session-layout-design.md, decision
+// 5): .turn sits in the virtual list's width:100% item; min-width: 0 keeps a
+// long child (a wide diff, an unwrapped token) from pinning the column wider
+// than the item that contains it.
+test("the turn column can shrink below its content's natural width", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "turnblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const turn = css.match(/\.turn \{([^}]*)\}/);
+  expect(turn).not.toBeNull();
+  expect(turn![1]).toContain("min-width: 0");
+});

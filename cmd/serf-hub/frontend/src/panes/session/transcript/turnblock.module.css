@@ -25,6 +25,11 @@
   width: 100%;
   max-width: var(--session-measure);
   margin-inline: auto;
+  /* Let the column shrink below a wide child's natural width (a long
+   * unwrapped token, a wide diff) instead of pinning the virtual list's
+   * 100%-width item wider than its scroller (overflow containment,
+   * 2026-07-30-mobile-session-layout-design.md, decision 5). */
+  min-width: 0;
 }
 
 /* A collapsed tool run keeps one quiet row; its expanded members inherit the

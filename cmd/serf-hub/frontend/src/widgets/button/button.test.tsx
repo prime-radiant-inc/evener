@@ -188,3 +188,20 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const css = readFileSync(join(here, "button.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+// Mobile touch-target floor (2026-07-30-mobile-session-layout-design.md,
+// decision 4): every Button size - xs included, the composer's own verb
+// cluster uses it - reaches the 44px --tap-min floor on the phone.
+// min-height (not height) so the desktop heights above stay the desktop
+// sizing rule and this only ever grows them. jsdom has no layout: read the
+// CSS source, same as the focus-ring tests above.
+test("mobile: all button sizes meet the 44px tap floor", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile, "button.module.css must have a max-width:899px media block").not.toBeNull();
+  for (const size of ["xs", "sm", "md"]) {
+    const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
+    expect(rule, `mobile media block must override .${size}`).not.toBeNull();
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  }
+});

@@ -5,6 +5,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPane } from "../paneRegistry";
 import { openTopLevelSession } from "../sessionPlacement";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -81,7 +82,7 @@ beforeAll(async () => {
   );
   await warmPane(
     () => workspaceStore.getState().openPane("session", { ref: "local:ref_warm" }),
-    () => screen.findByText("local:ref_warm"),
+    () => screen.findByRole("heading", { name: "local:ref_warm" }),
   );
 });
 
@@ -101,6 +102,7 @@ async function warmPane(open: () => void, findLandmark: () => Promise<unknown>):
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
 });
 
@@ -167,7 +169,7 @@ test("renders the replacement session and drops stale secondary panes from the s
   expect(workspaceStore.getState().panes).toEqual([
     { id: replacementId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
   ]);
-  expect(await screen.findByText("local:session-a")).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "local:session-a" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: secondary/)).toBeNull();
 });
 
@@ -477,7 +479,7 @@ test("the URL updates to a deep-linked pane's URL once it becomes focused", asyn
   await screen.findByText("No session open");
 
   workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
-  await screen.findByText("local:ref_x");
+  await screen.findByRole("heading", { name: "local:ref_x" });
 
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
@@ -485,11 +487,11 @@ test("the URL updates to a deep-linked pane's URL once it becomes focused", asyn
 test("switching between two deep-linked panes updates the URL each time", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
   render(<StackHost />);
-  await screen.findByText("local:ref_x");
+  await screen.findByRole("heading", { name: "local:ref_x" });
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 
   workspaceStore.getState().openPane("session", { ref: "local:ref_y" });
-  await screen.findByText("local:ref_y");
+  await screen.findByRole("heading", { name: "local:ref_y" });
 
   expect(window.location.pathname).toBe("/s/local%3Aref_y");
 });
@@ -507,15 +509,15 @@ test("a pane type with no deep link (paneToURL returns null) leaves the URL unto
 test("back navigation updates the URL to match the pane it returns to", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
   render(<StackHost />);
-  await screen.findByText("local:ref_x");
+  await screen.findByRole("heading", { name: "local:ref_x" });
   workspaceStore.getState().openPane("session", { ref: "local:ref_y" });
-  await screen.findByText("local:ref_y");
+  await screen.findByRole("heading", { name: "local:ref_y" });
   expect(window.location.pathname).toBe("/s/local%3Aref_y");
 
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  await screen.findByText("local:ref_x");
+  await screen.findByRole("heading", { name: "local:ref_x" });
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
@@ -528,7 +530,7 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
   window.addEventListener("popstate", handler);
 
   render(<StackHost />);
-  await screen.findByText("local:ref_x");
+  await screen.findByRole("heading", { name: "local:ref_x" });
 
   window.removeEventListener("popstate", handler);
   expect(handler).not.toHaveBeenCalled();
@@ -544,4 +546,30 @@ test("the stack container reserves the device's bottom safe-area inset", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
   expect(css).toContain("env(safe-area-inset-bottom)");
+});
+
+// The top-bar title channel (2026-07-30-mobile-session-layout-design.md,
+// decision 2): StackHost renders whatever PaneScaffold published to the
+// chrome store between the back button and the drawer trigger.
+test("renders the chrome store's published title in the top bar", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  chromeStore.getState().setPaneTitle("Move Side Open Control");
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  expect(screen.getByTestId("topbar-title").textContent).toBe("Move Side Open Control");
+});
+
+test("the top bar title is empty when no pane has published one", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  expect(screen.getByTestId("topbar-title").textContent).toBe("");
+});
+
+test("a real session pane's scaffold-published title lands in the top bar", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:ref_titled" });
+  render(<StackHost />);
+  // The session pane's own PaneScaffold publishes its title (model.name ||
+  // ref fallback, Session.tsx) through the channel on mount.
+  await vi.waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:ref_titled"));
 });

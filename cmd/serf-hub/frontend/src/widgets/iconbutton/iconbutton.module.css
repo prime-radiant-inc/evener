@@ -26,3 +26,22 @@
   height: 32px;
   padding: 0;
 }
+
+/* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
+ * min-*, not width/height - the desktop squares above stay the desktop rule.
+ * The top bar's Back/drawer and the composer's attach are the controls this
+ * exists for. */
+@media (max-width: 899px) {
+  .xs {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+  .sm {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+  .md {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+}

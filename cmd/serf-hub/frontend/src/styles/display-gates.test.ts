@@ -98,3 +98,9 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
   // this is just comfortable's 1.25 leaking through".
   expect(baseDensityScale(media![1]!)).toBe("1");
 });
+
+test("the 44px touch-target floor is declared inside the phone media query (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
+  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media, "tokens.css must have a max-width:900px media block").not.toBeNull();
+  expect(media![1]).toMatch(/--tap-min:\s*44px/);
+});

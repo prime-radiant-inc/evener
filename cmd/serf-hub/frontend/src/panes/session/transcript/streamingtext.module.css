@@ -4,7 +4,11 @@
    * paragraph together into one line. white-space: pre-wrap keeps both:
    * newlines are honored AND long lines still wrap at the container edge. */
   white-space: pre-wrap;
-  overflow-wrap: break-word;
+  /* anywhere, not break-word: break-word still counts an unbreakable token
+   * toward min-content sizing, which is what let fit-content bubbles
+   * over-read their width - and the live path must wrap exactly like the
+   * settled markdown it becomes (markdown.module.css's .root rule). */
+  overflow-wrap: anywhere;
   font-family: var(--font-sans);
   /* --prose-font-size mirrors widgets/markdown/markdown.module.css's own
    * --markdown-ink hook, and for the same reason: .root sets font-size on

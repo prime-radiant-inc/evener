@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -1074,4 +1077,20 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
   await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/other"));
+});
+
+// --- mobile full-bleed shell (2026-07-30-mobile-session-layout-design.md, decision 1) ---
+// jsdom performs no layout, so media-query rules are verified by reading the
+// CSS module's own source, the same way panescaffold.test.tsx verifies its
+// truncation rule.
+
+test("mobile: the shell content frame drops its padding so the workspace is full-bleed", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile).not.toBeNull();
+  const contentRule = mobile![1]!.match(/\.content \{([^}]*)\}/);
+  expect(contentRule).not.toBeNull();
+  expect(contentRule![1]).toContain("padding: 0");
+  expect(contentRule![1]).toContain("gap: 0");
 });
