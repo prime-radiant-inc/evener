@@ -638,6 +638,85 @@ func TestClientMutation_StartClaimedWithoutTranscriptRestoresRunnableSameTurn(t 
 	}
 }
 
+// TestClientMutation_StartReplayStaysPendingWhileClaimed pins the contract on
+// the PRIMARY start path: AcceptClientMutationStart's replay branch copies
+// lookup.Record.ProjectionState straight into the receipt
+// (session_client_mutation.go's replay-disposition handling), so a turn/start
+// retry between claim and transcript incorporation must still read pending.
+// The input is durable and claimed, but nothing describes it as visible until
+// markClaimedUserTranscriptIncorporated runs; reporting reflected here is the
+// exact browser symptom this task exists to fix
+// (mutationOutboxIndexedDB.ts:172 retains only on "pending"), reached through
+// the primary start entry point rather than the queue path.
+func TestClientMutation_StartReplayStaysPendingWhileClaimed(t *testing.T) {
+	sess := newTestSession(t)
+	params := appwire.TurnStartParams{
+		ClientMutationID: "start-claimed-reflection",
+		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
+	}
+	if _, err := sess.AcceptClientMutationStart(params); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok || claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+
+	replayed, err := sess.AcceptClientMutationStart(params)
+	if err != nil {
+		t.Fatalf("replay claimed start: %v", err)
+	}
+	if replayed.Receipt.Disposition != appwire.MutationDispositionReplayed ||
+		replayed.Receipt.ProjectionState != appwire.MutationProjectionPending {
+		t.Fatalf("claimed start replay receipt = %#v, want replayed/pending", replayed.Receipt)
+	}
+	snapshot := sess.clientMutations.snapshot()
+	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("claimed start pending projection = %q, want pending", got)
+	}
+}
+
+// TestClientMutation_QueueHeadReclaimAfterReturnStaysPending pins
+// claimClientMutationStart's third reclaim path: a queue entry claimed once
+// (earning a stable turn ID that became the active turn), then returned to
+// the head of the input queue without ever reaching transcript incorporation,
+// still has no transcript item describing it when the active turn's owner
+// reclaims it straight off the queue head. That reclaim must report pending,
+// not reflected.
+func TestClientMutation_QueueHeadReclaimAfterReturnStaysPending(t *testing.T) {
+	sess := newTestSession(t)
+	params := appwire.TurnQueueParams{
+		ClientMutationID: "queue-head-reclaim",
+		Input:            []appwire.InputItem{{Type: "text", Text: "run me"}},
+	}
+	if _, err := sess.clientMutationQueue(params); err != nil {
+		t.Fatalf("clientMutationQueue: %v", err)
+	}
+	claimed := sess.popQueueHead()
+	if claimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("popQueueHead claimed = %#v, want %q", claimed, params.ClientMutationID)
+	}
+	// Return the claim to the queue head without incorporating it. The
+	// journal record keeps the stable turn ID popQueueHead assigned, and
+	// ActiveTurnID (never touched by pushQueueHead) still names that same
+	// turn, so claimClientMutationStart's third loop -- not its first two --
+	// is what reclaims this entry.
+	sess.pushQueueHead(claimed)
+
+	reclaimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok || reclaimed.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("claimClientMutationStart reclaim: reclaimed=%#v ok=%v err=%v", reclaimed, ok, err)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	if got := snapshot.Journal[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("queue head reclaim record projection = %q, want pending", got)
+	}
+	if got := snapshot.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionPending {
+		t.Fatalf("queue head reclaim pending projection = %q, want pending", got)
+	}
+}
+
 func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplicateAppend(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -691,6 +770,18 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	if reclaimed.ClientMutationID != params.ClientMutationID ||
 		reclaimed.StableTurnID != started.Turn.ID {
 		t.Fatalf("incorporated recovery claim = %#v", reclaimed)
+	}
+	// The reclaim above resumes a start whose transcript item was already
+	// durably written before the crash (asserted above: ExecutionState
+	// "incorporated"). Reclaiming it must not downgrade that already-visible
+	// state back to pending -- only a fresh accepted->claimed transition
+	// earns a pending write.
+	afterReclaim := restored.clientMutations.snapshot()
+	if got := afterReclaim.Journal[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
+		t.Fatalf("incorporated start reclaim record projection = %q, want reflected", got)
+	}
+	if got := afterReclaim.PendingExecutions[params.ClientMutationID].ProjectionState; got != appwire.MutationProjectionReflected {
+		t.Fatalf("incorporated start reclaim pending projection = %q, want reflected", got)
 	}
 	before := countClientMutationTranscriptTurns(t, restored, params.ClientMutationID)
 	if err := restored.acceptUserInput(
