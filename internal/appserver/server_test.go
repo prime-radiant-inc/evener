@@ -1190,6 +1190,66 @@ func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
 	}
 }
 
+// TestSnapshotCutReleasesBroadcastToBufferingSubscriber pins the sequence
+// Broadcast allocates for itself. A relay frame, a serf/thread/resync, or the
+// synthesized failed turn/completed that replaces a dead spinner all reach a
+// subscriber through Broadcast, and each is silent when lost. With no sequence
+// of its own the record carries Seq 0, which never clears a non-zero cut, so
+// every one that lands inside a hydration window is discarded on release.
+func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-broadcast-cut")
+	server.registerConnection(conn)
+	conn.setInitialized()
+
+	notifier := NewNotifier(10)
+	// Advance the notifier so the capture's cut is non-zero, which is the only
+	// state a live thread is ever in by the time a client rejoins it.
+	server.CommitProjection(func() []SequencedNotification {
+		return []SequencedNotification{
+			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "before"}),
+		}
+	})
+	if cut := notifier.CurrentSequence(); cut == 0 {
+		t.Fatal("cut is zero; the test cannot tell a dropped record from a released one")
+	}
+
+	HandleTyped(server.Router(), "test/snapshot", func(ctx context.Context, _ struct{}) (struct{}, error) {
+		if !CaptureSubscription(
+			ctx,
+			false,
+			func() string { return "th_1" },
+			notifier.CurrentSequence,
+			func() bool { return true },
+		) {
+			t.Error("snapshot subscription was rejected")
+		}
+		return struct{}{}, nil
+	})
+
+	response := conn.HandleMessage(
+		context.Background(),
+		appwire.RequestMessage(appwire.NewIntID(1), "test/snapshot", struct{}{}),
+	)
+
+	server.Broadcast("th_1", appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{ThreadID: "th_1"})
+
+	if err := conn.enqueueResponse(context.Background(), response); err != nil {
+		t.Fatalf("enqueue response: %v", err)
+	}
+	conn.closeSend()
+
+	var methods []string
+	for msg := range conn.send {
+		if msg.Notification != nil {
+			methods = append(methods, msg.Notification.Method)
+		}
+	}
+	if len(methods) != 1 || methods[0] != appwire.NotifySerfThreadResync {
+		t.Fatalf("released notifications = %v, want one %s", methods, appwire.NotifySerfThreadResync)
+	}
+}
+
 func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
 	conn := server.NewConnection("conn-replace")

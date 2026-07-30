@@ -431,6 +431,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if !read.handoff.Prepare() {
 					return false, nil
 				}
+				// A cut of zero releases every frame the hub buffered during
+				// this capture. That is right for a relay: the hub does not
+				// sequence its own projection -- the upstream RelaySession
+				// already decided which frames the response embodies and which
+				// follow it, and every frame reaching this server through
+				// Broadcast is by construction one that follows. Snapshot is a
+				// no-op for the same reason: the response was materialized
+				// upstream before this capture opened.
 				return appserver.CaptureSubscriptionWithHandoff(
 					ctx,
 					params.ReplaceSubscription,

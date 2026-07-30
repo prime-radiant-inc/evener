@@ -27,6 +27,7 @@ type Server struct {
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
 	nextHydrationGeneration        uint64
+	routedSeq                      uint64
 	mu                             sync.RWMutex
 	conns                          map[string]*Connection
 	afterUnregisterDelete          func()
@@ -108,9 +109,17 @@ func (s *Server) unregisterConnectionLocked(conn *Connection) []*hydrationRespon
 	return aborted
 }
 
+// Broadcast publishes a notification that no caller sequenced -- a relay frame,
+// a resync, or a synthesized turn failure. It allocates a sequence above every
+// sequence this server has already routed, because a hydration cut only ever
+// names a sequence that was routed before the cut was taken. An unsequenced
+// record would carry Seq 0, and Subscriptions.Release keeps only records above
+// the cut, so a buffering subscriber would discard it on release.
 func (s *Server) Broadcast(threadID, method string, params any) {
 	s.projectionMu.Lock()
+	s.routedSeq++
 	record := SequencedNotification{
+		Seq:          s.routedSeq,
 		ThreadID:     threadID,
 		Notification: *appwire.NotificationMessage(method, params).Notification,
 	}
@@ -129,7 +138,13 @@ type notificationDelivery struct {
 	record     SequencedNotification
 }
 
+// routeSequencedLocked runs under projectionMu, the same gate a capture holds
+// while it reads its cut. Tracking the high-water sequence here is what lets
+// Broadcast allocate above every cut the server can have handed out.
 func (s *Server) routeSequencedLocked(record SequencedNotification) []notificationDelivery {
+	if record.Seq > s.routedSeq {
+		s.routedSeq = record.Seq
+	}
 	deliveries := make([]notificationDelivery, 0)
 	for _, connID := range s.subs.Route(record) {
 		s.mu.RLock()
