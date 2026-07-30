@@ -35,7 +35,6 @@ FuzzGoogleComplete 82.2
 FuzzGoogleRequestBuild 80.0
 FuzzHandleMessage 82.4
 FuzzHookRunnerProgram 95.9
-FuzzHubReplayCarryThrough 78.1
 FuzzHubReplayLiveVsReload 78.1
 FuzzHubReplayLiveVsReloadStructured 78.1
 FuzzJobEventLogReplay 95.2
