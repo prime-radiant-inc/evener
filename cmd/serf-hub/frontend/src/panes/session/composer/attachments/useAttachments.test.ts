@@ -121,6 +121,56 @@ async function flush(): Promise<void> {
   });
 }
 
+test("replaceWithSettled hydrates recovery attachments without re-encoding", () => {
+  const editor = makeFakeEditor();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.replaceWithSettled([
+      {
+        marker: 4,
+        name: "proof.png",
+        mediaType: "image/png",
+        data: "AQID",
+        pending: false,
+      },
+    ]);
+  });
+
+  expect(result.current.items).toEqual([
+    {
+      marker: 4,
+      name: "proof.png",
+      mediaType: "image/png",
+      data: "AQID",
+      pending: false,
+    },
+  ]);
+  expect(result.current.toInputAttachments()).toEqual([{ name: "proof.png", mediaType: "image/png", data: "AQID" }]);
+});
+
+test("a new attachment after recovery hydration uses the next marker", async () => {
+  const editor = makeFakeEditor("[image 4]");
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.replaceWithSettled([
+      {
+        marker: 4,
+        name: "old.png",
+        mediaType: "image/png",
+        data: "AQID",
+        pending: false,
+      },
+    ]);
+    result.current.ingestFiles([makeFile("new.png")], () => {});
+  });
+  await flush();
+
+  expect(editor.getText()).toBe("[image 4][image 5]");
+  expect(result.current.items.map((item) => item.marker)).toEqual([4, 5]);
+});
+
 test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", () => {
   const editor = makeFakeEditor("hello", 5);
   const { result } = renderHook(() => useAttachments(editor));

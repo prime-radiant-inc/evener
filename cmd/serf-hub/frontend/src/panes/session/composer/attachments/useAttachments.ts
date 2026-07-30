@@ -62,6 +62,10 @@ export interface TextEditor {
 
 export interface UseAttachmentsResult {
   items: PendingAttachment[];
+  /** Replaces the staged items with already-encoded durable attachments
+   * restored into Composer state. Their marker high-water mark remains
+   * authoritative for attachments added afterward. */
+  replaceWithSettled(items: PendingAttachment[]): void;
   /** True while any item is still mid-encode - gates submit (parity §A: "a
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
@@ -108,6 +112,11 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
   const nextMarkerRef = useRef(0);
+
+  const replaceWithSettled = useCallback((nextItems: PendingAttachment[]) => {
+    nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
+    setItems(nextItems.map((item) => ({ ...item })));
+  }, []);
 
   const ingestFiles = useCallback(
     (files: File[], onRejected: (message: string) => void) => {
@@ -214,6 +223,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
 
   return {
     items,
+    replaceWithSettled,
     hasPending: items.some((item) => item.pending),
     ingestFiles,
     removeItem,
