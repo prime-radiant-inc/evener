@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -118,5 +119,67 @@ func TestSendHubDrainAsSteerSendsIdentityTurnAndQueueRevision(t *testing.T) {
 	}
 	if got.ExpectedQueueRevision != 42 {
 		t.Errorf("ExpectedQueueRevision = %d, want 42", got.ExpectedQueueRevision)
+	}
+}
+
+// Found by running the TUI against a rate-limited daemon: after a turn failed,
+// the composer was still in queue mode, so Enter sent turn/queue with an empty
+// ExpectedTurnID and the daemon answered "expectedTurnId is required". The user
+// saw a wire-level protocol error for an action the client could tell was
+// impossible before sending.
+//
+// Same principle the web client already applies at its own submit
+// (Spawn.tsx handleSpawn, kata xgk8): a mutation that CANNOT succeed must not be
+// sent, whatever path reaches it.
+func TestSendHubQueueRefusesWithoutAnActiveTurn(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	called := false
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, _ appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		called = true
+		return appwire.EmptyResponse{}, nil
+	})
+	client, cleanup := newTUIAppWireClient(t, app)
+	defer cleanup()
+
+	msg := sendHubQueue(client, appwire.Ref{SourceID: "local", ThreadID: "th_q"}, "queue me", "queue me", nil, "")
+	queueMsg, ok := msg().(hubQueueMsg)
+	if !ok {
+		t.Fatalf("msg=%T", msg())
+	}
+	if called {
+		t.Error("turn/queue was sent with no ExpectedTurnID; it cannot succeed")
+	}
+	if queueMsg.err == nil {
+		t.Fatal("expected an error the composer can show")
+	}
+	if strings.Contains(queueMsg.err.Error(), "expectedTurnId is required") {
+		t.Errorf("error is the raw wire rejection, not a client-side explanation: %v", queueMsg.err)
+	}
+	// The draft must survive so the user does not retype.
+	if queueMsg.draft != "queue me" {
+		t.Errorf("draft = %q, want it preserved", queueMsg.draft)
+	}
+}
+
+func TestSendHubDrainAsSteerRefusesWithoutAnActiveTurn(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	called := false
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+		called = true
+		return appwire.TurnDrainAsSteerResponse{}, nil
+	})
+	client, cleanup := newTUIAppWireClient(t, app)
+	defer cleanup()
+
+	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_d"}, "steer", "steer", nil, "", 0)
+	drainMsg, ok := msg().(hubDrainAsSteerMsg)
+	if !ok {
+		t.Fatalf("msg=%T", msg())
+	}
+	if called {
+		t.Error("turn/drainAsSteer was sent with no ExpectedTurnID; it cannot succeed")
+	}
+	if drainMsg.err == nil {
+		t.Fatal("expected an error the composer can show")
 	}
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
@@ -50,6 +52,9 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 		if idErr != nil {
 			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
 		}
+		if strings.TrimSpace(expectedTurnID) == "" {
+			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: errNoActiveTurnToQueueBehind}
+		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
 			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
@@ -82,6 +87,9 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		}
 		if idErr != nil {
 			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: idErr}
+		}
+		if strings.TrimSpace(expectedTurnID) == "" {
+			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: errNoActiveTurnToSteer}
 		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
@@ -130,3 +138,15 @@ func buildAttachmentItems(attachments []*clipboard.PastedImage) ([]appwire.Input
 	}
 	return items, nil
 }
+
+// A queue or drain-as-steer is scoped to a specific in-flight turn: the daemon
+// requires expectedTurnId so the message cannot silently attach to a turn other
+// than the one the user was looking at. When the composer has no active turn to
+// name — the session went idle or its turn failed while queue mode was still on
+// screen — the mutation cannot succeed, and sending it earns a raw
+// "expectedTurnId is required" from the wire for something the client already
+// knew. Refuse locally and say so in the composer's own terms instead.
+var (
+	errNoActiveTurnToQueueBehind = errors.New("no active turn to queue behind — the session is idle, so send instead")
+	errNoActiveTurnToSteer       = errors.New("no active turn to steer — the session is idle, so send instead")
+)
