@@ -110,8 +110,8 @@ type StatusInfo struct {
 	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
 	Capabilities     ActionCapabilities `json:"capabilities"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
-	// working-state/token metrics (WS2 A7), read from workMetricsFn on demand
-	// rather than pushed on every event. Usage is a pointer (unlike the other
+	// working-state/token metrics (WS2 A7), served from the materialized thread
+	// envelope. Usage is a pointer (unlike the other
 	// two scalars) because appwire.SerfUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/unwired daemon signals
 	// "no token data" rather than rendering ↑0 ↓0.
