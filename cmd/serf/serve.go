@@ -482,16 +482,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentMu.Unlock()
 	}
 
+	// The observer runs ON the bridge goroutine, which is the daemon's
+	// authoritative consumer, so it must never block: see verboseEventTee.
 	var eventObserver func(events.SessionEvent)
 	if *verbose {
-		enc := json.NewEncoder(os.Stderr)
-		enc.SetEscapeHTML(false)
-		var verboseMu sync.Mutex
-		eventObserver = func(ev events.SessionEvent) {
-			verboseMu.Lock()
-			defer verboseMu.Unlock()
-			_ = enc.Encode(ev)
-		}
+		tee := newVerboseEventTee(os.Stderr, verboseEventTeeBuffer)
+		defer tee.close()
+		eventObserver = tee.observe
 	}
 
 	var notifyCallback func()
