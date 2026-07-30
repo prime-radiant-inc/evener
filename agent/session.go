@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1122,12 +1123,33 @@ func (s *Session) sclock() clock.Clock {
 	return s.clock
 }
 
+// assistantHistoryMessage makes malformed tool arguments replayable in semantic
+// history without changing the provider response used for tool validation.
+func assistantHistoryMessage(message llm.Message) llm.Message {
+	var content []llm.ContentPart
+	for i, part := range message.Content {
+		if part.ToolCall == nil || len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments) {
+			continue
+		}
+		if content == nil {
+			content = append([]llm.ContentPart(nil), message.Content...)
+		}
+		call := *part.ToolCall
+		call.Arguments = json.RawMessage(`{}`)
+		content[i].ToolCall = &call
+	}
+	if content != nil {
+		message.Content = content
+	}
+	return message
+}
+
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
-		Message:                         resp.Message,
+		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),
 		Usage:                           resp.Usage,
 		ResponseID:                      resp.ID,

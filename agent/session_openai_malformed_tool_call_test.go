@@ -50,6 +50,9 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		case 1:
 			writeResponsesFunctionCall(t, w, flusher, "resp_bad", "call_bad", "my_strict_tool", malformedArgs)
 		case 2:
+			args := mustJSON(t, map[string]any{"value": "fixed"})
+			writeResponsesFunctionCall(t, w, flusher, "resp_fixed", "call_fixed", "my_strict_tool", args)
+		case 3:
 			args := mustJSON(t, map[string]any{
 				"message":  "recovered",
 				"end_turn": true,
@@ -60,6 +63,17 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 				},
 			})
 			writeResponsesFunctionCall(t, w, flusher, "resp_done", "call_done", "communicate", args)
+		case 4:
+			args := mustJSON(t, map[string]any{
+				"message":  "restored",
+				"end_turn": true,
+				"output": map[string]any{
+					"message":   "",
+					"data":      map[string]any{},
+					"artifacts": []string{},
+				},
+			})
+			writeResponsesFunctionCall(t, w, flusher, "resp_restored", "call_restored", "communicate", args)
 		default:
 			t.Errorf("unexpected request %d body: %s", requestIndex, string(body))
 			w.WriteHeader(http.StatusInternalServerError)
@@ -82,16 +96,16 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 	defer sess.Close()
 
-	var toolRuns int
+	var toolInputs []any
 	sess.RegisterTool("my_strict_tool", "requires valid JSON arguments", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"value": map[string]any{"type": "string"},
 		},
 		"required": []string{"value"},
-	}, func(context.Context, any) (any, error) {
-		toolRuns++
-		return "should not run", nil
+	}, func(_ context.Context, input any) (any, error) {
+		toolInputs = append(toolInputs, input)
+		return "corrected call ran", nil
 	})
 
 	eventsDone := make(chan struct{})
@@ -110,38 +124,103 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if !strings.Contains(got, "recovered") {
 		t.Fatalf("ProcessInput output = %q, want recovered", got)
 	}
+	if len(toolInputs) != 1 {
+		t.Fatalf("strict tool executions = %d, want only the corrected call", len(toolInputs))
+	}
+	toolInput, ok := toolInputs[0].(map[string]any)
+	if !ok || toolInput["value"] != "fixed" {
+		t.Fatalf("strict tool input = %#v, want corrected value", toolInputs[0])
+	}
 
+	meta := sess.Meta()
+	transcriptPath := sess.TranscriptPath()
 	sess.Close()
 	<-eventsDone
 
-	if toolRuns != 0 {
-		t.Fatalf("malformed tool call executed %d time(s), want 0", toolRuns)
-	}
-
-	rawCall, ok := findToolCallInHistory(sess.history, "call_bad")
+	storedCall, ok := findToolCallInHistory(sess.history, "call_bad")
 	if !ok {
-		t.Fatalf("missing raw assistant tool call in session history: %s", turnKinds(sess.history))
+		t.Fatalf("missing assistant tool call in session history: %s", turnKinds(sess.history))
 	}
-	if string(rawCall.Arguments) != malformedArgs {
-		t.Fatalf("stored tool-call arguments = %q, want raw malformed %q", string(rawCall.Arguments), malformedArgs)
+	if got := string(storedCall.Arguments); got != "{}" {
+		t.Fatalf("stored tool-call arguments = %q, want {}", got)
 	}
 
 	result, ok := findToolResultInHistory(sess.history, "call_bad")
 	if !ok {
 		t.Fatalf("missing error tool result for call_bad: %s", turnKinds(sess.history))
 	}
-	if !result.IsError {
-		t.Fatalf("tool result IsError = false, want true: %+v", result)
+	if !result.IsError || !result.PrevalOnly {
+		t.Fatalf("tool result = %+v, want pre-validation error", result)
 	}
 	if !strings.Contains(fmt.Sprint(result.Content), "arguments were not valid JSON") {
-		t.Fatalf("tool result content = %q, want invalid-JSON repair diagnostic", fmt.Sprint(result.Content))
+		t.Fatalf("tool result content = %q, want invalid-JSON diagnostic", fmt.Sprint(result.Content))
+	}
+
+	_, entries, skipped, err := readTranscript(transcriptPath)
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	if skipped != 0 {
+		t.Fatalf("readTranscript skipped %d records, want 0", skipped)
+	}
+	durableHistory := ResumeHistory(entries)
+	durableCall, ok := findToolCallInHistory(durableHistory, "call_bad")
+	if !ok || string(durableCall.Arguments) != "{}" {
+		t.Fatalf("durable call_bad = %+v, want arguments {}", durableCall)
+	}
+	durableResult, ok := findToolResultInHistory(durableHistory, "call_bad")
+	if !ok || !durableResult.IsError || !durableResult.PrevalOnly {
+		t.Fatalf("durable call_bad result = %+v, want pre-validation error", durableResult)
+	}
+	callIndex := turnIndexWithToolCall(durableHistory, "call_bad")
+	resultIndex := turnIndexWithToolResult(durableHistory, "call_bad")
+	if callIndex < 0 || resultIndex <= callIndex {
+		t.Fatalf("durable call/result order = call:%d result:%d, want call before result", callIndex, resultIndex)
+	}
+
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		meta,
+		RestoreSessionConfig{
+			StateDir: dir,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	restoredEventsDone := make(chan struct{})
+	go func() {
+		defer close(restoredEventsDone)
+		for range restored.Events() {
+		}
+	}()
+	defer func() {
+		restored.Close()
+		<-restoredEventsDone
+	}()
+
+	restoreCtx, cancelRestore := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRestore()
+	restoredOutput, err := restored.ProcessInput(restoreCtx, "continue after restore", nil)
+	if err != nil {
+		t.Fatalf("restored ProcessInput: %v", err)
+	}
+	if !strings.Contains(restoredOutput, "restored") {
+		t.Fatalf("restored ProcessInput output = %q, want restored", restoredOutput)
 	}
 
 	mu.Lock()
 	bodies := append([][]byte(nil), requestBodies...)
 	mu.Unlock()
-	if len(bodies) != 2 {
-		t.Fatalf("OpenAI Responses request count = %d, want 2", len(bodies))
+	if len(bodies) != 4 {
+		t.Fatalf("OpenAI Responses request count = %d, want 4", len(bodies))
 	}
 
 	second := decodeResponsesRequest(t, bodies[1])
@@ -270,4 +349,15 @@ func findToolCallInHistory(history []schema.Turn, callID string) (*llm.ToolCallD
 		}
 	}
 	return nil, false
+}
+
+func turnIndexWithToolCall(history []schema.Turn, callID string) int {
+	for i, turn := range history {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+				return i
+			}
+		}
+	}
+	return -1
 }
