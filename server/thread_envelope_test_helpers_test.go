@@ -33,6 +33,9 @@ type stubThreadEnvelopeSource struct {
 	reasoningLevels  []string
 	supportsReason   bool
 	meta             schema.SessionMeta
+	// parkOnMeta runs at the start of SessionMeta(), the last facet
+	// refreshFacets samples. Parking there holds a fully-populated sample open.
+	parkOnMeta func()
 }
 
 func (s *stubThreadEnvelopeSource) ContextPressure() float64              { return s.contextPressure }
@@ -40,7 +43,13 @@ func (s *stubThreadEnvelopeSource) ContextMetrics() ContextMetrics        { retu
 func (s *stubThreadEnvelopeSource) DetailedStatus() DetailedStatus        { return s.detailedStatus }
 func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return s.tasks }
 func (s *stubThreadEnvelopeSource) AskPending() bool                      { return s.askPending }
-func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta       { return s.meta }
+
+func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
+	if s.parkOnMeta != nil {
+		s.parkOnMeta()
+	}
+	return s.meta
+}
 
 func (s *stubThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
 	return s.queue, s.pendingMutations

@@ -664,3 +664,110 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 		t.Error("a late old-session event closed the replacement's status")
 	}
 }
+
+// TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns pins the seed that
+// follows /clear's identity commit.
+//
+// ReplaceAppIdentity zeroes the envelope in the same commit as the identity, so
+// between that commit and the replacement session's first drained event there is
+// a window where the daemon knows the new thread's id and nothing else about it.
+// serve closes it by re-seeding immediately. Without that call a client reading
+// in the window gets a thread with no diagnostics, no reasoning settings and no
+// title -- for a session that has all three.
+//
+// The window is held open by construction rather than raced for: the cleared
+// session's bridge is replaced with one that never drains, so the ONLY thing
+// that can have populated the envelope is the seed.
+func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+
+	var bridged int
+	var bridgeMu sync.Mutex
+	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
+		bridgeMu.Lock()
+		bridged++
+		n := bridged
+		bridgeMu.Unlock()
+		if n > 1 {
+			// The replacement session's events are never drained, so nothing
+			// after the identity commit can refresh the envelope.
+			return
+		}
+		server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+	}
+
+	var diagnostics bool
+	var newID string
+	obs := runClearAttempt(t, deps, state, args, func(*clearObservation) {
+		newSess := state.session(1)
+		if newSess == nil {
+			return
+		}
+		newID = newSess.ID()
+		conn := state.srv.AppServer().NewConnection("clear-seed")
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodInitialize,
+			appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+		resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(2), appwire.MethodThreadRead,
+			appwire.ThreadReadParams{Ref: "local:" + newID}))
+		read, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+		if !ok {
+			return
+		}
+		diagnostics = read.Thread.Serf.Diagnostics != nil
+	})
+	if obs.clearErr != nil {
+		t.Fatalf("clear: %v", obs.clearErr)
+	}
+	if newID == "" {
+		t.Fatal("clear produced no replacement session; the fixture proves nothing")
+	}
+	if !diagnostics {
+		t.Fatal("thread/read carries no diagnostics for the replacement session: the envelope was zeroed with the identity and never re-seeded")
+	}
+}
+
+// TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns is the same pin for the other
+// seed. The daemon installs its identity before any event has been drained, so
+// without an explicit seed the first client to attach -- which is what opening a
+// session URL does -- reads a thread with no diagnostics, no reasoning settings
+// and no title, for a session that has all three.
+//
+// Bridging is suppressed entirely, so SESSION_START can never arrive and the
+// seed is the only thing that can populate the envelope.
+func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	deps.bridge = func(serveServer, *agent.Session, func(events.SessionEvent)) {}
+
+	var diagnostics bool
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		sess := state.session(0)
+		if sess == nil {
+			state.srv.shutdown()
+			return http.ErrServerClosed
+		}
+		conn := state.srv.AppServer().NewConnection("startup-seed")
+		conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodInitialize,
+			appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+		resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+			appwire.NewIntID(2), appwire.MethodThreadRead,
+			appwire.ThreadReadParams{Ref: "local:" + sess.ID()}))
+		read, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+		if !ok {
+			state.srv.shutdown()
+			return http.ErrServerClosed
+		}
+		diagnostics = read.Thread.Serf.Diagnostics != nil
+		state.srv.shutdown()
+		return http.ErrServerClosed
+	}
+
+	if err := runServeWithDeps(args, deps); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if !diagnostics {
+		t.Fatal("the first thread/read carries no diagnostics: the daemon installed its identity without seeding the envelope")
+	}
+}

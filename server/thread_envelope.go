@@ -126,27 +126,56 @@ const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 // have events carrying their values today and could be converted to true
 // carriers one at a time later, without touching the read path.
 var facetsByEvent = map[events.EventKind]envelopeFacet{
-	// A session opening or closing restates everything about it.
+	// THE THREE CHECKPOINTS. A session opening or closing restates everything
+	// about it, and so does a turn boundary.
+	//
+	// TURN_ENDED is facetAll deliberately, and it is what makes a whole class of
+	// gap structurally impossible rather than individually remembered. Several
+	// values move DURING a turn with no event of their own: the reasoning effort
+	// is reassigned every model round from the task store and again by loop
+	// detection, MCP servers record connection errors, the goal tool's terminal
+	// verdict is deferred to the next gate. Worse, the failed-turn return path
+	// emits ONLY this event, so anything not re-read here would freeze until the
+	// next cleanly-ending turn -- which never comes if the user stops after a
+	// failure. Sampling everything once per turn costs one jobs.jsonl read and
+	// one task-store read per turn, which is the right price for that.
 	events.EventSessionStart: facetAll,
 	events.EventSessionEnd:   facetAll,
+	events.EventTurnEnded:    facetAll,
 
-	// Queue mutations. QUEUE_CHANGED is the direct announcement; the turn
-	// boundaries are here because a queued entry is CONSUMED into a turn without
-	// a QUEUE_CHANGED of its own, and because the client-mutation store's
+	// Queue mutations. QUEUE_CHANGED is the direct announcement; the turn-start
+	// events are here because a queued entry is CONSUMED into a turn without a
+	// QUEUE_CHANGED of its own, and because the client-mutation store's
 	// pending-execution set transitions on incorporation and completion.
+	//
+	// USER_INPUT carries facetMeta because an unnamed thread's preview falls back
+	// to meta.OriginalPrompt, which is derived from the first user turn in
+	// history: without it a new thread lists as its raw session id for its whole
+	// first turn.
 	events.EventQueueChanged:     facetQueue,
-	events.EventUserInput:        facetQueue | facetWork | facetContext | facetAsk,
-	events.EventSteeringInjected: facetQueue | facetAsk,
-	events.EventTurnEnded:        facetQueue | facetWork | facetContext | facetAsk | facetFailures,
+	events.EventUserInput:        facetQueue | facetWork | facetContext | facetAsk | facetMeta,
+	events.EventSteeringInjected: facetQueue | facetAsk | facetContext,
 
-	// Tool calls move the transcript writer's failure count, and ask_user's
-	// completion is what clears the pending-ask bit.
-	events.EventToolCallEnd:      facetFailures | facetAsk | facetTasks,
-	events.EventToolCallRepaired: facetFailures,
+	// A completed tool call appends its result to history (context), can be the
+	// ask_user whose completion sets the pending-ask bit, and can be a task tool.
+	//
+	// facetFailures is the one row where the write-then-emit ordering does NOT
+	// hold: TOOL_CALL_END is emitted from execToolBatch, and the write that
+	// advances the transcript writer's counter happens afterwards in
+	// persistToolResults (agent/session_lifecycle.go). So this sample can be one
+	// tool call behind. That is not a regression -- the read-time pull it
+	// replaced sampled at the same instant, inside the commit for this same
+	// event -- and TURN_ENDED re-reads the facet after persistence, so the figure
+	// is exact by the turn boundary. It is listed here because the count usually
+	// HAS advanced (from earlier calls in the batch) and the finer-grained stamp
+	// is worth having; not because the ordering guarantee applies.
+	events.EventToolCallEnd: facetFailures | facetAsk | facetTasks | facetContext,
 
-	// A model response is what moves cumulative usage and context pressure.
+	// A model response moves cumulative usage and context pressure. Compaction
+	// rewrites history outright, and an idle /compact has no turn boundary to
+	// rescue the preview it can change.
 	events.EventAssistantTextEnd:  facetContext | facetWork,
-	events.EventContextCompaction: facetContext,
+	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
 	// Values whose events carry them today.
@@ -155,8 +184,10 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics,
 	events.EventReasoningEffortChanged: facetReasoning,
 
-	// Goal state.
-	events.EventGoalContinuation: facetGoal | facetQueue,
+	// Goal state. Neither SetGoal nor Clear emits anything -- the goal store has
+	// no event handle at all -- so goal/set refreshes facetGoal at the handler
+	// (see handleAppGoalSet). These two cover the engine's own transitions.
+	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
 	events.EventGoalEnded:        facetGoal,
 
 	// Sandbox escalations block a tool call awaiting a human.
@@ -195,10 +226,15 @@ func (s *Server) RefreshThreadEnvelope() {
 //
 // It runs in the bridge, BEFORE RecordAppEvent projects ev. That ordering is
 // the same one applySessionEventStatus relies on and it is what makes the
-// response cut correct: a session writes its state before emitting the event
-// that announces it, so an envelope refreshed here can only lead its own
+// response cut correct: where a session writes its state before emitting the
+// event that announces it, an envelope refreshed here can only lead its own
 // notification, never lag it. Refreshing after the commit would invert exactly
 // the invariant this work exists to protect.
+//
+// That write-then-emit guarantee is the session's, not this function's, and it
+// does not hold everywhere -- see the facetFailures note on TOOL_CALL_END. Where
+// it does not hold, the sample is no worse than the read-time pull it replaced,
+// because that pull ran inside the commit for the very same event.
 func (s *Server) refreshThreadEnvelopeForEvent(ev events.SessionEvent) {
 	facets, ok := facetsByEvent[ev.Kind]
 	if !ok {
@@ -221,10 +257,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if src == nil {
 		return
 	}
-	if sourceID == "" {
-		sourceID = "local"
+	stampSourceID := sourceID
+	if stampSourceID == "" {
+		stampSourceID = "local"
 	}
-	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+	ref := appwire.Ref{SourceID: stampSourceID, ThreadID: threadID}.String()
 
 	var next threadEnvelope
 	if facets&facetContext != 0 {
@@ -281,7 +318,22 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 
 	s.mu.Lock()
-	s.appEnvelope.assign(facets, next)
+	// Re-test the identity in the same hold as the write, exactly as
+	// applySessionEventStatus does, and drop a sample that no longer describes
+	// this daemon's session.
+	//
+	// Sampling above ran outside s.mu and took no projection lock, so unlike the
+	// read-time pull this replaced it is NOT mutually excluded from
+	// ReplaceAppIdentity's commit -- and in production it genuinely interleaves,
+	// because /clear runs that commit while the outgoing session's bridge is
+	// still draining and only closes it afterwards. Storing a sample taken
+	// before the replacement would publish the retired session's title, queue,
+	// failure count and escalation cards under its successor's identity, with
+	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
+	// that is the I/O this change exists to move off it.
+	if s.appThreadID == threadID && s.appSourceID == sourceID {
+		s.appEnvelope.assign(facets, next)
+	}
 	s.mu.Unlock()
 }
 

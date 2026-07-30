@@ -477,3 +477,177 @@ func (c *countingThreadEnvelopeSource) ClientMutationProjection() (appwire.Queue
 	c.hit()
 	return appwire.QueueState{}, nil
 }
+
+// TestClearingTheGoalClearsItOnTheWire pins the one state change that reaches
+// the daemon through a handler rather than through the session's event stream.
+//
+// goal/set with an empty objective is the documented clear path, and the web
+// palette offers it as one ("objective... (empty to clear)"). It runs
+// Session.ClearGoal -> goal.Store.Clear, which nils the goal and emits nothing:
+// the goal store has no event handle at all. Nothing in facetsByEvent can
+// therefore observe a clear, so without a refresh at the handler a cleared goal
+// stays on every thread/read for the life of the identity, and the status bar
+// keeps reporting an objective the user explicitly abandoned.
+//
+// Setting a goal is silent for the same reason (SetGoal returns without an event
+// whenever a turn is running, no kick is wired, or an ask is pending), so the
+// refresh covers both directions of the one handler.
+func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		goalStatus: "active", goalIterations: 2, goalSet: true,
+	})
+	// The daemon's goal callback is the session's; here it stands in for
+	// ClearGoal/SetGoal, which both mutate the store and emit nothing.
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		if objective == "" {
+			src.goalStatus, src.goalIterations, src.goalSet = "", 0, false
+			return false, nil
+		}
+		src.goalStatus, src.goalIterations, src.goalSet = "active", 0, true
+		return true, nil
+	})
+
+	if got := readThreadOverWire(t, srv, "local:th_1").Serf.Goal; got == nil || got.Status != "active" {
+		t.Fatalf("fixture did not publish a goal to clear: %+v", got)
+	}
+
+	conn := srv.AppServer().NewConnection("goal-clear")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(1), appwire.MethodInitialize,
+		appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{Objective: ""}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("goal/set: %v", resp.Kind())
+	}
+
+	// Traffic keeps flowing afterwards. None of these events samples facetGoal,
+	// which is what makes the staleness permanent rather than transient.
+	//
+	// The events are chosen deliberately: a turn boundary WOULD rescue the goal,
+	// because TURN_ENDED re-reads every facet. But clearing a goal is something
+	// you do when you have stopped, and an idle session produces no turn
+	// boundary at all -- so leaning on one here would prove the handler refresh
+	// unnecessary when it is exactly what that session depends on.
+	feedBridge(srv,
+		events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1"},
+		events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "x"}},
+		events.SessionEvent{Kind: events.EventQueueChanged, SessionID: "th_1", Data: events.QueueChangedData{}},
+	)
+
+	if got := readThreadOverWire(t, srv, "local:th_1").Serf.Goal; got != nil {
+		t.Fatalf("thread/read still carries goal %+v after goal/set cleared it", got)
+	}
+}
+
+// TestSampleLandingAfterAnIdentityReplacementIsDropped pins the window this
+// change opened.
+//
+// refreshFacets deliberately samples OUTSIDE s.mu, because a sample can read
+// jobs.jsonl or take the session's mutex and holding s.mu across that would put
+// the I/O back under a lock the read path takes. It also takes no projection
+// lock, so unlike the pull it replaced it is no longer mutually excluded from
+// ReplaceAppIdentity's commit. In production that race is not theoretical: the
+// identity commit for /clear runs while the OLD session's bridge is still
+// draining, and only closes it afterwards.
+//
+// A sample that started before the replacement therefore describes the retired
+// session. Storing it would publish the retired session's title, queue, failure
+// count and escalation cards under the replacement's identity, with nothing
+// afterwards to correct it. The ordering here is a real happens-before: the
+// sample is parked in its last facet while the replacement runs to completion.
+func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src := &stubThreadEnvelopeSource{
+		queue:            appwire.QueueState{Depth: 3, Revision: 2},
+		failedToolCalls:  9,
+		failuresMeasured: true,
+		meta:             schema.SessionMeta{ID: "th_1", Name: "the retired session"},
+		escalations:      []appwire.SandboxEscalationRequested{{EscalationID: "esc_old"}},
+	}
+	srv.SetThreadEnvelopeSource(src)
+	src.parkOnMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		srv.RefreshThreadEnvelope()
+	}()
+	<-parked
+
+	// The daemon's session is replaced while that sample is in flight.
+	srv.SetAppIdentity("local", "th_2")
+	close(release)
+	<-sampled
+
+	thread := readThreadOverWire(t, srv, "local:th_2")
+	if thread.Name != "" {
+		t.Fatalf("thread.Name = %q on th_2: a sample of the retired session landed after the replacement", thread.Name)
+	}
+	if thread.Serf.Queue.Depth != 0 {
+		t.Fatalf("queue = %+v on th_2, want the retired session's queue dropped", thread.Serf.Queue)
+	}
+	if thread.Serf.FailedToolCalls != nil {
+		t.Fatalf("failedToolCalls = %d on th_2, want absent: that count belongs to th_1", *thread.Serf.FailedToolCalls)
+	}
+	if len(thread.Serf.PendingEscalations) != 0 {
+		t.Fatalf("pendingEscalations = %+v on th_2, want th_1's cards dropped", thread.Serf.PendingEscalations)
+	}
+}
+
+// TestTurnStartPublishesItsPendingMutation pins the other change point that
+// reaches the daemon through a handler rather than an event.
+//
+// The six sibling mutation handlers all reflect the durable queue, which emits
+// QUEUE_CHANGED. turn/start does not: it records a pending execution and emits
+// nothing until the serve loop later CLAIMS it. A client reading in between
+// would not see its own in-flight mutation, which is the single thing the
+// retry-safe projection exists to show a reconnecting client.
+func TestTurnStartPublishesItsPendingMutation(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			// Stands in for AcceptClientMutationStart: the durable intent is
+			// recorded, and nothing is emitted.
+			src.pendingMutations = []appwire.PendingMutation{{
+				ClientMutationID: params.ClientMutationID,
+				Method:           "turn/start",
+				ExecutionState:   "accepted",
+			}}
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+		},
+	})
+
+	conn := srv.AppServer().NewConnection("turn-start")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(1), appwire.MethodInitialize,
+		appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+			Ref:              "local:th_1",
+			ClientMutationID: "cm_1",
+			Input:            []appwire.InputItem{{Type: "text", Text: "go"}},
+		}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("turn/start: %v", resp.Kind())
+	}
+
+	got := readThreadOverWire(t, srv, "local:th_1").Serf.PendingMutations
+	if len(got) != 1 || got[0].ClientMutationID != "cm_1" {
+		t.Fatalf("pendingMutations = %+v after turn/start, want the accepted intent", got)
+	}
+}

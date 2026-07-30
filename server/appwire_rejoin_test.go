@@ -111,7 +111,6 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	publishSessionQueueEnvelope(srv, sess)
-	publishSessionQueueEnvelope(srv, sess)
 
 	response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
 	if err != nil {

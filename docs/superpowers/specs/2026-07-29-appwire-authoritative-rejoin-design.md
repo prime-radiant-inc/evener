@@ -267,8 +267,10 @@ The envelope around the turns is materialized. `server.Server` holds one
 `threadEnvelope` (`server/thread_envelope.go`) carrying every value a thread
 snapshot reports about the live session other than its identity and its turns.
 `appThread()` and `/status` copy it. The sixteen injected read-time callbacks
-they used to pull are deleted, so the read path cannot reach a session: there is
-no longer a callback on the Server that could.
+they used to pull are deleted, so neither surface reaches a session. The Server
+still holds session-reaching callbacks for other work (`tasksFn`,
+`listModelsFunc`, the mutation and lifecycle hooks); none of them is on the
+`thread/read` cut.
 
 Every envelope field that a notification also announces -- queue, status, active
 turn, escalations, the failure count -- is still produced on the cut's side of

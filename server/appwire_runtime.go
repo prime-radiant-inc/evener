@@ -518,6 +518,18 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 		return appwire.TurnStartResponse{}, appwire.Unavailable("turn start not available")
 	}
 	response, err := fn(params)
+	// turn/start accepts a durable mutation intent and emits NOTHING: unlike
+	// steer/queue/drain/promote/cancel, it does not reflect the durable queue, so
+	// no QUEUE_CHANGED announces the pending execution it just recorded. The
+	// serve loop's later claim does emit one, but a client reading between accept
+	// and claim would not see its own in-flight mutation -- which is the single
+	// thing the retry-safe projection exists to show a reconnecting client.
+	//
+	// Every mutation handler refreshes, not just this one. They all commit to the
+	// same store, and a uniform refresh means nobody has to re-derive which of
+	// the seven happens to emit. The sample is cheap: the store publishes its
+	// committed generation under a narrow mutex it never holds across a write.
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -543,6 +555,7 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 		return appwire.TurnSteerResponse{}, appwire.Unavailable("steer not available")
 	}
 	response, err := fn(params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -580,6 +593,7 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 		return appwire.TurnInterruptResponse{}, appwire.Unavailable("interrupt not available")
 	}
 	response, err := fn(ctx, params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -605,6 +619,7 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 		return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
 	}
 	response, err := fn(params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -627,6 +642,7 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
 	}
 	response, err := fn(params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -652,6 +668,7 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
 	}
 	response, err := fn(params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -674,6 +691,7 @@ func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.Tur
 		return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("cancel-queued not available")
 	}
 	response, err := fn(params)
+	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
@@ -693,6 +711,17 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	if err != nil {
 		return appwire.GoalSetResponse{}, err
 	}
+	// The goal store has no event handle: SetGoal emits nothing when a turn is
+	// running, no kick is wired, or an ask is pending, and Clear emits nothing
+	// ever. So no event in facetsByEvent can observe this change, and without
+	// this refresh a cleared goal would stay on every thread/read for the life
+	// of the identity -- the status bar still reporting an objective the user
+	// explicitly abandoned.
+	//
+	// This handler is the change point, so the refresh belongs here. It uses the
+	// same sampler the bridge uses, so the goal has one source of truth either
+	// way.
+	s.refreshFacets(facetGoal)
 	return appwire.GoalSetResponse{Started: started}, nil
 }
 
