@@ -57,6 +57,7 @@ gesture.
   ```bash
   "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
   HUBPID=$!
+  echo "$HUBPID" >"$run/hub.pid"
   for i in $(seq 1 50); do
     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
     [ -n "$PORT" ] && break
@@ -66,7 +67,13 @@ gesture.
   HUB=http://127.0.0.1:$PORT
   TOKEN=$(cat "$HOME/.serf/auth-token")
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
+  export SERF_E2E_RUN="$run"   # how the sibling ask cards find this hub
   ```
+- This card owns the hub the rest of the ask set reuses. `$SERF_E2E_RUN` is the
+  whole handoff — `$HOME`, the port, the token and the pid all re-derive from files
+  under it, so no sibling has to know a port number and two agents running the set
+  concurrently never meet. See "Handing this hub to a sibling card" in
+  `docs/agentic-testing.md`.
 - The browser steps need a real SPA bundle: a checkout that has never run `make build-web`
   ships a one-line `frontend/dist/PLACEHOLDER` and serves no app. Build the frontend
   **before** the hub (rebuild-matrix item 3 in the runbook).

@@ -8,7 +8,19 @@ delegation-only tools for a coordinator.
 
 ## Pre-state
 
-- Hub + credentials as `ask-web-answer.md` (reuse if still running on `127.0.0.1:9280`).
+- Hub + credentials as `ask-web-answer.md` — reuse that card's hub if it is still
+  running, otherwise re-run its Pre-state first. The handoff is its run directory, not
+  a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  ```bash
+  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  export HOME="$run/home"
+  unset XDG_STATE_HOME
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+  HUB=http://127.0.0.1:$PORT
+  TOKEN=$(cat "$HOME/.serf/auth-token")
+  HUBPID=$(cat "$run/hub.pid")
+  kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
+  ```
 - `openai/gpt-5.5` usable.
 
 ## Steps
@@ -98,10 +110,16 @@ delegation-only tools for a coordinator.
 ## Cleanup
 
 ```bash
-curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SID/shutdown" >/dev/null
-pkill -f serf-hub-ask
-rm -rf "$tmpdir" /tmp/serf-ask /tmp/serf-hub-ask
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
+rm -rf "$tmpdir"
 ```
+
+Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
+kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
+`SERF_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
+`pkill -f serf-hub`, which takes out every other concurrent agent's hub too
+(`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 

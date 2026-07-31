@@ -15,15 +15,18 @@ compaction runs.
 ## Pre-state
 
 - Fresh binaries built from this branch, run in a **fully isolated** hub so the
-  test cannot collide with a real hub or a sibling worktree's hub (`~/.serf`,
-  the default port, and `~/.local/state/serf` are host-level singletons). Use a
-  throwaway `$HOME` with the real provider creds symlinked in:
+  test cannot collide with a real hub or a sibling worktree's hub (`~/.serf` and
+  `~/.local/state/serf` are host-level singletons). One `mktemp` run directory
+  names the binaries, the throwaway `$HOME`, the log and the pid — never a fixed
+  `/tmp` name a second concurrent run would overwrite (kata `k2rx`) — and the
+  hub picks its own port (kata `68fm`), with the real provider creds symlinked in:
   ```bash
   cd <this worktree>
-  go build -o /tmp/serf-sc-hub ./cmd/serf-hub
-  go build -o /tmp/serf-sc     ./cmd/serf
+  run=$(mktemp -d -t serf-e2e-compact-XXXXXX)
+  go build -o "$run/serf-hub" ./cmd/serf-hub
+  go build -o "$run/serf"     ./cmd/serf
   REALSERF=~/.serf
-  TH=$(mktemp -d -t serf-sc-home-XXXXX)        # isolated HOME
+  TH="$run/home"                               # isolated HOME
   mkdir -p "$TH/.serf/run" "$TH/.local/state/serf/projects"
   # Symlink read-only creds + config that DON'T carry absolute state paths:
   for f in credentials.toml providers.toml auth-token launch.toml; do
@@ -32,7 +35,7 @@ compaction runs.
   # (hub_state_root, run_dir, state_glob, past_index_db) and the test hub will
   # then read/write REAL state. WRITE a fresh one pointed entirely at $TH:
   cat > "$TH/.serf/hub.toml" <<EOF
-  addr = "127.0.0.1:9186"
+  addr = "127.0.0.1:0"
   hub_state_root = "$TH/.serf"
   run_dir = "$TH/.serf/run"
   state_glob = "$TH/.local/state/serf/projects/*"
@@ -40,12 +43,24 @@ compaction runs.
   spawn_timeout = "30s"
   EOF
   HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-    /tmp/serf-sc-hub -addr 127.0.0.1:9186 -serf /tmp/serf-sc \
-    >/tmp/serf-sc-hub.log 2>&1 &
-  sleep 3
+    "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" \
+    >"$run/hub.log" 2>&1 &
+  HUBPID=$!
+  echo "$HUBPID" >"$run/hub.pid"
+  # One startup line carries BOTH facts this card needs — the port the kernel
+  # gave the hub and the run_dir it resolved (`cmd/serf-hub/main.go:451`), so
+  # wait for it rather than sleeping a guessed interval:
+  for i in $(seq 1 50); do
+    PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
+    [ -n "$PORT" ] && break
+    kill -0 "$HUBPID" 2>/dev/null || { echo "hub exited before listening:" >&2; cat "$run/hub.log" >&2; exit 1; }
+    sleep 0.1
+  done
+  [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
+  HUB=http://127.0.0.1:$PORT
   # ISOLATION GATE — abort if the hub resolved real paths:
-  grep -q "run_dir=$TH" /tmp/serf-sc-hub.log || { echo "NOT ISOLATED — abort"; exit 1; }
-  TOKEN=$(cat "$REALSERF/auth-token")
+  grep -q "run_dir=$TH" "$run/hub.log" || { echo "NOT ISOLATED — abort"; exit 1; }
+  TOKEN=$(cat "$TH/.serf/auth-token")
   ```
 - A **launchable** model whose **credentials the isolated `$HOME` can actually
   reach**. This is the catch (see Sharp edges): `launch.toml` lists the
@@ -66,17 +81,17 @@ compaction runs.
    SID=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
      -d "{\"prompt\":$(python3 -c 'import json,os;print(json.dumps(os.environ["PROMPT"]))'),\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$TH\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
-     http://127.0.0.1:9186/api/spawn | python3 -c 'import sys,json;print(json.load(sys.stdin).get("session_id",""))')
+     "$HUB/api/spawn" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("session_id",""))')
    echo "session: $SID"
    ```
    **Expected:** a non-empty `$SID`. Falsify: empty/`error` ⇒ spawn failed
-   (check `/tmp/serf-sc-hub.log` — usually a model/creds problem, not the
+   (check `$run/hub.log` — usually a model/creds problem, not the
    feature).
 
 2. **Wait for the turn to reach idle** (the agent ran the tool and replied):
    ```bash
    for i in $(seq 1 60); do
-     grep -q '"kind":"TURN_END"\|DONE' /tmp/serf-sc-hub.log && break; sleep 2
+     grep -q '"kind":"TURN_END"\|DONE' "$run/hub.log" && break; sleep 2
    done
    sleep 2
    ```
@@ -124,19 +139,22 @@ compaction runs.
 ## Cleanup
 
 ```bash
-pkill -x serf-sc-hub          # exact PROCESS NAME — see Sharp edges
-rm -rf "$TH" /tmp/serf-sc-hub /tmp/serf-sc /tmp/serf-sc-hub.log
+kill "$HUBPID" 2>/dev/null    # by the pid you captured — see Sharp edges
+rm -rf "$run"                 # $TH, the binaries and the log all live under it
 ```
 Leave the real `~/.serf` hub and sibling worktrees untouched — the isolated
 `$HOME` guarantees this test never wrote to them.
 
 ## Sharp edges
 
-- **`pkill -f 'serf-sc-hub'` SHOOTS ITSELF.** Your own shell's argv contains the
-  string `serf-sc-hub`, so `pkill -f` (match full args) kills the shell running
-  the cleanup — the command dies mid-way with no output and the hub may survive.
-  Use `pkill -x serf-sc-hub` (match the exact process *name*, which only the
-  binary has, not the shell). Verify with `pgrep -x serf-sc-hub`.
+- **Kill the hub by pid, never by pattern.** Two independent ways a pattern
+  match goes wrong here, which is why `$HUBPID` (and `$run/hub.pid` for a
+  second shell) exists: `pkill -f serf-hub` also kills every *other* concurrent
+  agent's test hub, since they are all called `serf-hub` now that each lives
+  under its own run directory; and a `pkill -f` whose pattern appears in your
+  own shell's argv kills the shell running the cleanup, so the command dies
+  mid-way with no output and the hub survives anyway. Verify the kill took with
+  `kill -0 "$HUBPID"`.
 - **Never `cp` the real `hub.toml`.** It hardcodes absolute paths
   (`hub_state_root`, `run_dir`, `state_glob`, `past_index_db`) into the real
   `~/.serf` / `~/.local/state/serf`, so a "copied-config" test hub reads and

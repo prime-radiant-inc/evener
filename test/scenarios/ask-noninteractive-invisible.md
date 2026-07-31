@@ -12,8 +12,21 @@ available to turn it off).
 
 ## Pre-state
 
-- Hub + credentials as `ask-web-answer.md` (reuse if still running on `127.0.0.1:9280`); the
-  one-shot half of this card also needs the plain `serf` binary and does not touch the hub.
+- Hub + credentials as `ask-web-answer.md` — reuse that card's hub if it is still
+  running, otherwise re-run its Pre-state first. The handoff is its run directory, not
+  a port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"); the plain
+  `serf` binary the one-shot half needs is under it too, and that half never touches
+  the hub:
+  ```bash
+  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  export HOME="$run/home"
+  unset XDG_STATE_HOME
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+  HUB=http://127.0.0.1:$PORT
+  TOKEN=$(cat "$HOME/.serf/auth-token")
+  HUBPID=$(cat "$run/hub.pid")
+  kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
+  ```
 - `openai/gpt-5.5` usable.
 
 ## Steps
@@ -46,7 +59,7 @@ available to turn it off).
    way:
    ```bash
    tmpdir2=$(mktemp -d -t serf-e2e-ask-ni-oneshot-XXXXX)
-   /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir2" \
+   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir2" \
      "Call the tool named ask_user right now, asking header \"Confirm\" question \"Should we proceed?\" with options Yes and No. If no such tool exists in your tool list, say so plainly and proceed on your own best judgment instead."
    TFILE2=$(grep -l "\"working_dir\":\"[^\"]*$(basename "$tmpdir2")\"" ~/.local/state/serf/projects/*/sessions/*.transcript.jsonl)
    SID2=$(basename "$TFILE2" .transcript.jsonl)
@@ -61,9 +74,9 @@ available to turn it off).
    ```bash
    go run ./cmd/serf-doctor transcript "$SID1" --count ask_user
    go run ./cmd/serf-doctor transcript "$SID2" --count ask_user
-   /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir1" \
+   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir1" \
      "Audit session $SID1. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
-   /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir2" \
+   "$run/serf" --model openai/gpt-5.5 --dir "$tmpdir2" \
      "Audit session $SID2. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
    ```
 
@@ -81,10 +94,16 @@ available to turn it off).
 ## Cleanup
 
 ```bash
-curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SID1/shutdown" >/dev/null
-pkill -f serf-hub-ask
-rm -rf "$tmpdir1" "$tmpdir2" /tmp/serf-ask /tmp/serf-hub-ask
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{}' "$HUB/api/sessions/local:$SID1/shutdown" >/dev/null
+rm -rf "$tmpdir1" "$tmpdir2"
 ```
+
+Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
+kills `$HUBPID` and removes `$run`. If you had to start the hub yourself because
+`SERF_E2E_RUN` was unset, you own it: `kill "$HUBPID"; rm -rf "$run"`. Never
+`pkill -f serf-hub`, which takes out every other concurrent agent's hub too
+(`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 

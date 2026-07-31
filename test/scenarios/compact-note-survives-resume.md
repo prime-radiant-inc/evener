@@ -12,8 +12,10 @@ process restart.
 ## Pre-state
 
 - The same fully-isolated hub setup as
-  `compact-tool-pins-note-and-persists.md` Pre-state (throwaway `$HOME`,
-  symlinked creds, `-addr 127.0.0.1:9186`). Reach a state where a session has a
+  `compact-tool-pins-note-and-persists.md` Pre-state (one `mktemp` `$run`,
+  throwaway `$HOME` at `$TH="$run/home"`, symlinked creds, `-addr 127.0.0.1:0`
+  with `$PORT`/`$HUB`/`$HUBPID` read back from `$run/hub.log` and
+  `$run/hub.pid`). Reach a state where a session has a
   pinned note on disk — run that scenario through step 3, OR re-pin here with a
   fresh token `SCNOTE-RES1`.
 
@@ -24,15 +26,27 @@ process restart.
    Wait for idle. Confirm `pinned_note` is in `meta.json` (as in the core
    scenario step 3). Capture `$SID`.
 
-2. **Restart the daemon** (simulate a crash/restart). Kill the hub, then start a
-   fresh hub with the same isolated `$HOME`/state so it reloads the persisted
-   session:
+2. **Restart the daemon** (simulate a crash/restart). Kill the hub by the pid
+   you captured — never `kill %1`, which depends on this being the same shell
+   that backgrounded it — then start a fresh hub with the same isolated
+   `$HOME`/state so it reloads the persisted session. The second hub binds its
+   own kernel-assigned port, so `$PORT`/`$HUB` must be re-read; that is the
+   whole reason nothing here may hardcode one:
    ```bash
-   kill %1 2>/dev/null; sleep 1
+   kill "$HUBPID" 2>/dev/null; sleep 1
    HOME="$TH" XDG_STATE_HOME="$TH/.local/state" \
-     /tmp/serf-sc-hub -addr 127.0.0.1:9186 -serf /tmp/serf-sc \
-     >/tmp/serf-sc-hub2.log 2>&1 &
-   sleep 2
+     "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" \
+     >"$run/hub2.log" 2>&1 &
+   HUBPID=$!
+   echo "$HUBPID" >"$run/hub.pid"
+   for i in $(seq 1 50); do
+     PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub2.log" 2>/dev/null | grep -oE '[0-9]+$') || true
+     [ -n "$PORT" ] && break
+     kill -0 "$HUBPID" 2>/dev/null || { echo "hub exited before listening:" >&2; cat "$run/hub2.log" >&2; exit 1; }
+     sleep 0.1
+   done
+   [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
+   HUB=http://127.0.0.1:$PORT
    ```
 
 3. **Resume the session and drive one more compaction.** Send a follow-up turn
@@ -66,9 +80,14 @@ process restart.
 ## Cleanup
 
 ```bash
-kill %1 2>/dev/null; pkill -f 'serf-sc-hub -addr 127.0.0.1:9186'
-rm -rf /tmp/serf-sc-home-* /tmp/serf-sc-hub2.log
+kill "$HUBPID" 2>/dev/null    # the SECOND hub's pid, re-captured in step 2
+rm -rf "$run"                 # $TH, both logs and the binaries all live under it
 ```
+
+Kill by the recorded pid, and remove `$run` by name — never `pkill -f
+'serf-hub …'` (it takes out every other concurrent agent's test hub) and never
+an `rm -rf /tmp/serf-sc-home-*` glob (it deletes every other concurrent run of
+this same card, kata `k2rx`).
 
 ## Sharp edges
 

@@ -37,7 +37,19 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
 ## Pre-state
 
 - Hub, `$HUB`, `$TOKEN`, and the isolated environment exactly as `ask-web-answer.md`'s
-  Pre-state (reuse them if that card's hub is still running).
+  Pre-state — reuse that card's hub if it is still running, otherwise re-run its
+  Pre-state first. The handoff is its run directory, not a port
+  (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  ```bash
+  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  export HOME="$run/home"
+  unset XDG_STATE_HOME
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+  HUB=http://127.0.0.1:$PORT
+  TOKEN=$(cat "$HOME/.serf/auth-token")
+  HUBPID=$(cat "$run/hub.pid")
+  kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
+  ```
 - Two sessions: **Session A** (will ask a question) and **Session B** (an unrelated,
   already-running session whose viewport we watch from).
 - `superpowers-chrome:browsing` with tab support, your own Chrome profile claimed

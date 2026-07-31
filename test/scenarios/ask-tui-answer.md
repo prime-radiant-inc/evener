@@ -8,23 +8,24 @@ submitting through the overlay does.
 
 ## Pre-state
 
-- Build fresh side-by-side binaries (adds `serf-tui` to `ask-web-answer.md`'s recipe):
+- Credentials + hub, same as `ask-web-answer.md` — reuse that card's hub if it is still
+  running, otherwise re-run its Pre-state first. The handoff is its run directory, not a
+  port (`docs/agentic-testing.md`, "Handing this hub to a sibling card"), and
+  **never pass `--state-dir`/`SERF_STATE_DIR`** to anything here:
   ```bash
-  go build -o /tmp/serf-ask     ./cmd/serf
-  go build -o /tmp/serf-hub-ask ./cmd/serf-hub
-  go build -o /tmp/serf-tui-ask ./cmd/serf-tui
-  ```
-- Credentials + hub, same as `ask-web-answer.md` (reuse that hub if it's still running on
-  `127.0.0.1:9280`, including its isolated `$HOME`; otherwise start fresh — **never pass
-  `--state-dir`/`SERF_STATE_DIR`**):
-  ```bash
-  set -a; . /Users/jesse/prime-radiant/toil-suite/serf/.env; set +a
-  export HOME=$(mktemp -d -t serf-e2e-ask-tui-home-XXXXX)
+  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  export HOME="$run/home"
   unset XDG_STATE_HOME
-  /tmp/serf-hub-ask -addr 127.0.0.1:9280 -serf /tmp/serf-ask &
-  sleep 2
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+  HUB=http://127.0.0.1:$PORT
   TOKEN=$(cat "$HOME/.serf/auth-token")
-  HUB=http://127.0.0.1:9280
+  HUBPID=$(cat "$run/hub.pid")
+  kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
+  ```
+- This card adds `serf-tui` to that recipe's binaries — into the same run directory, never
+  a fixed `/tmp` name a second concurrent build would overwrite mid-run (kata `k2rx`):
+  ```bash
+  go build -o "$run/serf-tui" ./cmd/serf-tui
   ```
 - `tmux` available.
 
@@ -61,7 +62,7 @@ submitting through the overlay does.
    ```bash
    tmux kill-session -t serf-ask-tui 2>/dev/null
    tmux new-session -d -s serf-ask-tui -x 200 -y 50 \
-     "/tmp/serf-tui-ask --hub-addr 127.0.0.1:9280 --debug 2>/tmp/ask-tui-stderr.log"
+     "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/ask-tui-stderr.log"
    sleep 2
    suffix=${SID: -8}
    tmux send-keys -t serf-ask-tui "/"
@@ -151,10 +152,16 @@ submitting through the overlay does.
 
 ```bash
 tmux kill-session -t serf-ask-tui 2>/dev/null
-curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SID/shutdown" >/dev/null
-pkill -f serf-hub-ask
-rm -rf "$tmpdir" /tmp/serf-ask /tmp/serf-hub-ask /tmp/serf-tui-ask
+curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
+rm -rf "$tmpdir"
 ```
+
+Leave the hub and `$run` alone — `ask-web-answer.md` started them and its Cleanup
+kills `$HUBPID` and removes `$run` (including this card's `serf-tui` and stderr log).
+If you had to start the hub yourself because `SERF_E2E_RUN` was unset, you own it:
+`kill "$HUBPID"; rm -rf "$run"`. Never `pkill -f serf-hub`, which takes out every
+other concurrent agent's hub too (`docs/agentic-testing.md`, "Cleanup recipe").
 
 ## Sharp edges
 

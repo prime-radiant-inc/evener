@@ -21,8 +21,20 @@ Chrome.
 
 ## Pre-state
 
-- Hub, `$HUB`, `$TOKEN`, and the isolated `$HOME` **same as `ask-web-answer.md`** (reuse
-  that card's `$run` hub if it is still running; otherwise re-run its Pre-state first).
+- Hub, `$HUB`, `$TOKEN`, `$HUBPID` and the isolated `$HOME` **same as
+  `ask-web-answer.md`** — reuse that card's hub if it is still running, otherwise re-run
+  its Pre-state first. The handoff is its run directory, not a port
+  (`docs/agentic-testing.md`, "Handing this hub to a sibling card"):
+  ```bash
+  run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+  export HOME="$run/home"
+  unset XDG_STATE_HOME
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+  HUB=http://127.0.0.1:$PORT
+  TOKEN=$(cat "$HOME/.serf/auth-token")
+  HUBPID=$(cat "$run/hub.pid")
+  kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
+  ```
   The throwaway `$HOME` matters here specifically: this card reads and writes
   `~/.serf/run`, which under that isolation is `$run/home/.serf/run` and not any real
   hub's rendezvous directory.
