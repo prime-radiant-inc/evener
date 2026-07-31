@@ -34,8 +34,19 @@ the area they exercise.
   `hnvv`).
 - `spawn-empty-prompt-starts-dormant.md` — empty/whitespace prompt
   starts a dormant session: `input: []` on the wire, no turn, no
-  error (kata `ytpa`; replaces the old `spawn-empty-prompt-blocked.md`,
-  kata `xj9j`).
+  error (kata `ytpa`; replaces the retired `spawn-empty-prompt-blocked`
+  card, kata `xj9j`).
+- `spawn-keyboard-contract.md` — the pane's whole keyboard contract:
+  Enter in the model picker selects the highlighted row and stops there,
+  bare Enter in the prompt inserts a newline, and only ⌘/Ctrl+Enter
+  spawns — with the structural reason (no `<form>`, no `onSubmit`)
+  checked alongside, since it is what makes the absence assertions mean
+  anything (kata `rjc5`; replaces the retired `spawn-picker-enter-noop`
+  card, kata `v0hg`).
+- `spawn-failure-ux-post-ws5.md` — the three remaining spawn-failure
+  classes (bogus model id, working dir that doesn't exist, harness
+  binary the hub can't execute) come back from `POST /api/spawn` as
+  legible errors rather than buried-stderr 500s. Browser-free.
 
 ## Session workspace
 
@@ -94,6 +105,27 @@ the area they exercise.
   web-steer-in-idle-fails-fast; Ctrl+S keybind in IDLE.
 - `tui-steer-success-reconciles.md` — TUI counterpart of the success
   reconcile; spinner prefix replaced by authoritative steering.
+- `lazy-transcript-loading.md` — a large transcript cold-loads only the
+  latest window (`thread/read{turnLimit}`) and pages older turns in as
+  the reader nears the top, prepended above the live content without
+  moving what they were reading (commits `49445a1d`, `2d36b225`).
+- `attention-needs-you-end-to-end.md` — the attention & status model's
+  single-tab happy path: an `awaiting` session drives its own rail row,
+  the tab title, and the favicon live, plus the interrupt guard-rail.
+  Notifications must be opted into before the first load.
+- `status-vocabulary-roundtrip.md` — the attainable your-move and
+  question-waiting states read the same across the web rail, the TUI
+  dashboard row, and the TUI session header; a deterministic gate pins
+  the whole `hubapi.StateWord` vocabulary (Track A §1-2).
+
+## Compaction (the `compact` tool)
+
+- `compact-tool-pins-note-and-persists.md` — a real model invokes the
+  agent-facing `compact` tool: the note is pinned, re-stamped through
+  the compaction the call forces, and reaches `meta.json`.
+- `compact-note-survives-resume.md` — the pinned note is restored
+  across a real process restart from structured `SessionMeta.PinnedNote`
+  rather than a history scan, and is re-stamped on the next compaction.
 
 ## Model switching
 
@@ -114,6 +146,40 @@ the area they exercise.
   ladder against the `serf serve` daemon's own HTTP surface (marker
   persistence, `response_model` per leg, effort-ladder
   re-derivation, thinking-absence on the wire); AC 8.
+- `reasoning-effort-providers.md` — reasoning effort end-to-end on
+  Kimi and Anthropic: `llm.ClampReasoningEffort`, the forced
+  `tool_choice` downgrade under thinking, and the `max_tokens` vs
+  thinking-budget reconciliation (symptom: `'xhigh'` rejected as an
+  unsupported `reasoning_effort` with a 400).
+
+## Model picker (Track B)
+
+Coverage for the model picker across all three surfaces it renders on —
+web spawn (`/new`), web settings (`/settings/launch-serf`), and the
+TUI's `n` new-session picker — over the embedded LiteLLM catalog and
+the Past index's Recent list.
+
+- `model-picker-fresh-install-no-recent.md` — with an empty Past index
+  every picker shows only the provider-grouped catalog and never an
+  empty or degenerate "Recent" group (Tasks 1-3).
+- `model-picker-recent-reflects-last-5-global.md` — Recent is the 5
+  most-recently-touched distinct `(provider, model)` pairs,
+  most-recent-first, and is the same list whichever `cwd` the caller
+  scopes the request to.
+- `model-picker-badges-match-catalog-data.md` — the rendered capability
+  badges (tools / vision / reasoning / web-search / context window /
+  max output / price) match both `/api/models?diagnostics=1` and the
+  embedded catalog's raw LiteLLM data; found and fixed a real
+  spawn-picker data-source bug.
+- `model-picker-dated-snapshot-sorts-last.md` — inside a provider group
+  the bare family id renders before its dated snapshot
+  (`claude-opus-4-6` before `claude-opus-4-6-20251101`) whatever order
+  the live listing returned (Tasks 4, 11).
+- `model-picker-uncatalogued-model-still-renders.md` — graceful
+  degradation: a live model the catalog doesn't know renders with its
+  name and provider-qualified id, carries no badge/cost/context
+  metadata at all, stays selectable, and launches (Ollama is the real,
+  un-stubbed example).
 
 ## Goal engine (`/goal`)
 
@@ -257,6 +323,51 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
   `job_read_output` peeks the result twice without consuming or hiding it.
+- `job-shell-lifecycle.md` — the shell tool's whole job-capable
+  lifecycle: foreground inline result, a nonzero exit reported honestly
+  rather than hidden, `background: true` launch-and-return,
+  `max_runtime_ms` killing a runaway into `stopped`/`run_timeout`, and
+  the complete-or-handle output window.
+- `job-stop-and-children.md` — `job_stop` lands `cancelled` /
+  `stopped_by_parent` with retained output still readable (stopping
+  deletes nothing), `max_wait_ms` makes the stop call itself wait for
+  finalization, and `include_children` fells the delegate's visible
+  nested shell job too.
+- `job-list-and-recovery.md` — `job_list` as the authoritative durable
+  inventory: `status[]`/`type[]` filters, newest-first ordering, the
+  short-job race (a job that finished before any running-filtered list
+  is still visible unfiltered), and mid-turn re-orientation before any
+  terminal notification has been delivered.
+- `job-nested-visibility.md` — a delegate's nested shell job appears
+  only under `job_list(include_nested=true)`, reads and stops through
+  the single parent-visible `job_id` (routing-if-live, so a confirmed
+  stop rather than `not_controllable`), and its output stays readable
+  after the delegate is finished.
+- `job-notification-semantics.md` — exactly one terminal notification
+  per notification-armed job (shell and delegate asserted separately),
+  the `<job-notification>` block's exact field set, and fires that land
+  mid-turn queueing to the turn boundary batched and without loss.
+- `job-restart-durability.md` — `kill -9` mid-job: restart finalizes the
+  orphaned `running` record exactly once as `stopped`/`runtime_lost`
+  with a stable `terminal_generation`, pre-crash output stays readable,
+  and the notification is delivered once and deduped durably across a
+  second restart. Runtime loss reads as supervision loss, never as
+  command failure.
+- `job-delegate-result-schema.md` — `delegate.result_schema` end to end:
+  a complying result returns `structured_result_valid: true` inline and
+  again via `job_read_output`, a violating one is reported honestly
+  (validity false plus a machine-readable reason, no invented result),
+  and a resumed turn inherits the original schema.
+- `job-send-message-surface.md` — the handle split: a `job_id` handed to
+  `delegate_send` is rejected with guidance toward the `delegate_id`, a
+  RUNNING delegate takes a live steer with no new job, and an IDLE one
+  refuses with `target_idle` unless `on_idle:"start"` explicitly starts
+  its next job in the same conversation.
+- `job-read-output-blocking-grep.md` — `job_read_output(max_wait_ms,
+  grep=…)` waits for the *match* — including a mandatory entry check
+  for a match that already landed — not for any new output; the
+  one-call "wait until the server prints ready" primitive that keeps
+  monitoring away from `job_watch`.
 - `job-notification-wake.md` — the proactive completion wake
   (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
   delegate and ends its turn; when the child reaches a terminal state later,
@@ -290,6 +401,22 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   frames that need no action can finish with bare assistant text and no
   tool call, while `assistant.tool` `event_filter` prevents `job_list`
   and failed `read_file` events from waking the observer.
+- `job-watch-caller-notification-delivery.md` - delivery is implicit: a
+  watch's fires go to the session that created it, waking an IDLE
+  creator as a job-notification turn, while N fires against a BUSY one
+  coalesce latest-frame-wins into one render per delivery boundary
+  (coalescing must not become silence).
+- `job-watch-output-match-catchup.md` - `output_match` is
+  level-triggered at attach: a watch attached after the token already
+  printed fires once for the whole retained scan carrying the last
+  matching line, an `output_match`-only watch on a terminal job is a
+  one-shot catch-up rather than an error, and `events` on a terminal
+  target still fails `target_terminal`.
+- `job-watch-caller-send-no-deadlock.md` - the caller-send config that
+  wedged session `01KTWN9KEHZ041D77B3GKK572M` is now unreachable
+  (`target`/`send` deleted from the schema at `9d0d777c6`, so it dies in
+  JSON-schema validation), and the closest legal observer variant
+  survives a tool-heavy turn.
 - `sidecar-approval-broker-communicate.md` - approval broker watches
   caller `communicate` frames and packages an explicit approval packet.
 - `sidecar-drift-detector-communicate.md` - drift detector flags a
@@ -307,7 +434,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 - `sidecar-test-triage-shell-frame.md` - test triage observer reads a
   failure signature out of an `assistant.tool` watch frame; pins that a
   parent-source observer gets event payloads, never a cross-session
-  read (renamed from `sidecar-test-triage-output-match.md`, kata
+  read (renamed from `sidecar-test-triage-output-match`, kata
   `f9gn`).
 - `sidecar-handoff-packager-job-notification.md` - handoff sidecar
   packages a completed delegate result from a `job.notification`
@@ -317,6 +444,26 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
   TODO left in a deliverable draft.
+
+## serf-doctor & forensics
+
+The read-only inspector (`cmd/serf-doctor` over `agent/doctor`) and the
+`doctor` agent type that drives it. The watch/provenance material these
+cards read is produced by the `job-watch-*` cards above.
+
+- `serf-doctor-forensics.md` — the four corrections the tool exists for:
+  `watches` collapses `watch_send_pending` coalescing into distinct
+  settled deliveries, `--self-loops` reads the recorded breaker
+  telemetry instead of re-deriving from the provenance chain,
+  `transcript --count` separates structural tool calls from prose
+  mentions, and `locate` resolves the per-session `jobs.jsonl` subdir.
+- `doctor-agent-diagnose.md` — the `doctor` agent type runs a real
+  LLM-driven diagnosis: the `doctoring-serf` skill loads, the tools run
+  through the shell tool, and a healthy session yields zero Findings
+  while a real defect yields exactly one schema-correct Finding.
+- `doctor-forensics.md` — both halves in one pass: the forensic tools
+  read settled on-disk state through serf's own folds and types, and the
+  doctor agent diagnoses what they report.
 
 ## Sidebar (rebuilt)
 
@@ -348,6 +495,25 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   archive→unarchive round-trip via the row menu, and a
   `SERF_SESSION_ORIGIN=test` project's classification into Test runs through
   to its Delete… action and on-disk removal.
+
+## Rail navigation & session refs
+
+- `local-sidebar-url-stability.md` — a local rail row opens its session
+  at the one canonical `/s/local:<session-id>` ref (the single ref form
+  commit `8cea30ca6` settled on), and clicking the same row again does
+  not open a second copy of the session beside the first.
+- `codex-sidebar-open.md` — a Codex row opens through the
+  source-qualified `/s/<source>:<thread-id>` route into that thread's
+  workspace, rather than collapsing to a bare local session id.
+- `codex-sidebar-drive.md` — the opened Codex workspace exposes the
+  action its source advertises, and the source's own logs show the click
+  routed back to the exact `source:thread-id` the row named, with no
+  fallback to a local session or a different thread.
+- `sidebar-project-order-lastactivity-feel.md` — a just-touched project
+  surfaces at the top, promptly. The `LastActivity` comparator is
+  already pinned by hubcore fuzz scenarios, so this card covers the
+  layer they cannot see: a completed turn propagating into `/api/tree`'s
+  memoized `Past.AllMetas()` input.
 
 ## Cost display & Display settings (Track C)
 
@@ -403,6 +569,46 @@ output by running it.
   `launch_overrides.pluginDirs`, and confirms the `brainstorming`
   skill loads into the agent's catalog. Plugin-discovery smoke
   test; doesn't run brainstorming.
+
+## Worktrees (`manage_worktree`)
+
+Live end-to-end coverage for the native worktree tool (branch
+`worktree-native-worktree-tools`). These are ergonomics tests as much as
+functional ones: each runs against a real provider (billed) and asks
+whether the tool's own description and error strings are enough for a
+model to do the right thing, so they are also where model tiers separate.
+
+- `worktree-cold-discovery.md` — the prompt never says "worktree",
+  "branch", or names a tool; it describes a need. Does the description
+  alone lead the agent to `manage_worktree` over a directory copy, an
+  in-place branch, or a stash?
+- `worktree-create-and-orient.md` — first contact: the agent picks
+  `operation: create`, understands the name doubles as the branch, and
+  correctly reports the worktree path and branch from the tool result.
+- `worktree-lifecycle-merge-back.md` — create → commit → `exit` →
+  confirm the work is isolated from the main checkout → `remove`; the
+  comprehension test for the isolation boundary.
+- `worktree-list-and-cleanup.md` — given one untouched lane and one with
+  committed work, is `list` legible enough that the agent disposes of
+  only the disposable one (staleness fields, prune vs remove)?
+- `worktree-resume-reentry.md` — a session killed while occupying a lane
+  re-enters and re-locks it on resume; the foreign-lock variant lands at
+  the restore root with a legible notice.
+- `worktree-delegate-isolation.md` — the auto-removing path, the
+  feature's highest-risk code: a delegate spawned with
+  `isolation: "worktree"` gets a lane named for it, and parent close
+  disposes that lane only if it is unchanged, keeping any lane with
+  commits or a dirty tree resumable.
+- `worktree-error-legibility.md` — refusals (dirty removal without
+  force, a name collision, removing a branch with unmerged work) give
+  the agent enough to recover on the next turn; run on the weakest and
+  strongest tiers, where error comprehension fails first.
+- `worktree-foreign-lock-legibility.md` — a lane locked by another live
+  session refuses `switch`/`remove` with a message naming the owner and
+  the recovery path, and the agent reads it instead of thrashing.
+- `worktree-ergonomics-findings.md` — not a card: the 2026-07-03 write-up
+  of running these cards across tiers (`kimi/kimi-for-coding` vs
+  `openai/gpt-5.4-mini`), recording how the tool feels to an agent.
 
 ## Plugin hooks (lifecycle)
 
