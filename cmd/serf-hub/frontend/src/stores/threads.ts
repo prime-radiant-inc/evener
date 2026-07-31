@@ -175,8 +175,8 @@ export interface ThreadsStoreState {
   // Lists available models (model/list) with launch diagnostics, feeding
   // the chrome stream's model-switch picker. Session-lifetime cached
   // (models don't change mid-session, and no live push exists for them
-  // either - same "no capabilities-changed entry" reasoning as
-  // ThreadModel.capabilities); pass refresh:true to bypass the cache and
+  // either - unlike ThreadModel.capabilities, which thread/status/changed
+  // now refreshes); pass refresh:true to bypass the cache and
   // force a fresh request. A failed request never poisons the cache with a
   // rejected promise - the next call (with or without refresh) retries.
   listModels(refresh?: boolean): Promise<ModelListResponse>;

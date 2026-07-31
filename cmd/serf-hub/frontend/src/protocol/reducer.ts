@@ -667,6 +667,17 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // "nobody counted": clearing it would blank a figure the hydrate
         // legitimately gave us. Absence at HYDRATE is where unknown lives.
         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
+        // Capabilities are snapshot-only too, and three of them (send, steer,
+        // queue) are defined BY this very transition: the hub gates send on
+        // "no turn in flight" and steer/queue on "a turn in flight"
+        // (server/appwire_runtime.go's appCapabilities). A set cut before the
+        // turn therefore describes the wrong session by the time the composer
+        // reads it back, which is how a running session came to show no Steer,
+        // no Stop and a dead Send until the page was reloaded (kata 06t8).
+        // Same absent-means-no-update rule as the count above: a source that
+        // state-gates nothing (the Codex bridge) sends none, and clearing on
+        // absence would strip the session of every action it advertised.
+        capabilities: n.params.capabilities ?? model.capabilities,
         lastFrameAt: now,
       };
     }

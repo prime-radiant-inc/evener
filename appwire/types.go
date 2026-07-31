@@ -1330,6 +1330,22 @@ type ThreadStatusChangedParams struct {
 	// hydrate legitimately gave it. Absence at HYDRATE is where "nobody
 	// counted" is expressed.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
+	// Capabilities carries the action set that goes WITH the status being
+	// announced (see SerfThread.Capabilities), for the same reason the failure
+	// count rides along above: it is otherwise snapshot-only, and three of its
+	// entries — Send, Steer, Queue — are defined by whether a turn is in
+	// flight. A client that read the thread while it was idle therefore holds
+	// steer=false/queue=false for the whole turn that follows, and renders a
+	// session it KNOWS is active with no Steer, no Stop and a dead Send until
+	// the page is reloaded (kata 06t8). A status transition is exactly when
+	// those flip, so the set refreshes there and nowhere else — no polling, no
+	// re-read of the transcript.
+	//
+	// ABSENT MEANS "NO UPDATE", same as the count: a source that does not
+	// state-gate its capabilities (the Codex bridge) omits it, and a client
+	// that cleared its set on absence would strip a session of every action
+	// its hydrate legitimately advertised.
+	Capabilities *ThreadCapabilities `json:"capabilities,omitempty"`
 }
 
 type AgentMessageDeltaParams struct {
