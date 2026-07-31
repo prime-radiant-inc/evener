@@ -74,9 +74,9 @@ describe("unconfiguredLabel", () => {
   });
 
   test("'No credentials required' for activeSource none", () => {
-    expect(
-      unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "none", credentialRequired: false })),
-    ).toBe("No credentials required");
+    expect(unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "none", credentialRequired: false }))).toBe(
+      "No credentials required",
+    );
   });
 
   test("falls back to the raw activeSource string for an unrecognized value", () => {
