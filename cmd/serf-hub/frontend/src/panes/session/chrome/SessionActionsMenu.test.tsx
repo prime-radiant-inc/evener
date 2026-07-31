@@ -61,6 +61,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     ],
     queue: null,
     tasks: null,
+    jobsUpdatedAt: null,
     lastFrameAt: 0,
     capabilities: FULL_CAPABILITIES,
     goal: null,

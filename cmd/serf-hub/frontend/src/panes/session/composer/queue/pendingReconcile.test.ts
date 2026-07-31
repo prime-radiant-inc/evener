@@ -39,6 +39,7 @@ function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
     turns: [],
     queue: { revision: 1 },
     tasks: null,
+    jobsUpdatedAt: null,
     lastFrameAt: 0,
     capabilities: {} as ThreadModel["capabilities"],
     goal: null,
