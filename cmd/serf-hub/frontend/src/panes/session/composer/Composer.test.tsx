@@ -1150,7 +1150,11 @@ test("recovered edits and attachment removal survive Composer remount", async ()
 
   await mountComposer("ref_a", { status: { type: "idle" } });
   await waitFor(() => expect(textarea().value).toBe("edited"));
-  expect(screen.queryByText("proof.png")).toBeNull();
+  // Any remove control at all, not one named for this file: a tile carries
+  // its filename in labels rather than as a text node, so a text query would
+  // report "gone" for an attachment still sitting there - and a query naming
+  // the file would report the same if only the label changed.
+  expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
 });
 
 test("blanking an attachment-free recovered draft discards it durably", async () => {
@@ -1449,15 +1453,17 @@ function installCanvasStubs(): void {
 // installFailingDecodeStub (rejects) below: this one never settles either
 // way, so a staged item stays pending === true for the whole test.
 //
-// That state is not just "not finished yet" - it renders a DIFFERENT
-// element. A pending attachment has no data/width/height, so Composer.tsx's
-// own `isImage` test fails and it renders a text <Chip>; the instant the
-// decode lands, that whole subtree is REPLACED by an image tile (a
-// different element type at the same position, so React unmounts the chip
-// rather than updating it). Any test that captures a node from the pending
-// chip and then interacts with it is racing that swap, and a test that
-// wants the settled tile has to wait for the tile itself, not merely for
-// the marker text the paste inserted synchronously.
+// Pending is a real, separately-reachable state, not merely "not finished
+// yet": the tile has no image to draw, submit is blocked, and removing the
+// item has to cancel a decode that is still in flight (useAttachments'
+// removedWhilePendingRef, kata kt4j). Stalling the decode is what pins a
+// test to that state - the marker text lands synchronously with the paste,
+// so waiting on it can return either side of a settling decode.
+//
+// What this stub no longer has to defend against is an element swap
+// mid-gesture: pending and settled are one tile with one remove button now
+// (kata 39xe), so a captured node stays connected across the transition
+// rather than being unmounted under the interaction (kata 3rxj's flake).
 function installStalledDecodeStub(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
@@ -1483,14 +1489,13 @@ test("pasting an image renders a removable attachment chip and inserts its marke
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
-test("the remove button names the specific attachment (filename + dimensions for image tile, or chip text for non-image)", async () => {
+test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
 
   pastePngInto(textarea(), "shot.png");
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
 
-  // For image attachments, the remove button label is "Remove {filename}"
   expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 });
 
@@ -1551,18 +1556,18 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   pastePngInto(textarea(), "screenshot.png");
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
 
-  // Assert the thumbnail <img> renders with a data-URL
-  const thumbnail = (await screen.findByRole("img", { name: /image 1 of 1/i })) as HTMLImageElement;
-  expect(thumbnail).toBeTruthy();
+  // The whole thumbnail is the control that opens the lightbox, and it is
+  // named for the file it shows.
+  const openButton = await screen.findByRole("button", { name: "View screenshot.png" });
+  const thumbnail = openButton.querySelector("img") as HTMLImageElement;
   expect(thumbnail.src).toMatch(/^data:image\/png;base64,/);
 
   // Assert the dimensions are displayed
   expect(screen.getByText(/4×4/)).toBeTruthy();
 
   // Assert clicking the thumbnail opens the lightbox (before removing)
-  await user.click(thumbnail);
-  const lightboxImg = screen.getByTestId("image-gallery-lightbox-img") as HTMLImageElement;
-  expect(lightboxImg).toBeTruthy();
+  await user.click(openButton);
+  const lightboxImg = screen.getByRole("img", { name: "screenshot.png" }) as HTMLImageElement;
   expect(lightboxImg.src).toMatch(/^data:image\/png;base64,/);
 
   // Close the lightbox by clicking outside (Esc or backdrop)
@@ -1573,6 +1578,117 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   const removeButton = screen.getByRole("button", { name: /remove screenshot\.png/i });
   await user.click(removeButton);
   await waitFor(() => expect(textarea().value).toBe(""));
+});
+
+// kata edhz. The settled tile used to draw its image twice - <ImageGallery>,
+// whose own 96px thumbnail button came along with the lightbox it was
+// imported for, PLUS a plain 80px <img> for the tile's own cover crop - as
+// flex siblings in one 80x80 overflow:hidden box. Measured in a real headless
+// Chrome against the real CSS: the gallery thumb rendered at y=-20..78 and
+// the plain img at y=78..156 inside a tile spanning 24..104, so the two
+// clipped crops met in a visible seam at y=78. Neither was vestigial; they
+// were there for different reasons, and the tile now draws its own image and
+// opens the shared Dialog itself.
+//
+// jsdom cannot see the seam (it computes no boxes at all), but it can see the
+// cause: two image elements where the design has one. The geometric half is
+// scripts/layoutguard/cases/edhz-attachment-tile-single-image.
+test("a settled attachment tile draws exactly one image, not a stack of them (kata edhz)", async () => {
+  installCanvasStubs();
+  await mountComposer("ref_a");
+
+  pastePngInto(textarea(), "screenshot.png");
+  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  const openButton = await screen.findByRole("button", { name: "View screenshot.png" });
+
+  const tile = openButton.parentElement as HTMLElement;
+  expect(tile.querySelectorAll("img")).toHaveLength(1);
+});
+
+// The fourth decode stub: settles on demand rather than on a microtask
+// (installCanvasStubs) or never (installStalledDecodeStub). release()
+// resolves only once the whole encode chain - Image.onload, canvas.toBlob,
+// Blob.arrayBuffer - has actually delivered its bytes, so a caller can
+// await the pending -> settled transition as a real completion instead of
+// polling for its side effects.
+function installGatedDecodeStub(): { release: () => Promise<void> } {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  let markDelivered!: () => void;
+  const delivered = new Promise<void>((resolve) => {
+    markDelivered = resolve;
+  });
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
+    const blob = new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" });
+    const readBytes = blob.arrayBuffer.bind(blob);
+    blob.arrayBuffer = async () => {
+      const buffer = await readBytes();
+      markDelivered();
+      return buffer;
+    };
+    callback(blob);
+  };
+  const waiting: (() => void)[] = [];
+  class GatedImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    width = 4;
+    height = 4;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      waiting.push(() => this.onload?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = GatedImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+  return {
+    release: () => {
+      for (const fire of waiting.splice(0)) fire();
+      return delivered;
+    },
+  };
+}
+
+// kata 39xe. A pending attachment and a settled one are the SAME element
+// tree at the same list position, differing only in what fills the tile -
+// so React updates the remove button rather than unmounting it, and a user
+// who has tab-focus on that button when the decode lands keeps it.
+//
+// This asserts the mechanism (the identical node is still focused), not a
+// side effect: an implementation that remounted an identically-labelled
+// button would satisfy "a focused remove button exists" while still
+// dropping the user's focus. Before the tile was unified, pending rendered
+// a <Chip> and settled a <div>, React remounted across that type boundary,
+// and this test failed on both of its last two assertions - activeElement
+// was <body> and the captured node reported isConnected === false.
+test("focus on an attachment's remove button survives its decode settling (kata 39xe)", async () => {
+  const gate = installGatedDecodeStub();
+  await mountComposer("ref_a");
+
+  act(() => {
+    pastePngInto(textarea(), "shot.png");
+  });
+  const removeButton = screen.getByRole("button", { name: "Remove shot.png" });
+  removeButton.focus();
+  expect(document.activeElement).toBe(removeButton);
+
+  await act(async () => {
+    await gate.release();
+  });
+
+  // The transition really happened: the tile now offers the decoded image,
+  // so the assertions below are about the settled state, not a decode that
+  // quietly never landed.
+  expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy();
+  expect(removeButton.isConnected).toBe(true);
+  expect(document.activeElement).toBe(removeButton);
 });
 
 // installFailingDecodeStub mirrors installCanvasStubs but rejects (via
@@ -1658,21 +1774,13 @@ test("two attachment gestures fired back-to-back with no intervening render stil
   await waitFor(() => expect(screen.getAllByRole("button", { name: /remove/i })).toHaveLength(2));
 });
 
-// The chip in this test's name is the PENDING rendering, and the decode is
-// stalled so it stays that way for the whole gesture (see
-// installStalledDecodeStub's own comment for why pending is a different
-// element, not just a different flag). With a settling decode this test
-// races the chip -> tile swap and loses under load: the marker text lands
-// synchronously with the paste, so the waitFor below can return while the
-// item is still pending, user-event then captures the CHIP's remove button,
-// and the decode settling during the click's own event sequence unmounts
-// that node - the click reaches a detached element, React never routes it,
-// and removeItem never runs. Reproduced under full-suite load with the
-// diagnosis recorded on the failure: clickedWasPendingChip=true,
-// clickedStillConnected=false, with only the tile's remove button left in
-// the tree. Removing a SETTLED attachment is the thumbnail/lightbox test
-// above, which waits for the tile itself before clicking its remove button.
-test("removing an attachment chip strips its marker from the textarea", async () => {
+// Removing an attachment while its decode is STILL IN FLIGHT, which the
+// stalled stub pins for the whole gesture: the marker has to come out of the
+// textarea even though there is no decoded image behind it yet, and
+// useAttachments has to remember the removal so the decode that eventually
+// lands doesn't resurrect it (kata kt4j). Removing a SETTLED attachment is
+// the thumbnail/lightbox test above.
+test("removing a still-encoding attachment strips its marker from the textarea", async () => {
   installStalledDecodeStub();
   const user = userEvent.setup();
   await mountComposer("ref_a");
