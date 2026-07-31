@@ -1649,6 +1649,66 @@ func TestAppEventProjectorFoldsPreFirstTurnAnnouncementsIntoOnePreludeTurn(t *te
 	}
 }
 
+// A turn id RESERVED before the session's first real turn - turn/start's
+// reservation (server.reserveAppTurnIDForStart), or the SetProcessing
+// auto-continuation's (server.setProcessingLocked) - bumps the projector's
+// turn counter without anything having actually run. A spawned session with
+// a queued initial prompt hits exactly this: the reservation lands while
+// plugins, prompts and hooks are still announcing. Those SESSION_START-time
+// announcements still happened BEFORE any real turn, so they must still fold
+// into the one prelude turn. Exiling them to a gap id minted after turn_1's
+// reservation is how a session's startup burst came to render as a "25
+// system events" group anchored at the END of the transcript.
+func TestAppEventProjectorReservationBeforeFirstTurnKeepsAnnouncementsInPrelude(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+
+	reserved := projector.ReserveTurnID()
+	if reserved == "" || reserved == appwire.SystemPreludeTurnID {
+		t.Fatalf("reserved id = %q, want a genuine turn_N", reserved)
+	}
+
+	first := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1",
+		Data: events.PluginLoadedData{Name: "superpowers", SkillCount: 5},
+	}), appwire.NotifyTurnCompleted)
+	second := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPromptLoaded, SessionID: "th_1",
+		Data: events.PromptLoadedData{Label: "identity.md", Size: 2212},
+	}), appwire.NotifyTurnCompleted)
+
+	if first != appwire.SystemPreludeTurnID || second != appwire.SystemPreludeTurnID {
+		t.Fatalf("post-reservation announcement ids = %q, %q; want both the prelude %q",
+			first, second, appwire.SystemPreludeTurnID)
+	}
+
+	// The reserved turn then starts for real, consuming the reservation.
+	realTurnID := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"},
+	}), appwire.NotifyTurnStarted)
+	if realTurnID != reserved {
+		t.Fatalf("real turn id = %q, want the reserved %q", realTurnID, reserved)
+	}
+}
+
+// The prelude carve-out above is for a FRESH session only. A resumed
+// session's startup burst (plugin loads, prompt-loaded notices firing as the
+// daemon reattaches) happened after the persisted history, not before any
+// real turn, so it must keep minting its own gap id (kata 9ekv) - folding it
+// into the prelude turn at the very top would misrepresent when it happened.
+func TestAppEventProjectorSeededHistoryKeepsAnnouncementsOutOfPrelude(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.SeedPersistedTurns(5)
+
+	got := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1",
+		Data: events.PluginLoadedData{Name: "late-loader"},
+	}), appwire.NotifyTurnCompleted)
+	if got == appwire.SystemPreludeTurnID {
+		t.Fatalf("resumed-session announcement id = %q, want a fresh gap id distinct from the prelude (%q)",
+			got, appwire.SystemPreludeTurnID)
+	}
+}
+
 // A burst of no-active-turn announcements landing BETWEEN two real turns
 // (nextTurn > 0, activeTurnID == "") must share one turn id with each other —
 // same rationale as the pre-first-turn prelude (kata bz2z): otherwise

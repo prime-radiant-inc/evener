@@ -117,6 +117,25 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 		if idx, ok := s.turnIndex[id]; ok {
 			return &s.turns[idx]
 		}
+		if id == appwire.SystemPreludeTurnID {
+			// The prelude turn is the one turn whose id fixes its position:
+			// it holds content from before the session's first real turn by
+			// definition (apptranscript.PreludeTurn, appprojector's bundled
+			// SESSION_START announcements), so it belongs at the front
+			// however late its first notification arrives. Nothing orders a
+			// session's first turn-starting request ahead of its startup
+			// announcements (PrepareAppIdentity says so), so an append here
+			// pins the "N system events" group a reader expects at the top
+			// to the END of the transcript instead. Inserting shifts every
+			// existing turn's position, so the index is rebuilt rather than
+			// patched; this happens at most once per identity.
+			s.turns = append([]appwire.Turn{{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress}}, s.turns...)
+			s.turnIndex = make(map[string]int, len(s.turns))
+			for i := range s.turns {
+				s.turnIndex[s.turns[i].ID] = i
+			}
+			return &s.turns[0]
+		}
 		s.turns = append(s.turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
 		s.turnIndex[id] = len(s.turns) - 1
 		return &s.turns[len(s.turns)-1]
