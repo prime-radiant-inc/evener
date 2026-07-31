@@ -37,7 +37,7 @@ func FuzzSessionRestoreCloseStatusProgram(f *testing.F) {
 		{6, 0, 6},   // unregistered-worktree refusal
 		{7, 1, 7},   // porcelain failure refusal
 		{8, 2, 8},   // non-local restore, missing-sidecar disposal
-		{9, 3, 9},   // lock-state failure, unverifiable disposal
+		{9, 3, 9},   // ordinary non-managed re-entry (b476b5e72 deleted the second-porcelain-read branch this covered), unverifiable disposal
 		{10, 4, 10}, // relock failure, foreign-lock preservation
 		{11, 5, 11}, // restore without fallback root, unlock failure
 		{3, 6, 12},  // init lock-state failure
@@ -145,20 +145,18 @@ func srspRestoreWorktree(t *testing.T, mode byte) {
 		}
 		wantReentry = false
 	case 9:
-		meta.WorktreeManaged = true
-		calls := 0
-		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
-			return func(args ...string) (string, error) {
-				if scriptedArgs(args, "worktree", "list", "--porcelain") {
-					calls++
-					if calls == 2 {
-						return "", errors.New("srsp: lock state unavailable")
-					}
-				}
-				return h.git.run(args...)
-			}
-		}
-		wantReentry = false
+		// Historically: the FIRST worktree-list read (the registered-at-path
+		// check) succeeds but a SECOND identical read (inside the managed lock
+		// check) fails, landing at the restore root. b476b5e72 memoized that
+		// listing — resumeWorktreeReentry now derives lock state from the read
+		// it already has — and deleted the production branch this mode
+		// exercised ("deleted rather than left unreachable"), removing
+		// TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoot
+		// on the non-fuzz side for the same reason. No fault to inject any
+		// more: this is now an ordinary successful non-managed re-entry (same
+		// shape as mode 2 — the lane's creation-time lock is cleared because a
+		// non-managed re-entry must land with none, spec §4).
+		entry.lockReason = ""
 	case 10:
 		meta.WorktreeManaged = true
 		entry.lockReason = ""

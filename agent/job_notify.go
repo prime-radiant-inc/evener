@@ -126,16 +126,24 @@ func notificationTranscriptRef(n jobNotification) string {
 	return ""
 }
 
-// escapeNotificationText HTML-entity-escapes text before it is interpolated
-// into a <job-notification> wrapper. Job output (a shell tail, a delegate
-// report head, a matched watch line) and agent-composed text (a disposal
-// hint, a watch frame) are under no obligation to avoid &, <, >, or " - so
-// without this step that content can prematurely close an attribute value,
-// close the opening tag early, terminate the block via a literal
-// </job-notification>, or forge a second block. & is escaped first so the
-// other entities are not themselves escaped a second time. NotificationCard's
-// decodeEntities (cmd/serf-hub/frontend) is the paired decoder.
+// escapeNotificationText makes text safe to interpolate into a
+// <job-notification> wrapper, in two steps. First, invalid UTF-8 (job output
+// and agent-composed text carry no encoding guarantee) is replaced with
+// U+FFFD via strings.ToValidUTF8, so the returned block is always valid
+// UTF-8. Before 522f25ab9, attribute values were rendered with fmt's %q verb,
+// which escapes invalid UTF-8 as a side effect; that commit switched
+// attributes to this function without also carrying over the ToValidUTF8 call
+// the body-text call sites already had, so a raw invalid byte in a value like
+// a job's Reason reached the rendered block unescaped (the
+// FuzzShellNotificationRenderProgram regression corpus catches it). Second, &
+// < > " are HTML-entity-escaped so the content cannot prematurely close an
+// attribute value, close the opening tag early, terminate the block via a
+// literal </job-notification>, or forge a second block. & is escaped first so
+// the other entities are not themselves escaped a second time.
+// NotificationCard's decodeEntities (cmd/serf-hub/frontend) is the paired
+// decoder.
 func escapeNotificationText(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
@@ -164,7 +172,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 			notificationAttr("trigger", n.Reason),
 		}
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), escapeNotificationText(strings.ToValidUTF8(n.watchSendFrame, "\uFFFD")))
+			strings.Join(attrs, " "), escapeNotificationText(n.watchSendFrame))
 	}
 
 	event := n.Status
@@ -212,7 +220,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 				"Watch event triggered: %s.\n"+
 				"</job-notification>",
 			strings.Join(attrs, " "),
-			escapeNotificationText(strings.ToValidUTF8(n.Reason, "\uFFFD")),
+			escapeNotificationText(n.Reason),
 		)
 	}
 

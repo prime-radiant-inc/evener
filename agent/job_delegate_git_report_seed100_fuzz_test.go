@@ -165,6 +165,20 @@ func jdgr100Report(t *testing.T, mode byte) {
 				return h.git.run(args...)
 			}
 		}
+	case 6:
+		// The scripted model refuses to answer rev-list --count at all (it is a
+		// real-git verdict it has no state to derive — docs/testing.md "Which
+		// harness"), so the clean/ahead=0 baseline must script that one call the
+		// same way mode 7 scripts its dirty/ahead=3 case; status passes through
+		// to the real model, which derives clean from the lane's disk state.
+		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+			return func(args ...string) (string, error) {
+				if len(args) > 2 && args[2] == "rev-list" {
+					return "0\n", nil
+				}
+				return h.git.run(args...)
+			}
+		}
 	case 7:
 		h.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
 			return func(args ...string) (string, error) {

@@ -443,8 +443,15 @@ func pifAssertInitialTranscript(t *testing.T, path, id, workspace string) {
 	if !strings.Contains(header.SystemPrompt, "PIF_BASE_PROMPT") || !strings.Contains(header.SystemPrompt, "PIF_APPEND_PROMPT") {
 		t.Fatalf("transcript header lost composed prompt: %q", header.SystemPrompt)
 	}
-	if len(entries) != 0 || skipped != 0 {
-		t.Fatalf("initial transcript entries=%d skipped=%d, want empty clean transcript", len(entries), skipped)
+	// The fixture's SessionStart hook (pifMaterializeFixture) always fires on a
+	// fresh session, and qm9y made a completed hook's exit unconditionally
+	// persist as a TurnHookCompleted entry — so "clean" means exactly that one
+	// entry now, not zero.
+	if len(entries) != 1 || skipped != 0 {
+		t.Fatalf("initial transcript entries=%d skipped=%d, want exactly one hook-completed entry", len(entries), skipped)
+	}
+	if entries[0].Turn.Kind != schema.TurnHookCompleted {
+		t.Fatalf("initial transcript entry kind = %q, want %q", entries[0].Turn.Kind, schema.TurnHookCompleted)
 	}
 }
 
