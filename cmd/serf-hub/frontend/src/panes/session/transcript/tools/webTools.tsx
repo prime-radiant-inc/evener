@@ -40,12 +40,37 @@ function webFetchByteCount(output: string): number {
   return typeof sizeBytes === "number" ? sizeBytes : output.length;
 }
 
+// The fetched URL, linkified so the reader can open it in their own browser
+// (kata tcp9). Sourced from argumentsJSON — the call's own input, present
+// even when the fetch failed and the output is bare error text — never from
+// the output envelope. http(s) only: an anchor built from tool-call text
+// must not be able to carry a javascript:/data: href, so anything else
+// renders as no link at all rather than a dead or dangerous one. Same
+// target/rel idiom as the markdown widget's own external links.
+function webFetchLink(item: { argumentsJSON?: string }): string | undefined {
+  const url = str(parseArgs(item.argumentsJSON), "url");
+  if (url === undefined) return undefined;
+  return url.startsWith("https://") || url.startsWith("http://") ? url : undefined;
+}
+
 function WebFetchBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
   const parsed = parseJSONObject(output);
   const answer = parsed ? str(parsed, "answer") : undefined;
-  return <div>{clip(answer ?? output, 240)}</div>;
+  const url = webFetchLink(item);
+  return (
+    <div>
+      {url !== undefined && (
+        <div>
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            {url}
+          </a>
+        </div>
+      )}
+      {clip(answer ?? output, 240)}
+    </div>
+  );
 }
 
 registerToolRenderer({
