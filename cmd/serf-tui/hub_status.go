@@ -3,12 +3,18 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 )
+
+// compactThreshold must match agent/internal/contextmgr/context_manager.go's
+// SummarizeThreshold so the "to compact" figure the user reads is the one the
+// agent will act on.
+const compactThreshold = 0.95
 
 func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth appwire.AuthStatusResponse, taskErr, authErr error, width int) string {
 	var b strings.Builder
@@ -72,11 +78,6 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth 
 //   - "45k (23%)"                       — used + pressure, no window
 //   - "23%"                             — pressure only (legacy thin form)
 //   - ""                                — nothing known
-//
-// The "to compact" hint uses the compactThreshold constant shared with the
-// standalone status bar (statusbar.go), matching agent/context_manager.go's
-// SummarizeThreshold so the threshold the user reads is the one the agent
-// will act on.
 func formatContextFragment(detail hubSessionDetail) string {
 	used := detail.ContextUsed
 	window := detail.ContextWindow
@@ -96,6 +97,17 @@ func formatContextFragment(detail hubSessionDetail) string {
 		return fmt.Sprintf("%.0f%%", pressure*100)
 	}
 	return ""
+}
+
+// formatTokens formats a token count compactly: e.g. 1234 → "1.2k", 12345 → "12k".
+func formatTokens(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	if n < 10000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%dk", n/1000)
 }
 
 // formatWorkMillis renders a session's accumulated work time compactly
