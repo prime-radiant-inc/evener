@@ -260,6 +260,79 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(second.clientMutationId)).toMatchObject({ state: "submitting" });
   });
 
+  // The daemon's own contract for a blocked-unknown outcome is "retry must
+  // remain blocked until persistence recovers" (NormalizeClientMutationError).
+  // The authoritative thread read is how recovery is proven: an id absent from
+  // every authoritative set (pending, queue, transcript items) was never
+  // journaled, so re-dispatching it is safe — the daemon's journal replays a
+  // receipt if a race ever makes it a duplicate. Without this restore, a
+  // blocked head parks the whole FIFO forever, across reloads (kata gwea).
+  test("restoreProvenAbsent returns a blocked head to submitting and the next dispatch drains it", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "restore-absent", ["mutation-a", "mutation-b"]);
+    const first = await outbox.enqueueIntent(queueIntent("ref-a", "first"));
+    const second = await outbox.enqueueIntent(queueIntent("ref-a", "second"));
+    const changes: string[][] = [];
+    let failFirstAttempt = true;
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      if (failFirstAttempt) {
+        failFirstAttempt = false;
+        throw new WireError("journal unavailable", -32014, {
+          serfErrorInfo: "mutationOutcomeUnknown",
+          clientMutationId: params.clientMutationId,
+          mutationOutcome: "unknown",
+          retryDisposition: "blocked",
+          cause: "persistenceUnavailable",
+        });
+      }
+      return { receipt: receipt(params.clientMutationId) };
+    });
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (refs) => changes.push(refs),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+
+    await dispatcher.restoreProvenAbsent("ref-a", new Set());
+    expect(changes).toContainEqual(["ref-a"]);
+    expect(await outbox.getOutbox(first.clientMutationId)).toMatchObject({ state: "submitting" });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(queueCalls(client).map((params) => params.clientMutationId)).toEqual([
+      first.clientMutationId,
+      first.clientMutationId,
+      second.clientMutationId,
+    ]);
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
+  });
+
+  test("restoreProvenAbsent leaves records the authority knows for receipt reconciliation", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "restore-known", ["mutation-a", "mutation-other"]);
+    const known = await outbox.enqueueIntent(queueIntent("ref-a", "known"));
+    const otherRef = await outbox.enqueueIntent(queueIntent("ref-b", "other"));
+    await outbox.markUnknown(known.clientMutationId, "blockedUnknown");
+    await outbox.markUnknown(otherRef.clientMutationId, "blockedUnknown");
+    const changes: string[][] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => new FakeClient(),
+      onStorageChange: (refs) => changes.push(refs),
+    });
+
+    await dispatcher.restoreProvenAbsent("ref-a", new Set([known.clientMutationId]));
+
+    // The authority reports this id, so its receipt path (reconcileIdentities /
+    // a replayed dispatch) owns settlement; restore must not race it. The
+    // other ref's record is outside this reconcile entirely.
+    expect(await outbox.getOutbox(known.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    expect(await outbox.getOutbox(otherRef.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    expect(changes).toEqual([]);
+  });
+
   test("terminal rejection advances only after atomically moving the rejected intent to recovery", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "rejected", ["mutation-a", "mutation-b"]);

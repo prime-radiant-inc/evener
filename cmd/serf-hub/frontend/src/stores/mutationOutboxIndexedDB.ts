@@ -228,6 +228,31 @@ export class MutationOutboxIndexedDB {
     });
   }
 
+  // restoreProvenAbsent is markUnknown's exit. A blockedUnknown record waits
+  // for its outcome to become provable ("retry must remain blocked until
+  // persistence recovers" — the daemon's NormalizeClientMutationError); a
+  // successful authoritative read is that proof. An id absent from every
+  // authoritative set was never journaled, so it returns to "submitting" for
+  // the normal dispatch path — the daemon's journal replays a receipt if a
+  // race ever makes the resend a duplicate. Ids the authority DOES report are
+  // left alone: reconcileIdentities or a replayed dispatch owns their
+  // settlement. Returns the restored ids.
+  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
+    return this.#write(OUTBOX_STORE, undefined, async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+      const restored: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef) continue;
+        if (record.state !== "blockedUnknown") continue;
+        if (authoritativeIds.has(record.clientMutationId)) continue;
+        await requestResult(store.put({ ...record, state: "submitting" }));
+        restored.push(record.clientMutationId);
+      }
+      return restored;
+    });
+  }
+
   async transferToRecovery(
     clientMutationId: string,
     recoveryKind: MutationRecoveryKind,
