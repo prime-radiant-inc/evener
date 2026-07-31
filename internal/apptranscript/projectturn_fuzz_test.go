@@ -91,7 +91,6 @@ func exerciseTranscriptSurface(t testing.TB) {
 	StringifyToolContent(make(chan int))
 	DefaultImageProjector(llm.ImageData{MediaType: "image/png"})
 	ImagesFromContent(nil, nil)
-	AttachmentsFromContent([]llm.ContentPart{{Kind: llm.ContentAudio}, {Kind: llm.ContentDocument}})
 	WebSearchProjection(nil)
 	WebSearchProjection(&llm.WebSearchData{Raw: []byte(`{"input":{"query":"input"},"webSearchQueries":["gemini"],"groundingChunks":[{"web":{"title":"Title","uri":"https://example"}}],"content":[{"type":"ignored"}]}`)})
 	_ = webSearchResultLine("title", "")

@@ -360,7 +360,6 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		return []appwire.ThreadItem{item}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
-		images = append(images, AttachmentsFromContent(turn.Message.Content)...)
 		return []appwire.ThreadItem{{
 			Type:                 "userMessage",
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
@@ -377,7 +376,6 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		if text == "" && len(images) > 0 {
 			text = ImagePlaceholder(len(images))
 		}
-		images = append(images, AttachmentsFromContent(turn.Message.Content)...)
 		return []appwire.ThreadItem{{
 			Type:   "steering",
 			ID:     fmt.Sprintf("item_steering_%d", turnIndex),
@@ -535,30 +533,6 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	default:
 		return nil
 	}
-}
-
-// AttachmentsFromContent maps non-image input attachments (audio, documents)
-// into AppWire input items rendered as labeled chips. Images are handled
-// separately by ImagesFromContent because they carry sha-addressed bytes the
-// web UI fetches lazily; audio and documents have no byte-serving path, so a
-// chip naming the file and media type is the honest representation.
-func AttachmentsFromContent(parts []llm.ContentPart) []appwire.InputItem {
-	var out []appwire.InputItem
-	for _, part := range parts {
-		switch part.Kind {
-		case llm.ContentAudio:
-			if part.Audio == nil {
-				continue
-			}
-			out = append(out, appwire.InputItem{Type: "input_audio", MediaType: part.Audio.MediaType, URL: part.Audio.URL})
-		case llm.ContentDocument:
-			if part.Document == nil {
-				continue
-			}
-			out = append(out, appwire.InputItem{Type: "input_document", MediaType: part.Document.MediaType, Name: part.Document.FileName, URL: part.Document.URL})
-		}
-	}
-	return out
 }
 
 // webSearchRaw captures the provider-native web-search payload shapes serf's

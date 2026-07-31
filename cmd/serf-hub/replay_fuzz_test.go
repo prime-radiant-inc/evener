@@ -342,18 +342,14 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 	return out
 }
 
-// normalizeMetamorphicImages reduces input attachments to their media type and
-// drops the audio/document attachments that exist only on reload: the live
-// EventUserInput payload (UserInputData) carries images only, with no field for
-// audio/document attachments, so those render on reload alone. Image enrichment
-// (live "image" type + inline Data + Name vs reload's "input_image" + empty
-// Name) collapses to the shared media type.
+// normalizeMetamorphicImages reduces input attachments to their media type:
+// image enrichment (live "image" type + inline Data + Name vs reload's
+// "input_image" + empty Name) collapses to the shared media type. Nothing is
+// dropped - both sides carry pictures and only pictures, so any extra entry
+// on either side is a real divergence for the differential to report.
 func normalizeMetamorphicImages(images []appwire.InputItem) []appwire.InputItem {
 	var out []appwire.InputItem
 	for _, img := range images {
-		if img.Type == "input_audio" || img.Type == "input_document" {
-			continue
-		}
 		out = append(out, appwire.InputItem{MediaType: img.MediaType})
 	}
 	return out
