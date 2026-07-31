@@ -33,6 +33,7 @@ export interface SessionChromeProps {
 
 const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
+  body: requireClass(styles.body, "sessionchrome.module.css", "body"),
   cadenceSlot: requireClass(styles.cadenceSlot, "sessionchrome.module.css", "cadenceSlot"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
 };
@@ -129,16 +130,22 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
 
   return (
     <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
-      <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
-        <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
-      </span>
-      <StatusRow sessionRef={sessionRef} model={model} now={now} />
-      <GoalControl
-        sessionRef={sessionRef}
-        model={model}
-        dialogOpen={goalDialogOpen}
-        onDialogOpenChange={setGoalDialogOpen}
-      />
+      {/* .body owns ALL wrapping (sessionchrome.module.css says why): the
+          status content reflows inside this group when the pane is narrow,
+          so .right - and with it the "..." menu - can never be pushed onto
+          a line of its own and reflow the footer. */}
+      <div className={CLASS.body} data-testid="session-chrome-body">
+        <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
+          <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
+        </span>
+        <StatusRow sessionRef={sessionRef} model={model} now={now} />
+        <GoalControl
+          sessionRef={sessionRef}
+          model={model}
+          dialogOpen={goalDialogOpen}
+          onDialogOpenChange={setGoalDialogOpen}
+        />
+      </div>
       <div className={CLASS.right}>
         <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
         <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />

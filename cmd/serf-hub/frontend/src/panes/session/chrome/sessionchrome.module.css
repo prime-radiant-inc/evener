@@ -1,23 +1,45 @@
-/* One quiet status-bar row: StatusRow, GoalControl's chip (when a goal is
- * set), and .right are flat flex siblings here (not nested in their own
- * left/right wrapper divs) so they wrap onto a shared line as a unit when
- * the pane is narrow, rather than as two independently-wrapping halves. */
+/* One quiet status-bar row with exactly two direct children:
+ *
+ *   .body  - cadence slot + StatusRow + GoalControl's chip. Owns ALL
+ *            wrapping: when the pane is narrow its items reflow onto
+ *            shared extra lines in here.
+ *   .right - Details/Tasks/Jobs triggers + the session "⋯" menu. A
+ *            flex:none sibling of a row that never wraps.
+ *
+ * The split exists because the flat-sibling layout it replaced let the
+ * menu overflow onto a line of its own: with StatusRow, the goal chip and
+ * .right as direct items of a flex-wrap:wrap row, .right was the item the
+ * wrap pushed down whole whenever the status facts plus the triggers
+ * exceeded the chrome width - growing the footer by a full row just to
+ * hold the "⋯" (and reflowing the pane every time a long model name, a
+ * failure count or a queue chip crossed the threshold). Now the menu
+ * always shares the one top-level line, and only the status content
+ * decides whether the footer grows. */
 .chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
-  width: 100%;
+  flex: 1 1 auto;
+  /* min-width:0 lets the group shrink below its content width so the wrap
+   * happens in here; without it the row would overflow sideways instead. */
+  min-width: 0;
 }
 
 .right {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* Never wraps (the row is nowrap), never shrinks; .body's flex-grow is
+   * what pins this group to the trailing edge. */
   flex: none;
-  /* pushes Tasks + the "⋯" menu to the row's trailing edge, same trick
-   * panescaffold.module.css's own .actions uses for the header row. */
-  margin-left: auto;
 }
 
 /* The relocated header cadence (2026-07-30-mobile-session-layout-design.md,
