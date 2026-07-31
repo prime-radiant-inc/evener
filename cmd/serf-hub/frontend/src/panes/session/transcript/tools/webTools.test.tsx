@@ -108,3 +108,35 @@ test("web_search: body lists up to 5 trimmed result lines", () => {
   expect(screen.getByText("five")).toBeTruthy();
   expect(screen.queryByText("six (dropped)")).toBeNull();
 });
+
+// kata tcp9: the fetched URL must be openable in the user's own browser —
+// a real anchor, new tab, opener severed. The URL comes from argumentsJSON
+// (the call's own input, present even when the output isn't JSON or the
+// fetch failed), not from the output envelope.
+test("kata tcp9: body renders the fetched URL as a link that opens in the user's browser", () => {
+  const d = toolRendererFor("web_fetch");
+  const Body = d.body!;
+  const args = JSON.stringify({ url: "https://example.com/page", question: "q" });
+  const output = JSON.stringify({ answer: "Hello.", url: "https://example.com/page", size_bytes: 6 });
+  render(<Body item={item({ toolName: "web_fetch", argumentsJSON: args, output })} live={false} />);
+  const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("https://example.com/page");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+test("kata tcp9: a failed fetch's plain-text body still links the URL the call was for", () => {
+  const d = toolRendererFor("web_fetch");
+  const Body = d.body!;
+  const args = JSON.stringify({ url: "https://example.com/down", question: "q" });
+  render(<Body item={item({ toolName: "web_fetch", argumentsJSON: args, output: "fetch failed: timeout" })} live={false} />);
+  expect((screen.getByRole("link") as HTMLAnchorElement).getAttribute("href")).toBe("https://example.com/down");
+  expect(screen.getByText("fetch failed: timeout")).toBeTruthy();
+});
+
+test("kata tcp9: no url argument means no link, never a dead anchor", () => {
+  const d = toolRendererFor("web_fetch");
+  const Body = d.body!;
+  render(<Body item={item({ toolName: "web_fetch", argumentsJSON: "not json", output: "text" })} live={false} />);
+  expect(screen.queryByRole("link")).toBeNull();
+});
