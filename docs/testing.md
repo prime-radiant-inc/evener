@@ -393,6 +393,19 @@ because nothing fails. A lock-path-only override was considered and
 rejected for exactly that reason: it would unbundle the singleton guard
 from the state it guards.
 
+## A Live Run Uses the Machine's Build Cache
+
+None of the live-test commands below carries a `GOCACHE=` prefix, and adding
+one is a regression. A per-command cache under `/tmp` lands on the same
+volume as the checkout — the volume `scripts/setup-gocache.sh` exists to move
+the build cache OFF, which has filled to 100% twice mid-fleet-run (kata
+98x9); one stray `/tmp/serf-gocache` grew from 1.3G to 2.9G in an hour. There
+is nothing to isolate, either: the build cache is content-addressed, so a
+live run and the default suite cannot corrupt each other's entries. And when
+the configured cache volume stalls, `scripts/disk-reclaim.sh --check` — which
+`run-module-tests.sh` runs before every test run — names the stall instead of
+letting the run hang (kata r07s).
+
 ## MCP Server E2E
 
 The MCP manager has opt-in live tests against `npx -y
@@ -403,7 +416,7 @@ or use cached packages outside the repository.
 Run:
 
 ```sh
-SERF_MCP_E2E=1 GOCACHE=/tmp/serf-gocache go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
+SERF_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
 ```
 
 `SERF_LIVE_TESTS=1` also enables these tests with the other live test suites.
@@ -434,13 +447,13 @@ OAuth credentials and make live requests to `https://chatgpt.com/backend-api/cod
 Run:
 
 ```sh
-SERF_OPENAI_CODEX_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
+SERF_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
 ```
 
 Optional model override:
 
 ```sh
-SERF_OPENAI_CODEX_E2E=1 SERF_OPENAI_CODEX_E2E_MODEL=gpt-5.4 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
+SERF_OPENAI_CODEX_E2E=1 SERF_OPENAI_CODEX_E2E_MODEL=gpt-5.4 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
 ```
 
 Prerequisites:
@@ -487,13 +500,13 @@ and make live requests to `https://api.anthropic.com/v1/messages`.
 Run:
 
 ```sh
-SERF_ANTHROPIC_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
+SERF_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
 ```
 
 Optional model override:
 
 ```sh
-SERF_ANTHROPIC_E2E=1 SERF_ANTHROPIC_E2E_MODEL=claude-sonnet-4-5-20250929 GOCACHE=/tmp/serf-gocache go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
+SERF_ANTHROPIC_E2E=1 SERF_ANTHROPIC_E2E_MODEL=claude-sonnet-4-5-20250929 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
 ```
 
 Prerequisites:
