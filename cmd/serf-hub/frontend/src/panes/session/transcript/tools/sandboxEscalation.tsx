@@ -1,7 +1,9 @@
 // Sandbox escalation cards (M7): "the tool-exec goroutine blocks until
 // answered via serf/sandbox/escalation/resolve" (docs/appwire-protocol.md).
-// Fully interactive - approve/deny actually call the wire method - but NOT
-// wired into the live transcript tree. Ground truth (see the wave-4 task-3
+// Fully interactive - approve/deny actually call the wire method - and
+// mounted at the SESSION level (Session.tsx renders SandboxEscalationRail),
+// deliberately not inside the transcript tree. Ground truth for why a
+// transcript mount is structurally impossible (see the wave-4 task-3
 // report for the full trail, condensed here):
 //
 //   - serf/sandbox/escalation/requested and SerfThread.pendingEscalations
@@ -22,9 +24,9 @@
 //     tool row - confirming it was never meant to be item-scoped even in
 //     the original design.
 //
-// Given that, this file ships a fully working, fully tested card + data
-// hook, ready for whoever owns the mount point (a Session.tsx-level slot
-// is outside transcript/tools/**'s ownership).  Reading off the shared
+// Given that, this file owns the card + data hook and Session.tsx owns the
+// mount (a Session.tsx-level slot is outside transcript/tools/**'s
+// ownership).  Reading off the shared
 // threads store (rather than a private subscription) also means a second
 // browser tab/the CLI resolving the SAME escalation converges once this
 // client's own next snapshot or live notification touches that model -
