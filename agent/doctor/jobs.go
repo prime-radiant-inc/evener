@@ -209,7 +209,7 @@ func optionalBoolString(v *bool) string {
 // a session that ran jobs does not read as "no jobs recorded" just because a
 // --job filter matched none of them.
 func emptyJobsMessage(filtered string) string {
-	if id := strings.TrimPrefix(filtered, "job:"); id != filtered {
+	if id, ok := strings.CutPrefix(filtered, "job:"); ok {
 		return "job " + id + " not found in this session"
 	}
 	return "no jobs recorded"
