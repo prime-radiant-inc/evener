@@ -247,6 +247,7 @@ export interface RailRowActions {
   onToggleFavorite: (session: ApiTreeNode) => void;
   onToggleArchiveSession: (session: ApiTreeNode) => void;
   onRenameRequest: (session: ApiTreeNode) => void;
+  onDeleteSessionRequest: (session: ApiTreeNode) => void;
   onToggleFavoriteProject: (project: ApiTreeProject) => void;
   onToggleArchiveProject: (project: ApiTreeProject) => void;
   onDeleteProjectRequest: (project: ApiTreeProject) => void;
@@ -363,6 +364,16 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
       label: session.tier === "archived" ? "Unarchive" : "Archive",
       onSelect: () => actions.onToggleArchiveSession(session),
     });
+  }
+  // Delete (kata n15j) targets a stable LOCAL session ref
+  // (identifier.ValidateSessionID via web_api_session_delete.go) - offering
+  // it for a remote-source session would only ever 400. No client-side
+  // liveness check: a live session is offered the same as an ended one, and
+  // the server refuses via the same skipped/toast path deleteProject already
+  // uses for a session that raced back to live, rather than this menu
+  // duplicating the server's own crash-vs-live predicate (kata 8at6).
+  if (isTopLevelSession(session) && session.host_id === "local") {
+    items.push({ id: "delete", label: "Delete…", onSelect: () => actions.onDeleteSessionRequest(session) });
   }
   return items;
 }

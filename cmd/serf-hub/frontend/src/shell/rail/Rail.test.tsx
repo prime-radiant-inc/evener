@@ -209,6 +209,7 @@ function defaultPostResponses(): Record<string, { status: number; body: unknown 
     "/api/archive": { status: 200, body: { ok: true } },
     "/api/project/delete": { status: 200, body: { deleted: ["local:old1"], skipped: [] } },
     rename: { status: 204, body: undefined },
+    delete: { status: 200, body: { deleted: ["local:s1"], skipped: [] } },
   };
 }
 
@@ -254,6 +255,10 @@ beforeEach(() => {
       postCalls.push({ path: url, body });
       if (url.startsWith("/api/sessions/") && url.endsWith("/rename")) {
         const scripted = postResponses.rename!;
+        return jsonResponse(scripted.body, scripted.status);
+      }
+      if (url.startsWith("/api/sessions/") && url.endsWith("/delete")) {
+        const scripted = postResponses.delete!;
         return jsonResponse(scripted.body, scripted.status);
       }
       const scripted = postResponses[url];
@@ -1406,6 +1411,112 @@ describe("delete project flow", () => {
 
     await screen.findByText(/could not be removed/i);
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+  });
+});
+
+describe("delete session flow", () => {
+  test("opens a confirmation dialog; confirming POSTs the delete and refetches", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+
+    await screen.findByRole("heading", { name: "Delete session?" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(postCalls).toContainEqual({ path: "/api/sessions/local%3As1/delete", body: {} });
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+  });
+
+  test("canceling the delete confirmation does not POST anything", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("heading", { name: "Delete session?" });
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(postCalls).toHaveLength(0);
+  });
+
+  test("a refused delete (live or reserved target) still refetches but shows a warning toast", async () => {
+    postResponses.delete = { status: 200, body: { deleted: [], skipped: [{ id: "s1", reason: "resumed live" }] } };
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await screen.findByText(/couldn.?t delete/i);
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+  });
+
+  test("a failed delete request shows an error toast and leaves the row in place", async () => {
+    postResponses.delete = { status: 500, body: { error: "past index not configured" } };
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await screen.findByText(/past index not configured/i);
+    expect(screen.getByText("Session one")).toBeTruthy();
+  });
+
+  // n15j's own safety contract: "if the deleted session is open in the
+  // WebUI, navigate to a surviving workspace/session rather than leaving a
+  // dead route." workspace.ts's own invariant (DockHost's relaunchWelcome)
+  // already guarantees the main slot is never left empty once its pane is
+  // closed, so closing every pane whose ref matches the deleted session is
+  // the whole of what this layer owes - not a bespoke redirect.
+  test("closes every open pane for the deleted session, but leaves an unrelated pane open", async () => {
+    const deletedPaneId = workspaceStore.getState().openPane("session", { ref: "local:s1" });
+    const survivorPaneId = workspaceStore.getState().openPane("session", { ref: "local:live1" }, { slot: "secondary" });
+
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    const paneIds = workspaceStore.getState().panes.map((p) => p.id);
+    expect(paneIds).not.toContain(deletedPaneId);
+    expect(paneIds).toContain(survivorPaneId);
+  });
+
+  test("deleting a session with no open pane leaves the workspace untouched", async () => {
+    const survivorPaneId = workspaceStore.getState().openPane("session", { ref: "local:live1" });
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([survivorPaneId]);
   });
 });
 

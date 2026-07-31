@@ -33,7 +33,8 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate, paneToURL } from "../routing";
-import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
+import { workspaceStore } from "../workspace";
+import { deleteProject, deleteSession, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -164,6 +165,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<ApiTreeNode | null>(null);
   // Mutations currently in flight. Everything below renders from the tree with
   // these projected on (railPending), so a click shows before its round trip
   // resolves; runAction adds and removes them.
@@ -349,6 +351,9 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       setRenameTarget(session);
       setRenameValue(session.title);
     },
+    onDeleteSessionRequest: (session) => {
+      setDeleteSessionTarget(session);
+    },
     onToggleFavoriteProject: (project) => {
       const value = !project.favorite;
       void runAction(() => setFavorite("project", project.key, value), "Couldn't update favorite", {
@@ -421,6 +426,43 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       }
     } catch (err) {
       toasts.push("error", `Couldn't delete project: ${errorText(err)}`);
+    } finally {
+      setPending((ops) => ops.filter((op) => op !== optimistic));
+    }
+  }
+
+  function closeDeleteSessionDialog() {
+    setDeleteSessionTarget(null);
+  }
+
+  async function confirmDeleteSession() {
+    const target = deleteSessionTarget;
+    if (!target) return;
+    closeDeleteSessionDialog();
+    const optimistic: PendingOp = { kind: "hideSession", ref: target.ref };
+    setPending((ops) => [...ops, optimistic]);
+    try {
+      const result = await deleteSession(target.ref);
+      await treeStore.getState().refresh();
+      if (result.deleted.length > 0) {
+        // The session is actually gone: close every open pane still showing
+        // it (n15j's "navigate to a surviving workspace/session rather than
+        // leaving a dead route") instead of leaving a phantom tab open.
+        // workspace.ts's own invariant (DockHost's relaunchWelcome) takes it
+        // from there once the main slot is empty - this layer only owes
+        // closing the pane(s), not choosing what replaces them.
+        const workspace = workspaceStore.getState();
+        for (const pane of workspace.panes) {
+          const paneRef = (pane.params as { ref?: unknown }).ref;
+          if (paneRef === target.ref) workspace.closePane(pane.id);
+        }
+      }
+      if (result.skipped.length > 0) {
+        const reason = result.skipped[0]?.reason ?? "still in use";
+        toasts.push("warning", `Couldn't delete "${target.title}": ${reason}`);
+      }
+    } catch (err) {
+      toasts.push("error", `Couldn't delete "${target.title}": ${errorText(err)}`);
     } finally {
       setPending((ops) => ops.filter((op) => op !== optimistic));
     }
@@ -630,6 +672,26 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             Permanently delete every session in "{deleteTarget.name}"? This removes their transcripts and cannot be
             undone.
           </p>
+        </Dialog>
+      )}
+
+      {deleteSessionTarget && (
+        <Dialog
+          open
+          onClose={closeDeleteSessionDialog}
+          title="Delete session?"
+          footer={
+            <div className={CLASS.dialogActions}>
+              <Button variant="quiet" onClick={closeDeleteSessionDialog}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => void confirmDeleteSession()}>
+                Delete
+              </Button>
+            </div>
+          }
+        >
+          <p>Permanently delete "{deleteSessionTarget.title}"? This removes its transcript and cannot be undone.</p>
         </Dialog>
       )}
     </div>
