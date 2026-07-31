@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // --- old tests kept for regression ---
@@ -17,7 +19,10 @@ func TestCredentialsPanelShowsStatusBadges(t *testing.T) {
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"oauth"}},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
-		{Name: "kimi", Type: "kimi", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
+		// CredentialRequired is spelled out because Go's zero value for it is
+		// "optional", which is the wrong answer for a key-authenticated
+		// provider: the hub always sends the field, and for kimi it sends true.
+		{Name: "kimi", Type: "kimi", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
 	}}})
 	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
@@ -35,7 +40,7 @@ func TestCredentialsPanel_RendersList(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
-		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
+		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
 	}}})
 	view := updated.(CredentialsPanel).View()
 	for _, want := range []string{"openai", "anthropic", "OAUTH", "ABSENT"} {
@@ -440,6 +445,55 @@ func TestCredentialsPanel_RedactsCredentialTestRPCError(t *testing.T) {
 	}
 	if strings.Contains(view, secret) {
 		t.Fatalf("RPC error leaked secret:\n%s", view)
+	}
+}
+
+// instanceRow returns the one rendered row naming `name`, styling intact so a
+// caller can compare whole badges - tone included - rather than bare words.
+func instanceRow(t *testing.T, view, name string) string {
+	t.Helper()
+	found := ""
+	for line := range strings.SplitSeq(view, "\n") {
+		if !strings.Contains(line, name) {
+			continue
+		}
+		if found != "" {
+			t.Fatalf("%q names more than one rendered row, so this test cannot tell which badge is whose:\n%s", name, ansiPattern.ReplaceAllString(view, ""))
+		}
+		found = line
+	}
+	if found == "" {
+		t.Fatalf("no rendered row names %q:\n%s", name, ansiPattern.ReplaceAllString(view, ""))
+	}
+	return found
+}
+
+// A gateway that inherits no type-level key holds no credential and needs none:
+// the hub says so on the wire (InstanceEntry.CredentialRequired), and the web
+// pane calls it optional rather than unconfigured. The badge is that same claim
+// in one word, so a working local gateway must not wear the ended-tone ABSENT
+// badge that belongs to a provider whose key is genuinely missing.
+func TestCredentialsPanel_KeylessGatewayBadgeReadsOptional(t *testing.T) {
+	withTestColorProfile(t)
+	th := tuitheme.ActiveTheme()
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "llama", Type: "openai", BaseURL: "http://localhost:8080", ActiveSource: "absent", CredentialRequired: false, AuthModes: []string{"apiKey"}},
+		{Name: "claude", Type: "anthropic", ActiveSource: "absent", CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	view := updated.(CredentialsPanel).View()
+
+	keyless := instanceRow(t, view, "llama")
+	if !strings.Contains(keyless, tuiprim.StatusBadge(th.TextDim, "optional")) {
+		t.Errorf("the keyless gateway's badge is not the neutral OPTIONAL one:\n%s", ansiPattern.ReplaceAllString(keyless, ""))
+	}
+	if strings.Contains(keyless, tuiprim.StatusBadge(th.StateEnded, "absent")) {
+		t.Errorf("the keyless gateway wears the ended-tone ABSENT badge, which is the badge of a provider missing its key:\n%s", ansiPattern.ReplaceAllString(keyless, ""))
+	}
+
+	missing := instanceRow(t, view, "claude")
+	if !strings.Contains(missing, tuiprim.StatusBadge(th.StateEnded, "absent")) {
+		t.Errorf("a provider whose required key is missing must keep the ended-tone ABSENT badge:\n%s", ansiPattern.ReplaceAllString(missing, ""))
 	}
 }
 
