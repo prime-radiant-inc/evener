@@ -16,6 +16,11 @@ import (
 // agent will act on.
 const compactThreshold = 0.95
 
+// warnThreshold must match the same file's WarnThreshold so the header's amber
+// context band lights at the pressure where the agent starts nudging itself to
+// compact, rather than at a number only the TUI believes in.
+const warnThreshold = 0.75
+
 func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth appwire.AuthStatusResponse, taskErr, authErr error, width int) string {
 	var b strings.Builder
 	b.WriteString("status\n")

@@ -208,12 +208,14 @@ func exerciseQuestionOverlay() {
 func exerciseStatusFormatting() {
 	for _, detail := range []hubSessionDetail{
 		{ContextUsed: 46000, ContextWindow: 200000, ContextPressure: 0.23},
+		{ContextUsed: 160000, ContextWindow: 200000, ContextPressure: 0.80},
 		{ContextUsed: 195000, ContextWindow: 200000, ContextPressure: 0.98},
 		{ContextUsed: 46000, ContextPressure: 0.23},
 		{ContextPressure: 0.23},
 		{},
 	} {
 		_ = formatContextFragment(detail)
+		_ = contextPressureColor(detail)
 	}
 	_ = formatTokens(500)
 	_ = formatTokens(1500)
