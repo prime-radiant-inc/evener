@@ -15,7 +15,7 @@
 // by the uniform tone treatment.
 import { Fragment, useState } from "react";
 import { Card, Chip, Markdown } from "../../../../widgets";
-import { parseAnsiLines } from "../../../../widgets/codeblock/ansi";
+import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -75,10 +75,31 @@ function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
   ));
 }
 
+// boundedShellTailPreview bounds a shell excerpt to its FINAL EXCERPT_PREVIEW
+// characters, not its first: the producer's own excerpt is already a tail of
+// retained output (agent/job_notify.go), so a head-cut on top of that hides
+// the command's newest, usually most useful lines behind its oldest ones.
+// AnsiTailBuffer is the shared ANSI tail-state machinery (also used live by
+// shellTool.tsx's ShellBody) - reused here rather than a second control
+// parser - so a cut landing inside an SGR sequence never leaks a raw
+// fragment, and styling active at the kept boundary is reconstructed as a
+// normalized SGR sequence right before the kept text.
+function boundedShellTailPreview(decoded: string): string {
+  const tail = new AnsiTailBuffer(EXCERPT_PREVIEW).update(decoded);
+  return tail.truncated ? `…${tail.renderedText}` : tail.renderedText;
+}
+
 function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
   const decoded = decodeEntities(text.trim());
   if (decoded === "") return null;
-  const preview = decoded.length <= EXCERPT_PREVIEW ? decoded : `${decoded.slice(0, EXCERPT_PREVIEW)}…`;
+  // Direction matches the parse mode: a shell excerpt (ansi) is bounded to
+  // its tail, a delegate report head (non-ansi) keeps its existing
+  // head-truncated preview.
+  const preview = ansi
+    ? boundedShellTailPreview(decoded)
+    : decoded.length <= EXCERPT_PREVIEW
+      ? decoded
+      : `${decoded.slice(0, EXCERPT_PREVIEW)}…`;
   // Keep unstructured output bounded in the primary card. The complete
   // diagnostic payload remains available in the card's one raw disclosure.
   return (
