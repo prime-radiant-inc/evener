@@ -193,10 +193,11 @@ func scrubSSE(raw []byte) ([]byte, error) {
 		case "", "[DONE]":
 			out.WriteString(line)
 		default:
+			out.WriteString(prefix)
 			if scrubbed, ok := scrubJSONString(valTrim); ok {
-				out.WriteString(prefix + scrubbed)
+				out.WriteString(scrubbed)
 			} else {
-				out.WriteString(prefix + "scrubbed")
+				out.WriteString("scrubbed")
 			}
 		}
 		out.WriteString(term)
