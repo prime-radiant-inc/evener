@@ -86,3 +86,30 @@ func TestToolResultOutputImagesIgnoresResultsWithoutBytes(t *testing.T) {
 		t.Fatalf("byte-less result projected %+v, want nothing", got)
 	}
 }
+
+// TestToolResultOutputImagesIgnoresADocument keeps a PDF out of the thumbnail
+// strip. read_file routes a document through the same ImageResult the vision
+// side-channel consumes, so the bytes reach a tool result exactly like an
+// image's do — but a document has nothing an <img> can render, and describing
+// one only buys a fetch whose bytes the browser discards.
+func TestToolResultOutputImagesIgnoresADocument(t *testing.T) {
+	got := ToolResultOutputImages(&llm.ToolResultData{
+		Name: "read_file", ImageData: []byte("%PDF-1.7 ..."), ImageMediaType: "application/pdf",
+	})
+	if got != nil {
+		t.Fatalf("document projected %+v, want nothing", got)
+	}
+}
+
+// TestToolResultOutputImagesDescribesAnyImageMediaType covers the media types
+// the sha route can serve but the file-backed mechanism's sniffing allowlist
+// cannot (kata 1nr4 noted the BMP gap): these bytes come straight out of the
+// transcript with their recorded type, so no allowlist applies.
+func TestToolResultOutputImagesDescribesAnyImageMediaType(t *testing.T) {
+	for _, mediaType := range []string{"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/svg+xml"} {
+		got := ToolResultOutputImages(&llm.ToolResultData{Name: "read_file", ImageData: []byte("bytes"), ImageMediaType: mediaType})
+		if len(got) != 1 || got[0].MediaType != mediaType {
+			t.Errorf("%s projected %+v, want one descriptor carrying that media type", mediaType, got)
+		}
+	}
+}

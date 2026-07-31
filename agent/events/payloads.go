@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -171,13 +172,20 @@ const defaultOutputImageMediaType = "image/png"
 // transcript projector knows it. The sha is the content identity; the server
 // stamps the URL.
 //
-// Reports false when there are no bytes to describe.
+// Reports false when there is no image to describe: no bytes at all, or bytes
+// that are not an image. A tool result can carry a PDF (read_file routes a
+// document through the same ImageResult the vision side-channel consumes), and
+// a document is not something a thumbnail strip can render — describing one as
+// an OutputImage only buys a fetch whose bytes the browser discards.
 func ToolResultOutputImage(name string, data []byte, mediaType string) (OutputImage, bool) {
 	if len(data) == 0 {
 		return OutputImage{}, false
 	}
 	if mediaType == "" {
 		mediaType = defaultOutputImageMediaType
+	}
+	if !strings.HasPrefix(mediaType, "image/") {
+		return OutputImage{}, false
 	}
 	return OutputImage{
 		Source:    OutputImageSourceToolResult,
