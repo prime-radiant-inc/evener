@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>hk8v layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* .removeImageButton ramps its opacity over --motion-duration-overlay
+     (120ms). getComputedStyle reads the value at THIS instant, so a measure
+     taken right after the pseudo-state is pinned reads the start of the ramp
+     (0), not where the cascade settles. What this case asserts is which value
+     the cascade settles on, so the ramp is switched off rather than waited
+     out - a wait would hang forever in exactly the regression the case exists
+     to catch (no rule, so no transition, so no transitionend). */
+  * {
+    transition: none !important;
+  }
+</style>
+</head>
+<body>
+<!-- Three copies of Composer.tsx's staged-attachment tile against the REAL
+     composer.module.css class names. One is left alone; CSS.forcePseudoState
+     pins :hover on the second and :focus-visible on the third's remove button
+     (case.json), so one page and one measurement cover all three states with
+     the resting copy as the control. The image is a 4x4 two-colour PNG so the
+     thumbnail has real intrinsic dimensions rather than a broken-image box. -->
+<div class="chips">
+  <div class="imageTile" id="resting-tile">
+    <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
+    <div class="dimensionsOverlay">4×4</div>
+    <button type="button" class="removeImageButton" id="resting-remove" aria-label="Remove shot.png">
+      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <div class="imageTile" id="hovered-tile">
+    <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
+    <div class="dimensionsOverlay">4×4</div>
+    <button type="button" class="removeImageButton" id="hovered-remove" aria-label="Remove shot.png">
+      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <div class="imageTile" id="focused-tile">
+    <img class="imageThumbnail" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGP4z/AfjhhQOEhsVA4ANSkf4Z/pjskAAAAASUVORK5CYII=" alt="shot.png">
+    <div class="dimensionsOverlay">4×4</div>
+    <button type="button" class="removeImageButton" id="focused-remove" aria-label="Remove shot.png">
+      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const read = (id) => {
+    const style = getComputedStyle(document.getElementById(id));
+    return {
+      opacity: Number(style.opacity),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      outlineColor: style.outlineColor,
+    };
+  };
+  // The accent the focus ring is supposed to be drawn in, resolved from the
+  // real tokens.css to the same rgb() form outlineColor computes to, rather
+  // than restated as a hex literal here.
+  const probe = document.createElement("span");
+  probe.style.color = "var(--accent)";
+  document.body.appendChild(probe);
+  const accent = getComputedStyle(probe).color;
+  probe.remove();
+  return {
+    resting: read("resting-remove"),
+    hovered: read("hovered-remove"),
+    focused: read("focused-remove"),
+    accent,
+  };
+};
+</script>
+</body>
+</html>

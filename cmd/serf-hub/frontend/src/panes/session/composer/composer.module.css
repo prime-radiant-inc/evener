@@ -82,6 +82,18 @@
   opacity: 1;
 }
 
+/* Hover is not the only way to reach this control: a keyboard user tabs to
+ * it, and an opacity:0 button under focus is a control you cannot see you
+ * are standing on (kata hk8v). Focus reveals it exactly the way hover does,
+ * and draws the same ring chip.module.css's own .remove:focus-visible draws.
+ * jsdom evaluates no cascade, so the guard for this is a layoutguard case
+ * (scripts/layoutguard/cases/hk8v-remove-button-focus-visible). */
+.removeImageButton:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .removeImageButton:hover {
   background: var(--accent);
   color: var(--surface-0);

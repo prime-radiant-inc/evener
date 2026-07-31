@@ -32,9 +32,17 @@ function findChrome() {
 /**
  * @param {string} fileUrl - must start with file://
  * @param {string} expr - JS expression to evaluate in the page after load
+ * @param {{selector: string, pseudoClasses: string[]}[]} [forcePseudoStates] - pseudo-classes
+ *   to pin ON before evaluating, via CSS.forcePseudoState (the same mechanism DevTools' own
+ *   ":hov" toggle uses). Needed because some states cannot be reached from a page script at
+ *   all: there is no way to synthesize a trusted hover, and a programmatic .focus() does NOT
+ *   match :focus-visible (measured in this Chrome - it stayed unmatched with opacity 0). This
+ *   pins the SELECTOR match, so it proves the cascade applies the rule and nothing overrides
+ *   it; whether Chrome's own heuristic decides a given focus is "visible" is Chrome's contract,
+ *   not ours. A selector that matches no element is an error, never a silent no-op.
  * @returns {Promise<unknown>} the JSON-serializable value the expression evaluates to
  */
-export async function evalInFreshChrome(fileUrl, expr) {
+export async function evalInFreshChrome(fileUrl, expr, forcePseudoStates = []) {
   if (!fileUrl.startsWith("file://")) {
     throw new Error(
       "evalInFreshChrome only navigates file:// URLs - layoutguard cases are static files, no dev server",
@@ -78,7 +86,7 @@ export async function evalInFreshChrome(fileUrl, expr) {
 
   try {
     await waitForCdp(port);
-    return await withPage(port, fileUrl, expr);
+    return await withPage(port, fileUrl, expr, forcePseudoStates);
   } finally {
     cleanup();
   }
@@ -97,7 +105,7 @@ async function waitForCdp(port) {
   throw new Error("chrome devtools endpoint never came up");
 }
 
-async function withPage(port, fileUrl, expr) {
+async function withPage(port, fileUrl, expr, forcePseudoStates) {
   const listRes = await fetch(`http://127.0.0.1:${port}/json/list`);
   const targets = await listRes.json();
   const page = targets.find((t) => t.type === "page");
@@ -153,6 +161,21 @@ async function withPage(port, fileUrl, expr) {
     }
     if (!origin.startsWith("file://")) {
       throw new Error(`refusing: expected a file:// origin, got ${origin}`);
+    }
+
+    if (forcePseudoStates.length > 0) {
+      await send("DOM.enable");
+      await send("CSS.enable");
+      const doc = await send("DOM.getDocument", { depth: -1 });
+      const rootId = doc.result.root.nodeId;
+      for (const { selector, pseudoClasses } of forcePseudoStates) {
+        const found = await send("DOM.querySelector", { nodeId: rootId, selector });
+        // DOM.querySelector answers with nodeId 0 for "no match" rather than
+        // failing - forcing nothing would leave the case measuring the resting
+        // state while reporting the forced one, so it stops here instead.
+        if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
+        await send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses });
+      }
     }
 
     const evalRes = await send("Runtime.evaluate", {
