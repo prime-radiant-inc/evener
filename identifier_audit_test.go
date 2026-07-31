@@ -205,6 +205,9 @@ func TestIdentifierAudit(t *testing.T) {
 // package operation. A new package use, selector, method shape, alias, or
 // package initializer fails until its exact AST fingerprint is reviewed here.
 var identifierSHA256Inventory = map[string]map[string]map[string]bool{
+	// Content address for tool-result image bytes; every sha-addressed image
+	// route keys on it. No identifier is derived from the digest.
+	"agent/events/payloads.go": {"imageSHA": {"Sum256(data)": true}},
 	"agent/internal/jobstore/output.go": {
 		"outputFileHasPrefixSHA256": {"New()": true},
 		"outputFileHasSuffixSHA256": {"New()": true},
