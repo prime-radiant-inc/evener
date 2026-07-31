@@ -127,6 +127,63 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 	return source.SubscribeThread(ctx, params)
 }
 
+// stampClosedThreadCapabilities fills in the one status frame a daemon cannot
+// describe: its own close (kata pk2d).
+//
+// Every other thread/status/changed already carries the action set that goes
+// with the status it announces, stamped by the daemon at its own notification
+// egress (server/appwire_runtime.go's stampCapabilitiesOnStatusChange). The
+// close frame deliberately carries none, and rightly so: what a thread can
+// still be asked to do once its daemon is gone is not the daemon's to say. It
+// is this hub's — the next read is answered from the past index and a send
+// there resumes the session (kata qp94), which is exactly what
+// pastThreadCapabilities advertises.
+//
+// Left unstamped, a client keeps whatever the departing daemon last pushed. For
+// a session that shut down MID-TURN that set says send=false, because the
+// daemon gates Send on "no turn in flight" — and an ended thread's composer is
+// a follow-up card gated on precisely that bit, so the whole composer unmounts:
+// no card, no textarea, no Send, until the page is reloaded. The reload heals
+// it by asking the hub, so the hub answers here instead, at the moment of
+// close. A status and the capabilities beside it then agree however the thread
+// ended, and what the close pushes is what the next read would return.
+//
+// Local threads only, which is every thread that reaches this relay: the past
+// index is the local source's, and a source the hub does NOT answer from it
+// (the Codex bridge) would be told a resume story that is not true.
+//
+// One key is replaced, the rest of the payload is passed through as raw JSON —
+// re-minting it from the fields this hub understands would silently drop
+// anything a newer daemon added (the shape enrichOutputImageNotification uses
+// on this same stream, for the same reason).
+func stampClosedThreadCapabilities(notification appwire.Notification) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params map[string]json.RawMessage
+	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
+		return notification
+	}
+	var status appwire.ThreadStatus
+	if raw := params["status"]; len(raw) == 0 || json.Unmarshal(raw, &status) != nil {
+		return notification
+	}
+	if status.Type != appwire.ThreadStatusClosed {
+		return notification
+	}
+	capabilities, err := json.Marshal(pastThreadCapabilities())
+	if err != nil {
+		return notification
+	}
+	params["capabilities"] = capabilities
+	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
+}
+
 type hubRelayFunctions struct {
 	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
 	readThread          func(context.Context, appsource.Source, appwire.ThreadReadParams) (*hubThreadReadResult, error)
@@ -250,8 +307,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					relayMu.Unlock()
 					if active {
 						notification := delivery.Notification
+						// The edits only this hub can make to a local daemon's
+						// notification on its way to a browser: the images it can
+						// resolve off disk, and the answer to what a thread can still
+						// be asked to do once the daemon announcing its own close is
+						// gone.
 						if strings.HasPrefix(relayKey, "local:") {
 							notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
+							notification = stampClosedThreadCapabilities(notification)
 						}
 						_, publicationErr := withDeletionTargetOwnership(cfg, ref, threadID, "", func() (struct{}, error) {
 							server.Broadcast(relayKey, notification.Method, notification.Params)
