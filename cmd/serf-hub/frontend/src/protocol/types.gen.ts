@@ -284,6 +284,31 @@ export interface ItemLifecycleParams {
   failedToolCalls?: number;
 }
 
+export interface JobUpdatedParams {
+  threadId: string;
+  ref: string;
+  jobId: string;
+  status: string;
+}
+
+export interface JobsListParams {
+  ref?: string;
+}
+
+export interface JobsListResponse {
+  data: unknown;
+}
+
+export interface JobsOutputParams {
+  ref?: string;
+  jobId: string;
+  maxBytes?: number;
+}
+
+export interface JobsOutputResponse {
+  data: unknown;
+}
+
 export interface LaunchConfigDiagnostic {
   layer: string;
   field: string;
@@ -1286,6 +1311,8 @@ export const METHOD_NAMES = [
   "turn/cancelQueued",
   "goal/set",
   "serf/tasks/list",
+  "serf/jobs/list",
+  "serf/jobs/output",
   "serf/thread/transcripts/list",
   "serf/subagentPreview",
   "serf/paths/complete",
@@ -1361,6 +1388,7 @@ export const NOTIFICATION_NAMES = [
   "serf/plugin/updated",
   "serf/thread/resync",
   "serf/task/updated",
+  "serf/job/updated",
   "serf/sandbox/escalation/requested",
   "serf/sandbox/escalation/resolved",
   "serf/tree/changed",
@@ -1435,6 +1463,8 @@ export interface MethodTypes {
   "turn/cancelQueued": { params: TurnCancelQueuedParams; result: TurnCancelQueuedResponse };
   "goal/set": { params: GoalSetParams; result: GoalSetResponse };
   "serf/tasks/list": { params: TaskListParams; result: TaskListResponse };
+  "serf/jobs/list": { params: JobsListParams; result: JobsListResponse };
+  "serf/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
   "serf/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "serf/subagentPreview": { params: SerfSubagentPreviewParams; result: SerfSubagentPreviewResponse };
   "serf/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -1508,6 +1538,7 @@ export interface NotificationTypes {
   "serf/plugin/updated": EmptyParams;
   "serf/thread/resync": ThreadResyncParams;
   "serf/task/updated": TaskUpdatedParams;
+  "serf/job/updated": JobUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
   "serf/sandbox/escalation/resolved": SandboxEscalationResolved;
   "serf/tree/changed": EmptyParams;

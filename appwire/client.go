@@ -445,6 +445,18 @@ func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskList
 	return out, err
 }
 
+func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListResponse, error) {
+	var out JobsListResponse
+	err := c.request(ctx, MethodSerfJobsList, params, &out)
+	return out, err
+}
+
+func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
+	var out JobsOutputResponse
+	err := c.request(ctx, MethodSerfJobsOutput, params, &out)
+	return out, err
+}
+
 func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) (PathsCompleteResponse, error) {
 	var out PathsCompleteResponse
 	err := c.request(ctx, MethodSerfPathsComplete, params, &out)
