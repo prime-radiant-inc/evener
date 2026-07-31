@@ -136,6 +136,31 @@ sharing itself):
   `test/scenarios/web-goal-set-and-complete.md` and
   `sidecar-approval-broker-communicate.md` use this pattern.
 
+## Testing against a rate-limited provider
+
+Some scenarios need a provider that is ACTUALLY throttling — verifying the
+retry backoff, the honest-liveness "may be stalled" line, or a TUI
+notification for a model-call retry (kata 4zn8, e79v) — for as long as the
+check takes. A real provider will not reliably do that on demand.
+`test/e2e/fake429` is a fake OpenAI-compatible backend that answers
+`/v1/models` normally (so launch-check and model discovery succeed) and
+429s every completion request with a configurable `Retry-After`.
+
+`scripts/e2e-ratelimited-provider.sh` wraps it around the Setup checklist
+above — same HOME isolation, same kernel-assigned ports, never a real
+provider credential — and points the isolated hub's `providers.toml` at it:
+
+```bash
+scripts/e2e-ratelimited-provider.sh --retry-after 5
+```
+
+prints the run directory, fake429's address, and the exact `serf-tui
+--hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
+Spawn a session with `"model":"ratelimited/fake-model"` (see "Spawning a
+session via the REST shim" below) and every completion call it makes will
+429. Tear down with `scripts/e2e-ratelimited-provider.sh --stop RUN_DIR`
+(kills fake429 and the hub, removes the run directory).
+
 ## Hermetic workdir per scenario
 
 Every scenario runs in its own scratch directory so reruns don't
@@ -664,4 +689,5 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
+- **Rate-limited provider for retry/liveness checks**: `scripts/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.
 - **Browser profile** (own-Chrome-instance isolation): `set_profile` with a name derived from your worktree/branch — see "Driving the web UI" below. Do this before the first `use_browser` call of the run; a shared default profile is the root cause of kata `8ecz`.

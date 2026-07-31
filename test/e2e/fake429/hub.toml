@@ -1,0 +1,12 @@
+# Fixture for scripts/e2e-ratelimited-provider.sh (kata 3mn9), passed to
+# serf-hub via --config. `addr` here is illustrative only: the script always
+# also passes "-addr 127.0.0.1:0" (kernel-assigned, never a fixed port —
+# kata 68fm), and an explicit -addr flag wins over this file
+# (cmd/serf-hub/main.go: "if opts.addr != "" { cfg.Addr = opts.addr }"), so
+# the hub never actually binds the port below. It is kept so this file is a
+# complete, valid example of the hub.toml shape.
+#
+# plugin_auto_upgrade is off so the disposable hub stays quiet — the same
+# choice cmd/serf-hub/main_ephemeral_port_test.go makes for a throwaway hub.
+addr = "127.0.0.1:9472"
+plugin_auto_upgrade = false
