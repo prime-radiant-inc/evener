@@ -226,7 +226,7 @@ func TestCovSpawnMainFaultSeams(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := WaitForRendezvous(ctx, t.TempDir(), 123, WithStartedAfter(time.Now())); err == nil {
+	if _, err := waitForRendezvous(ctx, t.TempDir(), 123, WithStartedAfter(time.Now())); err == nil {
 		t.Fatal("canceled rendezvous wait succeeded")
 	}
 	exited := make(chan error, 1)

@@ -36,8 +36,8 @@ func FuzzSpawnWebSpawnPass6(f *testing.F) {
 		_, _ = rendezvous.Write(root, rendezvous.Entry{PID: 11, StartedAt: now.Add(time.Hour)})
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, _ = WaitForRendezvous(cancelCtx, root, 10, WithStartedAfter(now))
-		_, _ = WaitForRendezvous(ctx, root, 11, WithStartedAfter(now))
+		_, _ = waitForRendezvous(cancelCtx, root, 10, WithStartedAfter(now))
+		_, _ = waitForRendezvous(ctx, root, 11, WithStartedAfter(now))
 		for _, exitErr := range []error{nil, errors.New("status 9")} {
 			exited := make(chan error, 1)
 			exited <- exitErr

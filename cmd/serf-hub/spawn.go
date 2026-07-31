@@ -335,7 +335,7 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	return entry, nil
 }
 
-// WaitOption configures WaitForRendezvous.
+// WaitOption configures waitForRendezvousOrExit.
 type WaitOption func(*waitConfig)
 
 type waitConfig struct {
@@ -347,34 +347,6 @@ type waitConfig struct {
 // entry from a previously-crashed daemon.
 func WithStartedAfter(t time.Time) WaitOption {
 	return func(c *waitConfig) { c.startedAfter = t }
-}
-
-// WaitForRendezvous polls runDir for a rendezvous Entry whose PID matches.
-// Returns when found, or when ctx is canceled.
-func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...WaitOption) (rendezvous.Entry, error) {
-	cfg := waitConfig{}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		entries, _ := rendezvous.List(runDir)
-		for _, e := range entries {
-			if e.PID != pid {
-				continue
-			}
-			if !cfg.startedAfter.IsZero() && !e.StartedAt.After(cfg.startedAfter) {
-				continue
-			}
-			return e, nil
-		}
-		select {
-		case <-ctx.Done():
-			return rendezvous.Entry{}, rendezvousWaitError(ctx)
-		case <-ticker.C:
-		}
-	}
 }
 
 // ResumeDaemon launches `serf serve --resume <sessionID>` and waits for
@@ -874,6 +846,14 @@ func isSensitiveEnvKey(key string) bool {
 		strings.Contains(key, "CREDENTIAL")
 }
 
+// waitForRendezvousOrExit polls runDir for a rendezvous Entry whose PID
+// matches, returning when one appears, when the launched child exits first, or
+// when ctx ends. It is the only rendezvous wait: a second, exported copy of
+// this loop with no exited arm and no possible production caller was deleted,
+// having twice drifted from this one (kata waf1).
+//
+// A nil exited channel never fires in the select below, which is how a caller
+// with no child process to watch waits on the rendezvous file alone.
 func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited <-chan error, opts ...WaitOption) (rendezvous.Entry, error) {
 	cfg := waitConfig{}
 	for _, o := range opts {

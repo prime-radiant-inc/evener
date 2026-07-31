@@ -318,6 +318,26 @@ func assertPromptFile(t *testing.T, path, stateDir, want string) {
 	}
 }
 
+// waitForRendezvous drives the launch wait with no child process to watch: a
+// nil exited channel never fires in the loop's select, so the rendezvous file
+// and the context are all that decide the outcome.
+//
+// That is precisely what the deleted exported WaitForRendezvous was — the same
+// loop minus the exited arm — and it had already drifted from the live one
+// twice: 0c3g had to patch the identical <-ctx.Done() arm in both copies just
+// to keep the sentinel meaning one thing, and the copy still polled
+// rendezvous.List while the live wait polled the listRendezvousForWait seam.
+// Nothing outside these tests could ever have called it; it lived in package
+// main, so no other package could import it (kata waf1).
+//
+// The tests below are the only place the wait's matching rules — PID, the
+// startedAfter staleness filter, and which sentinel a done context yields — are
+// asserted at all. Pointing them at the live loop puts that coverage on the
+// code that ships instead of on a copy of it.
+func waitForRendezvous(ctx context.Context, runDir string, pid int, opts ...WaitOption) (rendezvous.Entry, error) {
+	return waitForRendezvousOrExit(ctx, runDir, pid, nil, opts...)
+}
+
 func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 	dir := t.TempDir()
 
@@ -331,9 +351,9 @@ func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	got, err := WaitForRendezvous(ctx, dir, 12345)
+	got, err := waitForRendezvous(ctx, dir, 12345)
 	if err != nil {
-		t.Fatalf("WaitForRendezvous: %v", err)
+		t.Fatalf("waitForRendezvous: %v", err)
 	}
 	if got.Address != "127.0.0.1:50000" {
 		t.Errorf("Address: %q", got.Address)
@@ -344,20 +364,20 @@ func TestWaitForRendezvous_TimesOut(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := WaitForRendezvous(ctx, dir, 99999)
+	_, err := waitForRendezvous(ctx, dir, 99999)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
 }
 
-// WaitForRendezvous shares errRendezvousTimeout with the launch wait, so it
-// owes the same distinction: a caller that gave up is not the wait running out
-// of time, and a caller classifying by sentinel must not be told otherwise
-// (kata 0c3g).
+// A caller that gave up is not the wait running out of time, and a caller
+// classifying by sentinel must not be told otherwise (kata 0c3g). This is the
+// only place that distinction is asserted at the sentinel rather than through a
+// launch failure's rendered message.
 func TestWaitForRendezvous_AbandonedCallerIsNotATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := WaitForRendezvous(ctx, t.TempDir(), 99999)
+	_, err := waitForRendezvous(ctx, t.TempDir(), 99999)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -375,7 +395,7 @@ func TestWaitForRendezvous_WrongPID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := WaitForRendezvous(ctx, dir, 22222); err == nil {
+	if _, err := waitForRendezvous(ctx, dir, 22222); err == nil {
 		t.Fatal("expected timeout for wrong PID")
 	}
 
@@ -406,9 +426,9 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	got, err := WaitForRendezvous(ctx, dir, 55555, WithStartedAfter(startedAfter))
+	got, err := waitForRendezvous(ctx, dir, 55555, WithStartedAfter(startedAfter))
 	if err != nil {
-		t.Fatalf("WaitForRendezvous: %v", err)
+		t.Fatalf("waitForRendezvous: %v", err)
 	}
 	if got.Address != "127.0.0.1:22222" {
 		t.Errorf("matched stale entry: address=%q", got.Address)
