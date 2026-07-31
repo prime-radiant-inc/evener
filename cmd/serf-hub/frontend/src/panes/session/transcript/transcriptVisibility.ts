@@ -13,7 +13,7 @@
 // prompt" title because it had no structured item type to dispatch on; this
 // codebase does, so a change to the announcement wording cannot silently
 // break these toggles.
-import type { ItemModel } from "../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../protocol/model";
 
 // The session's system prompt (apptranscript.go's PreludeTurn) arrives as a
 // systemMessage item with this exact, static id - the narrow fallback signal
@@ -24,17 +24,6 @@ import type { ItemModel } from "../../../protocol/model";
 // construction; it lives in this side-effect-free helper rather than in that
 // component so importing it never triggers a renderer registration.
 export const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
-
-// SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
-// before the session's first real turn - appwire.SystemPreludeTurnID on the
-// wire. apptranscript.PreludeTurn's system-prompt scaffold and
-// appprojector's bundled SESSION_START-time announcements (plugin loads,
-// prompt-loaded notices) both use it, so a transcript whose only turn is
-// this one has never had a real turn: the session is dormant (kata bz2z).
-// Session.tsx reads it from here, alongside SYSTEM_PROMPT_ITEM_ID above, for
-// the same reason: a side-effect-free home neither pane needs to import a
-// renderer to reach.
-export const SYSTEM_PRELUDE_TURN_ID = "turn_system";
 
 // model.turns is never actually empty for a real serf session:
 // apptranscript.go's PreludeTurn (and, live, appprojector's bundled

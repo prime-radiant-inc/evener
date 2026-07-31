@@ -780,19 +780,6 @@ function mapConflict(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
-// targetsNotification decides whether one live notification belongs to
-// `model`. v2 carries authoritative ref/threadId on every thread-scoped
-// notification. turn/completed additionally requires the matching active turn
-// so a stale completion cannot settle a newer turn on the same thread.
-function targetsNotification(n: AnyNotification, model: ThreadModel): boolean {
-  if (!notificationTargetsThread(n, model)) return false;
-  if (n.method === "turn/completed") {
-    const turnId = n.params.turnId || n.params.turn.id;
-    return model.activeTurnId === turnId;
-  }
-  return true;
-}
-
 function notificationRef(n: AnyNotification): string | undefined {
   const params = n.params as { ref?: unknown };
   return typeof params.ref === "string" ? params.ref : undefined;
@@ -1039,6 +1026,15 @@ function publishWatchedHydration(
 // the threads/frameTimes pass and the watchedThreads/watchedFrameTimes
 // pass below, since the fold-and-detect-a-real-change logic is identical
 // for either map.
+//
+// Delivery is decided by IDENTITY alone (notificationTargetsThread's
+// authoritative ref/threadId): where a frame lands inside a model is the
+// reducer's call, not this router's. turn/completed used to need the
+// model's active turn to match on top of that, back when the reducer
+// settled a completion into whichever turn was in flight; it now settles
+// the turn the frame NAMES and leaves activeTurnId alone for any other, so
+// the extra gate only cost the session its startup announcements - a
+// synthetic prelude turn is never any model's active turn.
 function applyToMap(
   map: Map<string, ThreadModel>,
   n: AnyNotification,
@@ -1049,7 +1045,7 @@ function applyToMap(
   const changedRefs: string[] = [];
   for (const [ref, model] of map) {
     if (skippedRefs?.has(ref)) continue;
-    if (!targetsNotification(n, model)) continue;
+    if (!notificationTargetsThread(n, model)) continue;
     const updated = applyNotification(model, n, now);
     if (updated === model) continue;
     next ??= new Map(map);

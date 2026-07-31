@@ -1,11 +1,10 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import type { ItemModel } from "../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../protocol/model";
 import {
   isDormantTranscript,
   isItemVisible,
-  SYSTEM_PRELUDE_TURN_ID,
   SYSTEM_PROMPT_ITEM_ID,
   type TranscriptVisibilityPrefs,
   visibleItems,

@@ -6,7 +6,7 @@ import basicTurnFixture from "./fixtures/basic-turn.jsonl?raw";
 import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
-import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -21,6 +21,7 @@ import type {
   SandboxEscalationRequested,
   Thread,
   ThreadCapabilities,
+  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "./types.gen";
@@ -3553,4 +3554,236 @@ test("modelRetry clears once the model produces a frame", () => {
     1003,
   );
   expect(model.modelRetry).toBeUndefined();
+});
+
+// The daemon's no-active-turn announcement path
+// (internal/appprojector/appwire_projection.go's systemAnnouncementItem)
+// emits ONE turn/completed per announcement, each carrying a single item and
+// all naming the SAME synthetic turn: appwire.SystemPreludeTurnID before the
+// session's first real turn has started, a freshly minted "turn_N" gap id
+// between two real turns (kata 9ekv). The payload is a map literal with no
+// top-level "turnId" key at all, so the reducer's params.turn.id fallback is
+// the only id on the frame — TurnCompletedParams declares turnId required,
+// hence the cast for the wire-true shape.
+function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
+  return {
+    method: "turn/completed",
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turn: { id: turnId, status: "completed", itemsView: "full", items: [item] },
+    },
+  } as AnyNotification;
+}
+
+const PLUGIN_LOADED_ITEM: ThreadItem = {
+  type: "systemMessage",
+  id: "item_plugin_loaded_1",
+  turnId: SYSTEM_PRELUDE_TURN_ID,
+  description: "Plugin loaded: superpowers",
+  text: "",
+  eventKind: "plugin_loaded",
+  status: "completed",
+};
+
+const PROMPT_LOADED_ITEM: ThreadItem = {
+  type: "systemMessage",
+  id: "item_prompt_loaded_2",
+  turnId: SYSTEM_PRELUDE_TURN_ID,
+  description: "Prompt loaded",
+  text: "Loaded prompt serf (2.1 kB)",
+  eventKind: "prompt_loaded",
+  status: "completed",
+};
+
+// The synthetic prelude turn is never the model's activeTurnId, so a
+// live-connected tab used to drop the whole startup burst and only saw the
+// "N system events" disclosure once a hydrate/re-subscribe took the snapshot
+// path. The authoritative snapshot reduction is the spec here
+// (server/appwire_turns.go's ensureTurn/upsertItem): the prelude is created
+// at the FRONT — it is the one turn whose id fixes its position — and each
+// announcement's item accumulates into it rather than replacing the last.
+test("a live startup burst creates the prelude turn at the front and accumulates every announcement into it", () => {
+  let model = testHydrate({
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnStartedAt: 900,
+    },
+  });
+  // Nothing orders a session's first turn-starting request behind its startup
+  // announcements, so turn_1 can (and does) start before the prelude's frames
+  // land — the interleaving d2cc7ff8 fixed server-side.
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1002);
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PROMPT_LOADED_ITEM), 1003);
+
+  expect(model.turns.map((t) => t.id)).toEqual([SYSTEM_PRELUDE_TURN_ID, "turn_1"]);
+  expect(turnAt(model, 0).items.map((it) => it.id)).toEqual(["item_plugin_loaded_1", "item_prompt_loaded_2"]);
+  expect(turnAt(model, 0).status).toBe("completed");
+  expect(itemAt(turnAt(model, 0), 0).eventKind).toBe("plugin_loaded");
+  expect(itemAt(turnAt(model, 0), 1).text).toBe("Loaded prompt serf (2.1 kB)");
+  // The real turn above the prelude is still in flight: an announcement's
+  // completion is not the active turn's, so it must not clear the active turn
+  // or its work-clock anchor (the snapshot reduction clears its own active
+  // turn only on an id match, for exactly this reason).
+  expect(model.activeTurnId).toBe("turn_1");
+  expect(model.activeTurnStartedAt).toBe(new Date(900).toISOString());
+  expect(model.lastFrameAt).toBe(1003);
+});
+
+// Placement is the assertion, not just presence: a live burst must leave the
+// same turn order and the same items a hydrate/re-subscribe would have handed
+// this client, so the prelude group reads at the top either way.
+test("the live startup burst leaves exactly the turns the snapshot path would have placed", () => {
+  let live = testHydrate();
+  live = applyNotification(
+    live,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  live = applyNotification(live, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1002);
+  live = applyNotification(live, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PROMPT_LOADED_ITEM), 1003);
+
+  // What server/appwire_turns.go reduces those same records to, and what
+  // thread/read would therefore return.
+  const snapshot = testHydrate({
+    turns: [
+      {
+        id: SYSTEM_PRELUDE_TURN_ID,
+        status: "completed",
+        itemsView: "full",
+        items: [PLUGIN_LOADED_ITEM, PROMPT_LOADED_ITEM],
+      },
+      { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+    ],
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+
+  const shape = (m: ThreadModel) =>
+    m.turns.map((t) => ({ id: t.id, status: t.status, items: t.items.map((it) => it.id) }));
+  expect(shape(live)).toEqual(shape(snapshot));
+  expect(live.activeTurnId).toBe(snapshot.activeTurnId);
+});
+
+// A between-turns gap shares the prelude's grouping rationale but not its
+// position: it happened AFTER the real turn it follows, so the snapshot
+// reduction APPENDS it (only the prelude id front-inserts). The live path
+// must place it the same way.
+test("a between-turns announcement turn appends after the real turn it follows", () => {
+  let model = testHydrate({
+    turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+  });
+  expect(model.activeTurnId).toBeUndefined();
+
+  model = applyNotification(
+    model,
+    announcementFrame("turn_2", {
+      type: "systemMessage",
+      id: "item_hook_completed_3",
+      turnId: "turn_2",
+      description: "Hook",
+      text: "Hook Stop finished, exit 0",
+      eventKind: "hook_completed",
+      exitCode: 0,
+      status: "completed",
+    }),
+    2000,
+  );
+
+  expect(model.turns.map((t) => t.id)).toEqual(["turn_1", "turn_2"]);
+  expect(turnAt(model, 1).items.map((it) => it.id)).toEqual(["item_hook_completed_3"]);
+  expect(itemAt(turnAt(model, 1), 0).exitCode).toBe(0);
+});
+
+// Accumulation is by ITEM ID, so a redelivered announcement frame — the
+// reconnect/hydration replay path hands the reducer frames it may already
+// have folded — updates its item in place instead of growing a second copy
+// of it (server/appwire_turns.go's upsertItem merges by id for the same
+// reason).
+test("a redelivered announcement frame updates its item in place instead of duplicating it", () => {
+  let model = testHydrate();
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1001);
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1002);
+
+  expect(model.turns.map((t) => t.id)).toEqual([SYSTEM_PRELUDE_TURN_ID]);
+  expect(turnAt(model, 0).items.map((it) => it.id)).toEqual(["item_plugin_loaded_1"]);
+});
+
+// The same-id-replaces-both hazard the active path guards against (see the
+// "settles only the FIRST turn" test above) applies to the non-active path
+// too: a duplicate id must not let one announcement's settle overwrite an
+// unrelated turn's content, silently.
+test("a non-active turn/completed settles only the FIRST turn matching a duplicated id, loudly", () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "systemMessage",
+            id: "item_first",
+            turnId: "turn_2",
+            text: "first gap's notice",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "agentMessage",
+            id: "item_second",
+            turnId: "turn_2",
+            text: "unrelated persisted content",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(model.activeTurnId).toBeUndefined();
+
+  model = applyNotification(
+    model,
+    announcementFrame("turn_2", {
+      type: "systemMessage",
+      id: "item_hook_completed_9",
+      turnId: "turn_2",
+      description: "Hook",
+      text: "Hook Stop finished, exit 0",
+      eventKind: "hook_completed",
+      status: "completed",
+    }),
+    2000,
+  );
+
+  expect(model.turns).toHaveLength(2);
+  // Only the first match accumulated the announcement.
+  expect(turnAt(model, 0).items.map((it) => it.id)).toEqual(["item_first", "item_hook_completed_9"]);
+  // The second row's unrelated content survives untouched.
+  expect(turnAt(model, 1).items.map((it) => it.id)).toEqual(["item_second"]);
+  expect(itemAt(turnAt(model, 1), 0).text).toBe("unrelated persisted content");
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(spy.mock.calls[0]?.[0]).toMatch(/turn\/completed.*turn_2.*2 turns/i);
+  spy.mockRestore();
 });

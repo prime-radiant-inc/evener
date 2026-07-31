@@ -4,7 +4,7 @@
 // Every function here is pure: given the same inputs, produces the same
 // (possibly reference-equal, for no-op cases) output.
 
-import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
+import { type ItemImage, type ItemModel, SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "./model";
 import type {
   AnyNotification,
   InputItem,
@@ -391,6 +391,108 @@ function resolveInsertTurnId(
   return candidate !== undefined && model.turns.some((t) => t.id === candidate) ? candidate : undefined;
 }
 
+// Replaces the FIRST turn matching turnId with `settled`, reporting loudly
+// when more than one row shares the id. model.turns is presented everywhere
+// else as if ids are unique — a duplicate should never happen (see the
+// "turn/started" case's comment) — but replacing EVERY entry sharing turnId
+// would overwrite an unrelated turn's content with this settle's, silently,
+// the exact corruption this reducer must not produce.
+function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: TurnModel): TurnModel[] {
+  const duplicateCount = turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
+  if (duplicateCount > 1) {
+    console.error(
+      `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
+    );
+  }
+  let settledFirstMatch = false;
+  return turns.map((t) => {
+    if (t.id !== turnId || settledFirstMatch) return t;
+    settledFirstMatch = true;
+    return settled;
+  });
+}
+
+// Folds a settle stamp's own items into a turn's item list BY ID: an item
+// already there is merged exactly the way item/completed merges its settled
+// payload (the three helpers read/write disjoint fields off the same `old`),
+// a new one is appended. Appending — not replacing, which is what the active
+// turn's "full" branch does — is what the announcement path needs: the daemon
+// sends one turn/completed per announcement, all naming the same synthetic
+// turn, so replacing would leave a startup burst showing only its last line
+// where the snapshot shows every one (server/appwire_turns.go's upsertItem).
+function upsertTurnItems(items: ItemModel[], incoming: ThreadItem[], now: number): ItemModel[] {
+  let next = items;
+  for (const wire of incoming) {
+    const settled = wireItemToModel(wire);
+    const present = next.some((it) => it.id === settled.id);
+    next = present
+      ? mapItem(next, settled.id, (old) =>
+          mergeObservedTiming(mergeArguments(mergeReasoning(settled, old), old), old, now),
+        )
+      : [...next, settled];
+  }
+  return next;
+}
+
+// Merges a completion stamp onto the turn it names, from an existing turn or
+// from nothing when the model has never seen that turn. Only the fields the
+// stamp actually carries are taken, mirroring the hub's own snapshot
+// reduction (server/appwire_turns.go's NotifyTurnCompleted case): an
+// announcement stamp carries id/status/items and nothing else, so a turn's
+// already-known startedAt, usage and cost survive it.
+function mergeTurnCompletionStamp(
+  existing: TurnModel | undefined,
+  turnId: string,
+  stamp: Turn,
+  now: number,
+): TurnModel {
+  const base: TurnModel = existing ?? { id: turnId, status: "", items: [] };
+  return {
+    ...base,
+    id: turnId,
+    status: stamp.status || base.status,
+    completedAt: epochMsToISO(stamp.completedAt) ?? base.completedAt,
+    durationMs: stamp.durationMs ?? base.durationMs,
+    error: stamp.error,
+    items: upsertTurnItems(base.items, stamp.items ?? [], now),
+  };
+}
+
+// The prelude is the one turn whose id fixes its POSITION: it holds content
+// from before the session's first real turn by definition, so it belongs at
+// the front however late its first frame arrives — nothing orders a session's
+// first turn-starting request behind its startup announcements. Every other
+// turn is placed where it arrived, which for a between-turns announcement gap
+// is after the real turn it followed. Same rule, same reasons, as the hub's
+// snapshot reduction (server/appwire_turns.go's ensureTurn).
+function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
+  return turn.id === SYSTEM_PRELUDE_TURN_ID ? [turn, ...turns] : [...turns, turn];
+}
+
+// Folds a turn/completed that names a turn OTHER than the model's active one.
+// That is the daemon's no-active-turn announcement path
+// (internal/appprojector/appwire_projection.go's systemAnnouncementItem): a
+// session's startup burst, or a burst between two real turns, arrives as one
+// turn/completed per announcement, each carrying a single item with itemsView
+// "full", all sharing one synthetic turn id — SYSTEM_PRELUDE_TURN_ID before
+// the first real turn, a minted "turn_N" gap id after one (kata 9ekv).
+//
+// activeTurnId and activeTurnStartedAt are deliberately left alone. This
+// settle is not the active turn's, and a real turn can be streaming while an
+// announcement's frames land, so clearing them here would stop the work clock
+// and lose the item-routing anchor for a turn that is still in flight. The
+// snapshot reduction clears its own active turn only on an id match, for the
+// same reason.
+function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
+  const existing = model.turns.find((t) => t.id === turnId);
+  const settled = mergeTurnCompletionStamp(existing, turnId, stamp, now);
+  return {
+    ...model,
+    turns: existing ? settleFirstMatchingTurn(model.turns, turnId, settled) : placeNewTurn(model.turns, settled),
+    lastFrameAt: now,
+  };
+}
+
 // Accumulates one reasoning delta chunk and, first delta only, stamps
 // observedStartedAt as a client observation of when reasoning began (the
 // wire carries no reasoning timestamps at all — see ItemModel's doc comment
@@ -421,8 +523,10 @@ function upsertPendingEscalation(
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
-// no-op here) either way. turn/completed additionally requires the matching
-// active turn because turn IDs are per-thread sequential.
+// no-op here) either way. turn/completed splits on whether it names the
+// model's active turn: the active turn's own settle ends the turn, while any
+// other turn's is the no-active-turn announcement path and folds through
+// foldNonActiveTurnCompleted instead.
 export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
   const next = applyNotificationToThread(model, n, now);
   // A real frame supersedes a pending model-call retry: the model produced
@@ -473,7 +577,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const params = n.params;
       const turnId = params.turnId || params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
-      if (model.activeTurnId !== turnId) return model;
+      if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
       let settledTurn: TurnModel;
@@ -504,26 +608,9 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
           items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)),
         };
       }
-      // model.turns is presented everywhere else as if ids are unique — a
-      // duplicate here should never happen (see the "turn/started" case's
-      // comment), but replacing EVERY entry sharing turnId would overwrite an
-      // unrelated turn's content with this settle's, silently, the exact
-      // corruption this reducer must not produce. Settle only the first
-      // match; report loudly and leave any further same-id entries alone.
-      const duplicateCount = model.turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
-      if (duplicateCount > 1) {
-        console.error(
-          `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
-        );
-      }
-      let settledFirstMatch = false;
       return {
         ...model,
-        turns: model.turns.map((t) => {
-          if (t.id !== turnId || settledFirstMatch) return t;
-          settledFirstMatch = true;
-          return settledTurn;
-        }),
+        turns: settleFirstMatchingTurn(model.turns, turnId, settledTurn),
         activeTurnId: undefined,
         // The active turn just ended: its start anchor is now stale (there is
         // no live push to refresh it), so clear it in lockstep with activeTurnId
