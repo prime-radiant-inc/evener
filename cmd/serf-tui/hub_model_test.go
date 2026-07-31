@@ -2581,7 +2581,7 @@ func TestHubModelExpectedStatusRefreshDoesNotReplaceTranscript(t *testing.T) {
 
 func TestFetchHubSessionSubscribesToLiveThread(t *testing.T) {
 	var got appwire.ThreadReadParams
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+	client, frames, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			got = params
 			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
@@ -2591,7 +2591,7 @@ func TestFetchHubSessionSubscribesToLiveThread(t *testing.T) {
 	})
 	defer cleanup()
 
-	msg := fetchHubSession(client, appwire.Ref{SourceID: "local", ThreadID: "01SEND"})()
+	msg := fetchHubSession(frames, client, appwire.Ref{SourceID: "local", ThreadID: "01SEND"})()
 	if gotMsg, ok := msg.(hubSessionMsg); !ok || gotMsg.err != nil {
 		t.Fatalf("msg=%T %+v", msg, msg)
 	}
@@ -4145,6 +4145,14 @@ func TestHubModelIgnoresPendingCoordinatorMessagesForOtherSessions(t *testing.T)
 }
 
 func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.Client, func()) {
+	client, _, cleanup := newTestHubClientWithFeed(t, register)
+	return client, cleanup
+}
+
+// newTestHubClientWithFeed is newTestHubClient for tests that read the model's
+// notification feed. The feed is the client's ordered frame handler, which only
+// takes effect when installed before the receive loop starts.
+func newTestHubClientWithFeed(t *testing.T, register func(*appserver.Server)) (*appwire.Client, *hubFrameFeed, func()) {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
@@ -4170,13 +4178,15 @@ func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.
 		t.Fatalf("dial: %v", err)
 	}
 	client := appwire.NewClient(transport)
+	feed := newHubFrameFeed()
+	client.SetOrderedFrameHandler(feed.Observe)
 	client.Start(context.Background())
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		_ = client.Close()
 		srv.Close()
 		t.Fatalf("initialize: %v", err)
 	}
-	return client, func() {
+	return client, feed, func() {
 		_ = client.Close()
 		srv.Close()
 	}

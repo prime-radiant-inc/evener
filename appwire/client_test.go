@@ -361,7 +361,7 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 }
 
 func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *testing.T) {
-	const burst = notificationBufferCap + 1
+	const burst = NotificationBufferCap + 1
 	transport := &memoryTransport{
 		writes: make(chan Message, 1),
 		reads:  make(chan Message, burst+2),
@@ -415,5 +415,63 @@ func TestClientFailPendingPreservesRequestID(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending request was not failed")
+	}
+}
+
+// An ordered-frame handler sees every response the connection carries, so a
+// caller whose correctness depends on its own response being the cut has to
+// know which frame that is. WithRequestIDObserver reports the id before the
+// request goes on the wire, and the receive loop hands that response frame to
+// the handler before it wakes the caller.
+func TestClientRequestIDObserverNamesTheCallersResponseFrame(t *testing.T) {
+	transport := &memoryTransport{
+		writes: make(chan Message, 2),
+		reads:  make(chan Message, 4),
+	}
+	client := NewClient(transport)
+	frames := make(chan Message, 4)
+	client.SetOrderedFrameHandler(func(message Message, err error) {
+		if err == nil {
+			frames <- message
+		}
+	})
+	client.Start(t.Context())
+
+	observed := make(chan ID, 2)
+	done := make(chan error, 2)
+	call := func(limit int) Message {
+		go func() {
+			_, err := client.ThreadList(WithRequestIDObserver(t.Context(), func(id ID) { observed <- id }), ThreadListParams{Limit: limit})
+			done <- err
+		}()
+		return <-transport.writes
+	}
+
+	first := call(1)
+	firstObserved := <-observed
+	second := call(2)
+	secondObserved := <-observed
+
+	if firstObserved.String() != first.Request.ID.String() || secondObserved.String() != second.Request.ID.String() {
+		t.Fatalf("observed ids %q/%q, want the sent request ids %q/%q", firstObserved, secondObserved, first.Request.ID, second.Request.ID)
+	}
+	if firstObserved.String() == secondObserved.String() {
+		t.Fatalf("both calls observed id %q; concurrent requests must be distinguishable", firstObserved)
+	}
+
+	// Answer the second call first: only the id tells the two response frames
+	// apart in the shared feed.
+	transport.reads <- ResponseMessage(second.Request.ID, ThreadListResponse{})
+	if frame := <-frames; frame.IDString() != secondObserved.String() {
+		t.Fatalf("ordered frame id=%q, want the second call's observed id %q", frame.IDString(), secondObserved)
+	}
+	transport.reads <- ResponseMessage(first.Request.ID, ThreadListResponse{})
+	if frame := <-frames; frame.IDString() != firstObserved.String() {
+		t.Fatalf("ordered frame id=%q, want the first call's observed id %q", frame.IDString(), firstObserved)
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
 	}
 }

@@ -474,7 +474,7 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		return nil
 	}
 	m.sessionDetailsRequested = true
-	return fetchHubSession(m.client, ref)
+	return fetchHubSession(m.frames, m.client, ref)
 }
 
 func fetchCurrentHubStatus(m *hubModel, _ string) tea.Cmd {

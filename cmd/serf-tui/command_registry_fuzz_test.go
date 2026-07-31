@@ -118,12 +118,12 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 			_ = commandPaletteEntriesForRows(hubModeDashboard, hubSessionCapabilities{}, []hubRow{{kind: hubRowSession}})
 			hubCommandRegistry = original
 		case 7:
-			client, cleanup := newTestHubClient(t, nil)
+			client, frames, cleanup := newTestHubClientWithFeed(t, nil)
 			ref, _ := appwire.ParseRef("local:thread")
 			// The fake server intentionally lacks these methods, yielding stable
 			// appwire errors and covering every command's error result branch.
 			cmds := []tea.Cmd{
-				fetchHubTree(client), fetchHubSession(client, ref),
+				fetchHubTree(client), fetchHubSession(frames, client, ref),
 				subscribeChildActivity(client, ref.String()), fetchHubStatus(client, ref),
 				fetchHubTranscriptTargets(client, ref),
 				fetchHubModelsForHarness(client, "serf", "/tmp"),
@@ -148,7 +148,7 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 
 			cleanup()
 			_ = fetchHubSpawnOptions(client, "/tmp")()
-			_ = waitHubNotification(client)()
+			_ = waitHubNotification(frames)()
 		case 8:
 			client, cleanup := commandRegistryOptionsClient(t)
 			defer cleanup()

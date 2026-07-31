@@ -68,7 +68,11 @@ type hubForkDraft struct {
 }
 
 type hubModel struct {
-	client   *appwire.Client
+	client *appwire.Client
+	// frames is the hub connection's ordered notification feed. main wires it
+	// to the client before the receive loop starts; a model without one never
+	// receives notifications, which is what a model without a hub wants.
+	frames   *hubFrameFeed
 	hubURL   string
 	stateDir string
 	width    int
@@ -248,7 +252,7 @@ func (m hubModel) Init() tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
-	return tea.Batch(fetchHubTree(m.client), waitHubNotification(m.client))
+	return tea.Batch(fetchHubTree(m.client), waitHubNotification(m.frames))
 }
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

@@ -75,6 +75,10 @@ func run() int {
 	go warmModelCatalog()
 
 	ctx := context.Background()
+	// The feed has to exist before the connection does: it becomes the client's
+	// ordered frame handler, which only takes effect when installed ahead of
+	// the receive loop.
+	frames := newHubFrameFeed()
 	runtime, err := startHubClient(ctx, hubstart.HubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
@@ -84,6 +88,7 @@ func run() int {
 		CurrentExecutable: currentExecutable(),
 		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,
+		ObserveFrames:     frames.Observe,
 	})
 	if err != nil {
 		_, _ = fmt.Fprint(standardError, hubstart.StartupErrorScreen(err))
@@ -98,7 +103,9 @@ func run() int {
 	applyTerminalBg()
 	defer resetTerminalBg()
 
+	frames.SetTransportCloser(runtime.Client.Close)
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
+	m.frames = frames
 	var programOpts []tea.ProgramOption
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())
