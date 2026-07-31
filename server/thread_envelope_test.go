@@ -236,6 +236,42 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				}
 			},
 		},
+		{
+			// Steering lands in history the moment it is injected, so the
+			// pressure it added is readable before any model round follows.
+			name: "context on STEERING_INJECTED",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.contextPressure = 0.4
+				e.contextMetrics = ContextMetrics{Used: 40, Window: 100, Remaining: 60}
+			},
+			event: events.SessionEvent{Kind: events.EventSteeringInjected, SessionID: "th_1", Data: events.SteeringInjectedData{Text: "answer"}},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Serf.ContextPressure != 0.4 || thread.Serf.ContextUsed != 40 {
+					t.Fatalf("context = (%v, %d), want the figures the injected steering moved to",
+						thread.Serf.ContextPressure, thread.Serf.ContextUsed)
+				}
+			},
+		},
+		{
+			// An unnamed thread's preview falls back to meta.OriginalPrompt,
+			// which is derived from the first user turn. Drop facetMeta here and
+			// a new thread lists as its raw session id for its whole first turn.
+			name: "preview on USER_INPUT",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.meta = schema.SessionMeta{ID: "th_1", OriginalPrompt: "make the envelope authoritative"}
+			},
+			event: events.SessionEvent{
+				Kind: events.EventUserInput, SessionID: "th_1",
+				Data: events.UserInputData{Text: "make the envelope authoritative"},
+			},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Preview != "make the envelope authoritative" {
+					t.Fatalf("thread.Preview = %q, want the first user turn's prompt: an unnamed "+
+						"thread otherwise lists as its raw session id for its whole first turn",
+						thread.Preview)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
