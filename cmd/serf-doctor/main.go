@@ -9,7 +9,7 @@
 //
 //	serf-doctor locate     <selector> [--all-buckets]
 //	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
-//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary]
+//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //
@@ -223,11 +223,32 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	cacheSpikes := fs.Bool("cache-spikes", false, "only calls whose uncached input >= --threshold")
 	threshold := fs.Int("threshold", 0, "uncached-input-token floor for --cache-spikes (default 50000)")
 	summary := fs.Bool("summary", false, "render only the per-session aggregate")
+	validate := fs.Bool("validate", false, "whole-history integrity scan: strictly decode every record offset zero..EOF via apilog.Decoder and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size; ignores --empty/--errors/--cache-spikes/--threshold/--summary; exits nonzero if any problem is found)")
 	sel, code := parseSelectorAndFlags(fs, args)
 	if code != 0 {
 		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
+
+	if *validate {
+		res, err := doctor.ValidateAPILog(base, sel)
+		if err != nil {
+			return fail(stderr, "apilog", err)
+		}
+		if *asJSON {
+			code = emitJSON(stdout, res)
+		} else {
+			code = writeText(stdout, doctor.RenderAPILogValidation(res))
+		}
+		if code != 0 {
+			return code
+		}
+		if !res.Clean {
+			return 1
+		}
+		return 0
+	}
+
 	opts := doctor.APILogOpts{
 		EmptyOnly:      *empty,
 		ErrorsOnly:     *errorsOnly,
