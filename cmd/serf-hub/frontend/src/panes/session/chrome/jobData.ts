@@ -14,6 +14,36 @@
 // everything else; JobRow.status below is what actually arrives.
 export type JobStatus = "running" | "completed" | "failed" | "cancelled" | "stopped" | "exhausted";
 
+// Which of those words mean the job is OVER - jobstore's Status.IsTerminal
+// (record.go), the daemon's own "no further runtime work is expected". A
+// Record over the union rather than a list of the terminal ones, so a status
+// added to JobStatus is a compile error here until someone says which side it
+// falls on: a new SETTLED status silently defaulting to unsettled would badge
+// a finished job as live forever.
+const STATUS_SETTLED: Record<JobStatus, boolean> = {
+  running: false,
+  completed: true,
+  failed: true,
+  cancelled: true,
+  stopped: true,
+  exhausted: true,
+};
+
+// A Map, not an object lookup: a wire status of "constructor" would answer off
+// Object.prototype (JobsPanel's TONE_BY_STATUS exists for the same reason).
+const SETTLED_BY_STATUS = new Map<string, boolean>(Object.entries(STATUS_SETTLED));
+
+// Whether the wire's own word for this job says it has finished. Anything
+// outside the vocabulary above is NOT settled, mirroring IsTerminal's own
+// `default: false`: the terminal half of the vocabulary is the closed one, so
+// a status a newer daemon invents is one this bundle has not been told is
+// over. Consumers that would rather show nothing than overclaim liveness ask
+// a narrower question instead - JobsPanel's jobDuration keys its ticking
+// clock on "running" itself, and says why there.
+export function isSettledStatus(status: string): boolean {
+  return SETTLED_BY_STATUS.get(status) ?? false;
+}
+
 export interface JobRow {
   jobId: string;
   type: string;

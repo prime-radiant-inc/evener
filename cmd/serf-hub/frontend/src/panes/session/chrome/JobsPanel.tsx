@@ -6,8 +6,8 @@
 // serf/job/started or serf/job/finished push while the user is looking - the
 // reducer bumps it on both), and the same failure taxonomy. Unlike
 // TasksPanel there is no live-pushed aggregate to badge the trigger with:
-// the running count comes from the last fetched list itself, so the trigger
-// starts bare and gains its ●N only after the first fetch lands.
+// the count of unsettled jobs comes from the last fetched list itself, so the
+// trigger starts bare and gains its ●N only after the first fetch lands.
 //
 // Failure handling is TasksPanel's, with one simplification: there is no
 // model.tasks-style aggregate to disambiguate isThreadNotFound's "never had
@@ -35,7 +35,14 @@ import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { type JobOutput, type JobRow, type JobStatus, parseJobListData, parseJobOutputData } from "./jobData";
+import {
+  isSettledStatus,
+  type JobOutput,
+  type JobRow,
+  type JobStatus,
+  parseJobListData,
+  parseJobOutputData,
+} from "./jobData";
 import styles from "./jobspanel.module.css";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { formatWorkDuration } from "./statusFormat";
@@ -150,14 +157,30 @@ function jobDuration(row: JobRow, now: number): string | undefined {
   // wire's own word that the job is over, so it beats a missing endedAt: the
   // duration is then unknowable, and an unknowable duration shows no clock
   // rather than an elapsed time that climbs forever on a finished job.
+  //
+  // Deliberately NOT triggerLabel's isSettledStatus question, and the two
+  // differ on exactly one row: an unrecognised status. A ticking clock asserts
+  // this job is working RIGHT NOW and has been for N - a claim an unknown
+  // status does not support - so it gets no clock, the same silence a
+  // garbage timestamp gets. The badge defaults the other way because its
+  // failure modes are not symmetric: an uncounted job is invisible, while an
+  // over-counted one only puts a dot on a trigger the reader can open and
+  // check.
   const end = row.status === "running" ? now : Date.parse(row.endedAt ?? "");
   if (!Number.isFinite(end)) return undefined;
   return formatWorkDuration(end - started);
 }
 
+// The badge counts every job the wire has NOT declared over - isSettledStatus,
+// jobstore's own terminal vocabulary - rather than the jobs it calls
+// "running". The two are the same list today, and a daemon that grows a second
+// non-terminal status must not drop those jobs out of the count: while the
+// panel is closed this badge is the only thing on screen saying anything is
+// happening, so a job missing from it is a job the reader cannot see at all.
+// Deliberately NOT the question jobDuration asks - see its own comment.
 function triggerLabel(rows: JobRow[] | null): string {
-  const running = rows?.filter((row) => row.status === "running").length ?? 0;
-  return running > 0 ? `Jobs ●${running}` : "Jobs";
+  const unsettled = rows?.filter((row) => !isSettledStatus(row.status)).length ?? 0;
+  return unsettled > 0 ? `Jobs ●${unsettled}` : "Jobs";
 }
 
 // One label/value row in a job's detail list - TasksPanel's TaskDetailField

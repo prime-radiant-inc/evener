@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseJobListData, parseJobOutputData } from "./jobData";
+import { isSettledStatus, parseJobListData, parseJobOutputData } from "./jobData";
 
 describe("parseJobListData", () => {
   it("parses a full shell row", () => {
@@ -123,6 +123,35 @@ describe("parseJobListData", () => {
     ]);
     expect(rows).toHaveLength(1);
     expect(rows![0]?.jobId).toBe("job_3");
+  });
+});
+
+describe("isSettledStatus", () => {
+  // The whole known vocabulary, split the way jobstore's own Status.IsTerminal
+  // splits it (agent/internal/jobstore/record.go): running is the one status
+  // that means work is still expected.
+  it("calls every terminal jobstore status settled, and running not", () => {
+    expect(isSettledStatus("completed")).toBe(true);
+    expect(isSettledStatus("failed")).toBe(true);
+    expect(isSettledStatus("cancelled")).toBe(true);
+    expect(isSettledStatus("stopped")).toBe(true);
+    expect(isSettledStatus("exhausted")).toBe(true);
+    expect(isSettledStatus("running")).toBe(false);
+  });
+
+  // IsTerminal's own `default: false`, carried across the wire: the settled
+  // list is closed, so a status invented by a newer daemon is one this bundle
+  // has NOT been told is finished. Reporting it settled would quietly retire a
+  // job that may still be working.
+  it("does not call a status outside the known set settled", () => {
+    expect(isSettledStatus("quarantined")).toBe(false);
+  });
+
+  // "constructor" would answer off Object.prototype through a bare object
+  // lookup - the same hazard STATUS_TONE's Map exists for.
+  it("does not answer a prototype key off Object.prototype", () => {
+    expect(isSettledStatus("constructor")).toBe(false);
+    expect(isSettledStatus("toString")).toBe(false);
   });
 });
 
