@@ -226,6 +226,18 @@ bytes. The pressure this creates is the danger — the remedy on offer does
 nothing, and the obvious next move is to loosen the classifier, which is
 how the deletion incident already happened twice.
 
+That zero is not a gap needing a new mechanism — kata worktrees have a
+disposal path, and it is the CONTROLLER'S RETIREMENT PASS, not
+`--worktrees`. After central gates go green the controller reads the
+report, verifies the branch is clean and landed (both facts), and removes
+worktree and branch by hand; the report goes with it, having been read.
+Sixteen worktrees retired that way in one night with zero friction. The
+report living inside the worktree is what makes the ratchet CORRECT for
+everything else: a worktree nobody retired is abandoned work, and its
+report is the only record of what that work was. Do not move reports out
+of worktrees to "fix" the yield, and do not treat `--worktrees` as the
+kata-cleanup tool — it is a background net for the other classes.
+
 So the levers have to be honest about what they can do. `--check` is a
 bare `df` on every test invocation and cannot measure, so it names the
 tools that can rather than promising a yield. The report sizes
