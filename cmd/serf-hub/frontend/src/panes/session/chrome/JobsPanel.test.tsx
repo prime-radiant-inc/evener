@@ -697,3 +697,45 @@ test("a row with an unknown status still renders, labelled with the wire's own s
   expect(rows[0]?.textContent).toContain("quarantined");
   expect(rows[0]?.textContent).toContain("held for review");
 });
+
+// 25. The badge counts what the wire has NOT declared over, not what it calls
+// "running": jobstore's Status.IsTerminal (record.go) enumerates the settled
+// statuses and defaults everything else to non-terminal, and jobData's
+// isSettledStatus is that same closed list. A status this bundle has never
+// heard of has therefore not been said to finish, so it counts - a job
+// dropped from the count is a job the reader cannot see at all while the
+// panel is closed, which is exactly when the badge is the only thing on
+// screen.
+test("the trigger badge counts a job whose status is outside the known set", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: UNKNOWN_STATUS_DATA }));
+
+  render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  await screen.findAllByTestId("job-row");
+
+  expect(screen.getByRole("button", { name: "Jobs ●1" })).toBeTruthy();
+});
+
+// 26. The row's clock asks a NARROWER question than the badge does, and an
+// unrecognised status is the one row where the two answers differ: it counts
+// (nothing said it finished) and yet it shows no elapsed time (nothing said
+// it is working right now either). One shared predicate would put a number on
+// this row that climbs forever on every tick - the failure test 17 rules out
+// for a settled job with no endedAt.
+test("an unknown status gets no ticking clock, even though the badge counts it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: UNKNOWN_STATUS_DATA }));
+
+  const { rerender } = render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  const row = (await screen.findAllByTestId("job-row"))[0];
+  expect(screen.getByRole("button", { name: "Jobs ●1" })).toBeTruthy();
+  const atNow = row?.textContent;
+  expect(atNow).not.toMatch(/\d+[smh]/);
+
+  rerender(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW + 3_600_000} />);
+  expect(row?.textContent).toBe(atNow);
+});

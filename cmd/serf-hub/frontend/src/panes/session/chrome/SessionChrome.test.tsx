@@ -169,6 +169,29 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   await waitFor(() => expect(calledRef).toBe("ref_c"));
 });
 
+// The tasks half of this pair (above) and the jobs half join the same two
+// facts from opposite ends: JobsPanel.test.tsx proves the panel fetches for
+// whatever sessionRef prop it is HANDED, and this proves SessionChrome hands
+// it its own. Neither alone catches a chrome that wires the panel to a wrong
+// or stale ref - both files stay green while the sheet quietly reports
+// another session's jobs.
+test("the jobs panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_e"));
+  await threadsStore.getState().ensureThread("ref_e");
+  let calledRef: unknown;
+  fake.on("serf/jobs/list", (params) => {
+    calledRef = params.ref;
+    return { data: [] };
+  });
+
+  render(<SessionChrome ref="ref_e" />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+
+  await waitFor(() => expect(calledRef).toBe("ref_e"));
+});
+
 // --- footer overflow (kata vybn) ---------------------------------------------
 //
 // jsdom ships no ResizeObserver, so a stub drives SessionChrome's own
@@ -343,7 +366,9 @@ test("selecting the Jobs menu item opens the Jobs sheet", async () => {
     // ...and its on-open fetch ran and resolved. WHICH ref it asked for is not
     // checked here (the fake answers serf/jobs/list for any ref) - that the
     // panel asks for the ref it is handed is JobsPanel.test.tsx's own
-    // "opening fetches and renders one row per job" case.
+    // "opening fetches and renders one row per job" case, and that this chrome
+    // hands it its OWN ref is "the jobs panel fetches for the SAME ref passed
+    // to SessionChrome" above.
     expect(await screen.findByText("No jobs yet")).toBeTruthy();
   } finally {
     ro.restore();
