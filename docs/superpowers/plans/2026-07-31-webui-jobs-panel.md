@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-31-webui-jobs-panel-design.md`
 
+**Status:** implemented and merged; superseded in places. Read the
+post-implementation addendum at the end of this file before treating any task
+below as current — `serf/job/updated` does not exist, and several task
+interfaces changed shape after the branch merged. The spec has been
+reconciled in place and describes what shipped.
+
 ## Global Constraints
 
 - Tests are deterministic: no provider credentials, no network (per `docs/testing.md` / AGENTS.md).
@@ -1534,3 +1540,81 @@ git commit -m "webui: mount the jobs panel in session chrome"
 - `cd cmd/serf-hub/frontend && npm test && npm run lint && npm run build` clean.
 - `make lint-generated` clean.
 - Manual smoke: `make build-hub`, open a session, run a background shell job and a delegate; the Jobs trigger lists both, the panel refreshes on start/finish without reopening, and expanding a job shows its output tail.
+
+---
+
+## Post-implementation addendum — 2026-07-31
+
+The plan above is the record of what was planned, and it is left as written.
+This section records where the shipped code differs, after the branch merged
+(`f99baf14e`) and a night of follow-up katas landed on top of it. The design
+spec has been reconciled in place and describes what is there now.
+
+**`serf/job/updated` does not exist** — kata j7y6, `ae4ff7d9f`. Task 1's
+`NotifySerfJobUpdated`/`JobUpdatedParams` and Task 4's projection case both
+landed and were then folded away. The notification fired at exactly the two
+instants `serf/job/started` and `serf/job/finished` fire, from the same two
+projector cases, to the same audience, and its payload was a strict subset of
+`SerfJobParams` — `Job.JobID` plus `Job.Status` is all a refetch trigger
+reads. Task 7's reducer case now hangs off that lifecycle pair, bumping
+`model.jobsUpdatedAt` on both ends. Task 4 is empty in hindsight: both
+projector cases predate this branch, so the projector never needed a change
+at all.
+
+**The output-tail refetch policy shipped exactly as Task 9 wrote it.** The
+tail is fetched when `Disclosure` mounts its body, and does not re-fire on a
+`jobsUpdatedAt` bump; the next collapse/expand re-mounts and refetches. What
+did not survive is the caption in the same sketch: `output.tail.length` is
+UTF-16 code units, which mis-counts every non-ASCII character, so the shipped
+caption counts `totalBytes - retainedStart` — the byte span the daemon itself
+measured over the file (kata e95r, `8fa05d583`).
+
+**The list refetch grew a closed-panel case** — kata e95r, `8fa05d583`. Task
+9 fetched on open, on Try again, and on a bump while open; its test 10 pinned
+"bump while closed → no fetch". But a closed panel still shows the trigger's
+`●N`, and that count must not keep claiming a job is running after the push
+that says it finished. A bump while closed now refetches, under three guards:
+only a bump this panel has not already fetched for, only after a first open,
+and only while a trigger is rendered at all (`hideTrigger` puts no count on
+screen). Such a refresh fails silently — no toast for a fetch the reader
+cannot see; the badge holds its last known count. Test 10 survives, narrowed
+to a panel that has never been opened.
+
+**Three more panel edges** — same kata and commit. The terminal daemon-gone
+notice carries `role=alert`, like the stale-refetch notice beside it. A
+settled status beats a missing `endedAt`: only a running job's clock ticks
+against `now`, so a finished job whose record carried no end timestamp shows
+no clock rather than an elapsed time that climbs forever. A zero `startedAt`
+(Go's zero time, `0001-01-01T00:00:00Z`) shows no clock rather than two
+millennia.
+
+**`JobRow.status` is a plain string, not the `JobStatus` union** — kata ddah,
+`c0e3883e2`. Task 8's `status: status as JobStatus` cast told every consumer
+an unrecognised status had been handled when it had not. Dropping the cast
+made the compiler name the consumer that had been falling through —
+`STATUS_TONE[row.status]`, `undefined` for anything outside the union, and
+invisible only because `Chip` defaults its tone. `statusTone` now answers
+`neutral` for a status this bundle does not know.
+
+**`SetJobsFunc` returns an error** — kata 1fkq, `d2e7557a3`. Task 5's
+`SetJobsFunc(fn func() any)` and `Session.JobSummaries() []JobSummary`
+swallowed `LoadOrdered`'s error and answered the same empty list a job-less
+session answers, so a damaged `jobs.jsonl` reported "No jobs yet" to the
+panel — the most reassuring thing it could have said. Both grew an `error`
+return. The nil-fn capability gap is still an empty response with no error,
+because that one really is "this daemon has no job list".
+
+**The wire payloads live in `appwire`, and the projection helper stayed
+unexported** — `2cdb01997`. Task 2 declared `JobSummary`/`JobOutputTail` in
+`agent/jobs_panel.go` with an exported `SummarizeJobRecord`. Wire payloads
+carry `appwire`'s camelCase tag convention (namingcheck's carve-out), so both
+structs moved to `appwire/types.go` with `agent` keeping aliases; and
+exporting the projector would have leaked `jobstore.JobRecord` past the
+library-boundary audit, so it is `summarizeJobRecord` and the hub reaches it
+only through `agent.LoadSessionJobList`/`agent.LoadSessionJobOutputTail`.
+
+**Both hub fallbacks share one past-index gate** — kata qqf6, `383e1c89c`.
+Task 6's two open-coded `cfg.Past.Find(threadID)` sites are now the shared
+`pastEntryForRead` helper (`cmd/serf-hub/app_threadread.go`), which performs
+the same three steps: parse the ref, require source `local`, and require the
+past index to know the thread.
