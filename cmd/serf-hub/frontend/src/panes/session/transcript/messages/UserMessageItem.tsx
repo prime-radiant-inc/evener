@@ -59,17 +59,21 @@ function ForkGlyph() {
 
 export interface ForkFromHereButtonProps {
   sessionRef: string;
-  turnId: string;
+  // The 1-based TRANSCRIPT ENTRY INDEX of the message being forked from, never
+  // a turn id - see UserMessageItem's own comment for why the two diverge.
+  transcriptEntryIndex: number;
 }
 
-function ForkFromHereButton({ sessionRef, turnId }: ForkFromHereButtonProps) {
+function ForkFromHereButton({ sessionRef, transcriptEntryIndex }: ForkFromHereButtonProps) {
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
 
   async function handleFork() {
     setBusy(true);
     try {
-      const resp = await threadsStore.getState().forkFromTurn(sessionRef, { sourceTurnId: turnId, deferInput: true });
+      const resp = await threadsStore
+        .getState()
+        .forkFromTurn(sessionRef, { sourceTurnId: String(transcriptEntryIndex), deferInput: true });
       writeDraft(resp.thread.serf.ref, resp.originalInput ?? "");
       workspaceStore.getState().openPane("session", { ref: resp.thread.serf.ref });
     } catch (err) {
@@ -129,8 +133,28 @@ export function UserMessageView({
   );
 }
 
-export const UserMessageItem = memo(function UserMessageItem({ item, turn, sessionRef }: ItemRenderProps) {
-  const actions = sessionRef ? <ForkFromHereButton sessionRef={sessionRef} turnId={turn.id} /> : undefined;
+// The fork affordance is driven by the item's TRANSCRIPT ENTRY INDEX, never by
+// the enclosing turn's id. thread/fork reads sourceTurnId as a 1-based index
+// into the parent transcript's entry list (cmd/serf-hub/app_threadlifecycle.go
+// parseSourceTurnID -> agent.ForkSessionAtUserTurn), and only a transcript
+// replayed from disk numbers turn_N off that same index. A live turn is
+// numbered off its minter's own counter - internal/appprojector's per-turn
+// counter, or the daemon's per-mutation counter (turn_m<seq>) - so past the
+// first turn or two a live turn id names a different entry than the message it
+// belongs to.
+//
+// An item with no entry index has no persisted transcript position, so it names
+// no divergence point and the action is simply not offered - the same refusal
+// this component already makes for a read-only pane with no sessionRef, and the
+// same stance cmd/serf-tui/hub_browse.go's startForkDraft takes when
+// TurnIndexFromID yields 0 ("fork requires persisted transcript turn
+// identity"). Guessing an entry is the one outcome that must never happen.
+export const UserMessageItem = memo(function UserMessageItem({ item, sessionRef }: ItemRenderProps) {
+  const entryIndex = item.transcriptEntryIndex;
+  const actions =
+    sessionRef && entryIndex !== undefined && entryIndex > 0 ? (
+      <ForkFromHereButton sessionRef={sessionRef} transcriptEntryIndex={entryIndex} />
+    ) : undefined;
   return <UserMessageView item={item} actions={actions} />;
 }, ignoringTurn);
 

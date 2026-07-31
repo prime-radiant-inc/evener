@@ -319,17 +319,32 @@ describe("per-message fork affordance", () => {
 
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
     const { rerender } = render(
-      <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />,
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptEntryIndex: 1 })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+      />,
     );
     expect(screen.getByRole("button", { name: /fork from here/i })).toBeTruthy();
 
     // No sessionRef (the read-only "open beside" transcript pane): forking
     // needs a ref to call thread/fork with, so the action is withheld.
-    rerender(<UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} />);
+    rerender(
+      <UserMessageItem item={item({ text: "fix the bug", transcriptEntryIndex: 1 })} turn={turn} live={false} />,
+    );
     expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
   });
 
-  test("forking calls thread/fork with this turn + deferInput, seeds the child's composer draft, and opens it as a pane", async () => {
+  // thread/fork's sourceTurnId is a TRANSCRIPT ENTRY INDEX, not a turn id:
+  // cmd/serf-hub/app_threadlifecycle.go's parseSourceTurnID hands its result
+  // straight to agent.ForkSessionAtUserTurn as a 1-based index into the
+  // parent's entry list. The turn id only coincides with that index on a
+  // transcript replayed from disk (internal/apptranscript numbers turn_N off
+  // the entry index itself); every LIVE minter numbers turns off a different
+  // counter, so sending turn.id cuts the child at an unrelated entry. The
+  // item's own transcriptEntryIndex is the only field that names the entry.
+  test("forking calls thread/fork with this message's transcript ENTRY INDEX (not the turn id), seeds the child's composer draft, and opens it as a pane", async () => {
     const user = userEvent.setup();
     const fake = connectForkClient();
     let called: unknown;
@@ -338,10 +353,19 @@ describe("per-message fork affordance", () => {
       return { thread: forkWireThread(), originalInput: "fix the bug" };
     });
 
-    render(<UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />);
+    // A live turn whose id (turn_1) and entry index (5) have diverged - the
+    // everyday case past the first turn or two.
+    render(
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptEntryIndex: 5 })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+      />,
+    );
     await user.click(screen.getByRole("button", { name: /fork from here/i }));
 
-    await waitFor(() => expect(called).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", deferInput: true }));
+    await waitFor(() => expect(called).toEqual({ ref: "ref_a", sourceTurnId: "5", deferInput: true }));
     // The child opens as its own pane...
     await waitFor(() =>
       expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({
@@ -361,7 +385,12 @@ describe("per-message fork affordance", () => {
 
     render(
       <>
-        <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />
+        <UserMessageItem
+          item={item({ text: "fix the bug", transcriptEntryIndex: 1 })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />
         <Toast />
       </>,
     );
@@ -369,6 +398,31 @@ describe("per-message fork affordance", () => {
 
     await screen.findByText(/fork boom/i);
     expect(workspaceStore.getState().panes).toHaveLength(0);
+  });
+
+  // The no-entry-index fork: an item the transcript has not numbered names no
+  // divergence position at all. The TUI's own fork draft refuses outright on
+  // this (cmd/serf-tui/hub_browse.go's startForkDraft: "fork requires
+  // persisted transcript turn identity" when TurnIndexFromID yields 0) rather
+  // than cut a child somewhere the user never pointed at. A per-message
+  // affordance refuses in the web-native way this component already uses for
+  // the other unforkable case (no sessionRef, above): it is not offered.
+  test("no Fork-from-here button at all when the item carries no transcript entry index", () => {
+    const { rerender } = render(
+      <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />,
+    );
+    expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
+
+    // Entry indexes are 1-based, so a 0 names no entry either.
+    rerender(
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptEntryIndex: 0 })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
   });
 });
 

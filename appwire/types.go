@@ -894,7 +894,15 @@ type ThreadResumeResponse struct {
 }
 
 type ThreadForkParams struct {
-	Ref           string `json:"ref"`
+	Ref string `json:"ref"`
+	// SourceTurnID names the divergence position as a 1-based index into the
+	// parent transcript's ENTRY list — every entry, not just the ones that
+	// opened a turn — optionally spelled with a "turn_" prefix. Despite the
+	// name it is NOT a turn id: the hub parses it with parseSourceTurnID and
+	// hands the number straight to agent.ForkSessionAtUserTurn. Send
+	// ThreadItem.TranscriptEntryIndex, never Turn.ID; the two coincide only on
+	// a transcript replayed from disk, because every live turn minter numbers
+	// turns off its own counter (kata 0jhh).
 	SourceTurnID  string `json:"sourceTurnId"`
 	EditedInput   string `json:"editedInput,omitempty"`
 	Label         string `json:"label,omitempty"`
