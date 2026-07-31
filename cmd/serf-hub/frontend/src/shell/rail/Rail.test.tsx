@@ -273,6 +273,11 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetToastStoreForTests();
+  // The rail both writes the address bar (row activation) and now reads it
+  // (the delete paths' dead-route rescue), so each test starts from a known
+  // path instead of inheriting the previous one's - the same reset the shell's
+  // own AppShell.test.tsx afterEach already does.
+  window.history.pushState({}, "", "/");
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1478,6 +1483,18 @@ describe("delete project flow", () => {
     await screen.findByText(/past index not configured/i);
     expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([paneId]);
   });
+
+  // A dead route is dead however its session died - see the delete-session
+  // flow's own address-bar tests (kata 1hdc) for why closing the pane alone
+  // leaves the shell re-opening it.
+  test("sends the address bar to welcome when it names a session in the deleted project", async () => {
+    window.history.pushState({}, "", "/s/local%3Aold1");
+    postResponses["/api/project/delete"] = { status: 200, body: { deleted: ["old1", "old2"], skipped: [] } };
+
+    await deleteArchivedProject();
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/"));
+  });
 });
 
 describe("delete session flow", () => {
@@ -1583,6 +1600,49 @@ describe("delete session flow", () => {
 
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
     expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([survivorPaneId]);
+  });
+
+  // Same three clicks the tests above each spell out; shared by the
+  // address-bar cases below, mirroring deleteArchivedProject one describe up.
+  async function deleteSessionOne(): Promise<void> {
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+  }
+
+  // Closing the pane is not enough for the pane the ADDRESS BAR names (kata
+  // 1hdc): AppShell re-applies the route on every workspace change, so a URL
+  // still naming the deleted session re-opens a pane for it the moment this
+  // one closes. Welcome is where DockHost's own relaunch already puts the
+  // emptied main slot, so the URL goes to the same place.
+  test("sends the address bar to welcome when it names the deleted session", async () => {
+    window.history.pushState({}, "", "/s/local%3As1");
+
+    await deleteSessionOne();
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/"));
+  });
+
+  test("leaves an address bar naming a surviving session exactly where it is", async () => {
+    window.history.pushState({}, "", "/s/local%3Alive1");
+
+    await deleteSessionOne();
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(window.location.pathname).toBe("/s/local%3Alive1");
+  });
+
+  test("leaves a non-session route alone when a session is deleted", async () => {
+    window.history.pushState({}, "", "/settings");
+
+    await deleteSessionOne();
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(window.location.pathname).toBe("/settings");
   });
 });
 

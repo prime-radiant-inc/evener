@@ -591,6 +591,57 @@ test("rail activation updates the URL and a later Settings activation returns Se
   );
 });
 
+// Closing a deleted session's pane is not enough for the pane the ADDRESS BAR
+// names (kata 1hdc): the route-application effect below re-runs on every
+// workspace change, so a URL still naming the deleted session re-opens a pane
+// for it the instant the rail closes it - "Loading transcript…" forever, for a
+// session whose files are gone. The rail's delete path leaves that dead route
+// for welcome, which is where DockHost's own relaunch already puts the emptied
+// main slot. Driven through the REAL rail delete (menu, confirmation, POST,
+// refetch) against the real AppShell + DockHost, because the re-open only
+// happens with the route effect and the dock host both live.
+test("deleting the session the address bar names lands on welcome instead of re-opening its pane", async () => {
+  const treeWithoutSession = {
+    ...TREE_RESPONSE_WITH_NESTED_SESSION,
+    projects: [{ ...TREE_RESPONSE_WITH_NESTED_SESSION.projects[0], sessions: [] }],
+  };
+  let treeBody: unknown = TREE_RESPONSE_WITH_NESTED_SESSION;
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(treeBody));
+    if (url === "/api/sessions/local%3As1/delete") {
+      // The server deleted it: every later tree read is the one without it,
+      // exactly what confirmDeleteSession's own awaited refresh sees.
+      treeBody = treeWithoutSession;
+      return Promise.resolve(jsonResponse({ deleted: ["s1"], skipped: [] }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/s/local:s1");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
+
+  await user.click(screen.getByRole("button", { name: /actions for session one/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await screen.findByRole("button", { name: "Delete" });
+  await user.click(screen.getByRole("button", { name: "Delete" }));
+
+  // Both halves on the SAME settled frame: the address bar has left the dead
+  // route AND no pane is routed at the deleted session.
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/");
+    expect(paneFor("local:s1")).toBeUndefined();
+  });
+  // And it stays that way: the re-open would land on the commit after the
+  // close, so flush those effects before reading the workspace one last time.
+  await act(async () => {});
+  expect(paneFor("local:s1")).toBeUndefined();
+  expect(window.location.pathname).toBe("/");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
+});
+
 // A route replacement that only opens B leaves A's secondary neighbors in the
 // shared workspace. The state assertion catches that additive placement even
 // if DockHost happens to hide the stale panel during reconciliation.
