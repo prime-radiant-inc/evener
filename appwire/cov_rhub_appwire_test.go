@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,7 +18,8 @@ import (
 // it runs invoke in a goroutine, captures the request frame the client writes,
 // asserts the JSON-RPC method, replies with response, and waits for invoke to
 // return. It exercises the real params-marshal / response-unmarshal path of
-// every thin Client.* wrapper without a live daemon.
+// every thin Client.* wrapper without a live daemon, and hands the captured
+// request frame back so the caller can assert what was marshaled outbound.
 func roundTrip(t *testing.T, wantMethod string, response any, invoke func(ctx context.Context, c *Client) error) Message {
 	t.Helper()
 	transport := newMemoryTransport()
@@ -55,14 +57,45 @@ func roundTrip(t *testing.T, wantMethod string, response any, invoke func(ctx co
 	return written
 }
 
+// assertWrittenParams checks the params object a wrapper actually put on the
+// wire against the JSON its case declares. Both sides are decoded before they
+// are compared, so struct field order is not part of the contract while every
+// key name, value and JSON type is. want is mandatory: a case that declares no
+// params frame fails, so no wrapper can join the table without stating what it
+// sends.
+func assertWrittenParams(t *testing.T, name string, got json.RawMessage, want string) {
+	t.Helper()
+	if want == "" {
+		t.Fatalf("%s: case declares no wantParams; state the params frame this wrapper writes", name)
+	}
+	if len(got) == 0 {
+		t.Fatalf("%s: no params frame was written, want %s", name, want)
+	}
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("%s: written params %s are not JSON: %v", name, got, err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("%s: wantParams %s is not JSON: %v", name, want, err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("%s params = %s, want %s", name, got, want)
+	}
+}
+
 func TestClientRequestWrappersRoundTrip(t *testing.T) {
 	cases := []struct {
-		name     string
-		method   string
-		response any
-		invoke   func(ctx context.Context, c *Client) error
+		name   string
+		method string
+		// wantParams is the params frame this wrapper must write. Every case
+		// states one: what a thin wrapper marshals outbound is half of the
+		// contract it carries, and it is the half no response assertion can
+		// see.
+		wantParams string
+		response   any
+		invoke     func(ctx context.Context, c *Client) error
 	}{
-		{"Request", MethodThreadList, ThreadListResponse{Data: []Thread{{ID: "th_1"}}}, func(ctx context.Context, c *Client) error {
+		{"Request", MethodThreadList, `{"limit":3}`, ThreadListResponse{Data: []Thread{{ID: "th_1"}}}, func(ctx context.Context, c *Client) error {
 			var out ThreadListResponse
 			if err := c.Request(ctx, MethodThreadList, ThreadListParams{Limit: 3}, &out); err != nil {
 				return err
@@ -72,7 +105,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadRead", MethodThreadRead, ThreadReadResponse{Thread: Thread{ID: "th_2"}, OlderCursor: "c1"}, func(ctx context.Context, c *Client) error {
+		{"ThreadRead", MethodThreadRead, `{"ref":"local:th_2","includeTurns":true}`, ThreadReadResponse{Thread: Thread{ID: "th_2"}, OlderCursor: "c1"}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadRead(ctx, ThreadReadParams{Ref: "local:th_2", IncludeTurns: true})
 			if err != nil {
 				return err
@@ -82,7 +115,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTurnsList", MethodThreadTurnsList, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
+		{"ThreadTurnsList", MethodThreadTurnsList, `{"ref":"local:th","limit":5}`, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadTurnsList(ctx, ThreadTurnsListParams{Ref: "local:th", Limit: 5})
 			if err != nil {
 				return err
@@ -92,7 +125,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTurnItemsList", MethodThreadTurnItemsList, ThreadTurnItemsListResponse{NextCursor: "n2"}, func(ctx context.Context, c *Client) error {
+		{"ThreadTurnItemsList", MethodThreadTurnItemsList, `{"ref":"local:th","turnId":"tn_1"}`, ThreadTurnItemsListResponse{NextCursor: "n2"}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadTurnItemsList(ctx, ThreadTurnItemsListParams{Ref: "local:th", TurnID: "tn_1"})
 			if err != nil {
 				return err
@@ -102,7 +135,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTranscriptList", MethodSerfThreadTranscriptsList, ThreadTranscriptListResponse{Data: []ThreadTranscriptTarget{{Ref: "local:th"}}}, func(ctx context.Context, c *Client) error {
+		{"ThreadTranscriptList", MethodSerfThreadTranscriptsList, `{"ref":"local:th"}`, ThreadTranscriptListResponse{Data: []ThreadTranscriptTarget{{Ref: "local:th"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadTranscriptList(ctx, ThreadTranscriptListParams{Ref: "local:th"})
 			if err != nil {
 				return err
@@ -112,7 +145,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadStart", MethodThreadStart, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
+		{"ThreadStart", MethodThreadStart, `{"harness":"serf","cwd":"/tmp"}`, ThreadStartResponse{Thread: Thread{ID: "th_3"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadStart(ctx, ThreadStartParams{CWD: "/tmp", Harness: "serf"})
 			if err != nil {
 				return err
@@ -122,7 +155,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadResume", MethodThreadResume, ThreadResumeResponse{Thread: Thread{ID: "th_4"}}, func(ctx context.Context, c *Client) error {
+		{"ThreadResume", MethodThreadResume, `{"sessionId":"sess_1"}`, ThreadResumeResponse{Thread: Thread{ID: "th_4"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadResume(ctx, ThreadResumeParams{Session: "sess_1"})
 			if err != nil {
 				return err
@@ -132,7 +165,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadFork", MethodThreadFork, ThreadForkResponse{Thread: Thread{ID: "th_5"}}, func(ctx context.Context, c *Client) error {
+		{"ThreadFork", MethodThreadFork, `{"ref":"local:th","sourceTurnId":"tn_1"}`, ThreadForkResponse{Thread: Thread{ID: "th_5"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadFork(ctx, ThreadForkParams{Ref: "local:th", SourceTurnID: "tn_1"})
 			if err != nil {
 				return err
@@ -142,7 +175,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadClear", MethodThreadClear, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
+		{"ThreadClear", MethodThreadClear, `{"ref":"local:th"}`, ThreadClearResponse{Ref: "local:th"}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadClear(ctx, ThreadClearParams{Ref: "local:th"})
 			if err != nil {
 				return err
@@ -152,32 +185,47 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadModelSet", MethodThreadModelSet, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"ThreadModelSet", MethodThreadModelSet, `{"ref":"local:th","modelProvider":"openai","model":"gpt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadModelSet(ctx, ThreadModelSetParams{Ref: "local:th", ModelProvider: "openai", Model: "gpt"})
 		}},
-		{"ThreadReasoningEffortSet", MethodThreadReasoningEffortSet, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"ThreadReasoningEffortSet", MethodThreadReasoningEffortSet, `{"ref":"local:th","reasoningEffort":"high"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadReasoningEffortSet(ctx, ThreadReasoningEffortSetParams{Ref: "local:th", ReasoningEffort: "high"})
 		}},
-		{"ThreadCompactStart", MethodThreadCompactStart, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"ThreadCompactStart", MethodThreadCompactStart, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadCompactStart(ctx, ThreadCompactStartParams{Ref: "local:th"})
 		}},
-		{"ThreadShutdown", MethodThreadShutdown, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+		{"ThreadShutdown", MethodThreadShutdown, `{"ref":"local:th"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadShutdown(ctx, ThreadShutdownParams{Ref: "local:th"})
 		}},
-		{"TurnInterrupt", MethodTurnInterrupt, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ExpectedTurnID: "tn_1"})
+		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt","expectedTurnId":"tn_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt", ExpectedTurnID: "tn_1"})
 		}},
-		{"TasksList", MethodSerfTasksList, TaskListResponse{Data: []string{"t1"}}, func(ctx context.Context, c *Client) error {
+		{"TasksList", MethodSerfTasksList, `{"ref":"local:th"}`, TaskListResponse{Data: []map[string]any{{
+			"id": 5, "type": "implement", "description": "Wire up the status row",
+			"prompt": "Follow the existing disclosure idiom.", "status": "in_progress",
+		}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.TasksList(ctx, TaskListParams{Ref: "local:th"})
 			if err != nil {
 				return err
 			}
-			if out.Data == nil {
-				return errors.New("TasksList decode mismatch")
+			// Data is `any` in the catalog and no appwire type describes a task
+			// row (the daemon puts agent/task.Task values here), so what this
+			// pins is the passthrough: rows arrive decoded, unwrapped, under
+			// the same snake_case keys and JSON types the web client's
+			// parseTaskListData requires of every row it accepts.
+			rows, ok := out.Data.([]any)
+			if !ok || len(rows) != 1 {
+				return fmt.Errorf("TasksList data = %#v, want one row", out.Data)
+			}
+			row, ok := rows[0].(map[string]any)
+			if !ok || row["id"] != float64(5) || row["type"] != "implement" ||
+				row["description"] != "Wire up the status row" ||
+				row["prompt"] != "Follow the existing disclosure idiom." || row["status"] != "in_progress" {
+				return fmt.Errorf("TasksList row = %#v", rows[0])
 			}
 			return nil
 		}},
-		{"PathsComplete", MethodSerfPathsComplete, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+		{"PathsComplete", MethodSerfPathsComplete, `{"prefix":"/","limit":10}`, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.PathsComplete(ctx, PathsCompleteParams{Prefix: "/", Limit: 10})
 			if err != nil {
 				return err
@@ -187,7 +235,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobsList", MethodSerfJobsList, JobsListResponse{Data: []JobSummary{{
+		{"JobsList", MethodSerfJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: []JobSummary{{
 			JobID: "job_a", Type: "shell", Status: "running", Description: "go test ./...", OutputBytes: 128, HasOutput: true,
 		}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobsList(ctx, JobsListParams{Ref: "local:th"})
@@ -209,7 +257,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobOutput", MethodSerfJobsOutput, JobsOutputResponse{Data: JobOutputTail{
+		{"JobOutput", MethodSerfJobsOutput, `{"ref":"local:th","jobId":"j1","maxBytes":4096}`, JobsOutputResponse{Data: JobOutputTail{
 			Tail: "tail-bytes", TotalBytes: 4096, RetainedStart: 3968, Truncated: true,
 		}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
@@ -223,7 +271,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ProjectsRecent", MethodSerfProjectsRecent, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+		{"ProjectsRecent", MethodSerfProjectsRecent, `{"limit":15}`, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
 			if err != nil {
 				return err
@@ -233,7 +281,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"HarnessList", MethodSerfHarnessesList, HarnessListResponse{Data: []HarnessDescriptor{{ID: "serf"}}}, func(ctx context.Context, c *Client) error {
+		{"HarnessList", MethodSerfHarnessesList, `{}`, HarnessListResponse{Data: []HarnessDescriptor{{ID: "serf"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.HarnessList(ctx, HarnessListParams{})
 			if err != nil {
 				return err
@@ -243,7 +291,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthStatus", MethodSerfAuthStatus, AuthStatusResponse{Provider: "openai", SignedIn: true}, func(ctx context.Context, c *Client) error {
+		{"AuthStatus", MethodSerfAuthStatus, `{"provider":"openai"}`, AuthStatusResponse{Provider: "openai", SignedIn: true}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthStatus(ctx, AuthStatusParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -253,7 +301,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLoginStart", MethodSerfAuthLoginStart, AuthLoginStartResponse{FlowID: "f1", URL: "https://x"}, func(ctx context.Context, c *Client) error {
+		{"AuthLoginStart", MethodSerfAuthLoginStart, `{"provider":"openai"}`, AuthLoginStartResponse{FlowID: "f1", URL: "https://x"}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthLoginStart(ctx, AuthLoginStartParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -263,8 +311,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLoginComplete", MethodSerfAuthLoginComplete, AuthLoginCompleteResponse{Status: AuthStatusResponse{SignedIn: true}}, func(ctx context.Context, c *Client) error {
-			out, err := c.AuthLoginComplete(ctx, AuthLoginCompleteParams{Provider: "openai", FlowID: "f1"})
+		{"AuthLoginComplete", MethodSerfAuthLoginComplete, `{"provider":"openai","flowId":"f1","redirectUrl":"https://x/callback"}`, AuthLoginCompleteResponse{Status: AuthStatusResponse{SignedIn: true}}, func(ctx context.Context, c *Client) error {
+			out, err := c.AuthLoginComplete(ctx, AuthLoginCompleteParams{Provider: "openai", FlowID: "f1", RedirectURL: "https://x/callback"})
 			if err != nil {
 				return err
 			}
@@ -273,7 +321,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"AuthLogout", MethodSerfAuthLogout, AuthLogoutResponse{Removed: true}, func(ctx context.Context, c *Client) error {
+		{"AuthLogout", MethodSerfAuthLogout, `{"provider":"openai"}`, AuthLogoutResponse{Removed: true}, func(ctx context.Context, c *Client) error {
 			out, err := c.AuthLogout(ctx, AuthLogoutParams{Provider: "openai"})
 			if err != nil {
 				return err
@@ -283,7 +331,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ModelList", MethodModelList, ModelListResponse{Data: []ModelDescriptor{{Provider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
+		{"ModelList", MethodModelList, `{"harness":"serf"}`, ModelListResponse{Data: []ModelDescriptor{{Provider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ModelList(ctx, ModelListParams{Harness: "serf"})
 			if err != nil {
 				return err
@@ -293,66 +341,82 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadNameSet", MethodSerfThreadNameSet, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.ThreadNameSet(ctx, ThreadNameSetParams{}) }},
-		{"TurnStart", MethodTurnStart, TurnStartResponse{}, func(ctx context.Context, c *Client) error { _, err := c.TurnStart(ctx, TurnStartParams{}); return err }},
-		{"TurnSteer", MethodTurnSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnSteer(ctx, TurnSteerParams{}) }},
-		{"TurnQueue", MethodTurnQueue, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnQueue(ctx, TurnQueueParams{}) }},
-		{"TurnDrain", MethodTurnDrainAsSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{}) }},
-		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error {
-			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{Index: 0})
+		{"ThreadNameSet", MethodSerfThreadNameSet, `{"ref":"local:th","name":"renamed"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.ThreadNameSet(ctx, ThreadNameSetParams{Ref: "local:th", Name: "renamed"})
 		}},
-		{"TurnCancelQueued", MethodTurnCancelQueued, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
-			_, err := c.TurnCancelQueued(ctx, TurnCancelQueuedParams{Index: 0})
+		{"TurnStart", MethodTurnStart, `{"ref":"local:th","clientMutationId":"cm_start","input":[{"type":"text","text":"hello"}]}`, TurnStartResponse{}, func(ctx context.Context, c *Client) error {
+			_, err := c.TurnStart(ctx, TurnStartParams{Ref: "local:th", ClientMutationID: "cm_start", Input: []InputItem{{Type: "text", Text: "hello"}}})
 			return err
 		}},
-		{"CommandList", MethodSerfCommandList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
-		{"MarketplaceList", MethodSerfMarketplaceList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
-		{"MarketplaceAdd", MethodSerfMarketplaceAdd, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{})
+		{"TurnSteer", MethodTurnSteer, `{"ref":"local:th","clientMutationId":"cm_steer","expectedTurnId":"tn_1","input":[{"type":"text","text":"steer"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnSteer(ctx, TurnSteerParams{Ref: "local:th", ClientMutationID: "cm_steer", ExpectedTurnID: "tn_1", Input: []InputItem{{Type: "text", Text: "steer"}}})
+		}},
+		{"TurnQueue", MethodTurnQueue, `{"ref":"local:th","clientMutationId":"cm_queue","expectedTurnId":"tn_1","input":[{"type":"text","text":"queued"}]}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnQueue(ctx, TurnQueueParams{Ref: "local:th", ClientMutationID: "cm_queue", ExpectedTurnID: "tn_1", Input: []InputItem{{Type: "text", Text: "queued"}}})
+		}},
+		{"TurnDrain", MethodTurnDrainAsSteer, `{"ref":"local:th","clientMutationId":"cm_drain","expectedTurnId":"tn_1","expectedQueueRevision":7}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{Ref: "local:th", ClientMutationID: "cm_drain", ExpectedTurnID: "tn_1", ExpectedQueueRevision: 7})
+		}},
+		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, `{"ref":"local:th","index":2,"clientMutationId":"cm_promote","expectedTurnId":"tn_1","expectedEntryId":"qe_1"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{
+				Ref: "local:th", Index: 2, ClientMutationID: "cm_promote", ExpectedTurnID: "tn_1", ExpectedEntryID: "qe_1",
+			})
+		}},
+		{"TurnCancelQueued", MethodTurnCancelQueued, `{"ref":"local:th","index":1,"clientMutationId":"cm_cancel","expectedEntryId":"qe_2"}`, TurnCancelQueuedResponse{}, func(ctx context.Context, c *Client) error {
+			_, err := c.TurnCancelQueued(ctx, TurnCancelQueuedParams{
+				Ref: "local:th", Index: 1, ClientMutationID: "cm_cancel", ExpectedEntryID: "qe_2",
+			})
 			return err
 		}},
-		{"MarketplaceRemove", MethodSerfMarketplaceRemove, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceRemove(ctx, MarketplaceNameParams{})
+		{"CommandList", MethodSerfCommandList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
+		{"MarketplaceList", MethodSerfMarketplaceList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
+		{"MarketplaceAdd", MethodSerfMarketplaceAdd, `{"name":"acme","source":{"kind":"git","repo":"acme/plugins"}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceAdd(ctx, MarketplaceAddParams{Name: "acme", Source: MarketplaceSourceInput{Kind: "git", Repo: "acme/plugins"}})
 			return err
 		}},
-		{"MarketplaceRefresh", MethodSerfMarketplaceRefresh, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceRefresh(ctx, MarketplaceNameParams{})
+		{"MarketplaceRemove", MethodSerfMarketplaceRemove, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceRemove(ctx, MarketplaceNameParams{Name: "acme"})
 			return err
 		}},
-		{"MarketplaceBrowse", MethodSerfMarketplaceBrowse, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.MarketplaceBrowse(ctx, MarketplaceBrowseParams{})
+		{"MarketplaceRefresh", MethodSerfMarketplaceRefresh, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceRefresh(ctx, MarketplaceNameParams{Name: "acme"})
 			return err
 		}},
-		{"PluginList", MethodSerfPluginList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
-		{"PluginInstall", MethodSerfPluginInstall, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginInstall(ctx, PluginRefParams{})
+		{"MarketplaceBrowse", MethodSerfMarketplaceBrowse, `{"name":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.MarketplaceBrowse(ctx, MarketplaceBrowseParams{Name: "acme"})
 			return err
 		}},
-		{"PluginUpgrade", MethodSerfPluginUpgrade, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginUpgrade(ctx, PluginRefParams{})
+		{"PluginList", MethodSerfPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginInstall", MethodSerfPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginRemove", MethodSerfPluginRemove, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginRemove(ctx, PluginRefParams{})
+		{"PluginUpgrade", MethodSerfPluginUpgrade, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginUpgrade(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginEnable", MethodSerfPluginEnable, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginEnable(ctx, PluginRefParams{})
+		{"PluginRemove", MethodSerfPluginRemove, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginRemove(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginDisable", MethodSerfPluginDisable, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginDisable(ctx, PluginRefParams{})
+		{"PluginEnable", MethodSerfPluginEnable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginEnable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err
 		}},
-		{"PluginAutoUpgrade", MethodSerfPluginSetAutoUpgrade, map[string]any{}, func(ctx context.Context, c *Client) error {
-			_, err := c.PluginSetAutoUpgrade(ctx, PluginSetAutoUpgradeParams{})
+		{"PluginDisable", MethodSerfPluginDisable, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginDisable(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
+			return err
+		}},
+		{"PluginAutoUpgrade", MethodSerfPluginSetAutoUpgrade, `{"plugin":"fmt","marketplace":"acme","autoUpgrade":true}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			_, err := c.PluginSetAutoUpgrade(ctx, PluginSetAutoUpgradeParams{Plugin: "fmt", Marketplace: "acme", AutoUpgrade: true})
 			return err
 		}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			roundTrip(t, tc.method, tc.response, tc.invoke)
+			written := roundTrip(t, tc.method, tc.response, tc.invoke)
+			assertWrittenParams(t, tc.name, written.Request.Params, tc.wantParams)
 		})
 	}
 }
