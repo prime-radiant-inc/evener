@@ -1928,6 +1928,15 @@ func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(s
 			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
+	if start > 0 {
+		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
+		// dangling continuation bytes rather than reading further back: the window
+		// SHRINKS, which keeps retainedStart (total - len(output), computed by
+		// jobOutputTailFrom) naming the first byte actually returned. Only our own cut
+		// is realigned — at start 0 the first byte is the file's own, and binary output
+		// keeps it.
+		buf = trimLeadingPartialRune(buf)
+	}
 	return string(buf), totalBytes, truncated, nil
 }
 
