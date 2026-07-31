@@ -48,6 +48,12 @@ const (
 	EventToolCallOutputDelta EventKind = "TOOL_CALL_OUTPUT_DELTA"
 	// EventToolCallEnd marks the end of a tool call.
 	EventToolCallEnd EventKind = "TOOL_CALL_END"
+	// EventToolResultImagesPersisted reports that the round's tool results are in
+	// the transcript, naming the calls whose result images a reader can fetch as
+	// of that moment. Tool results are written per ROUND, not per call, so a
+	// TOOL_CALL_END's sha-addressed image descriptor names bytes that nothing can
+	// serve yet — for as long as the round's remaining calls take (kata v3dv).
+	EventToolResultImagesPersisted EventKind = "TOOL_RESULT_IMAGES_PERSISTED"
 	// EventToolCallRepaired reports that a tool call's arguments were healed
 	// before dispatch (aliasing, coercion, JSON/unicode repair, drop-unknown).
 	// Silent to the model; emitted for drift telemetry.
