@@ -7,6 +7,15 @@ files (no runtime/DOM-interaction behavior, just regex assertions over `style.cs
 were actually about `task` (`test-task-updated-subscription.js`, `test-tasks-panel.js`)
 were excluded as filename false positives, not part of ask_user.
 
+**Staged attachments are tiles, not chips (kata `jm81`).** The legacy surface
+these lines were mined from rendered a staged image as a text chip — one row
+reading `📎 <name> (<W>×<H>)`. The rewrite renders an 80×80 `AttachmentTile`
+instead: one box in both states, an empty slot while the PNG re-encode is in
+flight and the thumbnail once it lands. The session composer has drawn it
+since kata `39xe`, Spawn since kata `kbg7`. The lines below say tile because
+that is what a suite has to find; every behavior is otherwise unchanged
+except where a line says so itself.
+
 ## Composer
 
 ### test-composer-shortcuts.js
@@ -19,10 +28,10 @@ were excluded as filename false positives, not part of ask_user.
 ### test-composer-image-markers.js
 - pasting an image inserts literal "[image N]" text at the textarea cursor and moves the cursor past it, with N starting at 1 (test-composer-image-markers.js)
 - sequential attachments via paste, drop, and the file picker all draw from the same monotonically-increasing marker counter (test-composer-image-markers.js)
-- removing an attachment chip strips only that image's "[image N]" substring from the textarea, leaving sibling markers untouched (test-composer-image-markers.js)
+- removing an attachment tile strips only that image's "[image N]" substring from the textarea, leaving sibling markers untouched (test-composer-image-markers.js)
 - marker numbering never reuses a removed number — the next attachment always gets highest-ever-assigned + 1, even immediately after removing the highest marker (test-composer-image-markers.js)
 - resetting the marker counter (e.g. after send) restarts a fresh composer's numbering at 1 (test-composer-image-markers.js)
-- removing a chip when no textarea is wired to the pending state still splices the item out without throwing (test-composer-image-markers.js)
+- removing a tile when no textarea is wired to the pending state still splices the item out without throwing (test-composer-image-markers.js)
 - the "[image N]" marker is inserted synchronously at the original cursor position on paste, with the pending item flagged `pending:true` until async decode resolves and assigns the marker; typing elsewhere afterward doesn't relocate the already-placed marker (test-composer-image-markers.js)
 - images over 8MB are rejected before decode — no item or marker is added, and an inline banner reads "maximum 8 MB" (test-composer-image-markers.js)
 - a 9th attachment is rejected before decode (8-image cap) — no item or marker is added, and an inline banner reads "maximum 8 images" (test-composer-image-markers.js)
@@ -118,13 +127,13 @@ were excluded as filename false positives, not part of ask_user.
 ## Attachments
 
 ### test-drag-drop-image.js
-- dropping image file(s) onto the composer drop zone queues them as image attachment items (type/mediaType/ArrayBuffer data) and renders one chip per image (test-drag-drop-image.js)
+- dropping image file(s) onto the composer drop zone queues them as image attachment items (type/mediaType/ArrayBuffer data) and renders one tile per image (test-drag-drop-image.js)
 - dropping multiple images at once synchronously inserts one "[image N]" marker per file into the textarea (test-drag-drop-image.js)
 - dropping a mix of image + non-image files queues only the images and surfaces one inline rejection banner naming the skipped file(s) (test-drag-drop-image.js)
 - dropping only non-image files queues nothing and shows the rejection banner (test-drag-drop-image.js)
 - `dragenter` toggles a `.drop-active` class on the drop zone; `dragleave` and `drop` both clear it (test-drag-drop-image.js)
 - a drop event is `preventDefault`'d so the browser doesn't navigate to the dropped file (test-drag-drop-image.js)
-- selecting image file(s) via the hidden file input queues one item per image and renders chips, matching drop behavior (test-drag-drop-image.js)
+- selecting image file(s) via the hidden file input queues one item per image and renders tiles, matching drop behavior (test-drag-drop-image.js)
 - the attach handler defensively sets `accept="image/*"` on a file input missing that attribute, but never overwrites an already-set accept value (test-drag-drop-image.js)
 - selecting a non-image file via the picker is rejected (0 items queued) with the same rejection banner as drag-drop (test-drag-drop-image.js)
 - clicking the visible attach button programmatically triggers the hidden file input's click, and the attach button itself is keyboard-reachable (real `<button>` or has `tabindex`) (test-drag-drop-image.js)
@@ -136,8 +145,8 @@ were excluded as filename false positives, not part of ask_user.
 - pasting an image from the clipboard queues one item (type=image, mediaType=image/png, ArrayBuffer data, name "paste-<ts>.png", positive width/height) (test-paste-image.js)
 - a text-only paste is left untouched — no attachment is queued, and the event's default (browser text insertion) is not prevented (test-paste-image.js)
 - pasting an image alongside text extracts only the image as an attachment, leaving the text to the browser's normal paste handling (event not prevented) (test-paste-image.js)
-- the rendered attachment chip shows both the image's filename and its WxH dimensions (test-paste-image.js)
-- clicking a chip's remove button empties the pending item and removes the chip from the DOM (test-paste-image.js)
+- the rendered attachment tile shows the image's WxH dimensions, as an overlay across the bottom of its thumbnail; the filename is the accessible name of the tile's own controls and the title of the lightbox it opens, NOT visible text — the legacy chip printed both on one line, and a suite that queries for a filename as text will not find it (test-paste-image.js)
+- clicking a tile's remove button empties the pending item and removes the tile from the DOM (test-paste-image.js)
 - a pasted non-PNG image (e.g. JPEG) is transparently re-encoded to image/png before being stored (test-paste-image.js)
 
 ### test-submit-attachments.js
@@ -149,15 +158,16 @@ were excluded as filename false positives, not part of ask_user.
 
 ### test-appwire-attachments-websearch-hydration.js
 - non-image input attachments (documents, audio) hydrate from a reloaded thread as labeled file chips, never as broken `<img>` elements (test-appwire-attachments-websearch-hydration.js)
+  - **Still open, and not a tile question (kata `jm81`):** this one is not about the composer's staged row at all, and it is the one line here the rewrite does NOT satisfy. Reachable half: a replayed turn's audio/document parts are still projected onto the wire, into the same `images` array as the pictures, tagged `input_audio`/`input_document`. Unmet half: the rewrite's transcript ignores that tag, resolves every entry in the array to a single `src`, and hands the lot to `ImageGallery`, which renders each as an `<img>` and silently drops any the browser fails to load. So a document or an audio clip surfaces as nothing at all — better than a broken `<img>`, still not the labeled row this line asks for. Staging one is impossible in the other direction (a non-image file is refused at the picker, and a recovered draft only lifts image items), so this is purely a hydration gap. How much it matters is open: no serf-side producer that persists an audio/document part into a user turn turned up while checking this, so the projector and its own Go tests may be all that keeps the case alive.
 - provider-native `web_search` content hydrates through the existing web_search tool card, showing the query and its result (test-appwire-attachments-websearch-hydration.js)
 
 ### test-input-area.js (attachment-integration subset of the input-area harness)
-- selecting an image via the composer's file picker queues it as a pending attachment and renders one chip showing its filename (test-input-area.js)
-- dropping multiple images at once queues each as a pending attachment and renders one chip per image (test-input-area.js)
-- clicking a chip's remove button removes exactly that attachment from the pending queue and its chip from the DOM (test-input-area.js)
+- selecting an image via the composer's file picker queues it as a pending attachment and renders one tile carrying its filename as the accessible name of the tile's controls (test-input-area.js)
+- dropping multiple images at once queues each as a pending attachment and renders one tile per image (test-input-area.js)
+- clicking a tile's remove button removes exactly that attachment from the pending queue and its tile from the DOM (test-input-area.js)
 - submitting with both text and a pending image attachment POSTs a body with `text` plus an `items` array carrying the image's type/mediaType/base64 `data`/name (test-input-area.js)
-- a successful submit clears the pending attachment queue and its rendered chips (test-input-area.js)
-- attachments added while an earlier submit is still in flight are excluded from that in-flight request's snapshot, but survive as the new pending queue/chips/draft once that submit succeeds — no data loss, no double-send (test-input-area.js)
+- a successful submit clears the pending attachment queue and its rendered tiles (test-input-area.js)
+- attachments added while an earlier submit is still in flight are excluded from that in-flight request's snapshot, but survive as the new pending queue/tiles/draft once that submit succeeds — no data loss, no double-send (test-input-area.js)
 - navigating to a different session while an old session's send is still in flight prevents that stale send's eventual completion from rendering a local echo into either the old or the new session's conversation (test-input-area.js)
 - submitting while a pasted/picked image is still synchronously pending (async decode unfinished) is blocked — no fetch fires and a "still processing" banner explains why (test-input-area.js)
 - submitting an empty textarea with no attachments fires no fetch (test-input-area.js)
