@@ -109,16 +109,16 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
 // matching hook order past its own early return.
 //
 // The bounded stream: .liveScroll caps the open thought at ~6 body lines and
-// measure() pins it to its own tail, so the newest reasoning is what stays
-// on screen while the cut is marked by the wrapper's fade (gated on
-// data-clipped - a short thought has no cut to mark). Two triggers cover the
-// two ways geometry changes:
+// pinTail() keeps it scrolled to its own end, so the newest reasoning is what
+// stays on screen (a hard clip at the cap edge - the fade that marked the cut
+// was tried and removed, Jesse's call after seeing it live). Two triggers
+// cover the two ways geometry changes:
 //
 //   - The per-commit layout effect (deliberately NO dependency array): every
 //     delta to this item re-renders this component (thinkBlockPropsEqual
 //     below ignores only turn identity), and the child StreamingText's own
 //     layout effect appends its text BEFORE a parent layout effect runs - so
-//     by the time this measures, the new text is in the DOM.
+//     by the time this pins, the new text is in the DOM.
 //   - The ResizeObserver on the scroller: a pane narrowing/widening, a font
 //     scale change, or a dockview reveal from display:none rewraps the text
 //     with NO delta and NO re-render (the memo skips them all), and a live
@@ -130,25 +130,18 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
 // hold a position in text that is still moving); the full body is one click
 // away the moment the thought settles.
 function LiveThinkBlock({ item }: { item: ItemModel }) {
-  const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const measure = () => {
-    const body = bodyRef.current;
+  const pinTail = () => {
     const scroller = scrollRef.current;
-    if (!body || !scroller) return;
+    if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight;
-    // +1: scrollHeight and clientHeight are integer-rounded from different
-    // rects, and fractional zoom / --font-scale steps can leave them one
-    // apart on a box that is not actually clipping. A single hairline of
-    // overflow is not a cut worth washing the first line for.
-    body.dataset.clipped = scroller.scrollHeight > scroller.clientHeight + 1 ? "true" : "false";
   };
-  useLayoutEffect(measure);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: measure reads only refs; the first render's closure is as good as any
+  useLayoutEffect(pinTail);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pinTail reads only the ref; the first render's closure is as good as any
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(pinTail);
     observer.observe(scroller);
     return () => observer.disconnect();
   }, []);
@@ -159,7 +152,7 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
           {thoughtIcon}
           Thinking…
         </span>
-        <div className={CLASS.liveBody} data-testid="think-block-live-body" ref={bodyRef}>
+        <div className={CLASS.liveBody} data-testid="think-block-live-body">
           <div className={CLASS.liveScroll} data-testid="think-block-live-scroll" ref={scrollRef}>
             {(item.reasoningSummaries ?? []).map((chunks, i) =>
               // A zero-chunk index (a later summaryIndex has started streaming

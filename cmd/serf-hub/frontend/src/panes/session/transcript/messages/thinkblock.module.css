@@ -71,32 +71,13 @@
 
 /* The live body is the draft (mockup #4): italics are the state signal -
  * in-flight reasoning reads as provisional, and the same words settle to
- * roman in the disclosure body the moment the item completes. position:
- * relative anchors the fade on THIS box precisely because it never scrolls:
- * an absolutely-positioned overlay inside .liveScroll would be carried away
- * with the content the first time the tail pin scrolls it. */
+ * roman in the disclosure body the moment the item completes. The cap's cut
+ * is a HARD clip at the box edge: the mockup's soft fade over the top line
+ * was implemented and then removed (Jesse's call, seen live) - do not
+ * reintroduce an overlay here without that call being reversed. */
 .liveBody {
   min-width: 0;
-  position: relative;
   font-style: italic;
-}
-
-/* The cut marker: a soft wash of the backdrop over the stream's top edge,
- * only while there IS a cut (LiveThinkBlock sets data-clipped from real
- * geometry) - ungated it would wash out the first line of a thought still
- * shorter than its cap. --surface-1 because that is the surface actually
- * under the transcript: both transcript hosts wrap it in PaneScaffold,
- * whose .pane paints var(--surface-1) (widgets/panescaffold), and nothing
- * beneath the think block repaints. The mockup's identical gradient used
- * surface-0 and was right THERE - /dev/thoughts renders on the app root -
- * which is exactly the transplant trap an in-pane copy must not repeat. */
-.liveBody[data-clipped="true"]::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: var(--space-5);
-  background: linear-gradient(to bottom, var(--surface-1), transparent);
-  pointer-events: none;
 }
 
 /* The live-wall fix every /dev/thoughts candidate shared: the open thought

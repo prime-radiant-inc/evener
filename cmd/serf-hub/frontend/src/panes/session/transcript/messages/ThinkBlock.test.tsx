@@ -253,9 +253,9 @@ test("through TurnBlock: a later item landing in the turn collapses the live tho
 // --- live: the draft treatment + the bounded stream (mockup #4) -------------
 // In-flight reasoning reads as a DRAFT - italic while streaming, settling to
 // roman - and the open stream stops claiming the whole viewport: the body caps
-// at ~6 body lines, pinned to its own tail, a fade marking the cut. The
-// thought stays OPEN the whole time (the live-state law); it just stops
-// growing without bound on screen.
+// at ~6 body lines, pinned to its own tail (a hard clip at the cap edge -
+// Jesse cut the fade after seeing it live). The thought stays OPEN the whole
+// time (the live-state law); it just stops growing without bound on screen.
 
 test("the live body carries the draft treatment - italic in flight, roman once settled (declaration-level)", () => {
   const css = thinkCss();
@@ -288,7 +288,7 @@ test("the live stream pins to its own tail as chunks land - the newest text is w
   expect(scroller.scrollTop).toBeGreaterThanOrEqual(scroller.scrollHeight - scroller.clientHeight);
 });
 
-test("the live wrapper and scroller carry their stylesheet classes - the cap, fade and italic actually bind to the DOM", () => {
+test("the live wrapper and scroller carry their stylesheet classes - the cap and italic actually bind to the DOM", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["bound"]] })} turn={turn} live={true} />);
   const body = screen.getByTestId("think-block-live-body");
   const scroller = screen.getByTestId("think-block-live-scroll");
@@ -300,21 +300,11 @@ test("the live wrapper and scroller carry their stylesheet classes - the cap, fa
   ).toBe(true);
 });
 
-test("a one-pixel metric disagreement is not a cut: the clip flag tolerates rounding under fractional zoom", () => {
-  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["snug"]] })} turn={turn} live={true} />);
-  const body = screen.getByTestId("think-block-live-body");
-  const scroller = screen.getByTestId("think-block-live-scroll");
-  Object.defineProperty(scroller, "scrollHeight", { get: () => 101, configurable: true });
-  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
-  rerender(<ThinkBlock item={item({ reasoningSummaries: [["snug", "!"]] })} turn={turn} live={true} />);
-  expect(body.dataset.clipped).toBe("false");
-});
-
-test("a geometry change BETWEEN deltas re-measures: the observer wired to the scroller re-pins and refreshes the clip flag", () => {
+test("a geometry change BETWEEN deltas re-pins the tail: the observer is wired to the scroller", () => {
   // jsdom ships no ResizeObserver (see virtuallist.test.tsx's own note), so
   // this installs a minimal recording fake: the assertions are about the
   // component's wiring - which element it observes, and that firing the
-  // callback re-measures with NO React re-render - not about the fake.
+  // callback re-pins with NO React re-render - not about the fake.
   const observed: Element[] = [];
   let fire: (() => void) | undefined;
   class RecordingObserver {
@@ -331,45 +321,25 @@ test("a geometry change BETWEEN deltas re-measures: the observer wired to the sc
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = RecordingObserver;
   try {
     render(<ThinkBlock item={item({ reasoningSummaries: [["rewrap me"]] })} turn={turn} live={true} />);
-    const body = screen.getByTestId("think-block-live-body");
     const scroller = screen.getByTestId("think-block-live-scroll");
     expect(observed).toContain(scroller);
-    expect(body.dataset.clipped).toBe("false");
 
     // The pane narrows: same item, no delta, text rewraps past the cap.
     Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
     Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
     fire?.();
-    expect(body.dataset.clipped).toBe("true");
     expect(scroller.scrollTop).toBeGreaterThanOrEqual(200);
   } finally {
     delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
   }
 });
 
-test("the fade only marks an actual cut: data-clipped tracks whether the stream overflows its cap", () => {
-  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["short"]] })} turn={turn} live={true} />);
-  const body = screen.getByTestId("think-block-live-body");
-  const scroller = screen.getByTestId("think-block-live-scroll");
-  // Nothing overflows (jsdom metrics are 0/0): no cut, no fade hook.
-  expect(body.dataset.clipped).toBe("false");
-
-  Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
-  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
-  rerender(<ThinkBlock item={item({ reasoningSummaries: [["short", " grew"]] })} turn={turn} live={true} />);
-  expect(body.dataset.clipped).toBe("true");
-});
-
-test("the fade lives on the non-scrolling wrapper, gated on the clipped state, and washes the PANE surface (declaration-level)", () => {
+test("no fade, no clip flag: the cap is a hard clip (Jesse's call after seeing the fade live)", () => {
   const css = thinkCss();
-  // surface-1, not surface-0: the transcript renders inside PaneScaffold's
-  // .pane (background: var(--surface-1)) - the mockup's surface-0 gradient
-  // was only right on the /dev page, which sits on the app root.
-  expect(css).toMatch(
-    /\.liveBody\[data-clipped="true"\]::before\s*\{[^}]*linear-gradient\(to bottom,\s*var\(--surface-1\),\s*transparent\)/,
-  );
-  // Never ungated: a short thought must not wash out its own first line.
-  expect(css).not.toMatch(/\.liveBody::before/);
+  expect(css).not.toMatch(/data-clipped/);
+  expect(css).not.toMatch(/\.liveBody(\[[^\]]*\])?::before/);
+  render(<ThinkBlock item={item({ reasoningSummaries: [["plain"]] })} turn={turn} live={true} />);
+  expect(screen.getByTestId("think-block-live-body").dataset.clipped).toBeUndefined();
 });
 
 // --- settled: duration + final context --------------------------------------
