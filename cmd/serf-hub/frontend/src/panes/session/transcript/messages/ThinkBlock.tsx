@@ -46,7 +46,7 @@
 // AgentMessageItem's identical live-plain/settled-markdown split, so both
 // message types behave the same way under streaming.
 
-import { memo, useLayoutEffect, useRef } from "react";
+import { memo } from "react";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -68,7 +68,6 @@ const CLASS = {
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
   icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
-  liveScroll: requireClass(styles.liveScroll, "thinkblock.module.css", "liveScroll"),
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
@@ -104,47 +103,16 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
   return parts.join(" · ");
 }
 
-// The live view (mockup #4's draft treatment) is its own component because it
-// alone needs hooks, and ThinkBlock's settled branch must not have to thread a
-// matching hook order past its own early return.
+// The live view (mockup #4's draft treatment): a quiet "Thinking…" eyebrow
+// over the streaming draft text, in its own component so the two states read
+// as the two separate layouts they are.
 //
-// The bounded stream: .liveScroll caps the open thought at ~6 body lines and
-// pinTail() keeps it scrolled to its own end, so the newest reasoning is what
-// stays on screen (a hard clip at the cap edge - the fade that marked the cut
-// was tried and removed, Jesse's call after seeing it live). Two triggers
-// cover the two ways geometry changes:
-//
-//   - The per-commit layout effect (deliberately NO dependency array): every
-//     delta to this item re-renders this component (thinkBlockPropsEqual
-//     below ignores only turn identity), and the child StreamingText's own
-//     layout effect appends its text BEFORE a parent layout effect runs - so
-//     by the time this pins, the new text is in the DOM.
-//   - The ResizeObserver on the scroller: a pane narrowing/widening, a font
-//     scale change, or a dockview reveal from display:none rewraps the text
-//     with NO delta and NO re-render (the memo skips them all), and a live
-//     thought can sit delta-less for the rest of a long turn. Absent in
-//     jsdom, hence the guard - the observer path is browser-only.
-//
-// scrollTop on an overflow: hidden box is programmatic-only, which is the
-// point: while live the tail is the only honest viewport (the reader cannot
-// hold a position in text that is still moving); the full body is one click
-// away the moment the thought settles.
+// It carries NO height bound (Jesse, bh8h): a thought that is still running is
+// shown in full, however long it grows, so the reader can follow the whole
+// block as it streams. The transcript's own scroller is the viewport - the
+// same one every other growing item shares - so there is nothing here to clip,
+// to fade, or to pin to a tail.
 function LiveThinkBlock({ item }: { item: ItemModel }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const pinTail = () => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    scroller.scrollTop = scroller.scrollHeight;
-  };
-  useLayoutEffect(pinTail);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pinTail reads only the ref; the first render's closure is as good as any
-  useLayoutEffect(() => {
-    const scroller = scrollRef.current;
-    if (!scroller || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(pinTail);
-    observer.observe(scroller);
-    return () => observer.disconnect();
-  }, []);
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="true">
       <div className={CLASS.live}>
@@ -153,31 +121,29 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
           Thinking…
         </span>
         <div className={CLASS.liveBody} data-testid="think-block-live-body">
-          <div className={CLASS.liveScroll} data-testid="think-block-live-scroll" ref={scrollRef}>
-            {(item.reasoningSummaries ?? []).map((chunks, i) =>
-              // A zero-chunk index (a later summaryIndex has started streaming
-              // before this earlier one has) renders nothing rather than an
-              // empty <p> - .paragraph carries its own margin, so an empty one
-              // would still show as a visible gap. It appears in position the
-              // instant its first chunk arrives.
-              //
-              // index-as-key is deliberate: i IS the stable identity here
-              // (summaryIndex, per this file's top comment - "each index's
-              // chunks only ever grow by appending", positions never reorder).
-              chunks.length === 0 ? null : (
-                // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
-                <p key={i} className={CLASS.paragraph}>
-                  {/* live={false}: NO blinking caret (Jesse's review call).
-                      The caret is the design system's reserved streaming cue
-                      for AGENT prose; inside a read-only reasoning view it
-                      reads as an edit cursor, and the thought's liveness is
-                      already carried by the "Thinking…" eyebrow plus the
-                      visibly growing text. */}
-                  <StreamingText chunks={chunks} live={false} />
-                </p>
-              ),
-            )}
-          </div>
+          {(item.reasoningSummaries ?? []).map((chunks, i) =>
+            // A zero-chunk index (a later summaryIndex has started streaming
+            // before this earlier one has) renders nothing rather than an
+            // empty <p> - .paragraph carries its own margin, so an empty one
+            // would still show as a visible gap. It appears in position the
+            // instant its first chunk arrives.
+            //
+            // index-as-key is deliberate: i IS the stable identity here
+            // (summaryIndex, per this file's top comment - "each index's
+            // chunks only ever grow by appending", positions never reorder).
+            chunks.length === 0 ? null : (
+              // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
+              <p key={i} className={CLASS.paragraph}>
+                {/* live={false}: NO blinking caret (Jesse's review call).
+                    The caret is the design system's reserved streaming cue
+                    for AGENT prose; inside a read-only reasoning view it
+                    reads as an edit cursor, and the thought's liveness is
+                    already carried by the "Thinking…" eyebrow plus the
+                    visibly growing text. */}
+                <StreamingText chunks={chunks} live={false} />
+              </p>
+            ),
+          )}
         </div>
       </div>
     </div>
@@ -188,9 +154,9 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
 // activity - the tail of turn.items. The wire never emits item/completed for
 // a reasoning item (only turn/completed settles it; TurnBlock's isItemLive
 // comment defers this per-type nuance HERE), so wire status alone would keep
-// a thought "live" for the whole rest of the turn - and with the live view
-// capped to a six-line tail, that would hide the head of a finished thought
-// for as long as the turn keeps running. Tail position is the honest signal:
+// a thought "live" for the whole rest of the turn - a finished thought would
+// sit open in its draft italic while the assistant answers, instead of
+// collapsing to its one-line summary. Tail position is the honest signal:
 // the projector abandons its reasoning item exactly when the next activity
 // starts. An item absent from turn.items falls back to current (true), which
 // keeps wire status the only signal for a renderer exercised outside

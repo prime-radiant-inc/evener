@@ -227,10 +227,11 @@ wording) and trails a rotate-on-open chevron (ToolRow's data-open idiom); the
 live stream renders as italic draft text — settling to roman — with the
 eyebrow at body size (quiet through ink, never size), capped at six body
 lines, pinned to its own tail (a ResizeObserver re-pins on delta-less
-reflows). The mockup's soft fade marking the cut was implemented — corrected
-from its surface-0 to the pane's actual surface-1 backdrop — then **removed
-entirely on Jesse's call after seeing it live** (2026-07-31): the cap's cut
-is a hard clip at the box edge.
+reflows) — **the cap is superseded, see the next paragraph**. The mockup's
+soft fade marking the cut was implemented — corrected from its surface-0 to
+the pane's actual surface-1 backdrop — then **removed entirely on Jesse's
+call after seeing it live** (2026-07-31): the cap's cut is a hard clip at the
+box edge.
 Because the cap made the wire's missing reasoning `item/completed`
 load-bearing, the renderer now settles a thought the moment anything later
 starts in its turn (tail position stands in for the completion the wire
@@ -239,6 +240,19 @@ restoring kgp2's "collapses once the assistant starts answering" behavior
 that the always-open-while-inProgress reading had quietly repealed. The
 no-caret law, the closed-only preview, and session-keyed disclosure state
 all stand.
+
+The six-line cap is **SUPERSEDED by kata bh8h, 2026-07-31** — Jesse: "webui
+showing thinking as it's running should not have a bounded height. you should
+be able to see the full thinking block." A running thought now renders at
+whatever height its own text needs; the capped box, the tail pin and its
+ResizeObserver are gone, and the transcript's own scroller is the only
+viewport, the same one every other growing item shares. The fade question
+dies with the cap — nothing is cut off, so there is nothing to mark. What the
+cap took with it and what it did not: the italic-to-roman draft signal, the
+dot-joined collapsed grammar, the chevron and the body-size eyebrow are all
+untouched, and settle-on-supersede stands on its own — it restores kgp2's
+"collapses once the assistant starts answering," which is a behaviour call
+rather than a consequence of the cap.
 
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.

@@ -44,8 +44,8 @@ test("is memoized: the comparator ignores turn identity but tracks the current-t
   // whole point of ignoring turn identity on unrelated deltas survives.
   expect(compare(base, { ...base, turn: { ...turn, items: [think] } })).toBe(true);
   // A later item lands: the current-thought flip MUST re-render, or the
-  // superseded thought would stay capped-live forever (the wire never
-  // completes a reasoning item mid-turn).
+  // superseded thought would stay open in its draft state forever (the wire
+  // never completes a reasoning item mid-turn).
   expect(compare(base, { ...base, turn: { ...turn, items: [think, later] } })).toBe(false);
 });
 
@@ -250,12 +250,11 @@ test("through TurnBlock: a later item landing in the turn collapses the live tho
   );
 });
 
-// --- live: the draft treatment + the bounded stream (mockup #4) -------------
+// --- live: the draft treatment (mockup #4) ----------------------------------
 // In-flight reasoning reads as a DRAFT - italic while streaming, settling to
-// roman - and the open stream stops claiming the whole viewport: the body caps
-// at ~6 body lines, pinned to its own tail (a hard clip at the cap edge -
-// Jesse cut the fade after seeing it live). The thought stays OPEN the whole
-// time (the live-state law); it just stops growing without bound on screen.
+// roman - and the whole of it is on screen: the thought stays OPEN and
+// unbounded for as long as it runs (Jesse, bh8h), scrolling with the
+// transcript like every other growing item.
 
 test("the live body carries the draft treatment - italic in flight, roman once settled (declaration-level)", () => {
   const css = thinkCss();
@@ -267,74 +266,32 @@ test("the live body carries the draft treatment - italic in flight, roman once s
   expect(css).not.toMatch(/\.summary\s*\{[^}]*font-style/);
 });
 
-test("the live stream is bounded to six body lines and hides its overflow (declaration-level)", () => {
-  const rule = /\.liveScroll\s*\{([^}]*)\}/.exec(thinkCss());
-  expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("max-height: calc(6 * var(--font-size-body) * var(--line-height-body))");
-  expect(rule![1]).toContain("overflow: hidden");
+test("a running thought is not height-bounded - the whole block is readable as it streams", () => {
+  const css = thinkCss();
+  // Every rule the live subtree wears, checked for a cap of any shape: a
+  // max-height, a line clamp, or a clipping box to hide an overflow inside.
+  const liveRules = [...css.matchAll(/\.(live|liveBody|liveScroll|paragraph)\s*\{([^}]*)\}/g)];
+  expect(liveRules.length).toBeGreaterThanOrEqual(3);
+  for (const [, name, declarations] of liveRules) {
+    expect(`.${name} {${declarations}}`).not.toMatch(/max-height|line-clamp|overflow:\s*hidden/);
+  }
+  // And no element between the italic wrapper and the paragraphs to clip them.
+  render(<ThinkBlock item={item({ reasoningSummaries: [["first\n", "second"]] })} turn={turn} live={true} />);
+  const body = screen.getByTestId("think-block-live-body");
+  expect(screen.queryByTestId("think-block-live-scroll")).toBeNull();
+  expect(body.querySelector("p")?.parentElement).toBe(body);
+  expect(body.textContent).toBe("first\nsecond");
 });
 
-test("the live stream pins to its own tail as chunks land - the newest text is what stays on screen", () => {
-  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["one\n"]] })} turn={turn} live={true} />);
-  const scroller = screen.getByTestId("think-block-live-scroll");
-  // jsdom lays nothing out, so real metrics are all zero; stub the geometry a
-  // grown stream would have, then land another chunk.
-  Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
-  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
-  rerender(<ThinkBlock item={item({ reasoningSummaries: [["one\n", "two\n"]] })} turn={turn} live={true} />);
-  // A real browser clamps scrollTop to scrollHeight - clientHeight (200);
-  // jsdom stores the raw 300. Assert the pin reached the tail without
-  // encoding either engine's artifact.
-  expect(scroller.scrollTop).toBeGreaterThanOrEqual(scroller.scrollHeight - scroller.clientHeight);
-});
-
-test("the live wrapper and scroller carry their stylesheet classes - the cap and italic actually bind to the DOM", () => {
+test("the live wrapper carries its stylesheet class - the italic actually binds to the DOM", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["bound"]] })} turn={turn} live={true} />);
   const body = screen.getByTestId("think-block-live-body");
-  const scroller = screen.getByTestId("think-block-live-scroll");
   expect(body.classList.contains(requireClass(rawThinkStyles.liveBody, "thinkblock.module.css", "liveBody"))).toBe(
     true,
   );
-  expect(
-    scroller.classList.contains(requireClass(rawThinkStyles.liveScroll, "thinkblock.module.css", "liveScroll")),
-  ).toBe(true);
 });
 
-test("a geometry change BETWEEN deltas re-pins the tail: the observer is wired to the scroller", () => {
-  // jsdom ships no ResizeObserver (see virtuallist.test.tsx's own note), so
-  // this installs a minimal recording fake: the assertions are about the
-  // component's wiring - which element it observes, and that firing the
-  // callback re-pins with NO React re-render - not about the fake.
-  const observed: Element[] = [];
-  let fire: (() => void) | undefined;
-  class RecordingObserver {
-    private readonly cb: () => void;
-    constructor(cb: () => void) {
-      this.cb = cb;
-      fire = () => this.cb();
-    }
-    observe(el: Element): void {
-      observed.push(el);
-    }
-    disconnect(): void {}
-  }
-  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = RecordingObserver;
-  try {
-    render(<ThinkBlock item={item({ reasoningSummaries: [["rewrap me"]] })} turn={turn} live={true} />);
-    const scroller = screen.getByTestId("think-block-live-scroll");
-    expect(observed).toContain(scroller);
-
-    // The pane narrows: same item, no delta, text rewraps past the cap.
-    Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
-    Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
-    fire?.();
-    expect(scroller.scrollTop).toBeGreaterThanOrEqual(200);
-  } finally {
-    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
-  }
-});
-
-test("no fade, no clip flag: the cap is a hard clip (Jesse's call after seeing the fade live)", () => {
+test("no fade and no clip flag over the live draft - nothing is cut off to mark", () => {
   const css = thinkCss();
   expect(css).not.toMatch(/data-clipped/);
   expect(css).not.toMatch(/\.liveBody(\[[^\]]*\])?::before/);

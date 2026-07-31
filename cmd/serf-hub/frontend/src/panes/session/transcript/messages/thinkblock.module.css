@@ -2,9 +2,9 @@
  * agent's own prose — quiet through INK, not size. Thinking is body text
  * like the turns around it (Jesse's review call: caption-sized thoughts
  * read as footnotes, and they are not footnotes). Live streams open in the
- * draft italic at reduced contrast, capped to a six-line tail (the draft
- * restyle - mockup #4 of /dev/thoughts, 2026-07-31); settled collapses to a
- * single ink-low summary line with a trailing chevron.
+ * draft italic at reduced contrast, at whatever height its own text needs;
+ * settled collapses to a single ink-low summary line with a trailing
+ * chevron.
  *
  * Both live and expanded-settled are STACKED ROWS, never a label-beside-
  * body column (Jesse, second review pass: the gutter layout squeezed the
@@ -71,23 +71,15 @@
 
 /* The live body is the draft (mockup #4): italics are the state signal -
  * in-flight reasoning reads as provisional, and the same words settle to
- * roman in the disclosure body the moment the item completes. The cap's cut
- * is a HARD clip at the box edge: the mockup's soft fade over the top line
- * was implemented and then removed (Jesse's call, seen live) - do not
- * reintroduce an overlay here without that call being reversed. */
+ * roman in the disclosure body the moment the item completes.
+ *
+ * NO height bound of any kind here (Jesse, bh8h): a thought that is still
+ * running shows in full, so the reader can follow the whole block as it
+ * streams. Nothing is cut off, so nothing needs a fade, a scroller, or a
+ * tail window - the transcript's own scroll is the only viewport. */
 .liveBody {
   min-width: 0;
   font-style: italic;
-}
-
-/* The live-wall fix every /dev/thoughts candidate shared: the open thought
- * stops claiming the whole viewport. Capped at six body lines; overflow:
- * hidden rather than auto because the only scrolling is the tail pin in
- * LiveThinkBlock's layout effect (see its comment for why a reader cannot
- * usefully hold a position in still-moving text) - no scrollbar, no wheel. */
-.liveScroll {
-  max-height: calc(6 * var(--font-size-body) * var(--line-height-body));
-  overflow: hidden;
 }
 
 .paragraph {
