@@ -47,6 +47,12 @@ import (
 	"primeradiant.com/serf/server"
 )
 
+// shutdownDrainWaitBudget bounds how long a returning serve waits for its
+// bridge drains before abandoning them. See the teardown defer in
+// runServeWithDeps for what expiry does and, more importantly, what it
+// deliberately does not do.
+const shutdownDrainWaitBudget = 30 * time.Second
+
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
@@ -120,6 +126,12 @@ type serveDeps struct {
 	// not "the consumer is done". It is a parameter rather than a return so a
 	// caller cannot silently skip the wait.
 	bridge func(serveServer, *agent.Session, func(events.SessionEvent), func())
+	// drainWaitExpiry starts the shutdown budget for waiting on bridge drains
+	// and returns the channel that fires when it runs out. Injectable because a
+	// test must be able to drive expiry on demand: a test that passes because a
+	// real timer happened to fire proves the budget exists, not that it is
+	// honoured, and the whole point of the budget is which of the two arms runs.
+	drainWaitExpiry func() <-chan time.Time
 	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
@@ -175,6 +187,7 @@ func defaultServeDeps() serveDeps {
 				server.BridgeEvent(srv, ev, observer)
 			}, onDrained)
 		},
+		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:           func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
@@ -531,23 +544,39 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// defer registered above this one. Waiting and closing live in ONE defer so
 	// the order cannot be broken by inserting another defer between them.
 	//
-	// THE WAIT IS UNBUDGETED, AND THAT IS A NEW FAILURE MODE, deliberately
-	// chosen. A drain wedged inside BridgeEvent -- on a lock, or on a
-	// subsystem that stopped answering -- now makes the daemon hang on
-	// shutdown instead of crashing on it. A daemon that ignores SIGTERM has
-	// to be killed, and a supervisor will eventually SIGKILL it.
+	// THE WAIT IS BUDGETED, AND EXPIRY SKIPS THE CLOSE. A drain wedged inside
+	// BridgeEvent -- on a lock, or on a subsystem that stopped answering --
+	// must not make the daemon ignore SIGTERM until something SIGKILLs it, so
+	// the wait gives up after shutdownDrainWaitBudget.
 	//
-	// A deadline was rejected rather than overlooked: expiring it would mean
-	// closing the tee under a live drain, which is precisely the crash this
-	// exists to prevent, so the timeout would trade a hang for the bug. The
-	// real remedy is keeping BridgeEvent bounded (see its doc); this is the
-	// backstop, and a hang at least leaves a stack to read.
+	// Giving up means LEAVING THE TEE OPEN, not closing it anyway. Closing it
+	// under a live drain is the exact crash this defer exists to prevent, so an
+	// expiry that closed anyway would trade a hang for the bug rather than fix
+	// either. An abandoned tee costs a truncated NDJSON tail on a process that
+	// is exiting regardless, and the OS reclaims the goroutine and the buffer.
+	//
+	// The budget bounds the pathological case ONLY; it must never absorb real
+	// work, because a budget that can expire on a slow machine quietly converts
+	// a slowness bug into a truncated log. A healthy drain is the session's
+	// buffered tail -- at most its 256-deep channel, each event memory work plus
+	// at most one jobs.jsonl read -- which is milliseconds, and still under
+	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
+	// Thirty seconds is two orders of magnitude past that, so an expiry here is
+	// always a genuine wedge, and it stays inside systemd's 90s default stop
+	// timeout so the daemon still gets to exit by its own decision.
 	defer func() {
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
 		drainsMu.Unlock()
+		// One budget for the whole teardown, not one per drain: what must be
+		// bounded is how long SIGTERM goes unanswered.
+		expiry := deps.drainWaitExpiry()
 		for _, drained := range pending {
-			<-drained
+			select {
+			case <-drained:
+			case <-expiry:
+				return
+			}
 		}
 		if closeEventObserver != nil {
 			closeEventObserver()
