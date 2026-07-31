@@ -279,7 +279,10 @@ test("re-expands Details and Tasks back onto the row when the chrome widens past
 // wide row, an overflow menu item (after Details and Tasks) leading the "..."
 // menu's own list once the chrome collapses, opened through the panel's
 // imperative handle either way.
-test("wide chrome renders a Jobs trigger beside Details and Tasks", async () => {
+// Details and Tasks being inline at this width is the neighbouring
+// "keeps Details and Tasks inline (and out of the ... menu)" test's job; this
+// one adds only what is new — that Jobs joins them on the row.
+test("wide chrome renders an inline Jobs trigger", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_jobs_wide"));
   await threadsStore.getState().ensureThread("ref_jobs_wide");
@@ -289,8 +292,6 @@ test("wide chrome renders a Jobs trigger beside Details and Tasks", async () => 
     render(<SessionChrome ref="ref_jobs_wide" />);
     ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
 
-    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Jobs" })).toBeTruthy();
   } finally {
     ro.restore();
@@ -339,7 +340,10 @@ test("selecting the Jobs menu item opens the Jobs sheet", async () => {
     // The sheet's title is an <h2> (OverlayPanel), so the heading role
     // disambiguates it from the menu item that opened it.
     expect(await screen.findByRole("heading", { name: "Jobs" })).toBeTruthy();
-    // ...and the panel fetched its list for THIS session's ref.
+    // ...and its on-open fetch ran and resolved. WHICH ref it asked for is not
+    // checked here (the fake answers serf/jobs/list for any ref) - that the
+    // panel asks for the ref it is handed is JobsPanel.test.tsx's own
+    // "opening fetches and renders one row per job" case.
     expect(await screen.findByText("No jobs yet")).toBeTruthy();
   } finally {
     ro.restore();

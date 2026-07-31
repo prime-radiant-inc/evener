@@ -2649,12 +2649,26 @@ const jobParams = (ref: string, status: string) => ({
   job: { jobId: "job_1", jobType: "shell", status, outputBytes: 0 },
 });
 
-test("serf/job/started bumps jobsUpdatedAt for the targeted thread", () => {
-  let model = testHydrate();
-  expect(model.jobsUpdatedAt).toBeNull();
-  model = applyNotification(model, { method: "serf/job/started", params: jobParams("ref_t", "running") }, 2000);
-  expect(model.jobsUpdatedAt).toBe(2000);
-  expect(model.lastFrameAt).toBe(2000);
+// Structural equality against the whole prior model, not just the two fields
+// that move: a job push carries no job LIST, so touching anything else here
+// would be the reducer inventing state off a notification that never said so.
+// The starting model carries a populated task aggregate and goal on purpose —
+// a guard like this only has teeth over fields that hold a distinguishable
+// value, so a clobber to a field left at its null default would slip past.
+test("serf/job/started bumps jobsUpdatedAt and lastFrameAt, and changes nothing else", () => {
+  const before = testHydrate({
+    name: "Session J",
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      tasks: { total: 3, done: 1 },
+      goal: { status: "active", iterations: 2 },
+    },
+  });
+  expect(before.jobsUpdatedAt).toBeNull();
+  const after = applyNotification(before, { method: "serf/job/started", params: jobParams("ref_t", "running") }, 2000);
+  expect(after).toEqual({ ...before, jobsUpdatedAt: 2000, lastFrameAt: 2000 });
 });
 
 test("serf/job/finished bumps jobsUpdatedAt for the targeted thread", () => {
