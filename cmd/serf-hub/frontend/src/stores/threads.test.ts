@@ -2632,7 +2632,7 @@ describe("useThreadsStore.send", () => {
 
     await threadsStore
       .getState()
-      .send("ref_a", "hello", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+      .send("ref_a", "hello", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2678,7 +2678,7 @@ describe("useThreadsStore.send", () => {
     await threadsStore
       .getState()
       .send("ref_a", "[image 1]Describe the attached image", [
-        { mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
@@ -2693,6 +2693,33 @@ describe("useThreadsStore.send", () => {
     });
   });
 
+  // kata 1gm2: the marker number rides InputAttachment so the composer, the
+  // durable record and the recovery draft can pair text to attachment by
+  // identity. It is client-side state and the daemon must never see it.
+  test("the attachment's marker number never reaches the wire (kata 1gm2)", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "[image 7]look", [{ marker: 7, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "(attached image 7: pic.png)look" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+    expect(JSON.stringify(call?.params)).not.toContain("marker");
+  });
+
   test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
     const fake = connectMutationClient();
     fake.on("turn/start", (params) => ({
@@ -2700,7 +2727,9 @@ describe("useThreadsStore.send", () => {
       receipt: mutationReceipt(params.clientMutationId),
     }));
 
-    await threadsStore.getState().send("ref_a", "look: [image 1]", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .send("ref_a", "look: [image 1]", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2723,7 +2752,9 @@ describe("useThreadsStore.send", () => {
 
     await threadsStore
       .getState()
-      .send("ref_a", "  keep\n  every\n  byte  ", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+      .send("ref_a", "  keep\n  every\n  byte  ", [
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2816,7 +2847,9 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     await ensureActiveTurn(fake, "ref_a");
     fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().steer("ref_a", "steer text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .steer("ref_a", "steer text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
 
     const call = fake.calls.find((c) => c.method === "turn/steer");
@@ -2868,7 +2901,9 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().queue("ref_a", "", [{ mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
+    await threadsStore
+      .getState()
+      .queue("ref_a", "", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
 
     const call = fake.calls.find((c) => c.method === "turn/queue");
@@ -2906,7 +2941,9 @@ describe("useThreadsStore.drainAsSteer", () => {
     await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().drainAsSteer("ref_a", "drain text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .drainAsSteer("ref_a", "drain text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");

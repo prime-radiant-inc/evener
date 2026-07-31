@@ -104,7 +104,7 @@ test("shows only the entries for the given sessionRef", async () => {
 });
 
 test("an image-only pending entry shows the image placeholder rather than blank text", async () => {
-  await seedPending("send", "", "ref_a", [{ mediaType: "image/png", data: "AAAA" }]);
+  await seedPending("send", "", "ref_a", [{ marker: 1, mediaType: "image/png", data: "AAAA" }]);
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("[image]")).toBeTruthy();
 });

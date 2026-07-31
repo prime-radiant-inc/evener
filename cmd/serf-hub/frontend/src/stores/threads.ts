@@ -56,7 +56,15 @@ import { createSecureUUID } from "./secureUUID";
 // is left unexercised here rather than invented into this store's public
 // surface. A future caller that genuinely has a hosted URL can still reach
 // it at the wire layer; it just isn't this parameter.
+//
+// `marker` is the one field here that never reaches the wire: it is the
+// composer marker number this attachment was staged under, carried so that
+// every consumer downstream - the submit boundary's marker translation, the
+// durable outbox record, the recovery draft that rebuilds a composer - pairs
+// text and attachment by identity instead of re-deriving the pairing from
+// array position. buildInput drops it when it assembles the wire input.
 export interface InputAttachment {
+  marker: number;
   mediaType: string;
   data: string; // base64-encoded bytes (wire InputItem.data)
   name?: string;

@@ -146,7 +146,9 @@ test("replaceWithSettled hydrates recovery attachments without re-encoding", () 
       pending: false,
     },
   ]);
-  expect(result.current.toInputAttachments()).toEqual([{ name: "proof.png", mediaType: "image/png", data: "AQID" }]);
+  expect(result.current.toInputAttachments()).toEqual([
+    { marker: 4, name: "proof.png", mediaType: "image/png", data: "AQID" },
+  ]);
 });
 
 test("a new attachment after recovery hydration uses the next marker", async () => {
@@ -469,7 +471,7 @@ test("clearSubmitted does NOT reset the counter when surviving (mid-flight) item
   expect(result.current.items.map((i) => i.marker)).toEqual([2, 3]);
 });
 
-test("toInputAttachments maps settled items to the wire-facing {mediaType, data, name} shape only", async () => {
+test("toInputAttachments maps settled items to the {marker, mediaType, data, name} shape only", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -481,6 +483,7 @@ test("toInputAttachments maps settled items to the wire-facing {mediaType, data,
   const attachments = result.current.toInputAttachments();
   expect(attachments).toHaveLength(1);
   expect(attachments[0]).toEqual({
+    marker: 1,
     mediaType: "image/png",
     data: result.current.items[0]?.data,
     name: "a.png",

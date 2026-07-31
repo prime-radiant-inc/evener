@@ -90,7 +90,7 @@ test("a whitespace-only prompt with an attachment sends an image-only input (no 
   await startThread(fake, {
     cwd: "/tmp/p",
     prompt: "   ",
-    attachments: [{ mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
+    attachments: [{ marker: 1, mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
   });
 
   expect(fake.calls[0]?.params).toEqual({
@@ -110,7 +110,7 @@ test("translates the prompt's [image N] markers to prose at send (kata 6nmz)", a
   await startThread(fake, {
     cwd: "/tmp/p",
     prompt: "[image 1]Describe the attached image",
-    attachments: [{ mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
+    attachments: [{ marker: 1, mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
   });
 
   expect(fake.calls[0]?.params).toEqual({
@@ -129,7 +129,7 @@ test("an unnamed attachment's marker translates without a dangling name separato
   await startThread(fake, {
     cwd: "/tmp/p",
     prompt: "look: [image 1]",
-    attachments: [{ mediaType: "image/png", data: "QkFTRTY0" }],
+    attachments: [{ marker: 1, mediaType: "image/png", data: "QkFTRTY0" }],
   });
 
   expect(fake.calls[0]?.params).toEqual({
@@ -148,7 +148,7 @@ test("a marker-less prompt reaches the wire byte-identical, untrimmed (kata 6nmz
   await startThread(fake, {
     cwd: "/tmp/p",
     prompt: "  keep\n  every\n  byte  ",
-    attachments: [{ mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
+    attachments: [{ marker: 1, mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
   });
 
   expect(fake.calls[0]?.params).toEqual({

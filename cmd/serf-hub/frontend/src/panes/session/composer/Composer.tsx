@@ -67,7 +67,9 @@ const CLASS = {
 
 function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
   return items.flatMap((item) =>
-    item.data === undefined ? [] : [{ name: item.name, mediaType: item.mediaType, data: item.data }],
+    item.data === undefined
+      ? []
+      : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
   );
 }
 
