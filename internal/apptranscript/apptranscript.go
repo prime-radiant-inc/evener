@@ -684,10 +684,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 		if decodeErr != nil {
 			return nil //nolint:nilerr // skip a malformed entry rather than aborting the whole read over one bad line
 		}
-		turnID := fmt.Sprintf("turn_%d", entryIndex)
-		if entry.Turn.StableTurnID != "" {
-			turnID = entry.Turn.StableTurnID
-		}
+		turnID := persistedTurnID(entry.Turn, entryIndex)
 		var items []appwire.ThreadItem
 		if project != nil {
 			items = project(entry.Turn, turnID, entryIndex)
@@ -712,6 +709,24 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 	}
 	emitPrelude()
 	return turns, nil
+}
+
+// persistedTurnID names the turn one persisted entry projects into.
+//
+// An id the daemon reserved for the entry and persisted with it wins: a
+// client-authored input is minted outside the entry-index namespace on purpose
+// (appwire.ClientMutationTurnID, kata rk09), so renumbering it by position
+// would rename it onto an unrelated entry's turn. Entry-index numbering is the
+// fallback for every entry that carries no reserved id.
+//
+// Both readers resolve an entry's id here — the full TurnsFromFile and the
+// bounded turn index — so one session answers with one set of turn ids however
+// it is read.
+func persistedTurnID(turn schema.Turn, entryIndex int) string {
+	if turn.StableTurnID != "" {
+		return turn.StableTurnID
+	}
+	return fmt.Sprintf("turn_%d", entryIndex)
 }
 
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
