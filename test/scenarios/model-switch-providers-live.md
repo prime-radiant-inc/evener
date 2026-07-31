@@ -20,12 +20,18 @@ no hub, no browser — so the switch path under test is exactly
 
 ## Pre-state
 
-- A `serf` binary built from this branch:
-  `go build -o /tmp/serf-msw ./cmd/serf`.
+- One `mktemp` run directory naming everything this card creates — the binary,
+  the isolated config, the state dir, the workdir — never a fixed `/tmp` name a
+  second concurrent run would overwrite mid-run (kata `k2rx`):
+  ```sh
+  run=$(mktemp -d -t serf-e2e-msw-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  mkdir -p "$run/cfg" "$run/state" "$run/wd" "$run/rendezvous"
+  ```
 - An **isolated** provider config so the live `~/.serf/providers.toml` is
   untouched. Instance NAMES below are deployment-local — declare whatever
   names your deployment's credentials resolve to; refs in this card are
-  `instanceName/model`. Write `/tmp/msw-cfg/providers.toml`:
+  `instanceName/model`. Write `$run/cfg/providers.toml`:
 
   ```toml
   default = "anthropic"
@@ -41,12 +47,12 @@ no hub, no browser — so the switch path under test is exactly
   type = "kimi-anthropic"
   ```
 
-  and `/tmp/msw-cfg/credentials.toml` (mode `0600` — serf's credential store
+  and `$run/cfg/credentials.toml` (mode `0600` — serf's credential store
   rejects a looser mode):
 
   ```sh
-  install -m 600 /dev/null /tmp/msw-cfg/credentials.toml
-  cat > /tmp/msw-cfg/credentials.toml <<EOF
+  install -m 600 /dev/null "$run/cfg/credentials.toml"
+  cat > "$run/cfg/credentials.toml" <<EOF
   schema = 0
   [providers]
     [providers.anthropic]
@@ -56,28 +62,45 @@ no hub, no browser — so the switch path under test is exactly
     [providers.kimi]
       api_key = "$KIMI_KEY"
   EOF
-  chmod 600 /tmp/msw-cfg/credentials.toml
+  chmod 600 "$run/cfg/credentials.toml"
   ```
 
-- `export SERF_PROVIDERS_CONFIG=/tmp/msw-cfg/providers.toml`. The session's
+- `export SERF_PROVIDERS_CONFIG="$run/cfg/providers.toml"`. The session's
   canonical private API log captures exact attempts whenever API logging is
   attached; there is no separate raw-body toggle or sidecar.
 
 ## Steps
 
 1. **Spawn on the anthropic-family instance.** Start the daemon on a real
-   anthropic (or anthropic-family) model, e.g.:
+   anthropic (or anthropic-family) model. Bind `127.0.0.1:0` and read the
+   address back from the daemon's own startup line — never a port a human
+   picked (kata `68fm`) — and give it its own `--run-dir`, so its rendezvous
+   entry lands under `$run` instead of `~/.serf/run`, where a real hub watches
+   and would otherwise adopt this daemon into a live roster
+   (`rendezvous/rendezvous.go`'s package doc; `DefaultDir()` is
+   `$HOME/.serf/run`):
 
    ```sh
-   /tmp/serf-msw serve --addr 127.0.0.1:9331 \
+   "$run/serf" serve --addr 127.0.0.1:0 \
      --model anthropic/claude-opus-4-6 --reasoning-effort none \
-     --state-dir /tmp/msw-state --non-interactive --no-project-prompts \
-     --dir /tmp &
-   curl -s http://127.0.0.1:9331/status   # capture session_id (SID)
+     --state-dir "$run/state" --run-dir "$run/rendezvous" \
+     --non-interactive --no-project-prompts \
+     --dir "$run/wd" 2>"$run/serve.log" &
+   DPID=$!
+   echo "$DPID" >"$run/serve.pid"
+   for i in $(seq 1 100); do
+     ADDR=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/serve.log" 2>/dev/null | grep -oE '127\.0\.0\.1:[0-9]+') || true
+     [ -n "$ADDR" ] && break
+     kill -0 "$DPID" 2>/dev/null || { echo "daemon exited before listening:" >&2; cat "$run/serve.log" >&2; exit 1; }
+     sleep 0.2
+   done
+   [ -n "$ADDR" ] || { echo "daemon never logged a listening address" >&2; exit 1; }
+   DAEMON=http://$ADDR
+   curl -s "$DAEMON/status"   # capture session_id (SID)
    ```
 
 2. **Tool-using turn on leg 1.**
-   `curl -s -X POST http://127.0.0.1:9331/input -d
+   `curl -s -X POST "$DAEMON/input" -d
    '{"text":"Use the shell tool to run `echo LEG1`, then reply with the
    single word DONE."}'`. Poll `GET /status` to `idle`. Read
    `sessions/<SID>.transcript.jsonl`'s last turn: assert
@@ -85,7 +108,7 @@ no hub, no browser — so the switch path under test is exactly
    "anthropic"`.
 
 3. **Switch → openai instance.**
-   `curl -s -X POST http://127.0.0.1:9331/model -d
+   `curl -s -X POST "$DAEMON/model" -d
    '{"model":"openai/gpt-5.5"}'` (expect 204). Read the transcript: the
    newest turn is `schema.TurnModelSwitch` whose FIRST line is exactly
    `Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5` (the marker
@@ -154,9 +177,14 @@ no hub, no browser — so the switch path under test is exactly
 
 ## Cleanup
 
-- `curl -s -X POST http://127.0.0.1:9331/shutdown` (or kill the daemon PID).
-- `rm -rf /tmp/msw-cfg /tmp/msw-state /tmp/serf-msw` and any one-shot
-  session dirs left under `~/.local/state/serf/projects/*/sessions/`.
+- `curl -s -X POST "$DAEMON/shutdown"`, or `kill "$DPID"` — the pid this card
+  recorded, never a `pkill -f 'serf serve'` pattern, which would also kill a
+  concurrent agent's daemon.
+- `rm -rf "$run"` — the binary, config, state dir, workdir, rendezvous dir and
+  logs all live under it. Remove it by name, never a `/tmp/serf-e2e-msw-*`
+  glob, which would take out every other concurrent run of this card (kata
+  `k2rx`). Also remove any one-shot session dirs left under
+  `~/.local/state/serf/projects/*/sessions/`.
 
 ## Sharp edges
 

@@ -25,10 +25,12 @@ mid-turn, and this card previously asserted that it was.
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and a kernel-assigned port (see the
-  Setup checklist in `docs/agentic-testing.md`), with a real `openai` and a
-  real `anthropic` instance configured (or two distinct catalogued models on
-  one instance — any two models with different `provider/model` ids work for
-  the assertion).
+  Setup checklist in `docs/agentic-testing.md`). That checklist's `$run`
+  directory is where this card writes its scratch files too — never a fixed
+  `/tmp/…` name a second concurrent run would clobber (kata `k2rx`). The hub
+  needs a real `openai` and a real `anthropic` instance configured (or two
+  distinct catalogued models on one instance — any two models with different
+  `provider/model` ids work for the assertion).
 - `superpowers-chrome:browsing` with multi-tab support, and a real SPA bundle
   (`make build-web`).
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Capture `SID`.
@@ -62,11 +64,11 @@ mid-turn, and this card previously asserted that it was.
    until `state` is `active` **and** `active_turn_id` is non-empty, then
    attempt the switch over REST and capture status + body:
    ```bash
-   curl -s -o /tmp/model-reject.json -w "%{http_code}\n" \
+   curl -s -o "$run/model-reject.json" -w "%{http_code}\n" \
      -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
      -d '{"model":"anthropic/claude-haiku-4-5-20251001"}' \
      "$HUB/api/sessions/local:$SID/model"
-   cat /tmp/model-reject.json
+   cat "$run/model-reject.json"
    # Re-read the session and confirm its model did NOT move.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq .model
    ```

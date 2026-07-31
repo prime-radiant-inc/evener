@@ -199,7 +199,8 @@ against the rewritten steps above is not expected to match them
 call-for-call.
 
 Verified live on 2026-06-20 against `kimi/kimi-for-coding` using a
-fresh hub on `127.0.0.1:9187`.
+fresh isolated hub (that run named its own port; ports are kernel-assigned
+now, and which one it got carries no information for a rerun).
 
 - Parent session: `01KVHFSX8KG4ZZB9YSWA5VE6HR`
 - Observer transcript: `local:01KVHFT2M0R6M19DW0WYG5XYAG`
