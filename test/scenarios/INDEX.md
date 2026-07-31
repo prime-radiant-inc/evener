@@ -307,13 +307,17 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   secret.
 - `sidecar-stuckness-read-file-error.md` - stuckness observer wakes
   only on `read_file` errors and reports a missing-input alert.
-- `sidecar-test-triage-output-match.md` - test triage observer wakes
-  on an output signature and reads the watched job through the grant.
+- `sidecar-test-triage-shell-frame.md` - test triage observer reads a
+  failure signature out of an `assistant.tool` watch frame; pins that a
+  parent-source observer gets event payloads, never a cross-session
+  read (renamed from `sidecar-test-triage-output-match.md`, kata
+  `f9gn`).
 - `sidecar-progress-digest-output-match.md` - progress concierge
   summarizes a meaningful milestone instead of heartbeat noise.
 - `sidecar-handoff-packager-job-notification.md` - handoff sidecar
   packages a completed delegate result from a `job.notification`
-  frame.
+  frame, and pins the observer read boundary: no cross-session read
+  grant, and no `job_read_output` tool at all.
 - `sidecar-runbook-capture-output-match.md` - runbook scribe captures
   a successful operational resolution from job output.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports

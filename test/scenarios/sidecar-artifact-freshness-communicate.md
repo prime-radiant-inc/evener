@@ -35,7 +35,7 @@ reference card `job-watch-observer-snide-thread.md`.
    >    finish with communicate end_turn true and message exactly
    >    ARTIFACT_IGNORED. Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then communicate exactly
+   >    watch_id from its `watches` entry, then communicate exactly
    >    FINAL_DRAFT artifact=missing-report.md.
    > 3. When the ARTIFACT_ALERT observer callback arrives, call
    >    `job_watch` with operation "clear" and that watch_id, then
@@ -44,7 +44,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` — the OBSERVER owns the watch.
+  observer's watch under `watches` — the OBSERVER owns the watch.
 - The watch uses `events: [communicate]` on source `parent`;
   `assistant.message` is not a public watch event.
 - The observer emits `ARTIFACT_ALERT` as its terminal

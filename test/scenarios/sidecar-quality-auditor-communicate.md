@@ -33,7 +33,7 @@ finding without becoming a second author. Driving mechanism:
    >    For nonmatching frames, finish with communicate end_turn true
    >    and message exactly QUALITY_IGNORED. Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then communicate exactly
+   >    watch_id from its `watches` entry, then communicate exactly
    >    DELIVERABLE_DRAFT title=client-report body='All tests pass. TODO
    >    add risk section.'
    > 3. When the QUALITY_FINDING observer callback arrives, call
@@ -43,7 +43,7 @@ finding without becoming a second author. Driving mechanism:
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` — the OBSERVER owns the watch.
+  observer's watch under `watches` — the OBSERVER owns the watch.
 - The watch uses `events: [communicate]` on source `parent`, and the
   delivered frame's `event:` block carries the full draft text in its
   `message:` field (that is what the observer audits — it never reads

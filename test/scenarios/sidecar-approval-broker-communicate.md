@@ -53,7 +53,7 @@ hand it back as an observer callback. Driving mechanism:
    >    frames, finish with communicate end_turn true and message
    >    exactly APPROVAL_IGNORED."
    > 2. After the delegate result reports `watching: true` and
-   >    APPROVAL_READY, capture the watch_id from its `watches:` line,
+   >    APPROVAL_READY, capture the watch_id from its `watches` entry,
    >    then call the communicate tool with exactly APPROVAL_REQUEST
    >    action=deploy target=staging-deploy risk=low.
    > 3. When the observer callback arrives, call `job_watch` with
@@ -68,7 +68,7 @@ hand it back as an observer callback. Driving mechanism:
 
 - The observer installs its own watch and only then reports
   `APPROVAL_READY`; the readiness delegate result carries
-  `watching: true` and the watch under `watches:`.
+  `watching: true` and the watch under `watches`.
 - The watch condition is `events: [communicate]` on source `parent`.
   Attempts to use `events: [assistant.message]` are rejected before a
   watch is installed.

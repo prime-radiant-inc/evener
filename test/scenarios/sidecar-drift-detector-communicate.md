@@ -33,7 +33,7 @@ reference card `job-watch-observer-snide-thread.md`.
    >    frames, finish with communicate end_turn true and message
    >    exactly DRIFT_IGNORED. Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then communicate exactly
+   >    watch_id from its `watches` entry, then communicate exactly
    >    DRIFT_SIGNAL original=fix-one-test new_scope=rewrite-parser.
    > 3. When the DRIFT_ALERT observer callback arrives, call `job_watch`
    >    with operation "clear" and that watch_id, then communicate
@@ -42,7 +42,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` — the OBSERVER owns the watch, the
+  observer's watch under `watches` — the OBSERVER owns the watch, the
   parent never installs one.
 - The registered watch condition is `events: [communicate]` on source
   `parent`.

@@ -33,7 +33,7 @@ reports a concise intervention note. Driving mechanism:
    >    nonmatching frames, finish with communicate end_turn true and
    >    message exactly LOOP_IGNORED. Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then communicate exactly
+   >    watch_id from its `watches` entry, then communicate exactly
    >    LOOP_TRIGGER tool=read_file repeats=3.
    > 3. When the LOOP_GOVERNOR_ALERT observer callback arrives, call
    >    `job_watch` with operation "clear" and that watch_id, then
@@ -42,7 +42,7 @@ reports a concise intervention note. Driving mechanism:
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` — the OBSERVER owns the watch.
+  observer's watch under `watches` — the OBSERVER owns the watch.
 - The registered watch is `events: [communicate]` on source `parent`.
 - The observer reports `LOOP_GOVERNOR_ALERT` once, as an `Observer
   callback:` block from its terminal `communicate(end_turn=true)`.

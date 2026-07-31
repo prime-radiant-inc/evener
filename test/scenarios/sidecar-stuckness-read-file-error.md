@@ -35,7 +35,7 @@ reference card `job-watch-observer-snide-thread.md`.
    >    communicate end_turn true and message exactly STUCK_IGNORED.
    >    Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then attempt to read
+   >    watch_id from its `watches` entry, then attempt to read
    >    `missing-input.txt`; the error is expected.
    > 3. When the STUCK_ALERT observer callback arrives, call `job_watch`
    >    with operation "clear" and that watch_id, then communicate
@@ -44,7 +44,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` with the `event_filter` echoed —
+  observer's watch under `watches` with the `event_filter` echoed —
   the OBSERVER owns the watch, the parent installs nothing.
 - The watch condition includes `status=error`.
 - The missing `read_file` event delivers one frame, and that frame's

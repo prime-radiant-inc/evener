@@ -39,7 +39,7 @@ reference card `job-watch-observer-snide-thread.md`.
    >    frames, finish with communicate end_turn true and message
    >    exactly SECRET_IGNORED. Use no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
-   >    watch_id from its `watches:` line, then read `sample.log`.
+   >    watch_id from its `watches` entry, then read `sample.log`.
    > 3. When the SECRET_FINDING observer callback arrives, call
    >    `job_watch` with operation "clear" and that watch_id, then
    >    communicate exactly SCENARIO_DONE secrets-monitor.
@@ -47,7 +47,7 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Expected
 
 - The readiness delegate result reports `watching: true` and lists the
-  observer's watch under `watches:` — the OBSERVER owns the watch.
+  observer's watch under `watches` — the OBSERVER owns the watch.
 - The delivered frame's `event:` block carries `kind: assistant.tool`,
   `tool_name: read_file`, `status: ok`, and the read's `output:`
   including the fixture line — the frame is where the observer sees the

@@ -40,7 +40,7 @@ reference card `job-watch-observer-snide-thread.md`.
    >    rule=no-force-push. For unrelated Watch frames, finish with
    >    communicate end_turn true and message exactly MEMORY_IGNORED."
    > 2. After the delegate result reports `watching: true` and
-   >    MEMORY_READY, capture the watch_id from its `watches:` line,
+   >    MEMORY_READY, capture the watch_id from its `watches` entry,
    >    then read `memory.md`.
    > 3. When the observer callback arrives, call `job_watch` with
    >    operation "clear" and that watch_id, then call the communicate
@@ -54,7 +54,7 @@ reference card `job-watch-observer-snide-thread.md`.
 
 - The observer installs the watch itself, before it reports
   `MEMORY_READY`; the readiness delegate result carries `watching:
-  true` and the watch under `watches:`. The parent never calls
+  true` and the watch under `watches`. The parent never calls
   `job_watch(operation="create")`.
 - The condition is `events: [assistant.tool] where tool_name=read_file,
   status=ok`.
