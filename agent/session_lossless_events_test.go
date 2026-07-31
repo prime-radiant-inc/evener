@@ -187,6 +187,13 @@ func TestConsumeEventsLosslessRejectsASecondConsumer(t *testing.T) {
 // actually buys is that authoritativeConsumer never becomes true on a session
 // that can no longer deliver anything, so the flag continues to mean "something
 // is draining this" rather than "something once asked to".
+//
+// The early return owes the caller onDrained just as much as the drain does,
+// and that is asserted rather than assumed. This is the one path where the
+// callback is invoked by the guard instead of by the loop, so it is also the one
+// path where a missed onDrained is a single deleted line -- and the caller that
+// misses it does not get an error, it waits forever. serve.go's teardown is
+// exactly such a caller.
 func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 	s := losslessTestSession("closed")
 	s.eventsMu.Lock()
@@ -194,9 +201,20 @@ func TestConsumeEventsLosslessOnAClosedSessionReturns(t *testing.T) {
 	close(s.events)
 	s.eventsMu.Unlock()
 
+	drained := make(chan struct{})
 	awaitWithin(t, 10*time.Second, "registering on a closed session", func() {
-		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
+		s.ConsumeEventsLossless(func(events.SessionEvent) {}, func() { close(drained) })
 	})
+
+	// Budgeted rather than a bare park: the guard fires onDrained synchronously,
+	// so this is already closed, but a regression that reroutes the closed
+	// session through the drain goroutine would make it merely late rather than
+	// absent, and neither should be allowed to consume the package timeout.
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("registering on a closed session never ran onDrained; a caller waiting on it waits forever")
+	}
 
 	s.eventsMu.RLock()
 	defer s.eventsMu.RUnlock()
