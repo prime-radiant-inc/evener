@@ -41,6 +41,22 @@ type AppEventProjector struct {
 	nextItem       int
 	reservedTurnID string
 	activeTurnID   string
+	// anyTurnStarted records whether a REAL turn has ever started in this
+	// projector's life. It is the chronologically honest half of the prelude
+	// test in preTurnAnnouncementTurnID: nextTurn alone cannot answer "has
+	// anything actually run yet", because ReserveTurnID mints an id (and so
+	// bumps nextTurn) for a turn that has not started - turn/start's
+	// reservation, or SetProcessing's auto-continuation reservation for a
+	// queued initial prompt, both land while the session is still announcing
+	// its own startup. Those SESSION_START-time events happened BEFORE any
+	// real turn whatever the counter says.
+	anyTurnStarted bool
+	// historySeeded records whether SeedPersistedTurns ever raised the
+	// counter over a resumed session's persisted entries. A resumed session's
+	// startup burst happened AFTER the persisted history, not before any
+	// real turn, so it must keep minting its own gap id (kata 9ekv) rather
+	// than folding into the prelude turn at the very top of the transcript.
+	historySeeded bool
 	// midSessionAnnouncementTurnID is the shared synthetic turn id for the
 	// CURRENT gap between two real turns (nextTurn > 0, activeTurnID == "").
 	// See preTurnAnnouncementTurnID's doc comment (kata 9ekv): it is minted
@@ -117,6 +133,11 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
 	if persistedEntries > p.nextTurn {
 		p.nextTurn = persistedEntries
+	}
+	// Zero entries is a fresh session's no-op seed, not history: only a real
+	// persisted entry count fences the prelude off (see historySeeded).
+	if persistedEntries > 0 {
+		p.historySeeded = true
 	}
 }
 
@@ -1482,6 +1503,7 @@ func (p *AppEventProjector) startTurn() string {
 		p.nextTurn++
 		p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
 	}
+	p.anyTurnStarted = true
 	// A real turn just started, ending whatever mid-session announcement gap
 	// preceded it — the next no-active-turn announcement belongs to a new
 	// gap and must mint its own fresh id (kata 9ekv).
@@ -1502,8 +1524,8 @@ func (p *AppEventProjector) startTurn() string {
 
 // preTurnAnnouncementTurnID returns the turn id a systemMessage announcement
 // gets when it arrives with no active turn. Before the session's first real
-// turn (nextTurn == 0), every such announcement — SESSION_START's plugin
-// loads, prompt-loaded notices, hook/MCP warnings — shares the one synthetic
+// turn, every such announcement — SESSION_START's plugin loads, prompt-loaded
+// notices, hook/MCP warnings — shares the one synthetic
 // appwire.SystemPreludeTurnID, so the client's existing consecutive-run
 // grouping (SystemNoticeItem) has one turn's worth of items to fold into a
 // single collapsed disclosure instead of rendering a wall of one-line turns
@@ -1511,19 +1533,31 @@ func (p *AppEventProjector) startTurn() string {
 // persisted-transcript system prompt, deliberately: both mean "before any
 // real turn," so a dormant session's live and replayed views agree.
 //
-// Once a real turn has started (nextTurn > 0), a no-active-turn announcement
-// falls into the GAP after whichever real turn just ended. Announcements
-// landing back-to-back in the same gap (no real turn started in between)
-// share ONE turn id — same grouping rationale as the prelude, so a burst of
-// hook completions between two turns folds into one disclosure instead of a
-// wall of one-line turns (kata 9ekv) — but each gap mints its OWN fresh id
-// rather than reusing the prelude's or an earlier gap's: it happened AFTER
-// its preceding real turn, not before it, and folding two different gaps
-// into one bucket would misrepresent when each happened relative to the real
-// turns between them. startTurn clears midSessionAnnouncementTurnID whenever
-// a real turn starts, so the next gap always gets a fresh id.
+// "Before the first real turn" is tested as !anyTurnStarted && !historySeeded,
+// NOT nextTurn == 0: a RESERVED turn id (turn/start's reservation, or
+// SetProcessing's auto-continuation reservation for a queued initial prompt)
+// bumps nextTurn without anything having run, and a spawned session reserves
+// exactly that way while plugins, prompts and hooks are still announcing.
+// Testing the counter exiled that startup burst to a gap id numbered after
+// turn_1 — which is how a session's "25 system events" group came to anchor
+// at the END of the transcript instead of the top. The reservation is an
+// intent, not a turn; the announcements still happened first.
+//
+// Once a real turn has started (anyTurnStarted), or the projector was seeded
+// over a resumed session's persisted history (historySeeded), a
+// no-active-turn announcement falls into the GAP after whichever real turn
+// just ended. Announcements landing back-to-back in the same gap (no real
+// turn started in between) share ONE turn id — same grouping rationale as
+// the prelude, so a burst of hook completions between two turns folds into
+// one disclosure instead of a wall of one-line turns (kata 9ekv) — but each
+// gap mints its OWN fresh id rather than reusing the prelude's or an earlier
+// gap's: it happened AFTER its preceding real turn, not before it, and
+// folding two different gaps into one bucket would misrepresent when each
+// happened relative to the real turns between them. startTurn clears
+// midSessionAnnouncementTurnID whenever a real turn starts, so the next gap
+// always gets a fresh id.
 func (p *AppEventProjector) preTurnAnnouncementTurnID() string {
-	if p.nextTurn == 0 {
+	if !p.anyTurnStarted && !p.historySeeded {
 		return appwire.SystemPreludeTurnID
 	}
 	if p.midSessionAnnouncementTurnID != "" {
