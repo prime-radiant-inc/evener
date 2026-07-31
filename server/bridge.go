@@ -136,10 +136,11 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 // when it announces none.
 //
 // Choosing the effect before the lock keeps every event that has none -- which
-// is nearly all of them, every token delta included -- off s.mu entirely. This
-// loop is the only consumer draining the session event channel, and that
-// channel drops on overflow, so anything that slows the drain shortens the
-// distance to a silently lost event.
+// is nearly all of them, every token delta included -- off s.mu entirely. The
+// daemon drains through its authoritative consumer, whose feed BLOCKS its
+// emitter rather than dropping (see BridgeEvent), so anything that slows the
+// drain is backpressure on the session loop, and a drain that stops is a
+// session that can no longer even be closed.
 //
 // This is deliberately one switch rather than a kind test in front of the
 // existing one: a second list of the status-bearing kinds would drift from this
