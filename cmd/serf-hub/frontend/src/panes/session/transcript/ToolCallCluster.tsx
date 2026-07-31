@@ -22,9 +22,22 @@ function leadItem(items: ItemModel[]): ItemModel {
   return items.reduce((best, item) => (consequenceRank(item) > consequenceRank(best) ? item : best));
 }
 
-function clusterSummary(items: ItemModel[]): string {
+// The collapsed header a folded run shows before anyone opens it: the step
+// count plus the LEAD call's own summary text - and, when that lead carries
+// one, the same summaryLink its per-call row uses (kata xw3t), so a
+// web_fetch-led run's URL is a real link here too rather than dead text the
+// reader has to unfold the run to click (kata 79cs). Text and link come from
+// ONE descriptor lookup of ONE item, because they must always describe the
+// same call. This row never passes a `purpose`, so ToolRow always renders the
+// summary in full - the clamped head/tail split that keeps xw3t's per-call
+// row plain text while collapsed cannot arise here.
+function clusterHeader(items: ItemModel[]): { summary: string; summaryLink: string | undefined } {
   const lead = leadItem(items);
-  return `${items.length} steps · ${toolRendererFor(lead.toolName ?? "").summary(lead)}`;
+  const descriptor = toolRendererFor(lead.toolName ?? "");
+  return {
+    summary: `${items.length} steps · ${descriptor.summary(lead)}`,
+    summaryLink: descriptor.summaryLink?.(lead),
+  };
 }
 
 // A cluster has its own local disclosure because it is a derived presentation
@@ -33,10 +46,12 @@ function clusterSummary(items: ItemModel[]): string {
 // height; no viewport or scroll state belongs in this component.
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
   const [open, setOpen] = useState(false);
+  const header = clusterHeader(items);
   return (
     <details className={CLASS.cluster} data-testid="tool-call-cluster" open={open}>
       <ToolRow
-        summary={clusterSummary(items)}
+        summary={header.summary}
+        summaryLink={header.summaryLink}
         failed={false}
         expandable
         expanded={open}
