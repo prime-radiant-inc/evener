@@ -702,6 +702,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// for its projection to be permanently wrong for. Bridging it instead
 		// would register a LOSSLESS consumer -- one whose feed blocks its
 		// emitter -- on a session nothing will ever close.
+		//
+		// Nothing closing it also means nothing calls its env's Cleanup()
+		// (agent/execenv/local.go), which is what disposes the session's owned
+		// scratch directory. Unlike the tee's buffered tail above -- which the
+		// OS reclaims once this process exits -- the replacement's scratch
+		// directory is disk state: it survives AFTER exit, not merely until it.
 		if teardownStarted {
 			return
 		}
