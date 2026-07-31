@@ -169,6 +169,12 @@ export interface ThreadModel {
   // own note below); everything else here is stale until the next
   // thread/read (e.g. a reconnect re-hydrate) and there is no live-push
   // wire-candidate yet.
+  // Not snapshot-only, unlike its neighbours here: thread/status/changed
+  // carries the set that goes with the status it announces, and the reducer
+  // applies it (kata 06t8). It has to, because the hub derives send/steer/
+  // queue FROM whether a turn is in flight - a set cut before the turn
+  // describes a session that no longer exists by the time the composer reads
+  // it back. Absent on a status frame still means "no update".
   capabilities: ThreadCapabilities;
   // Goal is null when no /goal objective is set (wire: SerfThread.Goal
   // *GoalState, omitempty). No live push exists (goal/set's response

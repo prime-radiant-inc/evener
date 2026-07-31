@@ -1060,6 +1060,7 @@ export interface ThreadStatusChangedParams {
   ref: string;
   status: ThreadStatus;
   failedToolCalls?: number;
+  capabilities?: ThreadCapabilities;
 }
 
 export interface ThreadTranscriptListParams {

@@ -11,19 +11,19 @@
 //
 // The legacy tier 2 ("the source already advertised live send/queue
 // capabilities for the CURRENT state, `liveCapabilitiesStatus === state`")
-// is intentionally absent: ThreadModel.capabilities (protocol/model.ts) is
-// hydrated from the thread/read snapshot only and has NO live push on the
-// wire (verified against appwire/protocol.go's Notifications catalog - no
-// capabilities-changed entry exists), so this store can never honestly
-// claim a capabilities snapshot was "just advertised for the current
-// status" the way the legacy client's own live event stream could. Using a
-// possibly-stale snapshot as a blanket override would silently reintroduce
-// the exact bug class the wave-4 lesson warns about (trusting a shape the
-// wire doesn't actually (re-)produce on every state change) - so capability
-// booleans are consulted ONLY in tier 3, exactly where the legacy code
-// itself already treats them as authoritative regardless of freshness (the
-// "explicitly known" queue-cap-false branch). Live capability push is a
-// wire-candidate, out of scope this wave.
+// is intentionally absent, and stays absent now that ThreadModel.capabilities
+// IS live: thread/status/changed carries the set that goes with the status it
+// announces (kata 06t8), so the two always describe the same moment - and for
+// that fresh set, this table already computes exactly what reading it would.
+// The hub gates Send on "no turn in flight" and Queue on "a turn in flight"
+// (server/appwire_runtime.go's appCapabilities), which is tiers 4 and 5; the
+// one thing the status alone cannot say is whether the harness wired a queue
+// at all, and that is tier 3. A tier 2 would restate the table, not correct
+// it.
+//
+// Capability booleans are therefore still consulted ONLY in tier 3, which is
+// also where the legacy code treated them as authoritative (the "explicitly
+// known" queue-cap-false branch).
 //
 // The active tier checks `statusType === "active"` ALONE - verified directly
 // against the cited renderer.js:479-513 (updateThreadState's sendBtn

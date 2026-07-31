@@ -201,6 +201,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 
 		for _, item := range projected {
 			params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
+			params = s.stampCapabilitiesOnStatusChange(item.Method, params)
 			params = s.stampFailureCountOnItemCompleted(item.Method, params)
 			params = stampAppNotificationTarget(params, threadID, ref)
 			record := s.appNotifier.Record(threadID, item.Method, params)
@@ -261,6 +262,57 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 		return params
 	}
 	status.FailedToolCalls = &count
+	return status
+}
+
+// stampCapabilitiesOnStatusChange rides the action set that goes with the
+// announced status along on every thread/status/changed (kata 06t8).
+//
+// The set is otherwise snapshot-only, refreshed by thread/read — and Send,
+// Steer and Queue are all defined by whether a turn is in flight
+// (appCapabilities). So a client that hydrated while the session was idle, or
+// while it was a cold exited session the hub answered from the past index,
+// holds steer=false/queue=false for the whole turn its own send starts: the
+// composer knows the turn is live (it has the status change and turn/started)
+// and still renders no Steer, no Stop and a disabled Send until a reload.
+// Every capability change is a status transition, so this refreshes them
+// exactly when they can have moved and never polls — the same shape
+// stampFailureCountOnStatusChange already uses for the failure count.
+//
+// It happens HERE, at the server's single notification egress, rather than in
+// the projector, for the same reason that one does: the projector maps events
+// to notifications and holds no session handle.
+//
+// The set is computed FROM THE ANNOUNCED STATUS, not from the server's ambient
+// processing flag. The two are written by different goroutines — the projector
+// emits this notification from the event bridge while SetProcessing is the
+// session loop's — so reading the ambient flag here would be a race that
+// silently publishes the old status's capabilities. Deriving them from the
+// status in hand makes the frame self-consistent by construction: a client
+// applying both fields of one notification can never hold a status and a
+// capability set that disagree.
+func (s *Server) stampCapabilitiesOnStatusChange(method string, params any) any {
+	if method != appwire.NotifyThreadStatusChanged {
+		return params
+	}
+	status, ok := params.(appwire.ThreadStatusChangedParams)
+	if !ok {
+		return params
+	}
+	// A daemon announcing its own close is describing a thread it is about to
+	// stop running, and what that thread can still be asked to do is the HUB's
+	// to say: it answers an exited session's read from the past index and
+	// resumes it on the next send, advertising Send there
+	// (cmd/serf-hub/app_threadread.go's pastEntryThread). This daemon's own
+	// all-false set would take the follow-up composer away from a session the
+	// hub would happily wake — the same wedge in the other direction. So the
+	// close frame updates nothing and leaves the set to the hub's next
+	// snapshot.
+	if status.Status.Type == appwire.ThreadStatusClosed {
+		return params
+	}
+	capabilities := s.appCapabilities(status.Status.Type, status.Status.Type == appwire.ThreadStatusActive)
+	status.Capabilities = &capabilities
 	return status
 }
 
