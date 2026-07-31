@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -349,6 +350,25 @@ func TestWaitForRendezvous_TimesOut(t *testing.T) {
 	}
 }
 
+// WaitForRendezvous shares errRendezvousTimeout with the launch wait, so it
+// owes the same distinction: a caller that gave up is not the wait running out
+// of time, and a caller classifying by sentinel must not be told otherwise
+// (kata 0c3g).
+func TestWaitForRendezvous_AbandonedCallerIsNotATimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := WaitForRendezvous(ctx, t.TempDir(), 99999)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, errRendezvousTimeout) {
+		t.Fatalf("abandoned wait reported as a timeout: %v", err)
+	}
+	if !errors.Is(err, errRendezvousCanceled) {
+		t.Fatalf("err = %v, want errRendezvousCanceled", err)
+	}
+}
+
 func TestWaitForRendezvous_WrongPID(t *testing.T) {
 	dir := t.TempDir()
 	_, _ = rendezvous.Write(dir, rendezvous.Entry{PID: 11111, Address: "x"})
@@ -422,18 +442,19 @@ exit 42
 	}
 }
 
-// waitForRendezvousOrExit already distinguishes a child that ran out of time
-// from one that died first, and the launch failure must report which: a daemon
-// that fails validation and exits in milliseconds is not a timeout, and saying
-// it is sends an operator triaging the crash after a slow machine, a hung
-// provider, or a too-short SpawnTimeout — none of which are involved. This is
-// the first line surfaced for every hub launch failure, spawn and resume
-// alike (kata 42ck).
+// A hub launch fails for three different reasons and the message must name
+// which: the child died first, the caller walked away, or the wait genuinely
+// ran out of time. A daemon that fails validation and exits in milliseconds is
+// not a timeout, and neither is a browser that navigates away mid-launch —
+// saying either is a timeout sends an operator triaging it after a slow
+// machine, a hung provider, or a too-short SpawnTimeout, none of which are
+// involved. This is the first line surfaced for every hub launch failure,
+// spawn and resume alike (katas 42ck, 0c3g).
 //
-// Both outcomes must stay inside diagnostic.HubFailureKeywords, the vocabulary
-// the hub and its web client each classify these messages against to offer
-// "Reconnect & retry" rather than a log to go read. The label is what changes;
-// which family of failure this is does not.
+// All three outcomes must stay inside diagnostic.HubFailureKeywords, the
+// vocabulary the hub and its web client each classify these messages against
+// to offer "Reconnect & retry" rather than a log to go read. The label is what
+// changes; which family of failure this is does not.
 func TestDaemonLaunchFailureNamesWhatActuallyHappened(t *testing.T) {
 	t.Parallel()
 	const exitsImmediately = `#!/bin/sh
@@ -468,9 +489,14 @@ sleep 30
 		},
 	}
 	outcomes := []struct {
-		name        string
-		script      string
-		timeout     time.Duration
+		name   string
+		script string
+		// The word that follows the action, naming what stopped this launch.
+		label   string
+		timeout time.Duration
+		// The context the hub hands the launch. Nil is an ordinary caller that
+		// stays for the answer.
+		callerCtx   func() context.Context
 		wantContain []string
 		wantAbsent  []string
 	}{
@@ -480,6 +506,7 @@ sleep 30
 			// bug this case is about.
 			name:    "child exits before rendezvous",
 			script:  exitsImmediately,
+			label:   "failed",
 			timeout: 10 * time.Second,
 			wantContain: []string{
 				"process exited before rendezvous",
@@ -490,12 +517,31 @@ sleep 30
 			wantAbsent: []string{"timed out", "timeout"},
 		},
 		{
+			// The caller's context is a live request context on both hub paths
+			// — r.Context() on the REST resume, the websocket connection's ctx
+			// on the RPC one — so a client that drops mid-launch cancels the
+			// rendezvous wait. That is the caller walking away, not the machine
+			// being slow, and the generous timeout below is never reached.
+			name:    "caller abandons the request",
+			script:  neverRegisters,
+			label:   "canceled",
+			timeout: 10 * time.Second,
+			callerCtx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantContain: []string{"request canceled before rendezvous"},
+			wantAbsent:  []string{"timed out", "timeout"},
+		},
+		{
 			// A child that starts and never registers is the real timeout, and
 			// it must keep saying so.
 			name:        "child never registers",
 			script:      neverRegisters,
+			label:       "timed out",
 			timeout:     20 * time.Millisecond,
-			wantContain: []string{"timed out", "timeout waiting for rendezvous"},
+			wantContain: []string{"timeout waiting for rendezvous"},
 		},
 	}
 
@@ -507,12 +553,16 @@ sleep 30
 				serfBinary := filepath.Join(dir, "fake-serf")
 				writeFakeSerf(t, serfBinary, tc.script)
 
-				err := launch.call(context.Background(), serfBinary, filepath.Join(dir, "run"), tc.timeout)
+				ctx := context.Background()
+				if tc.callerCtx != nil {
+					ctx = tc.callerCtx()
+				}
+				err := launch.call(ctx, serfBinary, filepath.Join(dir, "run"), tc.timeout)
 				if err == nil {
 					t.Fatal("launch succeeded, want a failure")
 				}
-				if !strings.HasPrefix(err.Error(), launch.action+" ") {
-					t.Fatalf("failure does not open by naming %q:\n%v", launch.action, err)
+				if wantPrefix := launch.action + " " + tc.label + ": "; !strings.HasPrefix(err.Error(), wantPrefix) {
+					t.Fatalf("failure does not open with %q:\n%v", wantPrefix, err)
 				}
 				for _, want := range tc.wantContain {
 					if !strings.Contains(err.Error(), want) {
