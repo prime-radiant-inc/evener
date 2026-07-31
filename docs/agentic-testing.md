@@ -37,6 +37,22 @@ run=$(mktemp -d -t serf-e2e-XXXXXX)
 #    not a fixed /tmp/serf-hub-test that a second concurrent build would
 #    overwrite mid-run (kata k2rx: this is exactly the shared-tmp-path
 #    collision that clobbered another agent's binaries and providers.toml).
+#
+#    make build-web comes first because the hub SERVES the SPA out of its
+#    own binary: frontend/dist is not tracked (only a one-line
+#    PLACEHOLDER) and webnext.go embeds it at compile time
+#    (`//go:embed all:frontend/dist`), so a bare `go build ./cmd/serf-hub`
+#    in a fresh checkout or worktree embeds nothing and every page route
+#    answers `503 serf-hub web app not built: run 'make build-web' and
+#    rebuild`. /api/* still answers normally, so the first symptom is a
+#    browser step failing minutes in (kata a6k8). frontend/dist is the one
+#    artifact that lands in the worktree instead of under $run — it is an
+#    input to the hub binary, not run state. A card with no browser steps
+#    can skip this line; the make-based builds (make build / build-hub /
+#    build-runtime) already depend on build-web and never need it. If
+#    web-preflight refuses to npm ci through a symlinked node_modules, see
+#    the rebuild matrix under "Falsification debugging".
+make build-web
 go build -o "$run/serf-hub" ./cmd/serf-hub
 go build -o "$run/serf" ./cmd/serf
 go build -o "$run/serf-tui" ./cmd/serf-tui
