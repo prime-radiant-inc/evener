@@ -72,12 +72,17 @@ type hubModel struct {
 	// frames is the hub connection's ordered notification feed. main wires it
 	// to the client before the receive loop starts; a model without one never
 	// receives notifications, which is what a model without a hub wants.
-	frames   *hubFrameFeed
-	hubURL   string
-	stateDir string
-	width    int
-	height   int
-	err      error
+	frames *hubFrameFeed
+	// dialHub opens a replacement connection after this one dies. A model
+	// without one reports the loss and tells the user to restart instead.
+	dialHub          hubDialer
+	connectionLost   bool
+	reconnectAttempt int
+	hubURL           string
+	stateDir         string
+	width            int
+	height           int
+	err              error
 
 	mode     hubMode
 	tree     hubTreeResponse

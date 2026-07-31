@@ -141,10 +141,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(append(preCut, subscribeChildren)...)
 	case hubNotificationMsg:
 		if !msg.ok {
-			return m, nil
+			// Evaluated before the return: the call mutates m, and the model
+			// operand's read is not ordered against it.
+			lost := m.hubConnectionLost()
+			return m, lost
 		}
 		cmd := m.applyHubNotification(msg.notification)
 		return m, tea.Batch(cmd, waitHubNotification(m.frames))
+	case hubReconnectMsg:
+		reconnected := m.applyHubReconnect(msg)
+		return m, reconnected
 	case pendingpkg.PendingRegisteredMsg:
 		if msg.Entry.Ref != "" && !m.matchesAsyncSessionRef(msg.Entry.Ref) {
 			return m, nil
