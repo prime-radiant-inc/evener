@@ -463,13 +463,31 @@ What remains, precisely:
   truth. The exposure is a cold `thread/read` landing inside the window and
   reading a stale queue depth or goal. Closing it needs a per-facet sequence
   number, which is not worth it here.
-- **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
-  Losslessness turns "emit under a lock" from a dropped event into a deadlock,
-  for every lock reachable from the bridge. Three call sites were found and
-  fixed, all of them the same callee reached from three different locked
-  callers; there is no compiler or vet check for the next one. The cheapest
-  real enforcement is one owner-tracked mutex — wrap `Session.mu` and assert at
-  `sendEvent`'s blocking branch — not an audit of every lock.
+- **The rule that an emitter holds no lock the consumer takes is enforced by
+  the emit path itself, on the emitter side only.** Losslessness turns "emit
+  under a lock" from a dropped event into a deadlock, for every lock reachable
+  from the bridge. Three call sites were found and fixed, all of them the same
+  callee reached from three different locked callers. Kata cb1k then audited
+  the class instead of guessing at the next one: intersect the locks the
+  consumer takes inside `agent/` with the locks `agent` code can hold across an
+  emit, and exactly two survive — `Session.mu` and `jobManager.mu` — and the
+  emit path re-acquires both (`emit` → `activeCausalProvenance` → `Session.mu`;
+  `emitWithProvenance` → `jobManager.onSessionEvent` → `jobManager.mu`). On
+  non-reentrant mutexes a violation therefore self-deadlocks on first
+  execution. `agent/session_emit_lock_guard_test.go` pins those two guards,
+  which are incidental to what those functions are for.
+  This **retracts** the earlier recommendation of an owner-tracked `Session.mu`
+  asserting at `sendEvent`'s blocking branch: it buys nothing, because
+  emit-under-`Session.mu` is already an immediate self-deadlock and the assert
+  would sit in a branch no test reaches.
+- **The consumer side of that rule is still unenforced, and is the live
+  exposure.** Four locks are held across emits today — `queueEventsMu`,
+  `queuePersistMu`, `responseSideEffectsMu` (`TOOL_CALL_END` and its
+  output-delta chunk loop) and `subagent.mu` — and they are safe only because
+  `liveThreadEnvelopeSource` does not take them. That is a property of a file
+  in `cmd/serf`, not of `agent`. A new envelope facet sampling under any of the
+  four wedges the daemon on the next large tool output with nothing to warn
+  first.
 
 `serf/thread/resync` still has no producer. It is not needed for the daemon's
 own feed any more, but it remains the only repair path if a future consumer is
