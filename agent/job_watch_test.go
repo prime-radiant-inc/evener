@@ -584,7 +584,7 @@ func countWatchReadGrantEvents(t *testing.T, jm *jobManager) int {
 // --- granted cross-session reads (spec §5.1, consumption) ---
 
 // grantReadWatchedOutput is the watched job's full retained output in the
-// granted-read fixture; "ready" fires the sidecar watch.
+// granted-read fixture.
 const grantReadWatchedOutput = "alpha\nbravo ready\ncharlie\n"
 
 // grantReadFixture is the minimal parent/observer pair for granted
@@ -626,15 +626,13 @@ func newGrantReadFixture(t *testing.T) *grantReadFixture {
 	if err != nil {
 		t.Fatalf("create watched job: %v", err)
 	}
-	// Canonical sidecar flow: the watch is created while the job runs (grant
-	// minted at create), output fires it, the job finishes, and the observer
-	// reads after the fact.
-	if _, err := parentJM.configureWatch(watchArgs{
-		Target:      watched.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure sidecar watch: %v", err)
+	// Canonical observer flow: the parent-source watch is armed, the watched
+	// job runs and finishes, its completion is delivered to the observer as a
+	// job.notification frame (which is what mints the grant), and the observer
+	// reads after the fact. Nothing in this sequence lets the observer name the
+	// job — the parent's own delivery hands it down.
+	if _, err := parentJM.configureWatch(parentSourceWatchArgs("child_job_obs", "dlg_obs", "job.notification")); err != nil {
+		t.Fatalf("configure parent-source watch: %v", err)
 	}
 	if _, err := parentJM.appendJobOutput(watched.JobID, parentJM.running[watched.JobID].output, []byte(grantReadWatchedOutput)); err != nil {
 		t.Fatalf("append watched output: %v", err)
@@ -643,6 +641,9 @@ func newGrantReadFixture(t *testing.T) *grantReadFixture {
 	if err := parentJM.finalize(watched.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize watched job: %v", err)
 	}
+	onSessionEventKD(parentJM, events.EventJobFinished, events.JobFinishedData{
+		JobID: watched.JobID, JobType: "shell", Status: string(jobstore.StatusCompleted), Reason: "exit_zero",
+	})
 	return &grantReadFixture{
 		parentStateDir: parentStateDir,
 		parent:         parent,

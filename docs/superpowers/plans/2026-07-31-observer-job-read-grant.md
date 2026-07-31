@@ -64,6 +64,14 @@ premise correction.
 
 ### Task 1: delete the unreachable create-time mint (ruling 4)
 
+> **Landed together with Task 2, in one commit.** There is no green commit
+> between them. `TestGrantSurvivesWatchClearAndStoreReopen` (ruling 3's test)
+> clears its watch before any fire, so the create mint is its only grant
+> source; and `TestTerminalCatchupSendMintsObserverReadGrant`'s catch-up fire
+> is the per-fire mint's only source. Deleting the create mint first breaks the
+> former; making the per-fire mint payload-derived first breaks the latter. The
+> two halves are one seam: "terminal-only becomes structural".
+
 **Files:**
 - Modify: `agent/job_watch.go` (`mintWatchCreateReadGrant` at :3259-3303; its
   call site at :587-597)

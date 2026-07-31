@@ -100,8 +100,11 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if err != nil {
 				t.Fatalf("new watch config: %v", err)
 			}
-			if err := jm.mintWatchCreateReadGrant(cfg); err == nil || !strings.Contains(err.Error(), "not a grantable delegate") {
-				t.Fatalf("missing observer grant error = %v", err)
+			// An unresolvable delivery target mints nothing and marks nothing:
+			// delivery itself reports the route failure, so the grant is simply
+			// never claimed and the next fire is free to retry.
+			if got := jm.mintWatchSendReadGrant(cfg, "dlg_missing", events.JobFinishedData{JobID: "job_target"}); got != "" || cfg.grantsMinted != nil {
+				t.Fatalf("missing observer minted grant %q (dedup=%+v)", got, cfg.grantsMinted)
 			}
 		case 10:
 			notified := false

@@ -418,38 +418,6 @@ func TestProgressTickDeliversSameWatchProvenanceClassified(t *testing.T) {
 	}
 }
 
-func TestWatchCreateMintsObserverReadGrant(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	rec, err := jm.createShell(createShellOpts{Command: "x"})
-	if err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-
-	grants := loadGrantTable(t, jm)
-	if !grants["child_job_obs"][rec.JobID] {
-		t.Fatalf("grants after create = %+v, want child_job_obs -> %s", grants, rec.JobID)
-	}
-	if got := countWatchReadGrantEvents(t, jm); got != 1 {
-		t.Fatalf("grant events after create = %d, want 1", got)
-	}
-
-	// The create-minted pair seeds the per-fire dedup: a live fire for the
-	// same (observer, watched) pair must not append a second grant.
-	feedJob(jm, rec.JobID, []byte("server ready\n"))
-	if got := countWatchReadGrantEvents(t, jm); got != 1 {
-		t.Fatalf("grant events after fire = %d, want 1 (create mint seeds dedup)", got)
-	}
-}
-
 func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -590,14 +558,14 @@ func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
 	}
 }
 
-// TestTerminalCatchupSendMintsObserverReadGrant pins the claim in
-// mintWatchSendReadGrant's doc comment: a terminal catch-up send never had a
-// create mint (runTerminalCatchup returns from configureWatch's terminal
-// intercept before mintWatchCreateReadGrant runs, and its detached config is
-// fresh), so the per-fire mint is the ONLY source of the observer's read
-// grant. The single catch-up fire mints exactly one grant keyed on the
-// observer delegate's child session id.
-func TestTerminalCatchupSendMintsObserverReadGrant(t *testing.T) {
+// TestTerminalCatchupSendMintsNoReadGrant pins the structural half of spec
+// §5.1: a read grant is derived from the delivered event payload, and an
+// output_match catch-up fire carries no payload at all (its root
+// events.SessionEvent has nil Data). So the catch-up delivers its frame and
+// grants nothing, even though its target happens to be terminal. Only a
+// job.notification payload names a job, which is what makes "the grant names a
+// finished job" true by construction rather than by convention.
+func TestTerminalCatchupSendMintsNoReadGrant(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -614,49 +582,12 @@ func TestTerminalCatchupSendMintsObserverReadGrant(t *testing.T) {
 	if !res.Fired || !res.TerminalCatchup {
 		t.Fatalf("result = %+v, want fired+terminal_catchup", res)
 	}
-
-	grants := loadGrantTable(t, jm)
-	if !grants["child_job_obs"][jobID] {
-		t.Fatalf("grants after catch-up = %+v, want child_job_obs -> %s", grants, jobID)
-	}
-	if got := countWatchReadGrantEvents(t, jm); got != 1 {
-		t.Fatalf("grant events after catch-up = %d, want 1 (single fire mints once)", got)
-	}
-}
-
-func TestWatchCreateGrantAppendFailureFailsCreationLoudly(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	rec, err := jm.createShell(createShellOpts{Command: "x"})
-	if err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	realAppend := jm.appendEvent
-	grantErr := errors.New("grant append failed")
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchReadGrant {
-			return grantErr
-		}
-		return realAppend(e)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("catch-up pending sends = %d, want 1 (the grant assertion below needs a real delivery)", len(pending))
 	}
 
-	_, err = jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	})
-	if err == nil {
-		t.Fatal("configureWatch succeeded, want grant append failure to fail creation")
-	}
-	if !strings.Contains(err.Error(), grantErr.Error()) {
-		t.Fatalf("creation error = %v, want wrapped %v", err, grantErr)
-	}
-	if jm.watchCount() != 0 {
-		t.Fatalf("watch installed despite grant failure: count = %d", jm.watchCount())
-	}
-	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after failed create = %+v, want none", grants)
+	if got := countWatchReadGrantEvents(t, jm); got != 0 {
+		t.Fatalf("grant events after catch-up = %d, want 0 (no job.notification payload)", got)
 	}
 }
 
@@ -854,19 +785,9 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create watched job: %v", err)
 	}
-	if _, err := parentJM.configureWatch(watchArgs{
-		Target:      watched.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure sidecar watch: %v", err)
-	}
-	if _, err := parentJM.configureWatch(watchArgs{
-		Target: watched.JobID,
-		Send:   &watchSendArgs{To: "dlg_obs"},
-		Clear:  true,
-	}); err != nil {
-		t.Fatalf("clear sidecar watch: %v", err)
+	watchRes, err := parentJM.configureWatch(parentSourceWatchArgs("child_job_obs", "dlg_obs", "job.notification"))
+	if err != nil {
+		t.Fatalf("configure parent-source watch: %v", err)
 	}
 	if _, err := parentJM.appendJobOutput(watched.JobID, parentJM.running[watched.JobID].output, []byte(grantReadWatchedOutput)); err != nil {
 		t.Fatalf("append watched output: %v", err)
@@ -874,6 +795,12 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 	code := 0
 	if err := parentJM.finalize(watched.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize watched job: %v", err)
+	}
+	onSessionEventKD(parentJM, events.EventJobFinished, events.JobFinishedData{
+		JobID: watched.JobID, JobType: "shell", Status: string(jobstore.StatusCompleted), Reason: "exit_zero",
+	})
+	if _, err := parentJM.clearWatchByID(watchRes.WatchID); err != nil {
+		t.Fatalf("clear parent-source watch: %v", err)
 	}
 	if err := parentJM.store.Close(); err != nil {
 		t.Fatalf("close parent store: %v", err)
