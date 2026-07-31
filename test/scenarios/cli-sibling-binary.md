@@ -29,9 +29,14 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 
 - The error message names a real exec attempt (`serf-hub exited
   during startup: ...`), not "executable file not found in $PATH".
-- Specifically: if another serf-hub is already running, you'll see
-  `flock: resource temporarily unavailable (another serf-hub may
-  already be running)` — that proves the sibling binary was exec'd.
+- Specifically: if another serf-hub is already running, stderr
+  contains the substring `resource temporarily unavailable (another
+  serf-hub may already be running` — that proves the sibling binary
+  was exec'd. Match on the substring, not the whole sentence: the
+  real message names the lock path and continues past that point
+  (`flock <path>: resource temporarily unavailable (another serf-hub
+  may already be running; a disposable hub needs its own HOME)`,
+  `cmd/serf-hub/internal/hostlock/hostlock.go:32`).
   If no other hub is running, you'll see a different startup error
   (port conflict, missing perms) — still proves the exec happened.
 - Falsification: stderr contains `executable file not found in $PATH`
@@ -51,8 +56,9 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
 - A symlink variant is worth adding: `ln -s real/path/serf-tui
   $tmpdir/serf-tui` and confirm the EvalSymlinks branch resolves to
   the symlink target's directory and finds serf-hub there. Covered
-  in the unit test `TestResolveHubBinaryFollowsSymlinks` but not
-  exercised end-to-end here.
+  in the unit test `TestResolveFollowsSymlinkedExecutable`
+  (`internal/binresolve/sibling_test.go:117`) but not exercised
+  end-to-end here.
 - `unset SERF_HUB_BIN` matters; if a developer has it set (e.g. to
   point at a wip build), the explicit override pre-empts sibling
   resolution and the test would pass trivially.

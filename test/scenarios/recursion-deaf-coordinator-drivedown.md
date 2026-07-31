@@ -3,11 +3,11 @@
 **What this covers**: the recursion design spec §9 headline regression —
 **the deaf-coordinator, drive-down form** — end to end through the REAL
 interface rather than the unit test's injected notifications
-(`docs/job-control.md` lines 1079, 1226; design §3/§9). A coordinator
+(`docs/job-control.md` lines 1147, 1304; design §3/§9). A coordinator
 (granted `delegation_allowance=1` under a raised `MaxSubagentDepth=2`)
-backgrounds workers (`max_wait_ms` unset = fire-and-return, line 1244)
+backgrounds workers (`max_wait_ms` unset = fire-and-return, line 316)
 and ENDS ITS TURN. The workers finish while the coordinator is IDLE.
-Drive-down (line 1079, design §3) means the parent DRIVES the idle
+Drive-down (line 1147, design §3) means the parent DRIVES the idle
 coordinator so the COORDINATOR's model gets a notification turn for the
 workers' completions — while the ROOT's model is told ONLY about the
 coordinator itself finishing. Before drive-down ("today, red"), an idle
@@ -35,11 +35,11 @@ IS the test, asserted on the coordinator's own transcript.
   credentialed model (the orchestrator picks the spawn model at run
   time, e.g. `openai/gpt-5.5`).
 - `tmpdir=$(mktemp -d -t serf-e2e-recdeaf-XXXXX)`.
-- **Recursion is dark by default (line 104); arm it with the config +
+- **Recursion is dark by default (line 126); arm it with the config +
   per-spawn grant.** Raise `MaxSubagentDepth` to 2 via
   `launch_overrides` so the root's own allowance is 2 and a grant of 1
   is legal. The wire key is `maxSubagentDepth` (camelCase,
-  `appwire/types.go:839`):
+  `appwire/types.go:1708`):
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
@@ -103,7 +103,7 @@ IS the test, asserted on the coordinator's own transcript.
 - **OWNER-SCOPED — the ROOT heard only the coordinator (step 4).** The
   `<job-notification>` frames on the ROOT's rail contain the
   COORDINATOR's terminal (COORD finishing — the root's OWN direct
-  delegate ending, line 1079 / line 1226) and contain NONE of the
+  delegate ending, line 1147 / line 1304) and contain NONE of the
   worker job_ids reported in `COORD_WORKERS`. For each worker job_id:
   it does NOT appear as the SUBJECT of any notification frame on the
   root's rail (the frame's `job_id=` attribute), and neither do the
@@ -113,14 +113,14 @@ IS the test, asserted on the coordinator's own transcript.
   the ROOT's rail, or a worker's completion text appears INSIDE one —
   the root was interrupted about a job its DESCENDANT created, which the
   owner-scoped rule forbids ("an agent is never interrupted about a
-  *subagent's* children", line 1079 / line 1234). Match on the frame
+  *subagent's* children", line 1147 / line 1304). Match on the frame
   SUBJECT, not a bare substring: the worker ids and their
   `W1_DONE`/`W2_DONE` payloads legitimately appear in the COORDINATOR's
   transcript and in the root's forwarded durable records — that
   substrate is not a root-rail notification.
 - **Visibility preserved, not removed.** Even though the root was not
   notified about the workers, a `job_list(include_descendants=true)`
-  from the root would surface them on demand (line 1079: the ancestor
+  from the root would surface them on demand (line 1147: the ancestor
   retains on-demand visibility). This card does not re-prove the full
   descendant walk (that is `recursion-coordinator-fanout.md` /
   `job-nested-visibility.md`); it only asserts the notification
@@ -129,15 +129,15 @@ IS the test, asserted on the coordinator's own transcript.
   notification, and must not be counted as one for the owner-scoped
   assertion above.
 - **Durable substrate.** The root's `jobs.jsonl` carries forwarded
-  `job_started` (typed `delegate`, line 1077) and `job_finished`
+  `job_started` (typed `delegate`, line 1145) and `job_finished`
   records for COORD and one-hop forwarded copies for the workers
   (`owner_session_id` = the coordinator's session, `parent_job_id` =
   COORD). These forwarded worker records are the DRIVE SIGNAL the
-  parent used to drive the coordinator (line 1079) — their presence in
+  parent used to drive the coordinator (line 1147) — their presence in
   the durable store is expected and is NOT a rail notification.
 - **One terminal per owner.** The coordinator's drive turn delivers
   each worker's terminal exactly once to the coordinator (no-loss /
-  dedupe, line 1245); the root gets exactly one terminal frame for
+  dedupe, line 1073); the root gets exactly one terminal frame for
   COORD. Falsification: duplicate worker terminals inside the
   coordinator's notification turn, or a missing one (no-loss broken).
 

@@ -12,8 +12,9 @@ real `shell` tool call, that:
    matcher of only `[A-Za-z0-9_|]` is exact / pipe-list, not regex
    (`agent/internal/hooks/matcher.go`).
 2. **Command exec-form**: a command hook with `"args":[...]` is spawned
-   directly with no shell (`agent/internal/hooks/hooks.go`
-   `executeCommandHook`: `len(hook.Args) > 0` → `exec.CommandContext`).
+   directly with no shell (`agent/internal/hooks/command_runtime.go:134,169`
+   `executeCommandHook`/`executeCommandHookWithRuntime`: `len(hook.Args) > 0`
+   → `exec.CommandContext`, `:85`).
 3. An exit-0 PreToolUse command hook does NOT block the tool call.
 
 The deterministic Go tests (`agent/internal/hooks/*_test.go`) cover the
@@ -45,9 +46,12 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 
 ## Pre-state
 
-- `serf` built from this branch:
+- `serf` built **from the checkout under test**, not from whichever one
+  this path happens to name. Run these from the worktree you are testing;
+  a hardcoded `cd` into the main checkout would silently build and prove
+  the wrong branch:
   ```bash
-  cd /Users/jesse/prime-radiant/toil-suite/serf
+  cd "$(git rev-parse --show-toplevel)"   # must be the branch under test
   go build -o /tmp/serf ./cmd/serf
   set -a; . "$PWD/.env"; set +a   # zsh: bare `. .env` fails; use the explicit form
   ```

@@ -1,29 +1,29 @@
 # recursion-coordinator-fanout: a granted coordinator fans out workers; visibility, cascade, and owner-scoped notifications hold
 
 **What this covers**: recursive delegation behind the double opt-in
-(`docs/job-control.md` lines 90, 96-104, 1062-1085, 1207-1214) and the
-owner-scoped drive-down notification rule (line 1079; recursion design
+(`docs/job-control.md` lines 112, 120-126, 1139-1153, 1281-1288) and the
+owner-scoped drive-down notification rule (line 1147; recursion design
 spec §3/§9/§10). A root with a raised `MaxSubagentDepth` (=2, so the
-root's own allowance is 2 — line 104) spawns a COORDINATOR delegate
+root's own allowance is 2 — line 126) spawns a COORDINATOR delegate
 with `delegation_allowance=1`; the coordinator fans out 2-3 WORKER
-delegates (`max_wait_ms` unset = fire-and-return, line 1244) and ends
+delegates (`max_wait_ms` unset = fire-and-return, line 316) and ends
 its turn. This card asserts, falsifiably: (a) the grant rule — a grant
-`>=` the granter's own allowance is rejected verbatim (line 100), a
+`>=` the granter's own allowance is rejected verbatim (line 122), a
 grant of 1 succeeds; (b) the allowance gate — the coordinator (allowance
-1 > 0) CAN delegate, a worker (allowance 0) CANNOT (lines 90, 1062);
+1 > 0) CAN delegate, a worker (allowance 0) CANNOT (lines 112, 1130);
 (c) the COORDINATOR is driven to receive its workers' completions in
-its OWN turns (drive-down, line 1079); (d) **OWNER-SCOPED** — the
+its OWN turns (drive-down, line 1147); (d) **OWNER-SCOPED** — the
 ROOT's model is NEVER interrupted with a worker's terminal; the root is
-told ONLY when the COORDINATOR itself finishes (line 1079, line 1226);
+told ONLY when the COORDINATOR itself finishes (line 1147, line 1304);
 (e) visibility is preserved via `job_list(include_descendants=true)`,
 which surfaces the live tree with per-row `owner_session_id` + `depth`
-(line 1071); (f) `job_stop` on the coordinator's delegate CASCADES into
+(line 1139); (f) `job_stop` on the coordinator's delegate CASCADES into
 the subtree — the workers actually stop as `cancelled`/
-`stopped_by_parent` (line 1084), not orphaned.
+`stopped_by_parent` (lines 848, 1152), not orphaned.
 
 This is the live-interface counterpart to the unit-level depth-N trees
 in `agent/job_delegate_test.go` / the §9 testing list. Recursion is
-DARK by default (line 104); this card only runs with the raised config
+DARK by default (line 126); this card only runs with the raised config
 below.
 
 ## Pre-state
@@ -35,9 +35,9 @@ below.
   `openai/gpt-5.5`).
 - `tmpdir=$(mktemp -d -t serf-e2e-recfan-XXXXX)`.
 - **The recursion opt-in is config + per-spawn grant (BOTH required,
-  line 104).** Raise `MaxSubagentDepth` to 2 on the spawn so the root's
-  own allowance is 2 (line 104): pass it in `launch_overrides`. The
-  wire key is `maxSubagentDepth` (camelCase, `appwire/types.go:839`):
+  line 126).** Raise `MaxSubagentDepth` to 2 on the spawn so the root's
+  own allowance is 2 (line 126): pass it in `launch_overrides`. The
+  wire key is `maxSubagentDepth` (camelCase, `appwire/types.go:1708`):
 
   ```json
   {"prompt":"...","model":"openai/gpt-5.5","working_dir":"$tmpdir",
@@ -118,8 +118,9 @@ below.
 
 - **Grant ceiling (step 2.1).** The `delegation_allowance=2` delegate
   is REJECTED with the verbatim error
-  `invalid_request: delegation_allowance must be less than your own allowance (2)`
-  (line 100; `agent/job_delegate.go:147`). The `(2)` proves the root's
+  `invalid_request: delegation_allowance must be less than your own allowance (2); valid grants: 0..1`
+  (line 122; `agent/job_delegate.go:318`) — the `; valid grants: <range>`
+  suffix is part of the message, not an addition. The `(2)` proves the root's
   own allowance is 2 — i.e. `MaxSubagentDepth=2` took. Falsification:
   the call SUCCEEDS (the ceiling didn't apply — config not raised, or
   the grant rule is off), or the parenthesised number is `(1)`
@@ -128,21 +129,21 @@ below.
   The `delegation_allowance=1` delegate is ACCEPTED and returns COORD.
   Inside the coordinator's transcript, its three `delegate` calls
   SUCCEED (its allowance is 1 > 0, so it received the `delegate` tool —
-  line 102). Each worker was granted allowance 0; in a worker's
-  transcript/prompt the `delegate` tool is ABSENT (leaf, line 90/102) —
+  line 112). Each worker was granted allowance 0; in a worker's
+  transcript/prompt the `delegate` tool is ABSENT (leaf, line 112/1130) —
   a worker that nonetheless tries to call `delegate` gets a
   tool-not-available / rejected result. Falsification (the recursion
   hole): a worker successfully spawns a grandchild — allowance 0 must
-  be a hard leaf (line 90: "a leaf delegate (allowance 0, the default)
+  be a hard leaf (line 112: "a leaf delegate (allowance 0, the default)
   cannot delegate").
 - **Visibility — live descendant walk (step 3).** The
   `include_descendants=true` listing surfaces the live tree at read
-  time (line 1071): the root's OWN coordinator delegate at `depth` 0
+  time (line 1139): the root's OWN coordinator delegate at `depth` 0
   with `owner_session_id` = `$SID`, and the three worker delegates at
   `depth` 1 (their owner is the coordinator's child session — one live
   hop down) with `owner_session_id` = the coordinator's session id
   (NOT `$SID`) and `parent_job_id` = COORD. Each worker appears EXACTLY
-  ONCE (the dedupe rule, line 1071/1078). Falsification: a worker is
+  ONCE (the dedupe rule, line 1139). Falsification: a worker is
   missing entirely (the live walk didn't recurse into the live child),
   a worker shows `depth` 0 or `owner_session_id` = `$SID` (the walk
   mis-attributed ownership), or a worker is listed twice (a forwarded
@@ -151,7 +152,7 @@ below.
   OWN turns (coordinator transcript).** After the coordinator ended its
   turn, the workers finish while it is idle; the coordinator's
   transcript shows a POST-IDLE notification turn (an `EntryNotification`
-  the parent drove — line 1079, design §3) carrying the workers'
+  the parent drove — line 1147, design §3) carrying the workers'
   terminal completions. The coordinator's model — not the root's — is
   the one woken for them. Falsification: the coordinator's transcript
   has NO post-idle notification turn for the workers (the worker
@@ -162,7 +163,7 @@ below.
   about a worker (step 4, the key new assertion).** The set of
   `<job-notification>` frames rendered on the ROOT's rail contains the
   COORDINATOR's terminal (COORD finishing — that is the root's OWN
-  direct delegate ending, line 1079 / line 1226) and contains NONE of
+  direct delegate ending, line 1147 / line 1304) and contains NONE of
   the worker job_ids. Concretely: for every worker job_id the
   coordinator reported in `COORDINATOR_SPAWNED`, that id does NOT appear
   in any notification frame on the root's rail. Falsification (this is
@@ -170,7 +171,7 @@ below.
   as the SUBJECT of a `<job-notification>` frame on the root's rail (the
   frame's `job_id=` attribute), or a worker's completion text appears
   INSIDE such a frame — the root was interrupted about a job a DESCENDANT
-  created, which the owner-scoped rule (line 1079, Jesse's ruling
+  created, which the owner-scoped rule (line 1147, Jesse's ruling
   "an agent is never interrupted about a *subagent's* children")
   forbids. Match on the frame SUBJECT, not a bare substring search: a
   worker job_id and its `WORKER_x` payload legitimately appear in the
@@ -185,7 +186,7 @@ below.
   `depth` 1. The step-5.4 `job_stop(COORD2, max_wait_ms 8000)` HALTS the
   live subtree: the step-5.5 re-list shows BOTH workers terminal —
   `cancelled` with reason `stopped_by_parent` (the cascade reached into
-  the subtree without a flag, line 1084), NOT still `running`. This is
+  the subtree without a flag, lines 848, 1152), NOT still `running`. This is
   the DECISIVE assertion — a `job_stop` on the coordinator MUST stop its
   running workers. COORD2's OWN record may read `completed` rather than
   `cancelled`: a fire-and-return coordinator finishes its own turn and
@@ -193,8 +194,8 @@ below.
   the live subtree, NOT the coordinator's already-terminal own record —
   so do NOT require COORD2's own status to be `cancelled`. The cascade
   fires regardless of the coordinator's own terminal status (the
-  stop-cascade has no terminal gate; `delegateChildSessionToCascade` in
-  `agent/jobs_nested.go`): a fire-and-return coordinator whose own job is
+  stop-cascade has no terminal gate; `delegateChildSessionToCascade`,
+  `agent/jobs_nested.go:437`): a fire-and-return coordinator whose own job is
   already `completed` STILL has its live workers stopped. Falsification
   (the cascade hole this guards): either worker is still `running` after
   the stop confirmed — `job_stop` on the coordinator failed to halt its
@@ -203,12 +204,12 @@ below.
   confirmed (record what you see); a worker left silently `running` is
   the failure.
 - **Durable substrate.** The root's `jobs.jsonl` contains forwarded
-  `job_started` (typed `delegate`, line 1077) and `job_finished` events
+  `job_started` (typed `delegate`, line 1145) and `job_finished` events
   for COORD/COORD2 and — as forwarded one-hop copies — for the workers,
   each worker copy carrying `owner_session_id` = the coordinator's
   session and `parent_job_id` = the coordinator. The presence of these
   forwarded records is the visibility substrate; it is NOT a
-  notification (line 1079: the forwarded copy is a drive signal, not a
+  notification (line 1147: the forwarded copy is a drive signal, not a
   rail-rendered frame).
 
 ## Cleanup
@@ -243,22 +244,27 @@ below.
   post-idle notification turn rather than expecting it instantaneously;
   a short worker sleep (8s) keeps the window tight without racing the
   drive.
-- **Tree-wide cap is 16 (line 1207).** This card's fan-out (1
-  coordinator + 3 workers = 4 running, then COORD2 + 2 = 3) stays well
-  under the cap; a spawn/resume at the cap fails
-  `tree_at_capacity: 16 delegate jobs running across this session tree...`.
-  Do not fan out wider here or the cap, not the owner-scoping, becomes
-  the thing under test (the cap is exercised separately).
+- **Tree-wide cap is 50 (lines 1281, 1302; `--max-concurrent-delegates`,
+  `defaultMaxConcurrentDelegateTurns`, `agent/tree_counter.go:12`).** It was
+  raised from the original hardcoded 16, and drive turns now budget
+  separately (`defaultMaxConcurrentDriveTurns` = 8, `:17`). This card's
+  fan-out (1 coordinator + 3 workers = 4 running, then COORD2 + 2 = 3)
+  stays well under the cap; a spawn/resume at the cap fails
+  `tree_at_capacity: 50 delegate turn slots in use across this session tree (J delegate jobs, D drive turns). Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.`
+  (`agent/tree_counter.go:41-42`) — note "turn slots", not "jobs running",
+  and the trailing jobs/drives split. Do not fan out wider here or the cap,
+  not the owner-scoping, becomes the thing under test (the cap is
+  exercised separately).
 - **Worker timing for visibility (step 3).** The turn-1 workers sleep
   8s; step 3's `include_descendants` list must run while they are still
   `running` to assert the `depth`-1 live rows. If they have already
   finished, the rows show terminal status (still owner-attributed at
-  `depth` 1 as the forwarded terminal copy, line 1071) — re-run with a
+  `depth` 1 as the forwarded terminal copy, line 1139) — re-run with a
   longer worker sleep if the live-running assertion needs them up.
 - A worker that "helpfully" declines the leaf gate by not attempting a
   nested delegate leaves arm (b)'s leaf assertion resting on the
   prompt-surface check (the `delegate` tool absent from the worker's
   prompt) rather than a live rejection. Both are valid evidence; the
-  prompt-absence form (line 102) is the normative one and is
+  prompt-absence form (line 112) is the normative one and is
   deterministic, so prefer reading the worker's system prompt /
   available tools over coaxing it into a forbidden call.

@@ -30,11 +30,17 @@ Pick a real session with watch deliveries (coalescing is fine — it is *expecte
 not a fault). Run the doctor persona directly:
 
 ```bash
-PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini run \
-  --prompt "Diagnose serf session <SID> for watch self-loops and delivery health.
-            Use the serf-doctor tools and the doctoring-serf skill. Report findings;
-            a healthy run emits zero findings."
+PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini \
+  "Diagnose serf session <SID> for watch runaways and delivery health.
+   Use the serf-doctor tools and the doctoring-serf skill. Report findings;
+   a healthy run emits zero findings."
 ```
+
+(The prompt is a bare trailing positional: `serf` has no `run` subcommand
+and no `--prompt` flag — `cmd/serf/main.go:359-372` dispatches only
+`serve`/`launch-check`/`openai`/`upgrade`/`plugin`, and unrecognised
+leading words would be silently joined into the prompt text by
+`cliprompt.Read` (`cmd/serf/main.go:166`) rather than erroring.)
 
 ASSERT the doctor:
 - invokes `serf-doctor watches <SID> --json` (and/or `--self-loops`) via the shell
@@ -57,7 +63,12 @@ depth up to the fuse: a delivered send plus a send DROPPED with
 is normal; the diagnosable event is the fired fuse):
 
 ```bash
-SCR=$(mktemp -d); BSID=01BROKENLOOPAAAAAAAAAAAAAAA; mkdir -p "$SCR/sessions/$BSID"
+# BSID must be a REAL session id: serf-doctor validates the selector before
+# reading anything (identifier.ValidateSessionID -> 22-char base62 UUIDv7,
+# identifier/uuid.go:12,64-73), so a readable fake like 01BROKENLOOP... is
+# rejected with `invalid session id` and nothing below runs. This literal is
+# a generated, validated id; keep it or generate another.
+SCR=$(mktemp -d); BSID=033z4xc9zG2DUwYAg4Pcdh; mkdir -p "$SCR/sessions/$BSID"
 printf '{"kind":"header","session_id":"%s"}\n' "$BSID" > "$SCR/sessions/$BSID.transcript.jsonl"
 printf '{"id":"%s"}' "$BSID" > "$SCR/sessions/$BSID.meta.json"
 cat > "$SCR/sessions/$BSID/jobs.jsonl" <<'JOBS'
@@ -66,9 +77,9 @@ cat > "$SCR/sessions/$BSID/jobs.jsonl" <<'JOBS'
 {"kind":"watch_send_dropped","seq":3,"watch_id":"wLOOP","watch_send":{"key":{"watch_id":"wLOOP"},"delivery_id":"dl3","diagnostic_reason":"runaway","self_influence_depth":8}}
 JOBS
 
-PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini run \
-  --prompt "Diagnose serf session $BSID for watch runaways. The state dir is $SCR
-            (pass it via --state-dir). Use the observer-self-loop runbook. Report findings."
+PATH="$PWD:$PATH" serf --agent doctor --model openai/gpt-5.4-mini \
+  "Diagnose serf session $BSID for watch runaways. The state dir is $SCR
+   (pass it via --state-dir). Use the observer-self-loop runbook. Report findings."
 ```
 
 ASSERT the doctor emits **exactly one** Finding conforming to the contract:
@@ -82,7 +93,9 @@ ASSERT the doctor emits **exactly one** Finding conforming to the contract:
   ran to the machinery floor — report the loop's participants; the drop itself
   is the breaker working as designed).
 
-Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini): the doctor
+Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini — recorded
+verbatim, so its session id is the pre-identifier-refactor 26-char form this
+card no longer uses; a re-run's signature carries `$BSID` instead): the doctor
 read the runbook + data-model references, ran exactly
 `serf-doctor watches 01BROKENLOOPAAAAAAAAAAAAAAA --state-dir $SCR
 --self-loops --json`, and emitted ONE Finding verbatim to the contract:
@@ -98,7 +111,7 @@ participants): `--self-loops` returned no watches and the doctor reported
 
 - If half A emitted a finding for coalescing, the doctor would be miscalibrated
   (visibility ≠ violation).
-- If half B emitted zero findings, the self-loop verdict (Chain walk) or the
-  runbook's CLASSIFY step would be broken.
+- If half B emitted zero findings, either the breaker telemetry (`runaway_drops`
+  on the `--self-loops` filter) or the runbook's CLASSIFY step would be broken.
 - If the doctor read `jobs.jsonl` by hand instead of running `serf-doctor`, it
   would be violating the HARD GATE.

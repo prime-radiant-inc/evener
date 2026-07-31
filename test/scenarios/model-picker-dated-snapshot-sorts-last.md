@@ -1,7 +1,7 @@
 # model-picker-dated-snapshot-sorts-last: bare family id before its dated snapshot, within a provider
 
 **What this covers**: Track B Tasks 4 (web `sortModelEntriesDatedLast`/
-`isDatedSnapshotModelID`, `cmd/serf-hub/web_spawn.go`) and 11 (TUI
+`isDatedSnapshotModelID`, `cmd/serf-hub/web_spawn.go:197,226`) and 11 (TUI
 `modelPickerItems`, `cmd/serf-tui/hub_commands.go`) — within one provider's
 group, a bare model id (e.g. `claude-opus-4-6`) must render before its dated
 snapshot (`claude-opus-4-6-20251101`), regardless of the order the live
@@ -46,13 +46,13 @@ Given no live path exists, this rule is instead verified as passing, on this
 exact build, via:
 - `TestIsDatedSnapshotModelID` and
   `TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`
-  (`cmd/serf-hub/app_models_test.go:89-128`) — asserts
+  (`cmd/serf-hub/app_models_test.go:151,169`) — asserts
   `modelDescriptorsToAPIModels([{anthropic, claude-opus-4-6-20251101},
   {anthropic, claude-opus-4-6}, {openai, gpt-5.2}], nil)` returns the
   anthropic group in order `[claude-opus-4-6, claude-opus-4-6-20251101]`
   regardless of input order.
 - `TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`
-  (`cmd/serf-tui/hub_model_picker_items_test.go:59-70`) — same assertion for
+  (`cmd/serf-tui/hub_model_picker_items_test.go:59`) — same assertion for
   the TUI's `modelPickerItems`.
 - Both re-run and confirmed green during this task:
   `go test ./cmd/serf-hub/ -run TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast` and
@@ -92,7 +92,7 @@ precedes the dated id's row in DOM order; repeat for the TUI's `n` picker.
   `-02-15`-style partial dates (5 digits, not 8) are correctly treated as
   non-dated by the same rule that correctly flags `-20260420` as dated.
 - The `openrouter` launch-check visibility filter
-  (`launchCheckModelVisible`, `cmd/serf/internal/launchcheck/launchcheck.go:280-297`)
+  (`launchCheckModelVisible`, `cmd/serf/internal/launchcheck/launchcheck.go:274-291`)
   is unrelated to and upstream of anything in this track — it's why
   `GET /api/models` for an `openrouter` instance in this session only ever
   showed 6-7 curated deepseek/inception/minimax models instead of

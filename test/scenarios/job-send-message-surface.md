@@ -1,4 +1,4 @@
-# delegate-send-surface: job handles are rejected, running delegates steer, and idle delegates start only when explicit
+# job-send-message-surface: job handles are rejected, running delegates steer, and idle delegates start only when explicit
 
 **What this covers**: the core `delegate_send` outcomes against the
 handle-split API. (a) A concrete `job_id` is a turn handle and is

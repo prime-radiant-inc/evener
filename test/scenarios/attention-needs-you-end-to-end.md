@@ -62,9 +62,10 @@ per `docs/agentic-testing.md`.
      .dispatchEvent(new Event("input", {bubbles:true}));
    document.querySelector('button[data-chip="model"]').click();
    ```
-   Pick the cheap model the same way `spawn-picker-enter-noop.md`
-   does — type a unique substring into the picker's search input,
-   then Enter selects it (does not submit the form):
+   Pick the cheap model by typing a unique substring into the picker's
+   search input, then Enter — the picker's own keydown handler selects
+   the highlighted row and calls preventDefault
+   (`widgets/modelCatalog/index.tsx:204-216`):
    ```
    type haiku
    ```
@@ -262,10 +263,9 @@ rm -rf "$HOME" "$tmpdir"
 - **Model picker options carry no stable per-option selector** —
   `.chip-picker-option` rows are plain `textContent`, matched by
   typing into `.chip-picker-search`, not clicked by attribute.
-  `spawn-picker-enter-noop.md` is the canonical reference for this
-  interaction (and documents that Enter can jump active providers if
-  your substring matches more than one — pick a substring, like
-  `haiku`, that is unique across configured providers).
+  Pick a substring, like `haiku`, that is unique across configured
+  providers: with several matches the highlighted row may not be the
+  one you meant.
 - The interrupt variant's daemon-side contract (interrupted turns
   hard-code `idle`, never upgrade to `awaiting`) is also covered by
   Go tests; this scenario's REST-shim variant is the cross-surface

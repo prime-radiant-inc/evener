@@ -10,12 +10,13 @@ button uses the SAME path.
 
 ## Pre-state
 
-- An isolated hub built from the branch under test, running with `-serf`
+- An isolated hub built from the branch under test, running with `--serf`
   set so it can spawn fresh daemons — the scratch `$HOME` and
   kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
-  never Jesse's real hub. Step 2 globs the run directory for a pid and
-  step 3 kills it; under the real `$HOME` that glob names his live
-  daemons.
+  never Jesse's real hub. Every `$HOME/.serf/run` path below is that
+  isolated home's rendezvous dir (`rendezvous.DefaultDir()`,
+  `rendezvous/rendezvous.go:40-49`): step 2 globs it for a pid and step 3
+  kills it, and under the real `$HOME` that glob names his live daemons.
 - A session exists whose last completed turn ended in idle (i.e.
   not stuck-processing — the r6y9 case is different). Spawn one if
   needed: `curl ... /api/spawn` with a quick prompt.
@@ -39,9 +40,13 @@ button uses the SAME path.
    already be there).
 5. Verify the status ribbon now shows `ended` (or similar — past-
    only projection). Send form should still be enabled.
-6. Type a new message into the send textarea
-   (`textarea[placeholder="message the agent…"]`) and click the
-   submit button (or `⌘↵`).
+6. Type a new message into the composer's textarea — find it via
+   `[data-testid="composer-input-card"]`
+   (`panes/session/composer/Composer.tsx:760`), not by placeholder text:
+   the placeholder is `Message the agent…` on a live session but
+   `Send a follow-up…` once the session reads as ended (`:782`), which
+   is exactly the state step 5 just confirmed. Then click the submit
+   button (`[data-testid="composer-submit"]`) or press `⌘↵`.
 
 ## Expected
 

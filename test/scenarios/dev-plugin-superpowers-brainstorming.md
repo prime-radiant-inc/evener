@@ -34,7 +34,7 @@ heavy and worth its own scenario.
    ls "$tmpdir/superpowers/skills/brainstorming/SKILL.md"
    ```
 3. Spawn a serf session with the plugin dir in `launch_overrides`.
-   The wire key is `pluginDirs` (camelCase, per `internal/appwire/types.go`):
+   The wire key is `pluginDirs` (camelCase, `appwire/types.go:1715`):
    ```bash
    TOKEN=$(cat "$HOME/.serf/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
@@ -112,4 +112,7 @@ between runs if you care about a clean past index.
   override that takes precedence over global / in-repo launch
   config. To make a plugin available across all sessions, set it
   in `$HOME/.serf/launch.toml` or via `serf-hub`'s settings UI under
-  Launch Defaults → Plugin Dirs.
+  Settings → Extensions → Plugins, in the "Plugin directories" list
+  (`panes/settings/sections.ts:30,49`;
+  `panes/settings/sections/pluginsDirs.tsx:11-12`). There is no
+  "Launch Defaults" section.

@@ -4,11 +4,12 @@
 web effort picker both show only the current model's levels, and both
 surfaces display the current model AND current effort for a cold-attached
 client (no prior notification). Exercises `/effort`
-(`cmd/serf-tui/hub_command_registry.go`), the session header's `effort` part
-(`hub_session_view.go:54`), and (for the web half of the criterion) the
-`⌘K` "Set reasoning effort" palette command (`cmd/serf-hub/assets/search.js`)
-plus the `composer-effort-value` chip (`model-switch.js`'s
-`renderEffortChip`).
+(`cmd/serf-tui/hub_command_registry.go:348-361`), the session header's
+`effort` part (`hub_session_view.go:52`), and (for the web half of the
+criterion) both the `⌘K` "Set reasoning effort" palette command
+(`cmd/serf-hub/frontend/src/shell/palette/commands.ts:393-408`) and the
+inline effort control in the session status row
+(`panes/session/chrome/StatusRow.tsx:130-162`).
 
 ## Pre-state
 
@@ -33,13 +34,16 @@ plus the `composer-effort-value` chip (`model-switch.js`'s
    `model` and `effort` parts.
 5. **Web, live.** In the web client (already attached, no reload since step
    3), open the `⌘K` palette, run "Set reasoning effort". Confirm the
-   offered levels match the *current* model's ladder (`window.SerfModelSwitch
-   .effortLevels()`), and confirm they reflect the level set in step 3 (i.e.
-   web already converged live via `thread/reasoning-effort/changed`).
+   offered levels match the *current* model's ladder (the thread snapshot's
+   `reasoningEffortLevels`, `appwire/types.go:348-349`, which
+   `StatusRow.tsx:128-129` filters `none` out of), and confirm they reflect
+   the level set in step 3 (i.e. web already converged live via
+   `thread/reasoning-effort/changed`).
 6. **Web, cold attach.** Reload the web client's session page fresh (or open
    a brand-new tab with no prior notification history). Read
-   `[data-effort-display]` (composer-effort-value chip) and
-   `[data-model-trigger] [data-model-display]` immediately after load.
+   `[data-testid="status-row-effort-value"]` and
+   `[data-testid="model-switch-value"]` (`ModelSwitch.tsx:137`)
+   immediately after load.
 7. **Known-empty ladder case.** Switch the session (or spawn a second one)
    to a model with `supportsReasoning: false`. Repeat `/effort` in the TUI:
    confirm it does NOT open a picker and instead shows an informative
@@ -58,10 +62,10 @@ plus the `composer-effort-value` chip (`model-switch.js`'s
 - Step 5 (web live convergence, sanity check supporting AC 1/6 together):
   levels match the model's ladder; the level reflects step 3's TUI-driven
   change without a web reload.
-- Step 6 (AC 6, web cold attach): `[data-effort-display]` shows the current
-  effort and `[data-model-trigger]`'s display shows the current model
-  immediately on load — driven by `loadEffortSnapshot()`'s one-shot
-  `thread/read` at init, not a notification. Falsification: the chip is
+- Step 6 (AC 6, web cold attach): `[data-testid="status-row-effort-value"]`
+  shows the current effort and `[data-testid="model-switch-value"]` shows
+  the current model immediately on load — driven by the thread snapshot at
+  init, not a notification. Falsification: the chip is
   blank/hidden or shows a stale value until some later event fires.
 - Step 7: `supportsReasoning === false` is a KNOWN-empty answer — no picker
   opens; the TUI shows the informative message. This distinguishes it from
@@ -83,10 +87,14 @@ plus the `composer-effort-value` chip (`model-switch.js`'s
   "unknown, falls back to default levels" with "known-empty, no levels" when
   reading `effortLevels()`'s behavior; step 7 is specifically the
   known-empty case.
-- The web effort control is **not** a clickable chip in this build — it's a
-  read-only `[data-effort-display]` span; setting effort goes exclusively
-  through the `⌘K` palette command. Don't look for a `data-effort-trigger`
-  click target.
+- The web effort control **is** interactive: the status row renders a real
+  native `<select id="status-row-reasoning-effort">` under a transparent
+  overlay, with the visible readout in
+  `[data-testid="status-row-effort-value"]` and the whole control wrapped
+  in `[data-testid="status-row-effort"]` (`StatusRow.tsx:130-162`). The
+  `⌘K` palette command still exists, but it is not the only path — an
+  older version of this card called the web control read-only, which would
+  make a working control read as a regression.
 - `/effort` gates on the `ChangeModel` capability (same gate as `/model`) —
   if a session's capabilities haven't hydrated yet, the command may
   correctly report unavailable; wait for capabilities before asserting the

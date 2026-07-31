@@ -5,7 +5,7 @@ Track D plan. WS5 previously fixed the main MCP-fatal cause of
 buried-stderr HTTP 500s on spawn. This card re-checks, live, the three
 remaining named failure classes: a bogus model id, a working dir that
 doesn't exist, and a harness binary the hub can't execute — against the
-real `POST /api/spawn` handler (`cmd/serf-hub/web_spawn.go:87` →
+real `POST /api/spawn` handler (`cmd/serf-hub/web_spawn.go:63` →
 `hubThreadStart` in `cmd/serf-hub/app_threadlifecycle.go` →
 `HubSpawner.Spawn` in `cmd/serf-hub/spawn.go`).
 
@@ -26,7 +26,7 @@ real `POST /api/spawn` handler (`cmd/serf-hub/web_spawn.go:87` →
    HTTP 503
    {"error":"model provider is not reported by the Serf launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
    ```
-   Rejected in `validateSerfLaunchModel` (`cmd/serf-hub/app_models.go:104-125`)
+   Rejected in `validateSerfLaunchModel` (`cmd/serf-hub/app_models.go:104-125`, fail-open guard at `:106-108`)
    before any subprocess is spawned. Legible, named, structured JSON.
 
 2. **(a2) Real provider, bogus model** — `model:
@@ -58,7 +58,7 @@ real `POST /api/spawn` handler (`cmd/serf-hub/web_spawn.go:87` →
    {"error":"serf launch-check failed: fork/exec /nonexistent/path/to/serf-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
-   (`cmd/serf-hub/spawn.go:609-642`), which execs `<serf-binary>
+   (`validateSerfLaunchContract`, `cmd/serf-hub/spawn.go:712`), which execs `<serf-binary>
    launch-check` before ever attempting the real daemon spawn. The Go
    `exec` error (`fork/exec ...: no such file or directory`) surfaces
    verbatim inside the structured wire error — legible and precise
@@ -73,8 +73,8 @@ as a structured JSON body (`{"error": ..., "code": ..., "serf_error_info":
 ...}`) with an HTTP status appropriate to the failure kind (400 for
 caller input errors via `appwire.CodeInvalidParams`, 503 for
 launch/environment-side failures via `appwire.CodeUnavailable`) — see
-`writeSpawnError` (`cmd/serf-hub/web_spawn.go:143-155`) and
-`writeAPIWireError` (`cmd/serf-hub/web_api.go:75-86`). WS5's fix holds:
+`writeSpawnError` (`cmd/serf-hub/web_spawn.go:104-116`) and
+`writeAPIWireError` (`cmd/serf-hub/web_api.go:89`). WS5's fix holds:
 no regression to buried-stderr raw 500s was found for any of the three
 named classes. **No code change made — this card is the re-verification
 record.**
@@ -100,9 +100,10 @@ response). Neither was observed.
   edges): a hub with an auto-materialized `providers.toml` present
   incorrectly requires a credential for `ollama` even though it needs
   none (`validateProviderCredentials`'s config-aware branch,
-  `cmd/serf-hub/spawn.go:461-509`, has no `SourceNone`-equivalent
-  escape hatch the way the no-config branch does at
-  `spawn.go:519-527`). This produced a *legible* 503
+  `cmd/serf-hub/spawn.go:556-608`, error at `:608`, has no
+  `SourceNone`-equivalent escape hatch the way the no-config branch
+  does at `spawn.go:623-634`). Still present, re-verified against this
+  tree. This produced a *legible* 503
   (`"provider credentials missing for ollama: ..."`), so it doesn't
   itself falsify this card's "raw 500 / hang" question — but it's a
   real correctness bug (a valid, credential-free spawn is wrongly

@@ -1,11 +1,10 @@
 # workspace-title-bar-actions: interrupt, compact, shutdown end-to-end
 
 **What this covers**: kata `gx92`. The workspace title-bar buttons
-(interrupt, compact, shutdown) hit `handleSessionAction` in
-`cmd/serf-hub/web.go`, which forwards to the daemon via appwire
-(`TurnInterruptParams`, `ThreadCompactStartParams`,
-`ThreadShutdownParams`). The jstest suite (`test-actions.js`) confirms
-the click handlers POST the right URLs. This scenario is the
+(interrupt, compact, shutdown) hit `handleSessionAction`
+(`cmd/serf-hub/web_session.go:188`), which forwards to the daemon via
+appwire (`TurnInterruptParams`, `ThreadCompactStartParams`,
+`ThreadShutdownParams`). This scenario is the
 server-side counterpart: did the daemon actually stop / compact /
 exit? Without this, a regression in the daemon-side wiring of these
 RPCs would not be caught.
@@ -244,7 +243,11 @@ head and runs it as a fresh user turn:
   instantly (compaction here is local re-projection of in-memory
   context; the daemon does not call the model). Transcript grows by
   exactly one entry of `turn.kind = "CHECKPOINT"` whose `message.text`
-  contains `[CONTEXT CHECKPOINT]` and includes the prior user
+  contains `[CONTEXT CHECKPOINT - SESSION LOG]`
+  (`agent/internal/contextmgr/strategy_session_log.go:186` — the writer
+  stopped emitting the bare `[CONTEXT CHECKPOINT]` form, though `:217`
+  still reads it for back-compat, so match the full string or a prefix
+  of it) and includes the prior user
   messages and agent replies summarized. `turn_count` is unchanged.
 - **Step 4 (follow-up after compact)**: assistant's `communicate`
   reply references the first prompt (the literal `"reply with the
@@ -272,10 +275,11 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
 
 ## Sharp edges
 
-- **Interrupt wiring** (kata `k7t8`, fixed). `cmd/serf/serve.go`
-  wraps each turn in a per-turn `context.WithCancel(ctx)` and
-  registers the cancel via `srv.SetCancelFunc` for the duration of
-  the turn (cleared on completion). This means `capabilities.interrupt`
+- **Interrupt wiring** (kata `k7t8`, fixed — re-confirmed present).
+  `cmd/serf/serve.go` wraps each turn in a per-turn
+  `context.WithCancel(ctx)` and registers the cancel via
+  `srv.SetCancelFunc` for the duration of the turn (`:957,965,977`,
+  cleared at `:986`). This means `capabilities.interrupt`
   is true only mid-turn. The REST `/interrupt` handler returns 503
   if no cancel is registered (mirrors the appwire path's
   `Unavailable` semantics) — so a stale "interrupt" click on an
@@ -289,8 +293,8 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
   with a `<SYSTEM-REMINDER>` so the model sees on its next turn
   that the previous round was cut short. If you see state stay at
   `closed` after the interrupt, the abort path in
-  `agent/session.go` ProcessInput regressed to its pre-`0ax1`
-  behaviour of calling `s.Close()`.
+  `ProcessInput` (`agent/session_lifecycle.go:513`, not `agent/session.go`)
+  regressed to its pre-`0ax1` behaviour of calling `s.Close()`.
 - The slow-turn prompt depends on the model actually choosing to run
   `exec_command` with a sleep loop. `gpt-5.4-mini` did so reliably in
   testing, but a model that shortcuts (responds with "I'll do that"
