@@ -54,9 +54,54 @@ func TestWatchEndNoticeOnTerminalTargetForNeverFiredWatch(t *testing.T) {
 	}
 }
 
-// A cross-session watcher has no owner-side backstop: the target's job-stopped
-// notification goes to the job's owner, not to send_to. Without an end notice
-// on the watch channel the send_to target hears nothing, ever.
+// The cross-session shape the public job_watch tool actually produces: watching
+// a descendant's job installs on the OWNER's manager with the requesting session
+// as receiver (configureDescendantReceiverWatch). The target's job-stopped
+// notification goes to the owner, never to that receiver, so the end notice is
+// the only thing the watcher can ever hear — and it must land on the receiver's
+// queue rather than the owner's.
+func TestWatchEndNoticeRoutesToCrossSessionReceiver(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var ownerQueue, receiverQueue []jobNotification
+	jm.enqueue = func(n jobNotification) { ownerQueue = append(ownerQueue, n) }
+	rec, _ := jm.createShell(createShellOpts{Command: "go test ./..."})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:            rec.JobID,
+		OutputMatch:       "(FAIL|ok  |PASS)",
+		ReceiverSessionID: "S-observer",
+		ReceiverNotify:    func(n jobNotification) { receiverQueue = append(receiverQueue, n) },
+	}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	exit := -1
+	if err := jm.finalize(rec.JobID, jobstore.StatusStopped, "run_timeout", &exit); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	notices := watchChannelNotices(receiverQueue)
+	if len(notices) != 1 {
+		t.Fatalf("receiver watch-channel notices = %d (%+v), want exactly one end notice", len(notices), notices)
+	}
+	for _, want := range []string{"watch ended", "status=stopped", "reason=run_timeout", "output_bytes=0", "condition never matched"} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("end notice missing %q; got %q", want, notices[0].Reason)
+		}
+	}
+	if owner := watchChannelNotices(ownerQueue); len(owner) != 0 {
+		t.Errorf("owner watch-channel notices = %+v, want none (the notice belongs to the receiver)", owner)
+	}
+	// The owner's own job-stopped notification proves the queue was live, so the
+	// assertion above is about routing rather than an empty run.
+	if len(ownerQueue) == 0 {
+		t.Error("owner queue is empty; it should still carry the target's own job-stopped notification")
+	}
+}
+
+// A delegate-receiver watch routes its deliveries as a sidecar send to the
+// observing delegate. That target has no owner-side backstop either: without an
+// end notice on the watch channel it hears nothing, ever.
 func TestWatchEndNoticeReachesCrossSessionSendTarget(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
