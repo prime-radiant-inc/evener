@@ -1342,3 +1342,105 @@ test("the transcript flex chain carries min-width: 0", () => {
     expect(rule![1]).toContain("min-width: 0");
   }
 });
+
+// --- session-open lands at the transcript end (kata cmjb) ------------------
+//
+// A real serf session's transcript is never literally turns.length === 0 -
+// apptranscript.go's PreludeTurn always synthesizes one turn from the
+// session's system prompt before the first real turn exists (see
+// transcriptVisibility.ts's own isDormantTranscript comment). A dormant
+// session (composer visible, no real turn yet) that then gets its first
+// real turn WHILE THE PANE STAYS MOUNTED is the realistic, common shape of
+// "just spawned a session and it started replying" - and useTranscriptScroll's
+// mount effect used to key its one-time "no saved position -> scroll to the
+// end" initialization off turns.length > 0, which was ALREADY true from the
+// prelude turn alone, before the real (VirtualList-backed) transcript had
+// ever mounted. That transition then never re-triggered the effect (the
+// dependency didn't change), so the mount positioning, the scroll listener,
+// and stick-to-bottom never initialized at all for the rest of that pane's
+// life - not just "didn't land at the end", but never followed anything
+// again. This proves the fix by exercising the consequence that's actually
+// observable in jsdom (no real scrollTop/scrollHeight - see
+// useTranscriptScroll.ts's own comment on the injectable measure seam):
+// stick-to-bottom reacting to a live turn that arrives right after the
+// dormant -> real transition.
+test("a dormant session's transcript follows new content the instant its first real turn arrives, wired through the real VirtualList", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "active" },
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "You are serf, an agent...",
+              status: "completed",
+              eventKind: "system_prompt",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByTestId("empty-state");
+
+  // The dormant session's first real turn - the transition that must
+  // re-initialize useTranscriptScroll's mount effect.
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        ref: "ref_a",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
+        },
+      },
+    } as AnyNotification);
+  });
+  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBeGreaterThan(0));
+
+  // Scroll away, then a third live turn arrives. If the mount effect never
+  // (re)ran at the dormant -> real transition, initializedRef is stuck
+  // false and NOTHING below reacts - not the scroll listener (never
+  // attached), not the pill, nothing (every later effect in the hook bails
+  // on !initializedRef.current). A pill that never appears is
+  // indistinguishable, from the DOM alone, between "reader is caught up"
+  // and "the follow machinery is dead" - which is exactly why this asserts
+  // the pill DOES appear here, not that it stays absent.
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        ref: "ref_a",
+        turn: {
+          id: "turn_2",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "second", status: "completed" }],
+        },
+      },
+    } as AnyNotification);
+  });
+
+  const pill = await screen.findByTestId("new-content-pill");
+  expect(pill.textContent).toContain("1");
+});
