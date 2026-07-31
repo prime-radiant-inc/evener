@@ -84,6 +84,34 @@ func TestRun_LocateJSON(t *testing.T) {
 	}
 }
 
+// The client-mutation store settles "did the user's input reach the daemon", so
+// locate has to point a diagnostician at it like it does every other artifact.
+func TestRun_LocateListsMutationsStore(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"locate", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), filepath.Join("mutations", sid+".json")) {
+		t.Errorf("locate output missing the client-mutation store path:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"locate", "--json", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	var p struct {
+		MutationsPath string `json:"mutations_path"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &p); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if !strings.HasSuffix(p.MutationsPath, filepath.Join("mutations", sid+".json")) {
+		t.Errorf("mutations_path = %q, want the bucket-level mutations/<sid>.json form", p.MutationsPath)
+	}
+}
+
 func TestRun_WatchesRunawayFuse(t *testing.T) {
 	base, sid := fixture(t)
 	var out, errb bytes.Buffer

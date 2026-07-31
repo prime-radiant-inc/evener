@@ -180,8 +180,8 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if bucket == "" {
 		bucket = "(override root)"
 	}
-	return writef(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  api log:    %s\n  meta:       %s\n  jobs:       %s\n  bucket:     %s\n",
-		paths.SessionID, paths.TranscriptRef, paths.TranscriptPath, paths.APILogPath, paths.MetaPath, paths.JobsPath, bucket)
+	return writef(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  api log:    %s\n  meta:       %s\n  jobs:       %s\n  mutations:  %s\n  bucket:     %s\n",
+		paths.SessionID, paths.TranscriptRef, paths.TranscriptPath, paths.APILogPath, paths.MetaPath, paths.JobsPath, paths.MutationsPath, bucket)
 }
 
 func cmdTranscript(args []string, stdout, stderr io.Writer) int {

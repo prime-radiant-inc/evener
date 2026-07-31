@@ -118,7 +118,8 @@ func resolveBuckets(stateBase string) ([]bucket, error) {
 
 // pathsFor builds the resolved Paths for a session in a bucket. The jobs.jsonl
 // path is the per-session SUBDIR form (sessions/<sid>/jobs.jsonl), never a
-// suffix on the transcript path.
+// suffix on the transcript path. The client-mutation store is a third shape
+// again: a flat <sid>.json under a bucket-level mutations/ dir beside sessions/.
 func pathsFor(b bucket, sid string) Paths {
 	sess := filepath.Join(b.dir, "sessions")
 	return Paths{
@@ -130,6 +131,7 @@ func pathsFor(b bucket, sid string) Paths {
 		APILogPath:     filepath.Join(sess, sid+".api.jsonl"),
 		MetaPath:       filepath.Join(sess, sid+".meta.json"),
 		JobsPath:       filepath.Join(sess, sid, "jobs.jsonl"),
+		MutationsPath:  filepath.Join(b.dir, "mutations", sid+".json"),
 	}
 }
 
