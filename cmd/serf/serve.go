@@ -995,7 +995,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			close(runnerDone)
 			clearMutationRunner(runnerDone)
 			if processErr != nil {
-				fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
+				serveLogf(os.Stderr, sess.ID(), "error: %v", processErr)
 			}
 			_ = result
 			return processed
@@ -1011,7 +1011,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}()
 
 	// Start HTTP server.
-	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
+	serveLogf(os.Stderr, getSession().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.SERFHubSpawned.Getenv() == "1" {
@@ -1042,7 +1042,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SpawnedBy:  spawnedBy,
 	}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		fmt.Fprintf(os.Stderr, "[serve] rendezvous write failed: %v\n", err)
+		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			_ = rvRegistration.Remove()
@@ -1106,9 +1106,9 @@ func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []
 
 func reportServeResume(w io.Writer, meta schema.SessionMeta, model cmdutil.ModelRef, oldProvider, oldModel string, overridden bool) {
 	if overridden {
-		_, _ = fmt.Fprintf(w, "[serve] resumed session %s with model override %s (was %s/%s)\n", meta.ID, model.Qualified(), oldProvider, oldModel)
+		serveLogf(w, meta.ID, "resumed with model override %s (was %s/%s)", model.Qualified(), oldProvider, oldModel)
 	} else {
-		_, _ = fmt.Fprintf(w, "[serve] resumed session %s (%d turns)\n", meta.ID, meta.TurnCount)
+		serveLogf(w, meta.ID, "resumed (%d turns)", meta.TurnCount)
 	}
 }
 
