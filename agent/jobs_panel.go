@@ -1,0 +1,218 @@
+package agent
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"time"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
+)
+
+// isOutputNotExistErr reports whether err means the job's output file does
+// not exist, through the jobstore fmt.Errorf %w wrapping. (The raw os.Stat
+// results in the historical readers use os.IsNotExist directly; wrapped
+// paths need errors.Is.)
+func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+// JobSummary is the UI wire projection of one jobstore.JobRecord — the
+// shape serf/jobs/list returns and the webui jobs panel renders. Internal
+// fields (provenance, restore descriptors, transcript refs, working dir,
+// notify state) deliberately stay out.
+type JobSummary struct {
+	JobID       string `json:"jobId"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	Description string `json:"description"`
+	Command     string `json:"command,omitempty"`
+	Task        string `json:"task,omitempty"`
+	Background  bool   `json:"background"`
+	StartedAt   string `json:"startedAt"`
+	EndedAt     string `json:"endedAt,omitempty"`
+	ExitCode    *int   `json:"exitCode,omitempty"`
+	OutputBytes int64  `json:"outputBytes"`
+	HasOutput   bool   `json:"hasOutput"`
+}
+
+// JobOutputTail is the serf/jobs/output payload: the last bytes of a job's
+// durable output plus the bookkeeping a client needs to say "showing last N
+// of M bytes".
+type JobOutputTail struct {
+	Tail          string `json:"tail"`
+	TotalBytes    int64  `json:"totalBytes"`
+	RetainedStart int64  `json:"retainedStart"`
+	Truncated     bool   `json:"truncated"`
+}
+
+const (
+	jobOutputTailDefaultBytes = 4096
+	jobOutputTailMaxBytes     = 65536
+)
+
+func clampJobTailBytes(maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		return jobOutputTailDefaultBytes
+	}
+	if maxBytes > jobOutputTailMaxBytes {
+		return jobOutputTailMaxBytes
+	}
+	return maxBytes
+}
+
+// SummarizeJobRecord projects one record. Description is the first non-empty
+// of Description, Command, Task. HasOutput means a tail read is worth
+// attempting: an output path is recorded or bytes were counted.
+func SummarizeJobRecord(rec *jobstore.JobRecord) JobSummary {
+	if rec == nil {
+		return JobSummary{}
+	}
+	desc := rec.Description
+	if desc == "" {
+		desc = rec.Command
+	}
+	if desc == "" {
+		desc = rec.Task
+	}
+	s := JobSummary{
+		JobID:       rec.JobID,
+		Type:        string(rec.Type),
+		Status:      string(rec.Status),
+		Reason:      rec.Reason,
+		Description: desc,
+		Command:     rec.Command,
+		Task:        rec.Task,
+		Background:  rec.Background,
+		StartedAt:   rec.StartedAt.UTC().Format(time.RFC3339),
+		ExitCode:    rec.ExitCode,
+		OutputBytes: rec.OutputBytes,
+		HasOutput:   rec.OutputPath != "" || rec.OutputBytes > 0,
+	}
+	if rec.EndedAt != nil {
+		s.EndedAt = rec.EndedAt.UTC().Format(time.RFC3339)
+	}
+	return s
+}
+
+func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
+	out := make([]JobSummary, 0, len(ordered))
+	for _, rec := range ordered {
+		if rec == nil {
+			continue
+		}
+		out = append(out, SummarizeJobRecord(rec))
+	}
+	return out
+}
+
+// JobSummaries is the live-daemon serf/jobs/list payload: every job in the
+// session's durable store, in append order. A nil jobManager (a session that
+// never started job infrastructure) yields an empty, non-nil slice.
+func (s *Session) JobSummaries() []JobSummary {
+	if s == nil || s.jobManager == nil {
+		return []JobSummary{}
+	}
+	ordered, err := s.jobManager.store.LoadOrdered()
+	if err != nil {
+		return []JobSummary{}
+	}
+	return summarizeJobRecords(ordered)
+}
+
+// JobOutputTail is the live-daemon serf/jobs/output payload. found=false
+// means no job with that id exists; a found job with no output file yet is
+// an empty tail, not an error.
+func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bool, error) {
+	if s == nil || s.jobManager == nil {
+		return JobOutputTail{}, false, nil
+	}
+	content, total, truncated, err := s.jobManager.readOutput(jobID, int(clampJobTailBytes(maxBytes)))
+	if err != nil {
+		if isJobNotFoundErr(err) {
+			return JobOutputTail{}, false, nil
+		}
+		if isOutputNotExistErr(err) {
+			return JobOutputTail{}, true, nil
+		}
+		return JobOutputTail{}, true, err
+	}
+	return jobOutputTailFrom(content, total, truncated), true, nil
+}
+
+func jobOutputTailFrom(content string, total int64, truncated bool) JobOutputTail {
+	retainedStart := total - int64(len(content))
+	if retainedStart < 0 {
+		retainedStart = 0
+	}
+	return JobOutputTail{Tail: content, TotalBytes: total, RetainedStart: retainedStart, Truncated: truncated}
+}
+
+// LoadSessionJobList reads one local session's durable jobs.jsonl and
+// returns every job in append order, projected for the webui jobs panel. It
+// is read-only: a session with no jobs.jsonl yields an empty slice and
+// creates no file.
+func LoadSessionJobList(stateDir, sessionID string) ([]JobSummary, error) {
+	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	if _, err := historicalJobsStat(path); err != nil {
+		if os.IsNotExist(err) {
+			return []JobSummary{}, nil
+		}
+		return nil, err
+	}
+	store, err := historicalJobsOpen(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = store.Close() }()
+	ordered, err := store.LoadOrdered()
+	if err != nil {
+		return nil, err
+	}
+	return summarizeJobRecords(ordered), nil
+}
+
+// LoadSessionJobOutputTail reads one local session's durable jobs.jsonl and
+// returns the tail of one job's output file, for the hub's past-session
+// fallback. It is read-only. found=false means no job with that id exists;
+// a found job with no output file yet is an empty tail, not an error.
+func LoadSessionJobOutputTail(stateDir, sessionID, jobID string, maxBytes int64) (JobOutputTail, bool, error) {
+	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	if _, err := historicalJobsStat(path); err != nil {
+		if os.IsNotExist(err) {
+			return JobOutputTail{}, false, nil
+		}
+		return JobOutputTail{}, false, err
+	}
+	store, err := historicalJobsOpen(path)
+	if err != nil {
+		return JobOutputTail{}, false, err
+	}
+	defer func() { _ = store.Close() }()
+	recs, err := store.Load()
+	if err != nil {
+		return JobOutputTail{}, false, err
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		return JobOutputTail{}, false, nil
+	}
+	outPath := rec.OutputPath
+	if outPath == "" {
+		outPath = filepath.Join(jobsDir(stateDir, sessionID), "jobs", jobID+".log")
+	}
+	validatedTotal, _, err := validatedOutputStatsForRecord(outPath, rec)
+	if err != nil {
+		if isOutputNotExistErr(err) {
+			return JobOutputTail{}, true, nil
+		}
+		return JobOutputTail{}, true, err
+	}
+	content, total, truncated, err := tailOutputFile(outPath, int(clampJobTailBytes(maxBytes)), validatedTotal)
+	if err != nil {
+		if isOutputNotExistErr(err) {
+			return JobOutputTail{}, true, nil
+		}
+		return JobOutputTail{}, true, err
+	}
+	return jobOutputTailFrom(content, total, truncated), true, nil
+}

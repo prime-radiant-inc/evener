@@ -457,6 +457,9 @@ func (*miscHistoricalStore) Close() error { return nil }
 func (s *miscHistoricalStore) Load() (map[string]*jobstore.JobRecord, error) {
 	return s.records, s.loadErr
 }
+func (s *miscHistoricalStore) LoadOrdered() ([]*jobstore.JobRecord, error) {
+	return nil, s.loadErr
+}
 func (s *miscHistoricalStore) LoadGrants() (map[string]map[string]bool, error) {
 	return s.grants, s.grantErr
 }

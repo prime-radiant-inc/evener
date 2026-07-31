@@ -12,6 +12,7 @@ import (
 type historicalJobStore interface {
 	Close() error
 	Load() (map[string]*jobstore.JobRecord, error)
+	LoadOrdered() ([]*jobstore.JobRecord, error)
 	LoadGrants() (map[string]map[string]bool, error)
 }
 
