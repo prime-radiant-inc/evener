@@ -574,7 +574,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             resolves in a few frames and this UI cannot report progress it
             does not have (widgets/skeleton's honest-liveness rule). */}
         {attachments.items.length > 0 && (
-          <div className={CLASS.attachments}>
+          <div className={CLASS.attachments} data-testid="spawn-attachments">
             {attachments.items.map((item) => (
               <AttachmentTile key={item.marker} item={item} onRemove={() => attachments.removeItem(item.marker)} />
             ))}

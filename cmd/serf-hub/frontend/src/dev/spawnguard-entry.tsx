@@ -46,6 +46,54 @@ createRoot(rootEl).render(
   </ClientProvider>,
 );
 
+// An 8x4 two-colour PNG, inline - the same fixture image scripts/layoutguard/
+// cases/edhz-attachment-tile-single-image uses, for the same reason: staging
+// has to be hermetic (no file I/O, no network, no clipboard), and the source
+// must NOT be square. An <img> with no height still gets one from its
+// intrinsic aspect ratio, so a square source would make .imageThumbnail's
+// height:100% redundant and unfalsifiable (docs/testing.md's own
+// unfalsifiable-fixture trap).
+const SAMPLE_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAIAAAA8r+mnAAAAFUlEQVR4nGP4z/AfK2LAKYFDHLcEAGSoP8FHDbrlAAAAAElFTkSuQmCC";
+
+function samplePngFile(index: number): File {
+  const binary = atob(SAMPLE_PNG_BASE64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], `staged-${index}.png`, { type: "image/png" });
+}
+
+// Stages `count` images through the pane's REAL file-picker path - Spawn.tsx's
+// hidden <input type=file>, its own handleFilePicker, useAttachments.
+// ingestFiles, and the canvas re-encode - so what gets measured afterward is
+// the production staging pipeline's own output rather than hand-built tile
+// markup that can drift from it (kata 289v; docs/testing.md's
+// unfalsifiable-fixture trap). Nothing here is stubbed: this runs in a real
+// headless Chrome, where Image decode and canvas.toBlob work, so determinism
+// comes from the inline bytes alone.
+//
+// Resolves only once every tile has settled with a decoded thumbnail. The
+// deadline is a failure bound, not a settle wait - it throws rather than
+// letting the guard measure a half-staged tree and report it as layout.
+async function stageSpawnAttachments(count: number): Promise<number> {
+  const input = document.querySelector<HTMLInputElement>('#spawnguard-pane input[type="file"]');
+  if (!input) throw new Error("spawn pane has no file input to stage through");
+  const transfer = new DataTransfer();
+  for (let index = 0; index < count; index++) transfer.items.add(samplePngFile(index));
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const thumbnails = Array.from(document.querySelectorAll<HTMLImageElement>('[data-testid="attachment-tile"] img'));
+    if (thumbnails.length === count && thumbnails.every((img) => img.complete && img.naturalWidth > 0)) return count;
+    if (performance.now() > deadline) {
+      throw new Error(`only ${thumbnails.length} of ${count} attachment tiles settled within 10s`);
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
 interface Visibility {
   display: string;
   visibility: string;
@@ -104,6 +152,51 @@ function scanHorizontalOverflow(): string[] {
   return findings;
 }
 
+interface Box {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+function boxOf(element: HTMLElement): Box {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: rect.left,
+    right: rect.right,
+    top: rect.top,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+// The staged-attachment row is the only part of this pane built from
+// fixed-size boxes - 80x80 AttachmentTiles in a flex-wrap row - so it is the
+// part with a real chance of escaping a 390px viewport, and it exists only
+// once something is staged. Arithmetic says it wraps in time (4x80 + 3x8 =
+// 344px at 390px, capped at 8 items); this measures it instead (kata 289v).
+function measureAttachments() {
+  const row = document.querySelector<HTMLElement>('[data-testid="spawn-attachments"]');
+  const tiles = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="attachment-tile"]'));
+  return {
+    row: row ? boxOf(row) : null,
+    tiles: tiles.map((tile) => {
+      const thumbnail = tile.querySelector("img");
+      return {
+        ...boxOf(tile),
+        // A tile whose decode never landed still occupies its 80x80 box (the
+        // pending slot is sized identically on purpose), so geometry alone
+        // cannot tell a settled tile from a stuck one - this can.
+        decoded: thumbnail?.complete === true && thumbnail.naturalWidth > 0,
+      };
+    }),
+    rowCount: new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size,
+  };
+}
+
 function measureSpawn() {
   const actionBand = document.querySelector<HTMLElement>('[data-testid="spawn-mobile-actions"]');
   const actionBox = actionBand?.getBoundingClientRect();
@@ -142,6 +235,7 @@ function measureSpawn() {
       height: actionBox?.height ?? null,
     },
     rows,
+    attachments: measureAttachments(),
     accessiblePrompt: {
       headingTag: heading?.tagName.toLowerCase() ?? "missing",
       headingText: heading?.textContent?.trim() ?? "",
@@ -164,8 +258,10 @@ declare global {
   interface Window {
     measureSpawn: typeof measureSpawn;
     settledSpawn: Promise<true>;
+    stageSpawnAttachments: typeof stageSpawnAttachments;
   }
 }
 
 window.measureSpawn = measureSpawn;
 window.settledSpawn = settled;
+window.stageSpawnAttachments = stageSpawnAttachments;

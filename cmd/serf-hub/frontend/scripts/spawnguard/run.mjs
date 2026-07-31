@@ -14,6 +14,10 @@ import { fileURLToPath } from "node:url";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIDTHS = [390, 899, 900];
+// The staging cap (attachments/limits.ts MAX_ATTACHMENTS), so the row is
+// measured at the widest the product allows it to get.
+const STAGED_ATTACHMENTS = 8;
+const TILE_PX = 80;
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/usr/bin/google-chrome",
@@ -96,6 +100,19 @@ async function measureAt(cdpPort, vitePort, width) {
     await send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/spawnguard.html` });
     await loaded;
     await send("Runtime.evaluate", { expression: "window.settledSpawn", awaitPromise: true, returnByValue: true });
+    // Stage before measuring, at every width: the page is navigated fresh per
+    // width, and the staged-attachment row exists only once something is in
+    // it. A staging failure has to name itself here rather than surfacing
+    // later as an empty row that reads like a layout regression.
+    const staged = await send("Runtime.evaluate", {
+      expression: `window.stageSpawnAttachments(${STAGED_ATTACHMENTS})`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (staged.result.exceptionDetails) {
+      const detail = staged.result.exceptionDetails;
+      throw new Error(`staging attachments at ${width}px failed: ${detail.exception?.description ?? detail.text}`);
+    }
     const output = await send("Runtime.evaluate", {
       expression: "JSON.stringify(window.measureSpawn())",
       returnByValue: true,
@@ -147,6 +164,46 @@ function assertResult(result, expectedWidth) {
   } else {
     if (result.actionBand.position === "fixed") failures.push("desktop action band unexpectedly remains fixed");
   }
+
+  // Staged attachments (kata 289v). The harness stages them through the
+  // pane's own file picker before this runs, so a zero count here means the
+  // row never entered the measured tree - the whole point of the case.
+  const staged = result.attachments;
+  if (staged.tiles.length !== STAGED_ATTACHMENTS) {
+    failures.push(`expected ${STAGED_ATTACHMENTS} staged attachment tiles in the tree, found ${staged.tiles.length}`);
+  }
+  if (staged.row === null) {
+    failures.push("staged-attachment row is not in the measured tree");
+  } else if (staged.row.right > expectedWidth + 1 || staged.row.left < -1) {
+    failures.push(`staged-attachment row escapes the viewport: ${JSON.stringify(staged.row)}`);
+  }
+  for (const [index, tile] of staged.tiles.entries()) {
+    if (Math.abs(tile.width - TILE_PX) > 0.5 || Math.abs(tile.height - TILE_PX) > 0.5) {
+      failures.push(`attachment tile ${index} is ${tile.width}x${tile.height}, expected ${TILE_PX}x${TILE_PX}`);
+    }
+    if (tile.right > expectedWidth + 1 || tile.left < -1) {
+      failures.push(`attachment tile ${index} escapes the viewport: ${JSON.stringify(tile)}`);
+    }
+    if (staged.row !== null && (tile.right > staged.row.right + 1 || tile.left < staged.row.left - 1)) {
+      failures.push(
+        `attachment tile ${index} escapes its own row: ${JSON.stringify(tile)} vs ${JSON.stringify(staged.row)}`,
+      );
+    }
+    // Redundant with the staging wait, which already blocks on this exact
+    // condition - it cannot fail while that wait is in place, and it is here
+    // for the harness change that drops the wait. Not independent coverage.
+    if (!tile.decoded) failures.push(`attachment tile ${index} never decoded its thumbnail`);
+  }
+  // Fixed-size boxes in a flex-wrap row: where the row is too narrow to hold
+  // every tile side by side (ignoring gaps, which only make it narrower), a
+  // single line means the row is overflowing rather than wrapping. Read off
+  // the MEASURED row width rather than the viewport, so this says nothing at
+  // a width where one line is the right answer.
+  const tooNarrowForOneLine = staged.row !== null && staged.row.width < staged.tiles.length * TILE_PX;
+  if (tooNarrowForOneLine && staged.rowCount < 2) {
+    failures.push(`${staged.tiles.length} tiles sit on one line inside a ${staged.row.width}px row instead of wrapping`);
+  }
+
   if (result.overflow.length > 0) failures.push(`horizontal overflow: ${result.overflow.join("; ")}`);
   return failures;
 }
@@ -204,7 +261,9 @@ async function main() {
       const result = await measureAt(cdpPort, vitePort, width);
       const failures = assertResult(result, width);
       if (failures.length === 0) {
-        console.log(`${width}px ... PASS - Spawn breakpoint, action band, rows, accessibility, and overflow`);
+        console.log(
+          `${width}px ... PASS - Spawn breakpoint, action band, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
+        );
       } else {
         failed++;
         console.log(`${width}px ... FAIL`);

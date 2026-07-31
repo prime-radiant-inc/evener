@@ -170,6 +170,22 @@ its proper section — flag a decision (keep vs. fix) for each rather than silen
 
 ## G. Image attachments (`composer-attachments.js`)
 
+**Every "chip" in this section is the legacy surface (kata `jm81`).** These
+lines cite `composer-attachments.js`, where a staged image really did render
+as a text chip: `📎 <name> (<W>×<H>)`. The rewrite renders an 80×80
+`AttachmentTile` instead — one box in both states, an empty slot while the PNG
+re-encode is in flight and the thumbnail once it lands — in the session
+composer since kata `39xe` and in Spawn since kata `kbg7`. The dimensions
+became an overlay across that thumbnail; the filename is no longer text at
+all, only the accessible name of the tile's view/remove controls and the title
+of the lightbox they open. The marker rules below survive the change intact:
+each staged tile still reserves a never-reused marker, still inserts the
+literal `"[image N]"` at the cursor, and removing one still strips the FIRST
+literal occurrence of that marker by plain string search with the same
+cursor-shift rule. Kata `6nmz` did not touch that either — the textarea still
+holds RAW markers, and the translation to prose happens at the submit boundary
+only (floor §1.12).
+
 - [ ] Hard limits: max 8 attachments, max 8 MiB (`8 * 1024 * 1024`) per file — `cmd/serf-hub/assets/composer-attachments.js:21-22`. The 8-count cap is CUMULATIVE across the whole composer session (paste + drag + file-picker share one running total via `pendingState.items.length`), not reset per gesture — `:137-159`.
 - [ ] Every accepted image — including already-PNG input — is re-encoded to PNG via an offscreen `<canvas>` round-trip, which strips color profiles/EXIF; this matches the TUI's "always re-encode pasted clipboard image data" rule — `cmd/serf-hub/assets/composer-attachments.js:24-50`.
 - [ ] Rejection reasons are file-specific: non-image MIME → bare filename; over the 8-image cap → `"<name> (maximum 8 images)"`; over 8 MB → `"<name> (maximum 8 MB)"` — `cmd/serf-hub/assets/composer-attachments.js:120-135`.

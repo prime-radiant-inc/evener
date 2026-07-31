@@ -68,7 +68,11 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
   const source = item.data === undefined ? undefined : `data:${item.mediaType};base64,${item.data}`;
 
   return (
-    <div className={CLASS.imageTile}>
+    // data-testid, not the CSS-module class, is what the browser guards
+    // select on (scripts/spawnguard): a hashed module class is a build
+    // detail, and a guard that measures the real tree needs a selector the
+    // component owns.
+    <div className={CLASS.imageTile} data-testid="attachment-tile">
       {source === undefined ? (
         // Named, so a screen reader hears which attachment is holding
         // things up. Not a live region: eight of those announcing at once
