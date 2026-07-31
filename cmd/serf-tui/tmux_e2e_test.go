@@ -926,6 +926,55 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("Hub spawn failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
 
+// TestTUITmuxE2E_CaptureStableDuringStream exercises CaptureStable under the
+// exact condition kata nxq6 reported the pane going blank above the composer:
+// a rapid burst of hub notifications re-rendering the pane in a tight loop,
+// no keypresses. Every CaptureStable() result taken during the burst must be
+// a complete frame — the session breadcrumb from the top of the pane and the
+// composer's key hints from the bottom, never one without the other — which
+// is the property a lone Capture() cannot promise.
+func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
+	t.Parallel()
+	requireTmux(t)
+	bin := buildTUIBinary(t)
+	hub := newTUIE2EHub(t)
+	defer hub.Close()
+	app := startTUITmuxSized(t, bin, hub.URL(), 200, 50)
+	defer app.Close()
+
+	openLiveSession(t, app)
+	app.WaitFor("serf / session / live task", "initial answer", "enter send")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			hub.BroadcastAgentDelta("01LIVE", "streamed word ")
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		wg.Wait()
+	})
+
+	for i := 0; i < 5; i++ {
+		screen := app.CaptureStable()
+		if !strings.Contains(screen, "serf / session / live task") {
+			t.Fatalf("capture %d: CaptureStable returned a frame missing the session breadcrumb:\n%s", i, screen)
+		}
+		if !strings.Contains(screen, "enter send") {
+			t.Fatalf("capture %d: CaptureStable returned a frame missing the composer hints:\n%s", i, screen)
+		}
+	}
+}
+
 // openLiveSession navigates from the dashboard to the "live task" session and
 // opens it. The dashboard sorts the serf project first (it owns the live
 // session) so the fixed tree positions are: row 0 "Launch New Session",
@@ -1148,6 +1197,46 @@ func (a *tmuxTUI) CaptureHistory() string {
 		a.t.Fatalf("capture tmux history: %v\n%s", err, out)
 	}
 	return normalizePane(string(out))
+}
+
+// CaptureStable returns Capture()'s output once two consecutive captures,
+// tuiE2EPollInterval apart, are byte-identical.
+//
+// A single Capture() is a snapshot of tmux's OWN terminal-grid state, which
+// updates incrementally as bytes arrive from the pty — not a snapshot of what
+// serf-tui most recently rendered. bubbletea writes each frame as one
+// unsynchronized ANSI byte stream (no terminal synchronized-output mode,
+// bubbletea v1.3.10) with the composer/footer last; a frame is commonly
+// several KB, well past any platform's atomic-pipe-write guarantee, so under
+// load (rapid re-renders, CPU contention — e.g. right after a turn starts and
+// notifications are streaming) tmux can legitimately still be mid-write when
+// capture-pane samples it. The visible result (kata nxq6) is a pane that
+// looks blank above the composer's last few lines: not a rendering bug, a
+// read of tmux's grid caught between an erase and the redraw that follows it.
+// It self-heals on its own within milliseconds, which is exactly what makes
+// two matching captures a few ms apart trustworthy where one capture is not.
+//
+// Use this instead of a lone Capture() for any assertion that a substring is
+// ABSENT. WaitFor already retries until its wanted substrings appear, which
+// makes it self-correcting for POSITIVE assertions the same way — but its
+// returned screen is only guaranteed to contain what it waited for, not to be
+// a complete frame, so a negative check (`strings.Contains(screen, unwanted)`
+// on that same screen) can still land mid-render and read an absence that
+// isn't real.
+func (a *tmuxTUI) CaptureStable() string {
+	a.t.Helper()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	prev := a.Capture()
+	for time.Now().Before(deadline) {
+		time.Sleep(tuiE2EPollInterval)
+		cur := a.Capture()
+		if cur == prev {
+			return cur
+		}
+		prev = cur
+	}
+	a.t.Fatalf("pane capture never stabilized within %s (still changing every %s — a real, ongoing render, not a capture race)\nlast capture:\n%s", tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
+	return ""
 }
 
 func (a *tmuxTUI) Resize(width, height int) {

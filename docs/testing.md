@@ -112,6 +112,79 @@ real regression in code committed minutes earlier. A guard is only worth its
 run time once it has been mutation-tested: break the thing on purpose and
 confirm it fails, naming the right element.
 
+## A Single `tmux capture-pane` Can Lie
+
+`tmux capture-pane` returns tmux's OWN terminal-grid state, not a snapshot of
+what the program last rendered. tmux updates that grid incrementally as bytes
+arrive from the pty; `cmd/serf-tui` writes each frame through bubbletea's
+default renderer as one unsynchronized ANSI byte stream — bubbletea v1.3.10
+has no terminal synchronized-output-mode support at all (grep `standard_renderer.go`
+for `2026`/`SyncUpdate`; nothing), and a single frame commonly runs several
+KB, well past any platform's atomic-pipe-write guarantee. Under load (rapid
+re-renders, CPU contention — kata nxq6's report: "shortly after a turn
+started and notifications were arriving"), `capture-pane` can land while tmux
+is still mid-write and read a pane that is blank above the last few lines,
+with those last few lines already showing current content.
+
+nxq6 investigated the alternative — a real partial-repaint bug, some update
+path writing the composer without repainting the frame above it — first, and
+ruled it out two ways before touching tmux at all:
+
+- `hubModel.View()` composes the full frame synchronously from model state on
+  every call (`cmd/serf-tui/hub_model.go`, `sessionView()` in
+  `cmd/serf-tui/hub_session_view.go`); there is no code path that writes only
+  the composer, and the session breadcrumb (`topBar`) is provably non-empty
+  for any reachable state, so `tuiprim.AppShell.View()` cannot legitimately
+  drop it while keeping the footer.
+- The kata's own report is inconsistent with a `View()` bug on logical
+  grounds: `View()` is a pure function of model state, so an inert keypress
+  cannot change its return value — yet "any key... brought back... content
+  that had not changed" is exactly what a render/transport-path bug looks
+  like from the outside, and exactly what a `View()` bug cannot produce.
+
+`cmd/serf-tui/hub_partial_repaint_nxq6_test.go` drives realistic notification
+bursts through `hubModel.Update` directly (no terminal involved) and checks
+that invariant after every step, both as a fixed scenario and as a fuzz
+target; a mutation test (temporarily dropping `topBar` from `AppShell.View()`)
+confirmed the check fails the way it should before the mutation was reverted.
+
+**The fix**: never trust a lone `Capture()` (or a lone `capture-pane`) for a
+negative assertion ("X is absent"). `WaitFor` in
+`cmd/serf-tui/tmux_e2e_test.go` already retries until its wanted substrings
+appear, which self-corrects for POSITIVE assertions the same way a capture
+race self-heals — but the screen it returns is only guaranteed to contain
+what it waited for, not to be a complete frame, so a
+`strings.Contains(screen, unwanted)` check against that same screen can still
+land mid-render. Use `(*tmuxTUI).CaptureStable()` instead: it polls until two
+consecutive captures match. A torn frame cannot do that — it converges within
+milliseconds — while a pane that is genuinely still changing (an active
+stream) legitimately does not, so `CaptureStable` keeps polling rather than
+settling on a stable-but-wrong frame. `TestTUITmuxE2E_CaptureStableDuringStream`
+exercises it under a live rapid-notification burst.
+
+For a check scripted OUTSIDE this harness — an agent driving `tmux
+capture-pane` directly to verify TUI behavior, the scripted-verification
+workflow this hazard cost real time in during e79v's verification (kata
+nxq6's motivating example) — the same fix applies without the Go helper:
+
+```sh
+prev=$(tmux capture-pane -p -t "$SESSION")
+sleep 0.02
+cur=$(tmux capture-pane -p -t "$SESSION")
+while [ "$prev" != "$cur" ]; do
+  prev=$cur
+  sleep 0.02
+  cur=$(tmux capture-pane -p -t "$SESSION")
+done
+# $cur is now safe to grep for an absence.
+```
+
+A live repro under CPU-loaded, multi-session, wide-pane bursts (~7,000
+captures across several attempts) never caught the pattern directly — tmux
+usually wins this race on a healthy machine, which is consistent with the
+above rather than a counter-example to it. Treat the mechanism as
+evidence-backed, not directly observed.
+
 ## A Test That Never Runs
 
 A test that does not execute is worse than a missing test: it reports the
