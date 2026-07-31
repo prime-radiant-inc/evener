@@ -462,13 +462,34 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	}
 }
 
-// statusOverWire serves /status and decodes the response, so an assertion sees
-// what a client sees rather than the struct the handler filled in.
+// statusOverWire serves /status and decodes the response into StatusInfo --
+// the same struct the handler used to encode it. That proves the response is
+// valid JSON and every field survives the trip, but Marshal and Unmarshal
+// share one tag table here, so a JSON tag renamed or dropped on StatusInfo
+// changes what this helper both writes and reads together and the round trip
+// still succeeds. It cannot see that mutation. Use statusRawWire to pin a
+// field's literal wire name independently of the Go struct.
 func statusOverWire(t *testing.T, srv *Server) StatusInfo {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	srv.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
 	var got StatusInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode /status: %v", err)
+	}
+	return got
+}
+
+// statusRawWire serves /status and decodes the response as untyped JSON, so an
+// assertion can pin a field's literal wire key instead of going back through
+// StatusInfo. Only the handler's encode is involved -- there is no matching
+// Unmarshal side for a renamed or dropped tag to silently move with -- so a
+// mutated tag shows up here as a missing or differently-named key.
+func statusRawWire(t *testing.T, srv *Server) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode /status: %v", err)
 	}
@@ -523,6 +544,37 @@ func TestStatusServesTheEnvelopesFailureCountAndEscalationBit(t *testing.T) {
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.escalations = nil })
 	if statusOverWire(t, srv).PendingEscalation {
 		t.Fatal("pending_escalation stayed true after the last card cleared")
+	}
+}
+
+// TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys asserts the
+// literal wire key names statusOverWire cannot. That helper decodes into
+// StatusInfo, the same struct the handler filled in, so a JSON tag renamed or
+// dropped on StatusInfo is invisible to it -- encode and decode move
+// together. cmd/serf-hub/internal/hubcore/prober.go separately re-declares
+// these same two tags to read them cross-process, so a silent rename here is
+// a silent break there (the hub's needs-you badge for pending_escalation).
+// Decoding into an untyped map instead means a renamed or dropped tag surfaces
+// as a missing key, independently of whichever Go struct StatusInfo is.
+func TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.failedToolCalls, e.failuresMeasured = 3, true
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}}
+	})
+
+	raw := statusRawWire(t, srv)
+	got, ok := raw["failed_tool_calls"]
+	if !ok {
+		t.Fatalf(`/status JSON has no "failed_tool_calls" key: got %v`, raw)
+	}
+	if n, ok := got.(float64); !ok || n != 3 {
+		t.Fatalf(`"failed_tool_calls" = %v, want 3`, got)
+	}
+	if v, ok := raw["pending_escalation"]; !ok || v != true {
+		t.Fatalf(`/status JSON has no "pending_escalation": true, got %v (present=%v)`, v, ok)
 	}
 }
 
