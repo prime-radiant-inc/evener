@@ -97,6 +97,20 @@ specific provider's stored key; see `credentials-page-displays-sources.md`
 for the pattern). If a scenario needs a specific provider, check
 `./serf <provider> status` first.
 
+Restarting the stack mid-run (e.g. to pick up a rebuilt binary), two
+measured traps:
+
+- **Swap binaries with a fresh inode** (`rm` then `cp`, or `cp` to a
+  temp name and `mv`), never `cp` over the existing file: macOS caches
+  the code signature by inode, and a binary that has already been
+  exec'd gets SIGKILLed on its next exec after an in-place overwrite —
+  surfacing as the hub's opaque `serf launch-check failed: signal:
+  killed`.
+- **Re-export the provider keys in the relaunch shell** (`set -a; .
+  .env; set +a` again): the keys lived only in the original launch
+  shell's environment, and a bare relaunch fails `thread/start` with
+  `provider credentials missing` even though the first hub worked.
+
 OpenAI footgun: an inherited `OPENAI_API_KEY` takes precedence over
 stored OAuth. If `serf openai status` is signed in but a GPT run fails
 with API-key quota, start the test hub with the key cleared:
