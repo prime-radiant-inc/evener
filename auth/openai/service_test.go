@@ -135,7 +135,14 @@ func TestLoginManualPastebackDoesNotWaitForCallbackTimeout(t *testing.T) {
 	var expectedState string
 
 	svc := newTestService(now)
-	svc.cfg = Config{CallbackTimeout: 10 * time.Second}
+	// The callback timeout Login must NOT wait for sits far beyond this
+	// test's own deadline: a Login that waits for it can only return via the
+	// watchdog ctx below, as an error. That makes the regression a hard
+	// failure instead of a slow success, so no wall-clock bound is needed on
+	// the correct path — an elapsed-time assertion here flaked under fleet
+	// load (50ms bound, 50.4ms observed) for a path whose real duration is
+	// microseconds.
+	svc.cfg = Config{CallbackTimeout: time.Hour}
 	svc.startCallbackServer = func(_ context.Context, _ Config, _ int, state string) (callbackServer, error) {
 		expectedState = state
 		return &stubCallbackServer{
@@ -159,19 +166,18 @@ func TestLoginManualPastebackDoesNotWaitForCallbackTimeout(t *testing.T) {
 		}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Watchdog, not a performance bound: correct Login returns via the
+	// pasteback in microseconds; a Login that waits for the hour-long
+	// callback timeout hits this deadline and fails on err instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	start := time.Now()
 	status, err := svc.Login(ctx, stateDir, "openai")
 	if err != nil {
-		t.Fatalf("Login() error = %v", err)
+		t.Fatalf("Login() error = %v, want manual fallback without waiting for callback timeout", err)
 	}
 	if !status.SignedIn {
 		t.Fatal("SignedIn = false, want true")
-	}
-	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
-		t.Fatalf("Login() took %v, want manual fallback without waiting for callback timeout", elapsed)
 	}
 }
 
