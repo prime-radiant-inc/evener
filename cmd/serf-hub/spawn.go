@@ -738,6 +738,34 @@ func envToMap(env []string) map[string]string {
 	return out
 }
 
+// launchCheckWaitError says which way a launch-check that never produced a
+// verdict was stopped. Its context is done for two unrelated reasons — the
+// serfLaunchCheckTimeout budget elapsed, or the caller went away — and only the
+// first is a timeout. Calling the second one sends an operator triaging it
+// after a slow machine or a hung `serf launch-check`, when nothing was slow and
+// nobody is waiting for the answer any more (kata zg02).
+//
+// The launch-check runs ahead of the rendezvous wait and carries its own
+// budget, so this is the first place a mid-launch cancellation lands: the hub
+// runs it under the caller's context on every path that reaches it, and both
+// hub paths hand it a live request context — r.Context() on the REST resume,
+// the websocket connection's ctx on the RPC one.
+//
+// ctx.Err() separates the two outright, the same way rendezvousWaitError does
+// for the wait that follows: Canceled is the caller walking away,
+// DeadlineExceeded is time genuinely running out — the hub's own budget, or a
+// deadline the caller brought with it.
+//
+// Both stay an appwire.HubLaunchError, the discriminator the web client and the
+// TUI notice panel read to headline the failure as a session that would not
+// start. The label changes; the family of failure does not.
+func launchCheckWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return appwire.HubLaunchError("serf launch-check canceled")
+	}
+	return appwire.HubLaunchError("serf launch-check timed out")
+}
+
 func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, env []string) error {
 	if serfBinary == "" {
 		serfBinary = "serf"
@@ -752,7 +780,7 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
-		return appwire.HubLaunchError("serf launch-check timed out")
+		return launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
@@ -783,7 +811,7 @@ func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []s
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
-		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check timed out")
+		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
