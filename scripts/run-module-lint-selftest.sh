@@ -37,12 +37,30 @@ assert_count() {
 	assert_eq "$actual" "$3" "$4"
 }
 
+# macOS mktemp resolves -t against the per-user temp path and ignores TMPDIR, so
+# an unfaked mktemp puts every temporary directory outside the case: assertions
+# about those paths can then never fail, and the run litters the real TMPDIR.
+# Redirect only the -t forms and pass everything else through.
+write_fake_mktemp() {
+	cat >"$1/mktemp" <<'FAKE_TMPDIR_MKTEMP'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+	-d) [ "${2:-}" = "-t" ] && exec /usr/bin/mktemp -d "$TMPDIR/$3.XXXXXX" ;;
+	-t) exec /usr/bin/mktemp "$TMPDIR/$2.XXXXXX" ;;
+esac
+exec /usr/bin/mktemp "$@"
+FAKE_TMPDIR_MKTEMP
+	chmod +x "$1/mktemp"
+}
+
 new_case() {
 	case_dir="$(mktemp -d "$work/case.XXXXXX")"
 	repo="$case_dir/repo"
 	state="$case_dir/state"
 	bin="$case_dir/bin"
 	mkdir -p "$repo" "$state" "$bin"
+	write_fake_mktemp "$bin"
 	for module in agent llm auth envvars invariant identifier one two three four five; do
 		mkdir -p "$repo/$module"
 	done
@@ -198,7 +216,7 @@ rm "$bin/golangci-lint"
 out="$case_dir/missing.out"
 (
 	cd "$repo" || exit 1
-	TMPDIR="$case_dir" PATH="/usr/bin:/bin" MODULES=". agent llm" "$runner"
+	TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" MODULES=". agent llm" "$runner"
 ) >"$out" 2>&1
 rc=$?
 if [ "$rc" -ne 0 ]; then ok "missing golangci-lint exits nonzero"; else bad "missing golangci-lint exits zero"; fi
@@ -383,6 +401,131 @@ if [ -f "$state/stopped" ]; then ok "interrupted child handled termination"; els
 if [ "$child_pid" != missing ] && ! kill -0 "$child_pid" 2>/dev/null; then ok "interrupted child was waited"; else bad "interrupted child remains alive"; fi
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "interruption removes temporary logs"
 
+# Gate lifetime: each child opens the wave's start gate through an inherited
+# redirection, which happens whenever that child is first scheduled. Unlinking
+# the gate while the wave is still running hands a late child ENOENT on a FIFO
+# the runner deleted itself; that is how four modules "failed" with no logs at
+# all and a bare Bash diagnostic naming wave.start (kata cqne).
+#
+# The runner writes one .status file per child it has reaped, so the number of
+# them present when the gate is unlinked is exactly how far the reaping got.
+# That count is fixed by the runner's own statement order, not by scheduling,
+# which makes it the one signal here that cannot race.
+new_case
+cat >"$bin/rm" <<'FAKE_RM'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+	case "$arg" in
+		*/wave.start)
+			dir="${arg%/wave.start}"
+			printf 'reaped=%s\n' \
+				"$(find "$dir" -maxdepth 1 -type f -name '*.status' | wc -l | tr -d ' ')" \
+				>>"$FAKE_STATE/gate-unlink"
+			;;
+	esac
+done
+exec /bin/rm "$@"
+FAKE_RM
+chmod +x "$bin/rm"
+out="$case_dir/gate-lifetime.out"
+if run_lint "one two three four" "$out" LINT_PARALLEL=4; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "gate-lifetime scenario exits zero"
+assert_eq "$(cat "$state/gate-unlink" 2>/dev/null)" "reaped=4" "the wave's start gate outlives every check in that wave"
+assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" "four one three two" "every module in the wave reaches its linter"
+
+# A log directory that goes away under a live run is not a lint finding. Say so
+# once, with the path and the cause class, instead of one bare Bash diagnostic
+# per dependent step and a retained-log pointer into a directory that is gone.
+# One check per wave here: a sibling still opening its log would race the
+# removal and leave the directory behind, which is a fixture artifact rather
+# than anything the runner does.
+new_case
+cat >"$bin/golangci-lint" <<'FAKE_VANISH'
+#!/usr/bin/env bash
+set -u
+module="$(basename "$PWD")"
+printf '%s\n' "$module" >>"$FAKE_STATE/calls"
+if [ "$module" = "${FAKE_VANISH_MODULE:-}" ]; then
+	for d in "$TMPDIR"/serf-module-lint.*; do
+		[ -d "$d" ] && /bin/rm -rf "$d"
+	done
+fi
+exit 0
+FAKE_VANISH
+chmod +x "$bin/golangci-lint"
+out="$case_dir/vanished.out"
+if FAKE_VANISH_MODULE=one run_lint "one two three four five" "$out" LINT_PARALLEL=1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a vanished log directory exits nonzero"; else bad "a vanished log directory exits zero"; fi
+assert_count "$out" "disappeared mid-run" "1" "a vanished log directory is reported exactly once"
+assert_not_has "$out" "No such file or directory" "no bare per-step Bash diagnostics reach the caller"
+assert_has "$out" "TMPDIR reaper" "the diagnosis names the likely cause class"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (5 modules, results lost: one two three four five)" "the vanished-directory summary keeps the FAIL lint shape"
+assert_eq "$(wc -l <"$out" | tr -d ' ')" "4" "a vanished log directory produces one diagnosis, not one per step"
+vanished_dir="$(sed -n 's/^lint: the temporary log directory disappeared mid-run: //p' "$out")"
+case "$vanished_dir" in
+	"$case_dir"/serf-module-lint.*) ok "the diagnosis names the log directory that went away" ;;
+	*) bad "the diagnosis does not name the runner's log directory (got '$vanished_dir')" ;;
+esac
+
+# The same directory can go away in the gaps between waves and after the last
+# one, where no module check is running to notice. Take it away as the runner
+# retires a wave's gate, which is the last thing it does in a wave.
+write_vanishing_rm() {
+	cat >"$1/rm" <<'FAKE_VANISHING_RM'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+	case "$arg" in
+		*/wave.start) /bin/rm -rf "${arg%/wave.start}" ;;
+	esac
+done
+exec /bin/rm "$@"
+FAKE_VANISHING_RM
+	chmod +x "$1/rm"
+}
+
+new_case
+write_vanishing_rm "$bin"
+out="$case_dir/vanished-between-waves.out"
+if run_lint "one two three four five" "$out" LINT_PARALLEL=4; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a directory lost between waves exits nonzero"; else bad "a directory lost between waves exits zero"; fi
+assert_count "$out" "disappeared mid-run" "1" "a directory lost between waves is reported exactly once"
+assert_not_has "$out" "No such file or directory" "a directory lost between waves produces no bare Bash diagnostics"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (5 modules, results lost: one two three four five)" "a directory lost between waves keeps the FAIL lint shape"
+assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" "four one three two" "the run stops at the loss instead of starting the next wave"
+
+new_case
+write_vanishing_rm "$bin"
+out="$case_dir/vanished-after-last-wave.out"
+if run_lint "one" "$out" LINT_PARALLEL=1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a directory lost after the last wave exits nonzero"; else bad "a directory lost after the last wave exits zero"; fi
+assert_count "$out" "disappeared mid-run" "1" "a directory lost after the last wave is reported exactly once"
+assert_not_has "$out" "full logs:" "no retained-log pointer names a directory that is gone"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (1 modules, results lost: one)" "a directory lost after the last wave keeps the FAIL lint shape"
+
+# Losing only the start gate leaves the directory in place, so the failures it
+# causes look exactly like lint findings with empty logs unless the runner
+# checks the gate it is about to retire.
+new_case
+cat >"$bin/golangci-lint" <<'FAKE_GATE_EATER'
+#!/usr/bin/env bash
+set -u
+module="$(basename "$PWD")"
+printf '%s\n' "$module" >>"$FAKE_STATE/calls"
+for d in "$TMPDIR"/serf-module-lint.*; do
+	[ -p "$d/wave.start" ] && /bin/rm -f "$d/wave.start"
+done
+exit 0
+FAKE_GATE_EATER
+chmod +x "$bin/golangci-lint"
+out="$case_dir/gate-lost.out"
+if run_lint "one two" "$out" LINT_PARALLEL=2; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a lost start gate exits nonzero"; else bad "a lost start gate exits zero"; fi
+assert_has "$out" "lint: the module start gate disappeared mid-run:" "a lost start gate is named as the thing that went away"
+assert_count "$out" "disappeared mid-run" "1" "a lost start gate is reported exactly once"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (2 modules, results lost: one two)" "a lost start gate keeps the FAIL lint shape"
+
 # Makefile integration: copy the real build entry point, fake only external
 # commands, and prove both quiet success and unchanged lint-family coverage.
 case_dir="$(mktemp -d "$work/make-case.XXXXXX")"
@@ -391,6 +534,7 @@ state="$case_dir/state"
 bin="$case_dir/bin"
 tmp="$case_dir/tmp"
 mkdir -p "$repo/scripts" "$state" "$bin" "$tmp"
+write_fake_mktemp "$bin"
 cp "$makefile" "$repo/Makefile"
 cp "$runner" "$repo/scripts/run-module-lint.sh"
 chmod +x "$repo/scripts/run-module-lint.sh"

@@ -48,6 +48,17 @@ interrupted() {
 	exit "$status"
 }
 
+# Nothing in this run deletes anything under $logdir before cleanup, so an
+# ENOENT under it is the scratch space going away rather than a lint finding.
+# Left unreported, every step that touches it fails with its own bare Bash
+# diagnostic and the retained-log pointer names a directory that is gone.
+scratch_vanished() {
+	printf 'lint: %s disappeared mid-run: %s\n' "$1" "$2" >&2
+	printf 'lint: nothing in this run removes it before cleanup, so something outside did; a TMPDIR reaper under disk pressure is the usual suspect on macOS\n' >&2
+	printf 'FAIL lint (%d modules, results lost: %s)\n' "$module_count" "$MODULES"
+	exit 1
+}
+
 trap cleanup EXIT
 trap 'interrupted 129' HUP
 trap 'interrupted 130' INT
@@ -72,12 +83,19 @@ run_wave() {
 	local first="$1" last="$2" i j pid status module log gate
 	local -a indexes=()
 	active_pids=()
+	[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 	gate="$logdir/wave.start"
 	if ! mkfifo "$gate"; then
 		printf 'lint: unable to create module start gate\n' >&2
 		exit 1
 	fi
-	exec 7<>"$gate"
+	# Without the gate open, every child of this wave blocks forever opening a
+	# FIFO nobody will write, so refuse the wave rather than hang in wait.
+	if ! exec 7<>"$gate"; then
+		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
+		printf 'lint: unable to open module start gate: %s\n' "$gate" >&2
+		exit 1
+	fi
 	for ((i = first; i < last; i++)); do
 		module="${modules[$i]}"
 		log="$logdir/$i.log"
@@ -96,14 +114,22 @@ run_wave() {
 		printf 'start\n' >&7
 	done
 	exec 7>&-
-	rm -f "$gate"
 	for j in "${!active_pids[@]}"; do
 		pid="${active_pids[$j]}"
 		if wait "$pid"; then status=0; else status=$?; fi
 		active_pids[$j]=""
-		printf '%s\n' "$status" >"$logdir/${indexes[$j]}.status"
+		if ! { printf '%s\n' "$status" >"$logdir/${indexes[$j]}.status"; } 2>/dev/null; then
+			[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
+			printf 'lint: unable to record the result for module %s\n' "${modules[${indexes[$j]}]}" >&2
+			exit 1
+		fi
 	done
 	active_pids=()
+	# Each child opens this gate through an inherited redirection, which happens
+	# whenever that child is first scheduled. Unlinking it before the whole wave
+	# is reaped hands a late child ENOENT on the gate and no log at all.
+	[ -p "$gate" ] || scratch_vanished 'the module start gate' "$gate"
+	rm -f "$gate"
 }
 
 for ((first = 0; first < module_count; first += LINT_PARALLEL)); do
@@ -114,7 +140,11 @@ done
 
 failed_modules=()
 for ((i = 0; i < module_count; i++)); do
-	status="$(cat "$logdir/$i.status")"
+	if ! status="$(cat "$logdir/$i.status" 2>/dev/null)"; then
+		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
+		printf 'lint: unable to read the result for module %s\n' "${modules[$i]}" >&2
+		exit 1
+	fi
 	if [ "$status" -ne 0 ]; then
 		failed_modules+=("${modules[$i]}")
 	else
