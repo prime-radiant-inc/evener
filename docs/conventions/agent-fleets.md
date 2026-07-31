@@ -71,6 +71,15 @@ real install on **every merge**. It looked like sabotage from another
 agent twice before the cause was found. `.gitignore` does not help —
 ignore rules only govern untracked files, so once staged it went quiet.
 
+The sharing also means **every vitest run, in any worktree, rewrites the
+one real `node_modules/.vite` cache.** Anything that fingerprints or
+diffs `node_modules` while a fleet is running will see those bytes move
+and blame whatever it was guarding — `TestInstallHomeGeneratedHome`'s
+install-mutation digest fired exactly this way during a 12-agent run and
+cost a root-cause investigation before the digest learned to skip
+`.vite`/`.vite-temp`. A guard over shared state must exclude the parts a
+legitimate concurrent actor owns, or it is a coin-flip under fleet load.
+
 **The Go build cache is large and grows fast.** One `go test -c` of the
 biggest package adds roughly 1G from warm. With the cache on the boot
 volume, a fleet filled the disk to zero **twice** — every agent died at

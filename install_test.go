@@ -201,6 +201,45 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	}
 }
 
+// The node_modules guard above must not fire on vite's own cache churn:
+// vite/vitest rewrite node_modules/.vite and .vite-temp on every run, and
+// with several worktrees symlinking one real install, a concurrent vitest
+// anywhere flips those bytes between the guard's two fingerprints. The guard
+// exists to catch the INSTALL mutating the checkout; vite's scratch space
+// cannot witness that, so it stays outside the digest.
+func TestFingerprintInstallTreeIgnoresViteCacheChurn(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	pkgDir := filepath.Join(tree, "somepkg")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTreeFile := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTreeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 1\n")
+	writeTreeFile(filepath.Join(tree, ".vite", "deps", "chunk.js"), "cache v1")
+
+	before := fingerprintInstallTree(t, tree)
+
+	writeTreeFile(filepath.Join(tree, ".vite", "deps", "chunk.js"), "cache v2")
+	writeTreeFile(filepath.Join(tree, ".vite-temp", "scratch.js"), "in flight")
+	if after := fingerprintInstallTree(t, tree); before != after {
+		t.Fatalf("vite cache churn changed the node_modules fingerprint: before=%+v after=%+v", before, after)
+	}
+
+	writeTreeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 2\n")
+	if after := fingerprintInstallTree(t, tree); before == after {
+		t.Fatal("a real package mutation no longer changes the node_modules fingerprint")
+	}
+}
+
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -565,6 +604,14 @@ func hashInstallTree(t *testing.T, hash interface{ Write([]byte) (int, error) },
 		t.Fatalf("read install tree %s: %v", root, err)
 	}
 	for _, entry := range entries {
+		// vite's dep-optimizer cache is rewritten by every vite/vitest run,
+		// and worktrees symlink one shared node_modules — so a concurrent run
+		// anywhere flips these bytes between two fingerprints. They cannot
+		// witness an install mutating the checkout, which is the only thing
+		// this digest exists to catch.
+		if relative == "" && (entry.Name() == ".vite" || entry.Name() == ".vite-temp") {
+			continue
+		}
 		entryPath := filepath.Join(root, entry.Name())
 		entryRelative := filepath.ToSlash(filepath.Join(relative, entry.Name()))
 		info, err := os.Lstat(entryPath)
