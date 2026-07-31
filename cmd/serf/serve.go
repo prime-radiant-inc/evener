@@ -641,11 +641,35 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// goroutine, so returning here means the registration has taken effect.
 		// Spawning this would reopen the window in which the session is live
 		// and its feed is still best-effort.
+		//
+		// The call and the registration are ONE critical section. An entry in
+		// bridgeDrains means "a drain exists that will close this channel", and
+		// each ordering without the lock breaks that in an opposite direction:
+		//
+		//   - Appending BEFORE the call leaves a channel nothing will ever close
+		//     if deps.bridge does not reach the drain. That is not theoretical
+		//     noise -- bridgeSession also runs from SetClearFunc on a net/http
+		//     handler goroutine, and net/http RECOVERS handler panics, so the
+		//     daemon would survive the panic and then wait out its whole
+		//     shutdown budget on a phantom, abandoning the tee. A loud crash
+		//     becomes a silent truncation.
+		//   - Appending AFTER it but outside the lock leaves a window in which
+		//     the teardown's snapshot misses a drain that is already live and
+		//     closes the tee under it, which is the crash this whole wait exists
+		//     to prevent.
+		//
+		// Holding drainsMu across both makes neither state observable: the
+		// snapshot runs either before deps.bridge is called or after the append,
+		// never between. deps.bridge does not block by contract, and nothing
+		// reachable from it takes drainsMu, so the section stays short. The
+		// unlock is deferred rather than written out because it must also run
+		// when deps.bridge panics -- an explicit unlock would leave the mutex
+		// held and deadlock the shutdown that the phantom was going to stall.
 		drained := make(chan struct{})
 		drainsMu.Lock()
-		bridgeDrains = append(bridgeDrains, drained)
-		drainsMu.Unlock()
+		defer drainsMu.Unlock()
 		deps.bridge(srv, s, eventObserver, func() { close(drained) })
+		bridgeDrains = append(bridgeDrains, drained)
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
