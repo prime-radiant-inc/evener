@@ -54,7 +54,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 
 	entries := make([]appwire.InstanceEntry, 0, len(cfg.Instances))
 	for _, inst := range cfg.Instances {
-		status := c.auth.instanceStatus(inst.Name, string(inst.Type))
+		status := c.auth.instanceStatus(inst.Name, providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)))
 		entry := appwire.InstanceEntry{
 			Name:           inst.Name,
 			Type:           string(inst.Type),
