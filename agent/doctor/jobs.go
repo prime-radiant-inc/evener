@@ -129,7 +129,8 @@ func RenderJobs(r JobReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s  (jobs: %s)\n", r.SessionID, r.JobsPath)
 	if len(r.Jobs) == 0 {
-		b.WriteString(emptyJobsMessage(r.Filtered) + "\n")
+		b.WriteString(emptyJobsMessage(r.Filtered))
+		b.WriteString("\n")
 		return b.String()
 	}
 	for _, j := range r.Jobs {
