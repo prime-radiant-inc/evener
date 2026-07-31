@@ -50,12 +50,12 @@ func (ToolCallEndData) eventKind() EventKind         { return EventToolCallEnd }
 func (ToolResultImagesPersistedData) eventKind() EventKind {
 	return EventToolResultImagesPersisted
 }
-func (ToolCallRepairedData) eventKind() EventKind    { return EventToolCallRepaired }
-func (SteeringInjectedData) eventKind() EventKind    { return EventSteeringInjected }
-func (QueueChangedData) eventKind() EventKind        { return EventQueueChanged }
-func (TaskUpdatedData) eventKind() EventKind         { return EventTaskUpdated }
-func (SessionNameChangedData) eventKind() EventKind  { return EventSessionNameChanged }
-func (ModelChangedData) eventKind() EventKind        { return EventModelChanged }
+func (ToolCallRepairedData) eventKind() EventKind   { return EventToolCallRepaired }
+func (SteeringInjectedData) eventKind() EventKind   { return EventSteeringInjected }
+func (QueueChangedData) eventKind() EventKind       { return EventQueueChanged }
+func (TaskUpdatedData) eventKind() EventKind        { return EventTaskUpdated }
+func (SessionNameChangedData) eventKind() EventKind { return EventSessionNameChanged }
+func (ModelChangedData) eventKind() EventKind       { return EventModelChanged }
 func (ReasoningEffortChangedData) eventKind() EventKind {
 	return EventReasoningEffortChanged
 }
