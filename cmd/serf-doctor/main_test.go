@@ -161,7 +161,7 @@ func TestRun_Help(t *testing.T) {
 		t.Errorf("help exit = %d, want 0", code)
 	}
 	got := out.String()
-	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree", "plugins"} {
+	for _, sub := range []string{"locate", "transcript", "apilog", "mutations", "watches", "tree", "plugins"} {
 		if !strings.Contains(got, sub) {
 			t.Errorf("help should list subcommand %q; got:\n%s", sub, got)
 		}
@@ -800,5 +800,99 @@ func TestRun_PluginsUnwritableStoreRoot(t *testing.T) {
 		if f.Category != "environment" {
 			t.Errorf("empty store should only produce environment findings; got %+v", f)
 		}
+	}
+}
+
+// mutationStore writes the fixture session's client-mutation store: one accepted
+// turn/start and one rejected turn/steer, plus an input still queued.
+func mutationStore(t *testing.T, base, sid string) {
+	t.Helper()
+	dir := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, sid+".json"), `{"version":1,"session_id":"`+sid+`","accepted_turns":1,
+	  "journal":{
+	    "cm-start":{"client_mutation_id":"cm-start","method":"turn/start","payload_hash":"h1",
+	      "stable_turn_id":"01TURNSTART","operation_state":"applied","execution_state":"running",
+	      "projection_state":"reflected","attempt_generation":1},
+	    "cm-steer":{"client_mutation_id":"cm-steer","method":"turn/steer","payload_hash":"h2",
+	      "operation_state":"rejected","execution_state":"rejected","projection_state":"removed",
+	      "attempt_generation":1,
+	      "rejection":{"code":-32013,"message":"turn is not running","data":{"serf_error_info":"conflict"}}}},
+	  "input_queue":[{"id":"q1","client_mutation_id":"cm-queued","input":[{"type":"text","text":"queued reply"}]}],
+	  "queue_revision":2,"budget_reservations":{},"pending_executions":{}}`)
+}
+
+// The client-mutation store is what settles "did the user's message reach the
+// daemon", so the doctor renders its journal instead of leaving it to jq.
+func TestRun_MutationsRendersJournalAndQueue(t *testing.T) {
+	base, sid := fixture(t)
+	mutationStore(t, base, sid)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	for _, want := range []string{
+		"accepted turns: 1  queue revision: 2",
+		"journal: 2 mutations (1 rejected)",
+		"cm-start  method=turn/start  operation=applied  execution=running  turn=01TURNSTART",
+		`cm-steer  method=turn/steer  operation=rejected  execution=rejected  rejection=-32013 "turn is not running"`,
+		"input queue: 1 entry",
+		"pending executions: 0",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("mutations output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"mutations", "--json", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var report struct {
+		Present bool `json:"present"`
+		Journal []struct {
+			ClientMutationID string `json:"client_mutation_id"`
+			OperationState   string `json:"operation_state"`
+		} `json:"journal"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if !report.Present || len(report.Journal) != 2 || report.Journal[1].OperationState != "rejected" {
+		t.Errorf("mutations --json = %+v, want a present store with a rejected second record", report)
+	}
+}
+
+// A session that accepted no client mutations has no store; that is an answer,
+// so it exits clean and says so rather than reporting an unreadable artifact.
+func TestRun_MutationsMissingStoreExitsClean(t *testing.T) {
+	base, sid := fixture(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "no client-mutation store on disk") {
+		t.Errorf("missing store did not report cleanly:\n%s", out.String())
+	}
+}
+
+func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
+	base, sid := fixture(t)
+	path := filepath.Join(base, "serf", "projects", "project-test-0123456789", "mutations", sid+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, path, `{"version":1,"session_id":"`+sid+`"}`)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 1 {
+		t.Fatalf("exit %d, want 1; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "serf-doctor mutations:") || !strings.Contains(errb.String(), path) {
+		t.Errorf("error does not name the subcommand and the file: %s", errb.String())
 	}
 }

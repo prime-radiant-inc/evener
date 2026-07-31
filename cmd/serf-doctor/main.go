@@ -1,7 +1,7 @@
 // Command serf-doctor is the read-only forensic data plane of serf's doctoring
 // system: a thin main over the agent/doctor package. It resolves a session
 // selector and inspects settled on-disk state — transcript, private API log,
-// meta, and jobs.jsonl —
+// meta, jobs.jsonl, and the client-mutation store —
 // with the same folds and types the serf runtime uses, so a schema change either
 // flows through automatically or fails to compile.
 //
@@ -10,6 +10,7 @@
 //	serf-doctor locate     <selector> [--all-buckets]
 //	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
 //	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
+//	serf-doctor mutations  <selector>
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //
@@ -50,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTranscript(rest, stdout, stderr)
 	case "apilog":
 		return cmdAPILog(rest, stdout, stderr)
+	case "mutations":
+		return cmdMutations(rest, stdout, stderr)
 	case "watches":
 		return cmdWatches(rest, stdout, stderr)
 	case "tree":
@@ -76,9 +79,10 @@ USAGE:
   serf-doctor <subcommand> <selector> [flags]
 
 SUBCOMMANDS:
-  locate      resolve a selector to its transcript/API-log/meta/jobs paths
+  locate      resolve a selector to its transcript/API-log/meta/jobs/mutations paths
   transcript  render a session's turns; --count <tool> prints the structural call count
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
+  mutations   client-mutation store: the journal of every client mutation the daemon accepted or rejected, plus the durable input queue
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
@@ -264,6 +268,26 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, res)
 	}
 	return writeText(stdout, doctor.RenderAPILog(res, opts))
+}
+
+// cmdMutations reports the session's durable client-mutation store — the
+// journal of every client mutation the daemon accepted and every one it
+// rejected. It takes no filters: the whole store is the evidence.
+func cmdMutations(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("mutations", stderr)
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	res, err := doctor.Mutations(base, sel)
+	if err != nil {
+		return fail(stderr, "mutations", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	return writeText(stdout, doctor.RenderMutations(res))
 }
 
 func cmdWatches(args []string, stdout, stderr io.Writer) int {
