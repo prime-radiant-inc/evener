@@ -228,7 +228,6 @@ const inflightHydrateEpochs = new Map<string, number>();
 type PendingHydrationRouting = {
   ref: string;
   threadId?: string;
-  activeTurnId?: string;
 };
 type PendingThreadHydration = {
   client: AppwireClientLike;
@@ -797,15 +796,6 @@ function notificationThreadId(n: AnyNotification): string | undefined {
   return typeof params.threadId === "string" ? params.threadId : undefined;
 }
 
-function notificationTurnId(n: AnyNotification): string | undefined {
-  if (n.method === "turn/completed") return n.params.turnId || n.params.turn.id;
-  if (n.method === "turn/started") return n.params.turn.id;
-  if (n.method === "item/started" || n.method === "item/completed") {
-    return n.params.turnId || n.params.item.turnId;
-  }
-  return undefined;
-}
-
 function notificationMutationIdentities(n: AnyNotification): string[] {
   if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
   if (n.method === "serf/steering/injected") {
@@ -831,6 +821,14 @@ function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string,
   pending.routing = pendingHydrationRouting(ref, model);
 }
 
+// Buffering is decided by IDENTITY alone, the same rule applyToMap follows for
+// live delivery: where a frame lands inside a model is the reducer's call, not
+// this buffer's. turn/completed used to additionally need the routing's active
+// turn to match, and the cost was the same as it was in the live router — a
+// no-active-turn announcement carries a synthetic turn that is never anyone's
+// active turn, so the gate dropped it, and a frame this buffer refuses is
+// dropped outright: handleNotification also withholds it from the stale
+// published model while the hydration is pending.
 function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydration): boolean {
   const routing = pending.routing;
   const ref = notificationRef(n);
@@ -841,34 +839,13 @@ function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydra
     // but once that subscription has also taught us its thread id, a
     // contradictory id is a different thread and must not enter this buffer.
     if (threadId !== undefined && routing.threadId !== undefined && threadId !== routing.threadId) return false;
-    if (n.method === "turn/completed") return routing.activeTurnId === notificationTurnId(n);
     return true;
   }
-  if (n.method === "turn/completed") return routing.activeTurnId === notificationTurnId(n);
   return threadId !== undefined && threadId === routing.threadId;
 }
 
-function advancePendingHydrationRouting(n: AnyNotification, pending: PendingThreadHydration): void {
-  const threadId = notificationThreadId(n);
-  if (pending.routing.threadId === undefined && threadId !== undefined) pending.routing.threadId = threadId;
-
-  if (n.method === "turn/started") {
-    pending.routing.activeTurnId = n.params.turn.id;
-  } else if (n.method === "turn/completed" && pending.routing.activeTurnId === notificationTurnId(n)) {
-    pending.routing.activeTurnId = undefined;
-  } else if (
-    (n.method === "item/started" || n.method === "item/completed") &&
-    pending.routing.activeTurnId === undefined
-  ) {
-    // Initial hydration can begin with an item frame whose turn/started frame
-    // was already durable in the snapshot. Learn that active turn from the
-    // item so the following turn/completed frame remains in order.
-    pending.routing.activeTurnId = notificationTurnId(n);
-  }
-}
-
 function pendingHydrationRouting(ref: string, model: ThreadModel | undefined): PendingHydrationRouting {
-  return { ref, threadId: model?.threadId, activeTurnId: model?.activeTurnId };
+  return { ref, threadId: model?.threadId };
 }
 
 function beginThreadHydration(
@@ -913,9 +890,13 @@ function transferPendingHydration(previous: PendingThreadHydration | undefined, 
   next.routing = { ...previous.routing };
 }
 
+// A buffered frame that names a thread id teaches it to the routing, so a
+// later ref-less frame on the same stream is judged against what this
+// subscription has actually seen rather than against the stale model.
 function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): void {
   pending.notifications.push(notification);
-  advancePendingHydrationRouting(notification, pending);
+  const threadId = notificationThreadId(notification);
+  if (pending.routing.threadId === undefined && threadId !== undefined) pending.routing.threadId = threadId;
 }
 
 function replayHydrationNotifications(
