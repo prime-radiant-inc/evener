@@ -181,7 +181,7 @@ test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", a
 
 // kata 77sf: agent/job_notify.go's escapeNotificationText entity-escapes &
 // (first), <, >, and " before interpolating job output into the wrapper.
-// This proves the paired decodeEntities recovers the EXACT original text,
+// This proves the paired decodeNotificationEntities recovers the EXACT original text,
 // including a literal ampersand and text that already looks like an entity
 // (decoding &amp; last is what keeps "&lt;" text from over-decoding to "<").
 test("kata 77sf: a delimiter-bearing excerpt decodes to the exact original text", async () => {

@@ -185,6 +185,24 @@ excerpt:
   expect(n.concerns).toEqual(["watch the edge case"]);
 });
 
+// A delegate's communicate envelope rides the excerpt as body content, so
+// the producer escapes it exactly like any other body text (kata 77sf) -
+// including the envelope's OWN JSON double-quotes, which become &quot;. That
+// text must be decoded back before JSON.parse, or a real producer-escaped
+// envelope (as opposed to the hand-typed unescaped JSON the other
+// communicate tests use) never parses at all.
+test("a producer-escaped delegate communicate envelope still parses (its own JSON quotes are escaped like any other body content)", () => {
+  const envelopeJson = JSON.stringify({ message: "R & D done", data: { status: "ok", concerns: ["edge <case>"] } });
+  const block = `<job-notification job_id="j" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
+Job j completed.
+excerpt:
+${escapeLikeProducer(envelopeJson)}
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.message).toBe("R & D done");
+  expect(n.concerns).toEqual(["edge <case>"]);
+});
+
 // --- kata 9cnq: communicate-envelope parsing must be gated on job_type,
 // never detected from JSON shape alone. A shell job's stdout is literal
 // output; it is not eligible to carry a delegate's communicate envelope,

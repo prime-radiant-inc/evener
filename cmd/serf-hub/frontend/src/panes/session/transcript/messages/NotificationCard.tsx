@@ -20,7 +20,12 @@ import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
-import { isValidTranscriptRef, type NotificationTone, type ParsedNotification } from "./steeringClassify";
+import {
+  decodeNotificationEntities,
+  isValidTranscriptRef,
+  type NotificationTone,
+  type ParsedNotification,
+} from "./steeringClassify";
 
 const CLASS = {
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
@@ -50,20 +55,6 @@ function toneChip(tone: NotificationTone): { chipTone: "attention" | "danger"; l
   return null;
 }
 
-// decodeNotificationEntities unescapes one HTML-entity layer so the reader sees
-// the job's real output text (the daemon escapes < & > in the excerpt to keep
-// them from breaking the <job-notification> wrapper). &amp; is undone LAST so
-// double-escaped content unwraps just one level. Safe: the result is only ever
-// rendered as React text (escaped), never as HTML.
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#0*39;|&#x0*27;/gi, "'")
-    .replace(/&amp;/g, "&");
-}
-
 function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
   if (!ansi) return text;
   return parseAnsiLines(text).map((line, index) => (
@@ -90,7 +81,7 @@ function boundedShellTailPreview(decoded: string): string {
 }
 
 function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
-  const decoded = decodeEntities(text.trim());
+  const decoded = decodeNotificationEntities(text.trim());
   if (decoded === "") return null;
   // Direction matches the parse mode: a shell excerpt (ansi) is bounded to
   // its tail, a delegate report head (non-ansi) keeps its existing

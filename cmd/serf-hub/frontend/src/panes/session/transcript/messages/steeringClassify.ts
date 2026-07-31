@@ -94,6 +94,24 @@ function compactStringArray(value: unknown): string[] {
   return value.map((v) => String(v ?? "").trim()).filter(Boolean);
 }
 
+// decodeNotificationEntities is the paired decoder for agent/job_notify.go's
+// escapeNotificationText: the producer HTML-entity-escapes &, <, >, and "
+// before interpolating job/watch-derived text into a <job-notification>
+// wrapper (kata 77sf), so text extracted from that wrapper - a body excerpt,
+// or (below) a delegate's communicate envelope, whose own JSON quotes are
+// escaped the same way as any other body content - must be decoded back
+// before use. &amp; is decoded LAST so double-escaped content only unwraps
+// one level. Exported so NotificationCard.tsx shares this one decoder rather
+// than keeping a second copy for its own excerpt display.
+export function decodeNotificationEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&#x0*27;/gi, "'")
+    .replace(/&amp;/g, "&");
+}
+
 interface CommunicateEnvelope {
   message: string;
   status: string;
@@ -181,8 +199,12 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // calls communicate to produce it - agent/session_tools_communicate.go).
   // Gate on the actual job type, not on whether the excerpt happens to parse
   // as JSON with message/data keys: shell stdout is literal output even when
-  // it coincidentally looks like an envelope (kata 9cnq).
-  const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(excerpt) : null;
+  // it coincidentally looks like an envelope (kata 9cnq). The excerpt is
+  // producer-escaped (kata 77sf) - decode before parsing, or the envelope's
+  // own JSON quotes (now &quot;) are no longer valid JSON syntax. excerpt
+  // itself stays raw/undecoded: NotificationCard's Excerpt decodes it
+  // separately, only when there is no communicate message to show instead.
+  const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
   let type = "job";
   if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
   if (attrs.event === "watch_send") type = "watch-send";
