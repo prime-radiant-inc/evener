@@ -63,6 +63,7 @@ unset XDG_STATE_HOME
 #    spawns per session.
 "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
 HUBPID=$!
+echo "$HUBPID" >"$run/hub.pid"   # so a later shell can kill it by pid, not by pattern
 
 # 5. Read the real port back from the hub's own startup log line.
 for i in $(seq 1 50); do
@@ -89,6 +90,60 @@ curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; mean
 #    header.
 TOKEN=$(cat "$HOME/.serf/auth-token")
 ```
+
+### Handing this hub to a sibling card
+
+Some cards share one hub on purpose. `ask-web-answer.md` stands one up and
+`ask-restart-rederive.md`, `ask-cross-session-notify.md`,
+`ask-two-clients.md`, `ask-noninteractive-invisible.md`,
+`ask-subagent-invisible.md` and `ask-tui-answer.md` all say "reuse that
+card's hub if it's still running" rather than each paying for its own hub,
+credential export, and authenticated browser tab. They used to do that by
+**agreeing on a number** — one hand-picked port, written into all six — which
+is exactly the collision domain kata 68fm removed everywhere else: two agents
+running the ask set at the same time contend for one listener, and the loser
+gets a bind failure or, worse, the winner's sessions.
+
+**The thing you hand over is the run directory, not the port.** Everything a
+sibling needs is already under `$run`, and the recipe above already wrote all
+of it down, so the owning card exports one variable and the sibling
+re-derives the rest:
+
+```bash
+# Owning card, once the checklist above has run:
+export SERF_E2E_RUN="$run"
+
+# Sibling card — works in the owning shell or a fresh one:
+run=${SERF_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export SERF_E2E_RUN="$run"}
+export HOME="$run/home"
+unset XDG_STATE_HOME
+PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
+HUB=http://127.0.0.1:$PORT
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUBPID=$(cat "$run/hub.pid")
+kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run the owning card's Pre-state" >&2; exit 1; }
+```
+
+No new file and no new vocabulary: `$run/hub.log` is the port's only
+authority (step 5 above reads the same line, and a second copy in a
+`hub.port` file would be a second thing to go stale), and `$run/hub.pid` is
+what lets a shell that never backgrounded the hub still tear it down by pid
+instead of by `pkill -f`. Those are the same two files
+`scripts/e2e-ratelimited-provider.sh` writes so its `--stop` works from a
+fresh invocation. `tail -1` on the log matters: a hub restarted mid-run
+(rebuild matrix item 2) appends a second `listening on` line and the last one
+is the live one.
+
+Whoever started the hub owns tearing it down. A sibling card that reused a
+running hub leaves it up; a sibling card that had to start its own (because
+`SERF_E2E_RUN` was unset) kills it in its own Cleanup, by that pid.
+
+The alternative — make every card self-sufficient and delete the reuse
+language — was considered and rejected. The reuse costs nothing in test
+value (each of these cards spawns its own sessions; none reads state another
+one wrote), and paying for six hub starts, six credential exports and six
+fresh browser authentications buys nothing back. The number was the problem,
+not the sharing.
 
 The hub picks up provider credentials from env (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`) and/or `$HOME/.serf/credentials.toml` (the isolated
