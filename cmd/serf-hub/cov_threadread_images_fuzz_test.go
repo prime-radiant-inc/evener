@@ -217,13 +217,16 @@ func covOutputImagesSeed(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		many.WriteString(name + " ")
+		many.WriteString(name)
+		many.WriteString(" ")
 	}
 	_ = outputImagesForToolCall("s", cwd, "shell", `{}`, many.String())
 	_ = shellOutputImageCandidates(strings.Repeat(" a.png", outputImageMaxCandidates+2))
 	var candidates strings.Builder
 	for i := range outputImageMaxCandidates + 2 {
-		candidates.WriteString(" z" + string(rune('a'+i)) + ".png")
+		candidates.WriteString(" z")
+		candidates.WriteString(string(rune('a' + i)))
+		candidates.WriteString(".png")
 	}
 	_ = shellOutputImageCandidates(candidates.String())
 	for _, data := range [][]byte{nil, []byte("text"), png, {0xff, 0xd8, 0xff}, []byte("GIF89a"), []byte("RIFF0000WEBP")} {
