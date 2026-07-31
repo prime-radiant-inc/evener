@@ -11,7 +11,9 @@
 // turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
 // bare turn id is never enough), and ThreadModel.modelRetry (which
 // deliberately does NOT restamp lastFrameAt, so the gap this reads keeps
-// measuring the real silence the retry is explaining). Display-only - no self-heal/reconnect side
+// measuring the real silence the retry is explaining). The retry does NOT,
+// however, share the ordinary 20s quiet gate past its first attempt - see
+// describeLiveness's own doc comment (kata gw2c). Display-only - no self-heal/reconnect side
 // effect (that's a connection.ts/threads.ts concern, not this pane's), no
 // idle animation (Cadence already carries live activity via its trace - see
 // widgets/cadence). Session-level thresholds only; the legacy renderer also
@@ -130,6 +132,17 @@ export function formatSubagentCount(count: number): string {
  * neither over the other: children are believed running, AND nothing has
  * arrived for a long time. The reader can act on that; they cannot act on
  * "waiting on 1 subagent" held for nine minutes.
+ *
+ * A retry does not wait for the quiet threshold past its FIRST attempt
+ * (kata gw2c). The retry is KNOWN information the daemon reported, not an
+ * inference from absence, so once we are on attempt 2 or later it should
+ * not share ordinary silence's 20s clock at all - a fast retry storm
+ * (e.g. Retry-After: 2, 11 attempts) would otherwise burn nearly its whole
+ * budget invisibly and fail right as the quiet threshold was about to
+ * explain it. Attempt 1 stays fully gated: that is the case the 20s gate
+ * originally existed for (a retry that resolves on its very next try must
+ * not flicker a message on and off for nobody's benefit), and it still
+ * applies unchanged.
  */
 export function describeLiveness(
   gapMs: number,
@@ -137,7 +150,12 @@ export function describeLiveness(
   runningSubagents: number,
   retry?: RetryWait,
 ): LivenessInfo {
-  if (!active || gapMs < QUIET_THRESHOLD_MS) return { level: "none", text: null };
+  if (!active) return { level: "none", text: null };
+  // See this function's own doc comment above (kata gw2c): a retry past its
+  // first attempt is known information, not an inference from silence, so
+  // it bypasses the ordinary quiet gate below rather than waiting on it.
+  const retryKnownEarly = retry !== undefined && retry.attempt >= 2;
+  if (gapMs < QUIET_THRESHOLD_MS && !retryKnownEarly) return { level: "none", text: null };
   if (retry) {
     const retrying = formatRetryWait(retry);
     if (gapMs < STALL_THRESHOLD_MS) return { level: "retrying", text: retrying };
