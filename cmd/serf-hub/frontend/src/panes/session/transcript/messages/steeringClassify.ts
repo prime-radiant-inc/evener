@@ -177,7 +177,12 @@ function parseJobNotification(block: string): ParsedNotification | null {
   const attrs = parseQuotedAttrs(m[1] ?? "");
   const bodyText = (m[2] ?? "").trim();
   const { excerpt } = splitNotificationExcerpt(bodyText);
-  const communicate = parseCommunicateEnvelope(excerpt);
+  // A communicate envelope can only ride a delegate's report (the delegate
+  // calls communicate to produce it - agent/session_tools_communicate.go).
+  // Gate on the actual job type, not on whether the excerpt happens to parse
+  // as JSON with message/data keys: shell stdout is literal output even when
+  // it coincidentally looks like an envelope (kata 9cnq).
+  const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(excerpt) : null;
   let type = "job";
   if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
   if (attrs.event === "watch_send") type = "watch-send";

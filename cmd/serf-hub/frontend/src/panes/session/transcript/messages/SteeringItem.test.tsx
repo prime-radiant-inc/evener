@@ -273,6 +273,48 @@ excerpt:
   expect(excerpt.querySelector("[data-ansi-dim]")?.textContent).toBe(" Test Files ");
 });
 
+// --- kata 9cnq: communicate-envelope parsing must be gated on job_type, not
+// detected from JSON shape. A shell job's stdout is literal output; it must
+// render literally even when it coincidentally parses as JSON with the same
+// message/data keys a delegate's communicate envelope uses. -----------------
+
+test("a completed shell job whose stdout happens to be JSON renders the literal JSON, not a communicate card", () => {
+  const text = `<job-notification job_id="job_shell" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="80" exit_code="0">
+Job job_shell completed.
+excerpt:
+{"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  const root = screen.getByTestId("notification-card-root");
+  // The raw JSON text is reader-visible verbatim (not consumed as an envelope).
+  expect(root.textContent).toContain('{"message":"**literal shell output**"');
+  // Markdown is not activated: "**literal shell output**" stays literal text,
+  // never a <strong> element.
+  expect(root.querySelector("strong")).toBeNull();
+  // The coincidental data.concerns array is not promoted to the card's
+  // concerns line.
+  expect(root.textContent).not.toContain("Concerns:");
+  // A clean exit with no promoted concerns reads as success, not warning.
+  expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("success");
+});
+
+// Companion coverage for the same kata: the communicate-envelope gate must
+// not disturb the unrelated ANSI excerpt path for ordinary (non-JSON) shell
+// output - the fix is a job_type gate, not a change to excerpt rendering.
+test("a shell excerpt that merely starts with '{' still renders through the ANSI path when it is not valid JSON", () => {
+  const text = `<job-notification job_id="job_shell2" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="20" exit_code="0">
+Job job_shell2 completed.
+excerpt:
+{not json} [31mFAIL[39m
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  expect(screen.getByText("FAIL").closest('[data-ansi-fg="red"]')).toBeTruthy();
+});
+
 test("a notification restores its owning session to main before opening the child beside it", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();

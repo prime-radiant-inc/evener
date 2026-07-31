@@ -184,3 +184,33 @@ excerpt:
   expect(n.message).toBe("**done** with the work");
   expect(n.concerns).toEqual(["watch the edge case"]);
 });
+
+// --- kata 9cnq: communicate-envelope parsing must be gated on job_type,
+// never detected from JSON shape alone. A shell job's stdout is literal
+// output; it is not eligible to carry a delegate's communicate envelope,
+// even when it coincidentally parses as JSON with message/data keys. -------
+
+test("shell stdout that happens to be valid JSON with message/data keys is NOT treated as a communicate envelope", () => {
+  const block = `<job-notification job_id="j" event="completed" job_type="shell" status="completed" reason="" output_bytes="0" exit_code="0">
+Job j completed.
+excerpt:
+{"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.message).toBeUndefined();
+  expect(n.concerns).toEqual([]);
+  expect(n.excerpt).toBe('{"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}');
+  // No concerns to promote and a clean exit: tone reads the outer attrs only.
+  expect(n.tone).toBe("success");
+});
+
+test("a delegate job's JSON excerpt still parses as a communicate envelope (job_type gate, not JSON shape)", () => {
+  const block = `<job-notification job_id="j" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
+Job j completed.
+excerpt:
+{"message":"**done**","data":{"concerns":["real concern"]}}
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.message).toBe("**done**");
+  expect(n.concerns).toEqual(["real concern"]);
+});
