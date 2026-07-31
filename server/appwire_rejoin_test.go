@@ -611,3 +611,164 @@ func TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription(t *testing.T)
 		t.Fatalf("assistant answer reduced into %d items, want exactly 1\nturns: %+v", answers, rejoined.Snapshot())
 	}
 }
+
+// TestReloadMidStreamResumesTheSameStream (kata 5xk6) reloads a session while
+// it is working -- in the middle of one assistant item's delta run -- and
+// requires the reloaded client to land on exactly the state a client that
+// never reloaded holds.
+//
+// "Streaming breaks after a reload" is what a torn response boundary looks
+// like from the outside. There are three ways to tear it, and a test that
+// reads BETWEEN turns cannot see any of them:
+//
+//   - the response's in-progress item stops short of the cut and the missing
+//     chunks are never replayed (a gap);
+//   - the response carries chunks that are replayed after it as well (a
+//     repeat);
+//   - the response carries no partial item at all, so every delta that
+//     follows has nothing to append to.
+//
+// The daemon's answer to all three is one boundary: CaptureSubscription clones
+// the installed snapshot and takes the notifier cut inside a single projection
+// transition, so the response and the records after it partition the stream
+// exactly. The gate barrier here is what makes that partition load-bearing
+// rather than incidental: four deltas commit while the read is parked at the
+// subscription gate, which is AFTER a snapshot sampled outside the capture
+// would have been taken and BEFORE the cut. They therefore have exactly one
+// correct home -- inside the response -- and a snapshot hoisted above
+// CaptureSubscription loses them in both directions at once, since the cut
+// then discards them as already-reflected. Without those deltas the test is
+// sequential and a hoisted snapshot survives it.
+//
+// The comparison is whole-snapshot rather than text-only on purpose: a
+// reload-specific divergence in item status, timing or turn state fails here
+// without anyone having to predict which field it lands in.
+func TestReloadMidStreamResumesTheSameStream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	writeTranscriptPairs(t, path, 1)
+
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+
+	stream := func(deltas []string) {
+		for _, delta := range deltas {
+			srv.RecordAppEvent(events.SessionEvent{
+				Kind:      events.EventAssistantTextDelta,
+				SessionID: "th_1",
+				Data:      events.AssistantTextDeltaData{Delta: delta},
+			})
+		}
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data:      events.UserInputData{Text: "question"},
+	})
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextStart,
+		SessionID: "th_1",
+		Data:      events.AssistantTextStartData{Model: "gpt-5.5"},
+	})
+
+	beforeRead := []string{"chunk-0 ", "chunk-1 ", "chunk-2 ", "chunk-3 "}
+	atTheGate := []string{"chunk-4 ", "chunk-5 ", "chunk-6 ", "chunk-7 "}
+	afterRead := []string{"chunk-8 ", "chunk-9 ", "chunk-10 ", "chunk-11"}
+	stream(beforeRead)
+
+	atGate := make(chan struct{})
+	openGate := make(chan struct{})
+	var once sync.Once
+	srv.AppServer().SetBeforeSubscriptionGate(func() {
+		once.Do(func() {
+			close(atGate)
+			<-openGate
+		})
+	})
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test transport teardown
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The reload: one subscribing read, issued with the turn still streaming.
+	type outcome struct {
+		response appwire.ThreadReadResponse
+		err      error
+	}
+	reads := make(chan outcome, 1)
+	go func() {
+		response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+			Ref:          "local:th_1",
+			Subscribe:    true,
+			IncludeTurns: true,
+			ItemsView:    "full",
+			TurnLimit:    40,
+		})
+		reads <- outcome{response: response, err: err}
+	}()
+	<-atGate
+
+	// The model keeps talking while the read waits at the gate. The read holds
+	// no lock there, so these commit to completion.
+	stream(atTheGate)
+	close(openGate)
+
+	got := <-reads
+	if got.err != nil {
+		t.Fatalf("ThreadRead: %v", got.err)
+	}
+	// This goroutine is the only committer and it was blocked on the read, so
+	// nothing has committed since the response's own cut: sampling here samples
+	// that cut.
+	cut := srv.appNotifier.CurrentSequence()
+
+	// The turn is deliberately left streaming. An ASSISTANT_TEXT_END settle
+	// stamp carries the whole accumulated answer, so completing the item would
+	// overwrite whatever the reload had reduced and heal a gap this test exists
+	// to catch -- and "while it's working" is the state the kata reports.
+	stream(afterRead)
+
+	reloaded := &appTurnSnapshot{threadID: "th_1"}
+	reloaded.Seed(got.response.Thread.Turns)
+	reloaded.Apply(srv.AppNotificationsAfter(cut, "th_1"))
+
+	// Only the LIVE turn is under test here; the seeded transcript contributes
+	// an older assistant turn of its own, which the whole-snapshot comparison
+	// below covers.
+	var wantText string
+	for _, deltas := range [][]string{beforeRead, atTheGate, afterRead} {
+		wantText += strings.Join(deltas, "")
+	}
+	reloadedTurns := reloaded.Snapshot()
+	liveTurn := reloadedTurns[len(reloadedTurns)-1]
+	gotText := ""
+	assistantItems := 0
+	for _, item := range liveTurn.Items {
+		if item.Type != "agentMessage" {
+			continue
+		}
+		assistantItems++
+		gotText = item.Text
+	}
+	if assistantItems != 1 {
+		t.Fatalf("reload reduced the streaming answer into %d agentMessage items on turn %s, want exactly 1\nturn: %+v",
+			assistantItems, liveTurn.ID, liveTurn)
+	}
+	if gotText != wantText {
+		t.Fatalf("streamed text across the reload =\n  %q\nwant\n  %q", gotText, wantText)
+	}
+
+	uninterrupted := srv.appAllTurns("th_1")
+	if !reflect.DeepEqual(reloadedTurns, uninterrupted) {
+		t.Fatalf("reloaded state diverged from the never-reloaded snapshot\n reloaded: %+v\n   direct: %+v", reloadedTurns, uninterrupted)
+	}
+}
