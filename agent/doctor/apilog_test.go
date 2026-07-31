@@ -570,6 +570,290 @@ func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testi
 	}
 }
 
+// apilogAppendRaw appends raw bytes directly to a session's on-disk API log,
+// bypassing the canonical writer -- the only way to construct a deliberately
+// corrupt or partial fixture. Test-only.
+func apilogAppendRaw(t *testing.T, path, content string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// apilogFileSize returns the current byte size of a session's on-disk API
+// log, used to compute the exact offset a subsequent apilogAppendRaw call
+// will land at.
+func apilogFileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
+}
+
+func TestValidateAPILog_CleanWholeFileReportsNoProblems(t *testing.T) {
+	base, sid, _ := apilogFixture(t)
+	path := filepath.Join(stateHomeBucket(base, hash1), "sessions", sid+".api.jsonl")
+	wantSize := apilogFileSize(t, path)
+
+	res, err := ValidateAPILog(base, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Clean {
+		t.Fatalf("expected a clean scan, got %+v", res)
+	}
+	if res.RecordsOK != 8 {
+		t.Fatalf("records_ok = %d, want 8 (4 attempts + 4 settlements)", res.RecordsOK)
+	}
+	if len(res.Problems) != 0 || res.ProblemCount != 0 || res.ProblemsTruncated {
+		t.Fatalf("expected no problems, got %+v", res.Problems)
+	}
+	if res.PartialTail != nil {
+		t.Fatalf("expected no partial tail, got %+v", res.PartialTail)
+	}
+	if res.FileSize != wantSize {
+		t.Fatalf("file_size = %d, want %d", res.FileSize, wantSize)
+	}
+	if res.SessionID != sid || res.APILogPath != path {
+		t.Fatalf("session_id/api_log_path = %q/%q, want %q/%q", res.SessionID, res.APILogPath, sid, path)
+	}
+}
+
+func TestValidateAPILog_EmptyAPILogIsClean(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeRichSession(t, bucket, sidA, nil, nil, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ValidateAPILog(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Clean || res.RecordsOK != 0 || res.FileSize != 0 || len(res.Problems) != 0 || res.PartialTail != nil {
+		t.Fatalf("empty API log validation = %+v, want a clean zero-record result", res)
+	}
+}
+
+func TestValidateAPILog_MissingAPILogFileErrors(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	if _, err := ValidateAPILog(base, sidA); err == nil {
+		t.Fatal("ValidateAPILog accepted a session with no API log file")
+	}
+}
+
+// TestValidateAPILog_ReportsInteriorCorruptionWithOffsetAndKeepsScanning is
+// the load-bearing proof of kata 7x84's headline behavior: unlike APILog
+// (which hard-stops at the first decode error), ValidateAPILog must keep
+// decoding past a corrupt record and still find the good record after it.
+func TestValidateAPILog_ReportsInteriorCorruptionWithOffsetAndKeepsScanning(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attemptA := doctorAttempt("ag_before", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	attemptB := doctorAttempt("ag_after", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attemptA}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+
+	offsetBeforeCorrupt := apilogFileSize(t, path)
+	apilogAppendRaw(t, path, "{bad json}\n")
+	attemptBLine, err := json.Marshal(attemptB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apilogAppendRaw(t, path, string(attemptBLine)+"\n")
+
+	res, err := ValidateAPILog(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Clean {
+		t.Fatal("validation reported clean despite interior corruption")
+	}
+	if res.RecordsOK != 2 {
+		t.Fatalf("records_ok = %d, want 2 (the record before AND after the corrupt line)", res.RecordsOK)
+	}
+	if len(res.Problems) != 1 || res.ProblemCount != 1 {
+		t.Fatalf("problems = %+v, count %d, want exactly 1", res.Problems, res.ProblemCount)
+	}
+	problem := res.Problems[0]
+	if problem.Offset != offsetBeforeCorrupt {
+		t.Fatalf("problem offset = %d, want %d", problem.Offset, offsetBeforeCorrupt)
+	}
+	if problem.Line != 2 {
+		t.Fatalf("problem line = %d, want 2", problem.Line)
+	}
+	if !strings.Contains(problem.Message, "line 2") {
+		t.Fatalf("problem message = %q, want it to mention line 2", problem.Message)
+	}
+}
+
+func TestValidateAPILog_ReportsMultipleDistinctProblemsWithOffsets(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_only", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+
+	firstCorruptOffset := apilogFileSize(t, path)
+	apilogAppendRaw(t, path, "{bad json 1}\n")
+	secondCorruptOffset := apilogFileSize(t, path)
+	apilogAppendRaw(t, path, "{bad json 2}\n")
+
+	res, err := ValidateAPILog(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) != 2 || res.ProblemCount != 2 {
+		t.Fatalf("problems = %+v, count %d, want exactly 2", res.Problems, res.ProblemCount)
+	}
+	if res.Problems[0].Offset != firstCorruptOffset || res.Problems[1].Offset != secondCorruptOffset {
+		t.Fatalf("problem offsets = %d,%d want %d,%d", res.Problems[0].Offset, res.Problems[1].Offset, firstCorruptOffset, secondCorruptOffset)
+	}
+}
+
+func TestValidateAPILog_PartialTailIsSeparateFromProblemsAndStaysClean(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_only", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+
+	partialOffset := apilogFileSize(t, path)
+	apilogAppendRaw(t, path, `{"kind":"attempt_group_settlement"`)
+
+	res, err := ValidateAPILog(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Clean {
+		t.Fatalf("a bare partial tail must not make validation unclean: %+v", res)
+	}
+	if len(res.Problems) != 0 || res.ProblemCount != 0 {
+		t.Fatalf("partial tail must not be reported as a problem: %+v", res.Problems)
+	}
+	if res.PartialTail == nil {
+		t.Fatal("partial tail was not reported")
+	}
+	if res.PartialTail.Offset != partialOffset || res.PartialTail.Line != 2 {
+		t.Fatalf("partial tail = %+v, want offset %d line 2", res.PartialTail, partialOffset)
+	}
+	if res.RecordsOK != 1 {
+		t.Fatalf("records_ok = %d, want 1", res.RecordsOK)
+	}
+}
+
+func TestValidateAPILog_ProblemsAreBoundedToFirstNAndCountStaysHonest(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	seed := doctorAttempt("ag_seed", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{seed}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+
+	// Every corrupt line is the same fixed byte length, so each one's expected
+	// offset/line is computable arithmetic -- the precise, non-string-parsed
+	// way to prove retention kept the FIRST 100, not an arbitrary 100.
+	const extraProblems = doctorAPILogValidationMaxProblems + 3
+	seedOffset := apilogFileSize(t, path)
+	corruptLine := "{bad json}\n"
+	var b strings.Builder
+	for range extraProblems {
+		b.WriteString(corruptLine)
+	}
+	apilogAppendRaw(t, path, b.String())
+
+	res, err := ValidateAPILog(base, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProblemCount != extraProblems {
+		t.Fatalf("problem_count = %d, want %d", res.ProblemCount, extraProblems)
+	}
+	if len(res.Problems) != doctorAPILogValidationMaxProblems {
+		t.Fatalf("retained problems = %d, want %d", len(res.Problems), doctorAPILogValidationMaxProblems)
+	}
+	if !res.ProblemsTruncated {
+		t.Fatal("problems_truncated = false, want true")
+	}
+	// Retention keeps the FIRST N (earliest trouble is most diagnostic for a
+	// corruption scan) -- unlike the calls/settlements tables, which keep the
+	// latest because live debugging cares about recent activity. The first
+	// retained problem is the very first corrupt line (line 2, right after the
+	// seed record); the last retained problem is the 100th corrupt line, not
+	// the 103rd.
+	first := res.Problems[0]
+	if first.Offset != seedOffset || first.Line != 2 {
+		t.Fatalf("first retained problem = %+v, want offset %d line 2", first, seedOffset)
+	}
+	last := res.Problems[len(res.Problems)-1]
+	wantLastOffset := seedOffset + int64((doctorAPILogValidationMaxProblems-1)*len(corruptLine))
+	wantLastLine := 1 + doctorAPILogValidationMaxProblems
+	if last.Offset != wantLastOffset || last.Line != wantLastLine {
+		t.Fatalf("last retained problem = %+v, want offset %d line %d", last, wantLastOffset, wantLastLine)
+	}
+}
+
+func TestRenderAPILogValidation_CleanMentionsCleanAndCounts(t *testing.T) {
+	res := APILogValidationResult{
+		SessionID:  sidA,
+		APILogPath: "/tmp/x.api.jsonl",
+		FileSize:   120,
+		RecordsOK:  4,
+		Clean:      true,
+	}
+	out := RenderAPILogValidation(res)
+	if !strings.Contains(out, sidA) || !strings.Contains(out, "records_ok=4") {
+		t.Fatalf("clean render missing session/summary: %q", out)
+	}
+	if !strings.Contains(out, "no structural problems") {
+		t.Fatalf("clean render missing no-problems marker: %q", out)
+	}
+}
+
+func TestRenderAPILogValidation_ProblemsShowsOffsetLineMessageAndTruncation(t *testing.T) {
+	res := APILogValidationResult{
+		SessionID: sidA,
+		Problems: []APILogValidationIssue{
+			{Offset: 42, Line: 3, Message: "decode api_attempt record: unexpected EOF"},
+		},
+		ProblemCount:      2,
+		ProblemsTruncated: true,
+	}
+	out := RenderAPILogValidation(res)
+	for _, want := range []string{"42", "3", "unexpected EOF"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("problems render missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "1/2") {
+		t.Fatalf("problems render missing truncation footer 1/2:\n%s", out)
+	}
+}
+
+func TestRenderAPILogValidation_PartialTailNotedSeparately(t *testing.T) {
+	res := APILogValidationResult{
+		SessionID:   sidA,
+		Clean:       true,
+		PartialTail: &APILogPartialTail{Offset: 88, Line: 5},
+	}
+	out := RenderAPILogValidation(res)
+	if !strings.Contains(out, "88") || !strings.Contains(out, "partial") {
+		t.Fatalf("render missing partial tail note:\n%s", out)
+	}
+}
+
 func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
 	t.Helper()
 	lines := strings.Split(output, "\n")
