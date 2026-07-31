@@ -38,13 +38,16 @@ func (m hubModel) sessionHeaderLines() []string {
 
 	// Line 3: meta strip — key/value pairs separated by ·
 	var parts []string
-	addPart := func(key, value string) {
+	addColoredPart := func(key, value string, valueColor lipgloss.Color) {
 		if value == "" {
 			return
 		}
 		k := lipgloss.NewStyle().Foreground(th.TextDim).Render(key)
-		v := lipgloss.NewStyle().Foreground(th.Text).Render(value)
+		v := lipgloss.NewStyle().Foreground(valueColor).Render(value)
 		parts = append(parts, k+" "+v)
+	}
+	addPart := func(key, value string) {
+		addColoredPart(key, value, th.Text)
 	}
 	addPart("src", firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
 	addPart("branch", m.detail.Branch)
@@ -53,8 +56,10 @@ func (m hubModel) sessionHeaderLines() []string {
 	if m.detail.WorkingDir != "" {
 		addPart("dir", modeldisplay.AbbreviatePath(m.detail.WorkingDir, 32))
 	}
+	// ctx is the one meta cell that escalates: a filling window is news the
+	// reader has to act on, and the strip is the only live surface that shows it.
 	if ctx := formatContextFragment(m.detail); ctx != "" {
-		addPart("ctx", ctx)
+		addColoredPart("ctx", ctx, contextPressureColor(m.detail))
 	}
 	if m.detail.WorkMillis > 0 {
 		addPart("work", formatWorkMillis(m.detail.WorkMillis))
@@ -79,6 +84,27 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 
 	return []string{rule, titleLine, meta}
+}
+
+// contextPressureColor returns the foreground for the meta strip's ctx value:
+// StateWarning from warnThreshold, StateError from compactThreshold, plain
+// Text below (spec §7.5). The ratio is the used/window one the fragment's own
+// percentage and "N to compact" figure come from, so the color can never
+// disagree with the number beside it. A source that reports no window gives no
+// ratio to band on — and no divisor — so it renders plain.
+func contextPressureColor(detail hubSessionDetail) lipgloss.Color {
+	th := tuitheme.ActiveTheme()
+	if detail.ContextUsed <= 0 || detail.ContextWindow <= 0 {
+		return th.Text
+	}
+	switch ratio := float64(detail.ContextUsed) / float64(detail.ContextWindow); {
+	case ratio >= compactThreshold:
+		return th.StateError
+	case ratio >= warnThreshold:
+		return th.StateWarning
+	default:
+		return th.Text
+	}
 }
 
 func (m hubModel) sessionHeaderWidth() int {

@@ -140,6 +140,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestSubmitSnapshotsAttachmentSliceBeforeAsyncCommand,
 		TestSessionHeaderHasThreeMainSections,
 		TestSessionHeaderShowsRichContextWhenWindowKnown,
+		TestSessionHeaderBandsContextPressure,
 		TestParseTUIStartupOptionsDefaults,
 		TestParseTUIStartupOptionsUsesEnvironmentDefaults,
 		TestParseTUIStartupOptionsFlagsOverrideEnvironment,
