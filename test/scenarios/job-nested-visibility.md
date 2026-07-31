@@ -42,8 +42,7 @@ watched job) is job-watch-sidecar-observer.md, not this card.
    > 1. Call job_list with NO include_nested and report every job_id
    >    and type.
    > 2. Call job_list with include_nested true and report every
-   >    job_id, type, status, parent_job_id, owner_session_id, and
-   >    visible_to_session_id.
+   >    job_id, type, status, parent_job_id, and owner_session_id.
    > 3. Call job_read_output with the NESTED shell job's job_id (from
    >    step 2 / the delegate's report). Report the full JSON.
    > 4. Call job_stop with that nested job_id and max_wait_ms 5000.
@@ -61,9 +60,14 @@ watched job) is job-watch-sidecar-observer.md, not this card.
   contains the DELEGATE job (terminal `completed`) and NOT the nested
   shell job. The step-2 listing adds exactly one more row: the nested
   job with `type` `"shell"`, `status` `"running"`, `parent_job_id`
-  equal to the delegate's job_id, `owner_session_id` NOT equal to
-  `$SID` (the child session owns the runtime), and
-  `visible_to_session_id` equal to `$SID` (line 76). Falsification:
+  equal to the delegate's job_id, and `owner_session_id` NOT equal to
+  `$SID` (the child session owns the runtime) (line 76). Do not ask for
+  `visible_to_session_id`: it is `json:"-"` on the row
+  (`agent/session_tools_jobs.go:1320-1322`, "kept for tooling but omitted
+  from the model wire"), so the model structurally cannot read it, and in
+  a plain list it always equals the owner anyway. The visibility this arm
+  is actually proving is that the row appears at all under
+  `include_nested=true` and is absent without it. Falsification:
   the nested job leaks into the default listing, or appears with a
   different/namespaced id than the one the delegate reported — the
   parent-visible `job_id` must be the same opaque handle everywhere
@@ -83,8 +87,9 @@ watched job) is job-watch-sidecar-observer.md, not this card.
   in-process, is wrong — line 122 + line 1003 reserve
   `not_controllable` for a believed-live owner that cannot
   route/control the job, and the shipped router routes any live
-  in-process owner directly (`agent/jobs_nested.go:76-78` states
-  exactly this).
+  in-process owner directly (`agent/jobs_nested.go:342-356`,
+  `stopNestedOrLocal`, whose comment states exactly this — the cited
+  `:76-78` is unrelated descendant-walk code).
 - Arm (d): the step-5 read — AFTER the delegate finished (long since
   terminal) and the nested job itself is now terminal — still returns
   the retained output: `status` `"cancelled"`, `output` containing

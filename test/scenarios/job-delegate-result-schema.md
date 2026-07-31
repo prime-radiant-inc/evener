@@ -135,9 +135,15 @@ the structured fields are how the parent judges outcome.
   remains normative for any payload that reaches capture invalid; that
   path is unit-covered (`agent/job_delegate_test.go`).
 - Arm (c) must wait for the arm-(a) job to be terminal (it is — the
-  foreground call returned completed) and for its session to be idle;
-  resuming while a prior resume is still running fails
-  `delegate_session_busy` (line 379).
+  foreground call returned completed). Do **not** expect a
+  `delegate_session_busy` failure if you race it: that error is
+  contract-legal (`docs/job-control.md:148,424`) but nothing in the Go
+  source emits it. A `delegate_send` aimed at a delegate whose job is
+  still running live-steers that job instead, returning
+  `action:"steered"` on the running `job_id` — pinned by
+  `agent/job_delegate_send_test.go:889-899`, which fails outright if the
+  error string appears. Scoring a steer as a failure here would be
+  scoring shipped behaviour as a bug.
 - `structured_result` larger than the persistence cap downgrades to
   valid:false + `schema_result_too_large`; keep test payloads tiny so
   the size path never triggers here.

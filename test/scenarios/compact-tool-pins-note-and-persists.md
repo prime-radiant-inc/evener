@@ -105,7 +105,11 @@ compaction runs.
    the original tool-call args but no `[NOTE TO SELF]` steering turn exists ⇒
    `runPreCompactHook` did not re-stamp the note (the headline survival
    guarantee broke). More than one *current* `[NOTE TO SELF]` block for a single
-   compaction ⇒ the strip-then-restamp dedup (`stripPinnedNoteTurns`) regressed.
+   compaction ⇒ the one-shot consume regressed: `runPreCompactHook` stamps the
+   handoff and immediately calls `clearPinnedNote()` in the same breath
+   (`agent/session_compaction.go:165-168`, `session_self_compact.go:65-68`), so
+   the note can only be re-stamped once per pin. There is no separate
+   strip-pass function.
 
 5. **(Optional) Confirm the tool's return is a prediction, not a false claim.**
    In the transcript, the `compact` tool result text should read "Note pinned. A
