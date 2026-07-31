@@ -596,7 +596,11 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 							}
 							if strings.TrimSpace(st.toolID) != "" {
-								tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
+								// The delta carries only this event's fragment: consumers
+								// (llm.StreamAccumulator, agent's consumeModelStream) build
+								// the args by appending deltas, and the complete args travel
+								// on ToolCallEnd.
+								tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(delta), Type: "function"}
 								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 							}
 						}

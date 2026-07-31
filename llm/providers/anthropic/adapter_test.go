@@ -3015,6 +3015,77 @@ func TestStream_ToolCall_ArgsNotCorrupted(t *testing.T) {
 	}
 }
 
+func TestStream_ToolCallDeltas_AreIncrementalFragments(t *testing.T) {
+	// StreamEventToolCallDelta carries "an incremental chunk of a tool call"
+	// (llm/stream.go), and consumers append: llm.StreamAccumulator and
+	// agent's consumeModelStream both build args by concatenating deltas.
+	// Sending the accumulated buffer instead of the fragment turns those
+	// consumers' buffers into self-concatenated garbage (kata hx43: the
+	// communicate preview extracted "The{" from it, sealing phantom "{"
+	// bubbles and duplicate agent messages in the web transcript).
+	sseLines := []string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","model":"claude-test","content":[],"usage":{"input_tokens":10,"output_tokens":0}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range sseLines {
+			fmt.Fprintln(w, line)
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{BaseURL: srv.URL, APIKey: "test"}
+
+	st, err := a.Stream(context.Background(), llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("weather in Paris")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var concatenated strings.Builder
+	var endArgs string
+	for ev := range st.Events() {
+		if ev.ToolCall == nil {
+			continue
+		}
+		switch ev.Type {
+		case llm.StreamEventToolCallDelta:
+			concatenated.Write(ev.ToolCall.Arguments)
+		case llm.StreamEventToolCallEnd:
+			endArgs = string(ev.ToolCall.Arguments)
+		}
+	}
+	_ = st.Close()
+
+	const want = `{"city":"Paris"}`
+	if got := concatenated.String(); got != want {
+		t.Fatalf("concatenated ToolCallDelta arguments = %q, want %q (deltas must be incremental fragments, not cumulative snapshots)", got, want)
+	}
+	if endArgs != want {
+		t.Fatalf("ToolCallEnd arguments = %q, want the complete args %q", endArgs, want)
+	}
+}
+
 func TestAdapter_ListModels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
