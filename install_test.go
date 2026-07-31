@@ -47,6 +47,7 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixtureRoot, "Makefile"), makefile, 0o644); err != nil {
 		t.Fatalf("write Makefile: %v", err)
 	}
+	copyRepositoryFile(t, repoRoot, fixtureRoot, "scripts/web-preflight.sh", 0o755)
 	if err := os.WriteFile(filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatalf("write package-lock.json: %v", err)
 	}
