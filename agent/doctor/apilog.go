@@ -218,14 +218,14 @@ type APILogPartialTail struct {
 // every complete record from offset zero through clean EOF (or a trailing
 // partial fragment) was strictly decoded with apilog.Decoder.
 type APILogValidationResult struct {
-	SessionID         string                   `json:"session_id"`
-	APILogPath        string                   `json:"api_log_path"`
-	FileSize          int64                    `json:"file_size"`
-	RecordsOK         int                      `json:"records_ok"`
-	Problems          []APILogValidationIssue  `json:"problems"`
-	ProblemCount      int                      `json:"problem_count"`
-	ProblemsTruncated bool                     `json:"problems_truncated"`
-	PartialTail       *APILogPartialTail       `json:"partial_tail,omitempty"`
+	SessionID         string                  `json:"session_id"`
+	APILogPath        string                  `json:"api_log_path"`
+	FileSize          int64                   `json:"file_size"`
+	RecordsOK         int                     `json:"records_ok"`
+	Problems          []APILogValidationIssue `json:"problems"`
+	ProblemCount      int                     `json:"problem_count"`
+	ProblemsTruncated bool                    `json:"problems_truncated"`
+	PartialTail       *APILogPartialTail      `json:"partial_tail,omitempty"`
 	// Clean is true iff ProblemCount is zero. A bare partial tail does not
 	// clear it: that is routine (an in-flight append), not corruption -- see
 	// APILogPartialTail.
