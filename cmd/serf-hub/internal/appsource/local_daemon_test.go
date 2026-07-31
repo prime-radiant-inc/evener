@@ -454,16 +454,25 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}
-	if list.Data == nil {
-		t.Fatal("ListJobs returned nil data")
+	// The daemon's payload must arrive whole: a non-nil check alone passes an
+	// empty list, which is exactly what a silent decode-to-empty regression
+	// produces.
+	jobs, ok := list.Data.([]any)
+	if !ok || len(jobs) != 1 {
+		t.Fatalf("ListJobs data = %#v, want the daemon's one-job list", list.Data)
+	}
+	job, ok := jobs[0].(map[string]any)
+	if !ok || job["id"] != "job_1" || job["state"] != "running" {
+		t.Fatalf("job = %#v, want id=job_1 state=running", jobs[0])
 	}
 
 	out, err := source.JobOutput(ctx, appwire.JobsOutputParams{Ref: "local:th_1", JobID: "job_1", MaxBytes: 1024})
 	if err != nil {
 		t.Fatalf("JobOutput: %v", err)
 	}
-	if out.Data == nil {
-		t.Fatal("JobOutput returned nil data")
+	tail, ok := out.Data.(map[string]any)
+	if !ok || tail["jobId"] != "job_1" || tail["output"] != "hello" {
+		t.Fatalf("JobOutput data = %#v, want the daemon's own tail payload", out.Data)
 	}
 	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
 		t.Fatalf("params forwarded = %+v", outputParams)

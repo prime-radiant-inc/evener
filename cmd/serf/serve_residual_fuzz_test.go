@@ -125,6 +125,8 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	s.name("renamed")
 	s.effort("low")
 	_ = s.tasks()
+	_ = s.jobs()
+	_, _, _ = s.jobOutput("job_1", 1024)
 }
 
 func TestRunServeResidualCoverage(t *testing.T) {

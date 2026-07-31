@@ -36,20 +36,14 @@ func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.
 	return appwire.JobsListResponse{}, err
 }
 
-// pastJobsListResponse mirrors pastTasksListResponse's past-index gating
-// (app_tasks.go): it resolves ref to a local past thread id and requires that
-// id to already be known to the past index before serving anything, so a job
-// list is never returned for a session the hub cannot otherwise account for.
-// Only then does it read the session's persisted jobs.jsonl.
+// pastJobsListResponse gates on pastEntryForRead (app_threadread.go), the
+// same gate hubJobsOutput's fallback uses: the ref must resolve to a LOCAL
+// past thread id the index already knows, so a job list is never returned
+// for a session the hub cannot otherwise account for — and never from local
+// state for another source's ref. Only then does it read the session's
+// persisted jobs.jsonl.
 func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) (appwire.JobsListResponse, bool, error) {
-	if cfg.Past == nil {
-		return appwire.JobsListResponse{}, false, nil
-	}
-	threadID, ok := localPastThreadID(appwire.ThreadReadParams{Ref: params.Ref})
-	if !ok {
-		return appwire.JobsListResponse{}, false, nil
-	}
-	entry, ok := cfg.Past.Find(threadID)
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {
 		return appwire.JobsListResponse{}, false, nil
 	}
@@ -75,14 +69,7 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if !isDeadSessionError(err) {
 		return appwire.JobsOutputResponse{}, err
 	}
-	if cfg.Past == nil {
-		return appwire.JobsOutputResponse{}, err
-	}
-	threadID, ok := localPastThreadID(appwire.ThreadReadParams{Ref: params.Ref})
-	if !ok {
-		return appwire.JobsOutputResponse{}, err
-	}
-	entry, ok := cfg.Past.Find(threadID)
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {
 		return appwire.JobsOutputResponse{}, err
 	}
