@@ -299,7 +299,13 @@ describe("session row", () => {
   test.each([true, false])(
     "the leading slots are chevron-gutter then signal-gutter (hasChildren %s)",
     (hasChildren) => {
-      render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info({ hasChildren })} actions={actions()} />);
+      render(
+        <RailRow
+          node={sessionRailNode(apiNode({ state: "active" }))}
+          info={info({ hasChildren })}
+          actions={actions()}
+        />,
+      );
       const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
       const signal = screen.getByTestId("rail-row-signal");
       const row = chevronGutter.parentElement;
