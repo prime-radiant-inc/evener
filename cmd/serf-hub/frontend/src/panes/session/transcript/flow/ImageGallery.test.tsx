@@ -1,10 +1,17 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import dialogStyles from "../../../../widgets/dialog/dialog.module.css";
 import { ImageGallery } from "./ImageGallery";
 
 afterEach(() => {
   cleanup();
+  // The keydown-listener tests below spy on window.addEventListener/
+  // removeEventListener; vi.spyOn's call history otherwise survives across
+  // tests in this file (nothing here uses vitest's restoreMocks config),
+  // which would let an earlier test's recorded "keydown" call leak into a
+  // later test's "was anything added" check.
+  vi.restoreAllMocks();
 });
 
 test("renders nothing when images is undefined", () => {
@@ -47,6 +54,19 @@ test("clicking a thumbnail opens the lightbox showing that image", () => {
   expect(lightboxImg.getAttribute("src")).toBe("/s/ref/images/bbb");
 });
 
+test("the lightbox uses Dialog's large size variant, not the compact default (kata b4xf)", () => {
+  render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
+  fireEvent.click(screen.getByTestId("image-gallery-thumb"));
+
+  // Exact token membership, not substring containment: dialogVariantLarge
+  // contains "dialogVariant" as a literal prefix, so a substring check would
+  // pass even if the wrong (default) class were applied.
+  const dialogClassTokens = screen.getByRole("dialog").className.split(/\s+/);
+
+  expect(dialogClassTokens).toContain(dialogStyles.dialogVariantLarge);
+  expect(dialogClassTokens).not.toContain(dialogStyles.dialogVariant);
+});
+
 test("a single-image set shows no prev/next controls in the lightbox", () => {
   render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
   fireEvent.click(screen.getByTestId("image-gallery-thumb"));
@@ -85,6 +105,106 @@ test("prev wraps from the first image back to the last", () => {
   fireEvent.click(screen.getByTestId("image-gallery-prev"));
 
   expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/b");
+});
+
+// --- keyboard navigation (kata b4xf: left/right arrows step between
+// adjacent images, same as the Previous/Next buttons; only wired up while
+// there's more than one image to step between) -----------------------------
+
+test("ArrowRight steps to the next image, same as clicking Next", async () => {
+  const user = userEvent.setup();
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[0]!);
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/a");
+
+  await user.keyboard("{ArrowRight}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/b");
+});
+
+test("ArrowLeft steps to the previous image, same as clicking Previous", async () => {
+  const user = userEvent.setup();
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[2]!);
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/c");
+
+  await user.keyboard("{ArrowLeft}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/b");
+});
+
+// Three images, not two: with only two, +1 and -1 from either end both land
+// on the SAME other index, so a wrap test that can't tell the two directions
+// apart would still pass even if ArrowLeft/ArrowRight were swapped.
+test("ArrowRight wraps from the last image back to the first", async () => {
+  const user = userEvent.setup();
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[2]!); // start at c (last)
+
+  await user.keyboard("{ArrowRight}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/a");
+});
+
+test("ArrowLeft wraps from the first image back to the last", async () => {
+  const user = userEvent.setup();
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[0]!); // start at a (first)
+
+  await user.keyboard("{ArrowLeft}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/c");
+});
+
+test("arrow keys do nothing with only one image open (no Previous/Next controls either)", async () => {
+  const user = userEvent.setup();
+  render(<ImageGallery images={[{ src: "/s/ref/images/a" }]} />);
+  fireEvent.click(screen.getByTestId("image-gallery-thumb"));
+  expect(screen.queryByTestId("image-gallery-prev")).toBeNull();
+  expect(screen.queryByTestId("image-gallery-next")).toBeNull();
+
+  await user.keyboard("{ArrowRight}");
+  await user.keyboard("{ArrowLeft}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/a");
+});
+
+test("closing the lightbox removes its keydown listener (no leaked listener)", () => {
+  const addSpy = vi.spyOn(window, "addEventListener");
+  const removeSpy = vi.spyOn(window, "removeEventListener");
+
+  render(<ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }]} />);
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[0]!);
+
+  const keydownCall = addSpy.mock.calls.find(([type]) => type === "keydown");
+  expect(keydownCall).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+  expect(removeSpy).toHaveBeenCalledWith("keydown", keydownCall![1]);
+
+  // The listener is really gone, not just "removeEventListener was called
+  // with the right args" - firing the same key on window after close must
+  // not reopen or otherwise touch the (now-closed) dialog.
+  fireEvent.keyDown(window, { key: "ArrowRight" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("no keydown listener is attached at all for a single-image gallery", () => {
+  const addSpy = vi.spyOn(window, "addEventListener");
+
+  render(<ImageGallery images={[{ src: "/s/ref/images/a" }]} />);
+  fireEvent.click(screen.getByTestId("image-gallery-thumb"));
+
+  expect(addSpy.mock.calls.some(([type]) => type === "keydown")).toBe(false);
 });
 
 test("Escape closes the lightbox (via Dialog's own contract)", async () => {

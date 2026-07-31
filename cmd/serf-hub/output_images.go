@@ -37,15 +37,28 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 	var candidates []candidate
 	var args map[string]any
 	_ = json.Unmarshal([]byte(argumentsJSON), &args)
-	addArgPath := func(key string) {
+	addArgPath := func(key, source string) {
 		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
-			candidates = append(candidates, candidate{path: v, source: "written-file"})
+			candidates = append(candidates, candidate{path: v, source: source})
 		}
 	}
 	switch toolName {
 	case "write_file", "edit_file":
-		addArgPath("file_path")
-		addArgPath("path")
+		addArgPath("file_path", "written-file")
+		addArgPath("path", "written-file")
+	case "read_file":
+		// read_file's own file_path/path arg names the file it read, same
+		// shape as write_file/edit_file's own arg above - a distinct source
+		// tag ("read-file", not "written-file") since this file wasn't
+		// written by the call. This is the file-backed, re-read-from-disk
+		// path: /doc/image, already live-session-capable (unlike the
+		// sha-addressed /s/.../images/ route a past thread read separately
+		// attaches via projectReplayOutputImages for the same call, source
+		// "tool-result" - appendOutputImagesUnique's sha-first key, below,
+		// is what keeps those two from showing the same image twice when
+		// both are present on a past read (kata 1nr4).
+		addArgPath("file_path", "read-file")
+		addArgPath("path", "read-file")
 	case "apply_patch":
 		for _, p := range shellOutputImageCandidates(output) {
 			candidates = append(candidates, candidate{path: p, source: "written-file"})

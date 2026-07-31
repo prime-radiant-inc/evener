@@ -104,8 +104,19 @@
   animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
+/* size="large" (kata b4xf): same centered fade-scale chassis as
+ * .dialogVariant, just without its 560px cap - the content (an image lightbox)
+ * is meant to fill almost the whole viewport, not sit in a form-sized box. */
+.dialogVariantLarge {
+  border-radius: var(--radius-pane);
+  max-width: calc(100vw - var(--space-8));
+  max-height: calc(100vh - var(--space-8));
+  animation: dialogFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .dialogVariant {
+  .dialogVariant,
+  .dialogVariantLarge {
     animation: none;
   }
 }

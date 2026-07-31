@@ -47,7 +47,10 @@
 .lightboxImg {
   display: block;
   max-width: 100%;
-  max-height: 70vh;
+  /* Dialog's size="large" (kata b4xf) already caps the panel itself at
+   * almost the full viewport; this just lets the image use most of that,
+   * leaving room for the panel's header/caption/nav chrome. */
+  max-height: 85vh;
   margin: 0 auto;
 }
 

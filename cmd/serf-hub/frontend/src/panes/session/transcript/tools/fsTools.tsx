@@ -6,7 +6,8 @@
 // target/result slot on the wire like the legacy DOM had).
 
 import type { ItemModel } from "../../../../protocol/model";
-import { registerToolRenderer, type ToolRendererDescriptor } from "../toolRenderers";
+import { CodeBlock } from "../../../../widgets";
+import { registerToolRenderer, type ToolRendererDescriptor, type ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 import { clip, lineCount, parseArgs, str } from "./helpers";
 
@@ -25,6 +26,29 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
   return count > 0 ? `lines ${offset}-${offset + count - 1}` : `lines ${offset}`;
 }
 
+// read_file's own output for an image/PDF read mirrors agent/execenv/
+// local.go's ReadFile: a "[image: FORMAT, N bytes, base64 data follows]" (or
+// "[document: ...]") header. The base64 payload never actually reaches this
+// text - agent/internal/tool/registry.go's ParseImageResult cuts the
+// ReadFile string at its first "\n" and keeps only this header as the tool
+// result's own Output, routing the decoded bytes through a separate field -
+// so "base64 data follows" is stale/misleading by the time a reader sees it
+// (kata 1nr4): nothing ever follows it here. BINARY_PAYLOAD_HEADER detects
+// that shape so ReadFileOutputBody, below, can show just the honest header
+// (dropping that phrase, and dropping any payload that DID make it into
+// output - an older daemon, say - rather than ever rendering it as text).
+// The real image renders as a thumbnail alongside, via ToolCallItem's
+// <ImageGallery images={item.outputImages} />, once the file resolves as a
+// supported image (output_images.go's read_file case).
+const BINARY_PAYLOAD_HEADER = /^\[(?:image|document): [^\]]+, base64 data follows\]/;
+
+function ReadFileOutputBody({ item, live }: ToolRenderProps) {
+  const output = item.output ?? "";
+  const match = BINARY_PAYLOAD_HEADER.exec(output);
+  if (match === null) return <TailFoldedOutputBody item={item} live={live} />;
+  return <CodeBlock text={match[0].replace(", base64 data follows]", "]")} copyLabel="Copy output" />;
+}
+
 registerToolRenderer({
   match: "read_file",
   icon: "file",
@@ -33,7 +57,7 @@ registerToolRenderer({
     const target = str(args, "file_path") ?? str(args, "path") ?? "";
     return `Read ${target} · ${readLineRange(args, item.output ?? "")}`;
   },
-  body: TailFoldedOutputBody,
+  body: ReadFileOutputBody,
   // read_file references a single file (floor §3.7): expose it for the "open
   // beside" affordance. grep/list_dir/glob below reference a directory or
   // pattern, not a single file, so they opt OUT (no openBesidePath).

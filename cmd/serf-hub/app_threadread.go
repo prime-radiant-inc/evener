@@ -610,12 +610,19 @@ func appendOutputImagesUnique(existing, extra []appwire.OutputImage) []appwire.O
 	return out
 }
 
+// outputImageDescriptorKey prefers SHA over URL: two descriptors for the same
+// content can legitimately carry different URLs (a past-thread read's
+// sha-addressed /s/.../images/ route vs. the file-backed mechanism's
+// /doc/image?... route for the same call, e.g. a read_file image - kata
+// 1nr4), and SHA is the real content identity there, not the route that
+// happened to serve it. Falls back to URL, then Path, for a descriptor that
+// carries no SHA at all.
 func outputImageDescriptorKey(img appwire.OutputImage) string {
-	if img.URL != "" {
-		return img.URL
-	}
 	if img.SHA != "" {
 		return "sha:" + img.SHA
+	}
+	if img.URL != "" {
+		return img.URL
 	}
 	if img.Path != "" {
 		return "path:" + img.Path
