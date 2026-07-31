@@ -228,6 +228,19 @@ type ToolCallEndData struct {
 	ToolState json.RawMessage `json:"tool_state,omitempty"`
 }
 
+// ToolResultImagesPersistedData is the payload for an
+// EventToolResultImagesPersisted event: the round's tool calls whose result
+// image bytes are now in the transcript, in call order.
+//
+// It carries no descriptors of its own. The descriptors are already on each
+// call's TOOL_CALL_END (ToolCallEndData.OutputImages); this says only that the
+// bytes behind them have landed somewhere a reader can fetch from. A consumer
+// that mints a fetchable URL from a descriptor holds it until its call id
+// appears here — see internal/appprojector.
+type ToolResultImagesPersistedData struct {
+	CallIDs []string `json:"call_ids,omitempty"`
+}
+
 // ToolCallRepairedData reports the repairs applied to a tool call's arguments.
 // Each entry in Changes is encoded "kind:field:detail".
 type ToolCallRepairedData struct {

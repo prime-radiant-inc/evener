@@ -656,6 +656,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
+		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
@@ -663,6 +664,49 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		return abortErr
 	}
 	return nil
+}
+
+// announceReadableToolResultImages names the round's tool calls whose result
+// image bytes just became fetchable, and is called from inside the same
+// side-effect bundle as the write that made them so.
+//
+// A tool result's bytes reach a reader only through the round's tool-result
+// turn, and rounds persist whole: between the TOOL_CALL_END that announces an
+// image by sha and the write above, the bytes exist nowhere a reader can look.
+// That gap is as long as the round's remaining calls take — microseconds for a
+// single-call round, the length of a build for an image read batched with one
+// (kata v3dv). The descriptor on TOOL_CALL_END is true when it is emitted; this
+// is the separate fact that it can now be acted on.
+//
+// Two things it deliberately does not announce. A round whose results carry no
+// image bytes says nothing at all — this sits on the busiest path in the
+// system and must stay silent on it. And a session with no transcript writer
+// says nothing either: there is no file for a reader to fetch from, so an
+// announcement would be the same unfulfillable promise this exists to remove.
+func (s *Session) announceReadableToolResultImages(results []tool.ExecResult) {
+	if !s.hasTranscriptWriter() {
+		return
+	}
+	var callIDs []string
+	for _, r := range results {
+		if _, ok := events.ToolResultOutputImage(r.ToolName, r.ImageData, r.ImageMediaType); ok {
+			callIDs = append(callIDs, r.CallID)
+		}
+	}
+	if len(callIDs) == 0 {
+		return
+	}
+	s.emit(events.EventToolResultImagesPersisted, events.ToolResultImagesPersistedData{CallIDs: callIDs})
+}
+
+// hasTranscriptWriter reports whether this session has somewhere durable to put
+// a turn. Nil is the ordinary answer for a session with no state directory, and
+// also for one whose writer could not be opened — transcript.Writer.Append is
+// nil-safe, so both report a write as successful and drop it.
+func (s *Session) hasTranscriptWriter() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transcript != nil
 }
 
 // allToolDefinitions returns cached tool definitions.

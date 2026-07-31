@@ -194,6 +194,12 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 		return out, true
 
 	case schema.TurnTool, schema.TurnToolResults:
+		// This entry IS a round: the daemon writes one of these once every call
+		// in the round has ended, and announces right afterwards which of those
+		// calls a reader can now fetch images for (kata v3dv). Both halves are
+		// synthesized here, in the same order, or the live side never catches up
+		// to the reload side it is being compared against.
+		var readableImageCallIDs []string
 		for _, p := range turn.Message.Content {
 			if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 				continue
@@ -214,6 +220,7 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 			// would let the two descriptions drift apart unnoticed.
 			if img, ok := events.ToolResultOutputImage(p.ToolResult.Name, p.ToolResult.ImageData, p.ToolResult.ImageMediaType); ok {
 				end.OutputImages = []events.OutputImage{img}
+				readableImageCallIDs = append(readableImageCallIDs, p.ToolResult.ToolCallID)
 			}
 			content := apptranscript.StringifyToolContent(p.ToolResult.Content)
 			if p.ToolResult.IsError {
@@ -222,6 +229,9 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 				end.Output = content
 			}
 			add(end)
+		}
+		if len(readableImageCallIDs) > 0 {
+			add(events.ToolResultImagesPersistedData{CallIDs: readableImageCallIDs})
 		}
 		return out, true
 

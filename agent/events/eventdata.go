@@ -47,12 +47,15 @@ func (ReasoningSummaryDeltaData) eventKind() EventKind {
 func (ToolCallStartData) eventKind() EventKind       { return EventToolCallStart }
 func (ToolCallOutputDeltaData) eventKind() EventKind { return EventToolCallOutputDelta }
 func (ToolCallEndData) eventKind() EventKind         { return EventToolCallEnd }
-func (ToolCallRepairedData) eventKind() EventKind    { return EventToolCallRepaired }
-func (SteeringInjectedData) eventKind() EventKind    { return EventSteeringInjected }
-func (QueueChangedData) eventKind() EventKind        { return EventQueueChanged }
-func (TaskUpdatedData) eventKind() EventKind         { return EventTaskUpdated }
-func (SessionNameChangedData) eventKind() EventKind  { return EventSessionNameChanged }
-func (ModelChangedData) eventKind() EventKind        { return EventModelChanged }
+func (ToolResultImagesPersistedData) eventKind() EventKind {
+	return EventToolResultImagesPersisted
+}
+func (ToolCallRepairedData) eventKind() EventKind   { return EventToolCallRepaired }
+func (SteeringInjectedData) eventKind() EventKind   { return EventSteeringInjected }
+func (QueueChangedData) eventKind() EventKind       { return EventQueueChanged }
+func (TaskUpdatedData) eventKind() EventKind        { return EventTaskUpdated }
+func (SessionNameChangedData) eventKind() EventKind { return EventSessionNameChanged }
+func (ModelChangedData) eventKind() EventKind       { return EventModelChanged }
 func (ReasoningEffortChangedData) eventKind() EventKind {
 	return EventReasoningEffortChanged
 }
@@ -96,6 +99,7 @@ var (
 	_ EventData = ToolCallStartData{}
 	_ EventData = ToolCallOutputDeltaData{}
 	_ EventData = ToolCallEndData{}
+	_ EventData = ToolResultImagesPersistedData{}
 	_ EventData = ToolCallRepairedData{}
 	_ EventData = SteeringInjectedData{}
 	_ EventData = QueueChangedData{}

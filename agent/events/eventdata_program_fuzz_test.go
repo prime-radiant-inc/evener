@@ -85,6 +85,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ToolCallStartData{ToolName: text, CallID: text, ArgumentsJSON: text}, EventToolCallStart},
 		{ToolCallOutputDeltaData{ToolName: text, CallID: text, Delta: text}, EventToolCallOutputDelta},
 		{ToolCallEndData{ToolName: text, CallID: text, Output: text, Error: text}, EventToolCallEnd},
+		{ToolResultImagesPersistedData{CallIDs: []string{text}}, EventToolResultImagesPersisted},
 		{ToolCallRepairedData{ToolName: text, CallID: text, Changes: []string{text}}, EventToolCallRepaired},
 		{SteeringInjectedData{Text: text}, EventSteeringInjected},
 		{QueueChangedData{Depth: n, Preview: []string{text}}, EventQueueChanged},
