@@ -37,11 +37,15 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 
 ## Steps
 
-1. **Write a fixture PNG to a known path.** Using a stable filename
-   makes the recorded scenario re-runnable without templated paths:
+1. **Write a fixture PNG into this run's own directory.** The
+   basename is stable because the chip assertion below reads it; the
+   directory is this run's (the Setup checklist's `$run`), never a
+   fixed `/tmp/serf-e2e-test-image.png` that a second agent's Cleanup
+   would delete out from under this one mid-paste (kata `k2rx`):
    ```bash
-   convert -size 64x64 xc:red /tmp/serf-e2e-test-image.png
-   file /tmp/serf-e2e-test-image.png    # PNG image data, 64 x 64
+   IMG="$run/serf-e2e-test-image.png"
+   convert -size 64x64 xc:red "$IMG"
+   file "$IMG"    # PNG image data, 64 x 64
    ```
 
 2. **Spawn a dormant session** (single trivial first turn so we have
@@ -89,7 +93,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    keystrokes and bubbletea reports them as normal `KeyMsg`s
    (the `Paste:true` branch never fires):
    ```bash
-   tmux set-buffer "/tmp/serf-e2e-test-image.png"
+   tmux set-buffer "$IMG"
    tmux paste-buffer -t "$TMUX_SESSION" -p
    sleep 0.4
    tmux capture-pane -t "$TMUX_SESSION" -p | head -25
@@ -119,7 +123,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 - **Step 5 (chip vs text)**: pane shows the chip
   `📎 serf-e2e-test-image.png [×]`. The textarea body is empty.
   Falsification:
-  - Textarea contains `/tmp/serf-e2e-test-image.png` and NO chip:
+  - Textarea contains the path from `$IMG` and NO chip:
     `handleBracketedPaste` didn't match (verify that the file
     exists, has an `.png` extension on the recognised list, and
     is not a directory — `mediaTypeForPath` and `IsImageFile`
@@ -149,7 +153,7 @@ curl -s -X POST -H "Content-Type: application/json" \
   "$HUB/s/$SID/shutdown" >/dev/null
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$WORKDIR"
-rm -f /tmp/serf-e2e-test-image.png
+rm -f "$IMG"
 # Optional, for hermeticity:
 # find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
@@ -165,9 +169,8 @@ rm -f /tmp/serf-e2e-test-image.png
   form via the file picker.
 - **`tmux paste-buffer -p` (the `-p` flag) is what triggers the
   branch.** Without it the bytes arrive as normal keystrokes and
-  bubbletea never sets `KeyMsg.Paste=true`. `tmux send-keys -l
-  "/tmp/serf-e2e-test-image.png"` similarly inserts the path as
-  text without firing the detection.
+  bubbletea never sets `KeyMsg.Paste=true`. `tmux send-keys -l "$IMG"`
+  similarly inserts the path as text without firing the detection.
 - **Supported extensions** are pinned in
   `cmd/serf-tui/clipboard_paste.go:IsImageFile`:
   `.png .jpg .jpeg .gif .webp`. Other extensions pass through to
@@ -184,9 +187,8 @@ rm -f /tmp/serf-e2e-test-image.png
   recognised forms.
 - **`os.Stat` is a real syscall**. If the path resolves but the
   file doesn't exist, the bracketed-paste falls through to normal
-  text insertion. The scenario relies on
-  `/tmp/serf-e2e-test-image.png` actually being on disk; the
-  setup step does that explicitly.
+  text insertion. The scenario relies on `$IMG` actually being on
+  disk; the setup step does that explicitly.
 - **claude-haiku-4-5-20251001's `read_file` quirk** — same as the
   other image scenarios. The model sees the image and decides to
   "read the file" before describing; the read fails, then the

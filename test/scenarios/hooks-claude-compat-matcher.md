@@ -49,10 +49,13 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 - `serf` built **from the checkout under test**, not from whichever one
   this path happens to name. Run these from the worktree you are testing;
   a hardcoded `cd` into the main checkout would silently build and prove
-  the wrong branch:
+  the wrong branch. The binary lands in this run's own directory, never a
+  fixed `/tmp/serf` a second concurrent run would overwrite mid-test
+  (kata `k2rx`):
   ```bash
   cd "$(git rev-parse --show-toplevel)"   # must be the branch under test
-  go build -o /tmp/serf ./cmd/serf
+  WORK=$(mktemp -d /tmp/serf-hook-scenario.XXXXXX)
+  go build -o "$WORK/serf" ./cmd/serf
   set -a; . "$PWD/.env"; set +a   # zsh: bare `. .env` fails; use the explicit form
   ```
 - A model whose instance is credentialed by `.env`. This card uses
@@ -66,7 +69,6 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 1. Build a hermetic project + plugin tree (markers land in the project
    dir; absolute paths in `args` so exec-form needs no cwd assumptions):
    ```bash
-   WORK=$(mktemp -d /tmp/serf-hook-scenario.XXXXXX)
    PROJ="$WORK/proj"
    mkdir -p "$PROJ" "$WORK/plugin/.claude-plugin" "$WORK/plugin/hooks"
 
@@ -92,7 +94,7 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
 2. Run serf live, forcing the shell tool. `--verbose` emits NDJSON
    lifecycle events to stderr:
    ```bash
-   /tmp/serf --model openai/gpt-5.4-mini --dir "$PROJ" \
+   "$WORK/serf" --model openai/gpt-5.4-mini --dir "$PROJ" \
      --plugin-dir "$WORK/plugin" --verbose \
      "Use the shell tool to run exactly this command: echo serf-hook-probe-marker. Then tell me the output. Do not use any other tool." \
      > "$WORK/run.log" 2>&1
@@ -124,7 +126,7 @@ to the real tool name: `"Bas"` is the substring of the real Claude name
                     "args": ["$PROJ/CONTROL_BAS_FIRED"] } ] }
    ] } }
    EOF
-   /tmp/serf --model openai/gpt-5.4-mini --dir "$PROJ" \
+   "$WORK/serf" --model openai/gpt-5.4-mini --dir "$PROJ" \
      --plugin-dir "$WORK/plugin-control" --verbose \
      "Use the shell tool to run exactly this command: echo serf-hook-control-marker. Then tell me the output. Do not use any other tool." \
      > "$WORK/run-control.log" 2>&1

@@ -13,7 +13,13 @@ API-log fixtures and do not require provider credentials or network access.
 
 ## Pre-state
 
-- Built serf binary (`go build -o /tmp/serf ./cmd/serf` if absent).
+- Built serf binary, into this run's own directory — never a fixed
+  `/tmp/serf` that a second card running at the same time would
+  overwrite mid-run (kata `k2rx`):
+  ```bash
+  run=$(mktemp -d -t serf-e2e-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  ```
 - Creds exported into the child env:
   ```bash
   set -a; . "$PWD/.env"; set +a
@@ -30,14 +36,14 @@ API-log fixtures and do not require provider credentials or network access.
 
 2. **Session A - create one small semantic transcript and provider attempt:**
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Reply with the literal text OK and stop."
    ```
    Wait for exit 0.
 
 3. **Session B - exercise each forensic lane explicitly:**
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Find the earlier OK session in this project and retain its transcript_ref as A_REF. Every subsequent read in this scenario must include transcript_ref=A_REF, including exact expansions and continuation calls. First call read_session_transcript on A_REF with format=jsonl. Confirm every non-empty line is a JSON object and that the grammar is exactly one header followed only by entries, with no system_prompt field or provider request/response record. Second call read_session_transcript on A_REF with source=api_log and report credential_values_excluded, record count, attempt IDs, outcomes, and request/response byte counts; do not claim body data is present in the summary. Third pick one returned attempt_id and call read_session_transcript with transcript_ref=A_REF, source=api_log, that attempt_id, and body=request. Report the body encoding, bytes_returned, total_bytes, and continuation handle if present. If a continuation is present, call again with transcript_ref=A_REF, source=api_log, the same attempt_id and body, and the returned offset_bytes. Finally, if your goal were to understand what the session did, state which transcript format you would use and why."
    ```
 
@@ -78,7 +84,7 @@ Falsification:
 ## Cleanup
 
 ```bash
-rm -rf "$proj"
+rm -rf "$proj" "$run"
 ```
 
 ## Sharp edges

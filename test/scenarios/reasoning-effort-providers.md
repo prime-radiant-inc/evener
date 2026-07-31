@@ -21,9 +21,18 @@ credentials and makes billed calls.
   export it directly so this card never touches his live credential store.
 - An Anthropic API key in the repo-root `.env` as `ANTHROPIC_API_KEY` (or
   exported in the environment).
-- A `serf` binary built from this branch: `go build -o /tmp/serf-eff ./cmd/serf`.
+- A `serf` binary built from this branch, into a unique run directory that also
+  holds this card's provider config — never a fixed `/tmp/serf-eff` +
+  `/tmp/eff-cfg` pair, which a card running beside this one would overwrite
+  mid-run (kata `k2rx`):
+
+  ```sh
+  run=$(mktemp -d -t serf-e2e-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  ```
+
 - An isolated provider config so the live `~/.serf/providers.toml` is untouched.
-  Write `/tmp/eff-cfg/providers.toml` with both Kimi routes (the sanctioned
+  Write `$run/providers.toml` with both Kimi routes (the sanctioned
   anthropic-compatible one used for completions, and the OpenAI-style one used
   only to observe the clamp in step 2):
 
@@ -39,14 +48,16 @@ credentials and makes billed calls.
   ```
 
 - Export the Kimi key (the raw curl in step 1 needs it) and write the isolated
-  credentials file. serf's credential store **rejects** a credentials.toml unless
-  it is mode `0600`, so create it restrictively:
+  credentials file **beside** `providers.toml` — the credential store is read
+  from the directory of `SERF_PROVIDERS_CONFIG` (`cmdutil/load_client.go`
+  `LoadProviderConfigAt`). serf's credential store **rejects** a
+  credentials.toml unless it is mode `0600`, so create it restrictively:
 
   ```sh
   KIMI_KEY="${KIMI_API_KEY:?export KIMI_API_KEY first — see Pre-state}"
   ANTHROPIC_KEY=$(grep -E '^ANTHROPIC_API_KEY=' "$(git rev-parse --show-toplevel)/.env" | cut -d= -f2- | tr -d '"'"'"')
-  install -m 600 /dev/null /tmp/eff-cfg/credentials.toml
-  cat > /tmp/eff-cfg/credentials.toml <<EOF
+  install -m 600 /dev/null "$run/credentials.toml"
+  cat > "$run/credentials.toml" <<EOF
   schema = 0
   [providers]
     [providers.anthropic]
@@ -56,15 +67,15 @@ credentials and makes billed calls.
     [providers.kimi-openai]
       api_key = "$KIMI_KEY"
   EOF
-  chmod 600 /tmp/eff-cfg/credentials.toml
+  chmod 600 "$run/credentials.toml"
   ```
 
-  Run serf with `SERF_PROVIDERS_CONFIG=/tmp/eff-cfg/providers.toml`.
+  Run serf with `SERF_PROVIDERS_CONFIG="$run/providers.toml"`.
 
 A one-shot invocation looks like:
 
 ```
-SERF_PROVIDERS_CONFIG=/tmp/eff-cfg/providers.toml /tmp/serf-eff \
+SERF_PROVIDERS_CONFIG="$run/providers.toml" "$run/serf" \
   --model <provider>/<model> --reasoning-effort <level> \
   --max-rounds 1 --no-project-prompts "reply with the single word OK"
 ```
@@ -119,7 +130,8 @@ SERF_PROVIDERS_CONFIG=/tmp/eff-cfg/providers.toml /tmp/serf-eff \
 
 ## Cleanup
 
-- `rm -rf /tmp/eff-cfg /tmp/serf-eff` and any one-shot session dirs under
+- `rm -rf "$run"` (binary and provider config both live there) and any
+  one-shot session dirs under
   `~/.local/state/serf/projects/*/sessions/` created by the run.
 
 ## Sharp edges

@@ -24,7 +24,16 @@ card proves it against a built binary on a real state-dir shape.
 
 ## Pre-state
 
-- Build the binary: `make build-doctor` (or `go build -o /tmp/serf-doctor ./cmd/serf-doctor`).
+- Build the binary into this run's own directory — never a fixed
+  `/tmp/serf-doctor` that a second card running at the same time would
+  overwrite mid-run (kata `k2rx`). `make build-doctor` works too; it
+  writes `./serf-doctor` in the worktree, so substitute that path in the
+  steps below if you use it.
+
+  ```bash
+  run=$(mktemp -d -t serf-e2e-XXXXXX)
+  go build -o "$run/serf-doctor" ./cmd/serf-doctor
+  ```
 - A scratch state dir with one session whose `jobs.jsonl` exercises coalescing,
   a dropped delivery, an `evicted` terminal, and a self-loop `Chain`. Build it
   deterministically (the binary's selector `--state-dir <root>` targets it; the
@@ -59,7 +68,7 @@ card proves it against a built binary on a real state-dir shape.
 
 1. **`locate` resolves the SUBDIR jobs path.**
    ```bash
-   /tmp/serf-doctor locate "$SID" --state-dir "$SCR" --json
+   "$run/serf-doctor" locate "$SID" --state-dir "$SCR" --json
    ```
    ASSERT `jobs_path` ends with `sessions/033z4xc9zDkqiOXWEe1X4l/jobs.jsonl`
    (the subdir, NOT a flat `…AAAA.jobs.jsonl`), and `transcript_path` ends with
@@ -67,7 +76,7 @@ card proves it against a built binary on a real state-dir shape.
 
 2. **`watches` collapses coalescing — the headline correction.**
    ```bash
-   /tmp/serf-doctor watches "$SID" --state-dir "$SCR"
+   "$run/serf-doctor" watches "$SID" --state-dir "$SCR"
    ```
    ASSERT for `w1`: `5 pending lines` collapse to `3 distinct` deliveries (the
    `j1` key alone is 3 pending → 1 delivered), the line contains `coalescing
@@ -86,7 +95,7 @@ card proves it against a built binary on a real state-dir shape.
    cat >> "$SESS/$SID/jobs.jsonl" <<'EOF'
   {"kind":"watch_send_dropped","seq":12,"watch_id":"w2","watch_send":{"key":{"watch_id":"w2"},"delivery_id":"dr","diagnostic_reason":"runaway","self_influence_depth":8}}
   EOF
-   /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --self-loops --json
+   "$run/serf-doctor" watches "$SID" --state-dir "$SCR" --self-loops --json
    ```
    ASSERT exactly one watch (`w2`) is returned with `runaway_drops == 1` and
    `max_self_influence_depth == 8`. ASSERT `w1` is NOT in the output (no
@@ -98,7 +107,7 @@ card proves it against a built binary on a real state-dir shape.
    assistant turn that *names* `delegate_send` without calling it, plus a real
    `read_file` call, then:
    ```bash
-   /tmp/serf-doctor transcript "$SID" --count delegate_send --state-dir "$SCR"
+   "$run/serf-doctor" transcript "$SID" --count delegate_send --state-dir "$SCR"
    ```
    ASSERT `delegate_send: 0 calls` with a non-zero "textual mention(s)" note —
    the structural invocation count is 0 even though the name appears in text.
@@ -106,7 +115,7 @@ card proves it against a built binary on a real state-dir shape.
 5. **Real-data spot check (non-deterministic, optional).** Point the binary at
    the live state home and confirm it reads real provenance:
    ```bash
-   /tmp/serf-doctor watches <a-real-SID-with-watch_send-events>
+   "$run/serf-doctor" watches <a-real-SID-with-watch_send-events>
    ```
    ASSERT the printed `distinct_deliveries` is ≤ `grep -c watch_send_pending` on
    the same `jobs.jsonl` (coalescing only ever collapses), and that the
