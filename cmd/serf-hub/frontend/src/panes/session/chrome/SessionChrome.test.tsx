@@ -273,6 +273,79 @@ test("re-expands Details and Tasks back onto the row when the chrome widens past
   }
 });
 
+// --- jobs panel mounting (2026-07-31-webui-jobs-panel, task 10) --------------
+//
+// Jobs mirrors the Details/Tasks mounting exactly: an inline trigger on the
+// wide row, an overflow menu item (after Details and Tasks) leading the "..."
+// menu's own list once the chrome collapses, opened through the panel's
+// imperative handle either way.
+test("wide chrome renders a Jobs trigger beside Details and Tasks", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_jobs_wide"));
+  await threadsStore.getState().ensureThread("ref_jobs_wide");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_jobs_wide" />);
+    ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
+
+    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Jobs" })).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
+});
+
+test("narrow chrome hides the inline Jobs trigger and puts a Jobs item in the ... menu after Details and Tasks", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_jobs_narrow"));
+  await threadsStore.getState().ensureThread("ref_jobs_narrow");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_jobs_narrow" />);
+    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
+
+    // No inline trigger on the row any more...
+    expect(screen.queryByRole("button", { name: "Jobs" })).toBeNull();
+
+    // ...it's in the "..." menu instead, after Details and Tasks, leading
+    // the menu's own list.
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(menuItems.slice(0, 3)).toEqual(["Details", "Tasks", "Jobs"]);
+  } finally {
+    ro.restore();
+  }
+});
+
+test("selecting the Jobs menu item opens the Jobs sheet", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_jobs_open"));
+  fake.on("serf/jobs/list", () => ({ data: [] }));
+  await threadsStore.getState().ensureThread("ref_jobs_open");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_jobs_open" />);
+    ro.fire(300); // collapsed: the menu item is the only way in
+
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Jobs" }));
+
+    // The sheet's title is an <h2> (OverlayPanel), so the heading role
+    // disambiguates it from the menu item that opened it.
+    expect(await screen.findByRole("heading", { name: "Jobs" })).toBeTruthy();
+    // ...and the panel fetched its list for THIS session's ref.
+    expect(await screen.findByText("No jobs yet")).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
+});
+
 // Every test above awaits ensureThread BEFORE the first render, so the
 // chrome div already exists on SessionChrome's very first commit. The real
 // app (Session.tsx, and this kata's own k7harness.html) instead mounts

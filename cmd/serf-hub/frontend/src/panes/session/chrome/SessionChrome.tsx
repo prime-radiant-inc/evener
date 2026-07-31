@@ -1,7 +1,8 @@
 // SessionChrome: the session pane's chrome surface - ONE quiet status-bar
 // row (status dot, model switch, work time, location, tokens/cost, the
-// goal chip when a goal is set) with Details, Tasks and the session "⋯" menu
-// pinned to the trailing edge - mounted by Session.tsx at PaneScaffold's footer
+// goal chip when a goal is set) with Details, Tasks, Jobs and the session "⋯"
+// menu pinned to the trailing edge - mounted by Session.tsx at PaneScaffold's
+// footer
 // slot. The locked contract stays exactly `{ ref: string }` - every real
 // value (the ThreadModel, capabilities, ...) is read from the threads store
 // internally via useThreadsStore, same as every other pane-level component
@@ -20,6 +21,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
+import { JobsPanel, type JobsPanelHandle } from "./JobsPanel";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
@@ -111,15 +113,17 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const [chromeRef, collapsed] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
+  const jobsRef = useRef<JobsPanelHandle>(null);
   if (!model) return null;
 
-  // Details/Tasks lead the "..." menu's own list when collapsed - see
+  // Details/Tasks/Jobs lead the "..." menu's own list when collapsed - see
   // SessionActionsMenu's extraItems doc comment for why that order, not
-  // this one, is what actually matters (this array is just the two items).
+  // this one, is what actually matters (this array is just the three items).
   const overflowItems: MenuItem[] = collapsed
     ? [
         { id: "details", label: "Details", onSelect: () => detailsRef.current?.open() },
         { id: "tasks", label: "Tasks", onSelect: () => tasksRef.current?.open() },
+        { id: "jobs", label: "Jobs", onSelect: () => jobsRef.current?.open() },
       ]
     : [];
 
@@ -138,6 +142,7 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
       <div className={CLASS.right}>
         <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
         <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />
+        <JobsPanel ref={jobsRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={collapsed} />
         <SessionActionsMenu
           sessionRef={sessionRef}
           model={model}
