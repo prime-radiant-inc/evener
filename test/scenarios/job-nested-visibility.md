@@ -14,8 +14,11 @@ line 1003); (d) after the delegate is finished and the nested job is
 terminal, the forwarded job's retained output is STILL readable by the
 parent — the forwarded-output promise (line 940; design spec
 2026-06-08 §3.4: mirroring or durable routing metadata, model-
-invisible). The cross-store read GRANT flavor (observer reads a
-watched job) is job-watch-sidecar-observer.md, not this card.
+invisible). The cross-store read GRANT flavor is not covered by any
+live card: the shapes that mint an observer read grant are unreachable
+through the public tool surface, and `sidecar-handoff-packager-job-
+notification.md` pins that boundary instead (kata `f9gn` retired
+job-watch-sidecar-observer.md over it).
 
 ## Pre-state
 

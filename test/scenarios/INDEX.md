@@ -312,14 +312,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   parent-source observer gets event payloads, never a cross-session
   read (renamed from `sidecar-test-triage-output-match.md`, kata
   `f9gn`).
-- `sidecar-progress-digest-output-match.md` - progress concierge
-  summarizes a meaningful milestone instead of heartbeat noise.
 - `sidecar-handoff-packager-job-notification.md` - handoff sidecar
   packages a completed delegate result from a `job.notification`
   frame, and pins the observer read boundary: no cross-session read
   grant, and no `job_read_output` tool at all.
-- `sidecar-runbook-capture-output-match.md` - runbook scribe captures
-  a successful operational resolution from job output.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
