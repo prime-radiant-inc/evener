@@ -1412,6 +1412,72 @@ describe("delete project flow", () => {
     await screen.findByText(/could not be removed/i);
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
   });
+
+  // Deleting a whole project owes the workspace exactly what deleting one
+  // session owes it (n15j: "navigate to a surviving workspace/session rather
+  // than leaving a dead route") - every pane routed at a session whose files
+  // are gone has to close, main slot included, or it sits on "Loading
+  // transcript…" forever for a session that no longer exists.
+  //
+  // The response reports BARE thread ids (web_api_project_delete.go's
+  // result.Deleted carries target.ThreadID, pinned by that file's own test at
+  // resp.Deleted[0] != webTestSessionID), not the "local:" ref form a pane
+  // carries - so these fixtures use the shape the handler actually ships.
+  async function deleteArchivedProject(): Promise<void> {
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived/i }));
+    await screen.findByText("old-project");
+    await user.click(within(rowFor("old-project")).getByRole("button", { name: /actions for old-project/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+    await screen.findByRole("button", { name: "Delete" });
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+  }
+
+  test("closes every pane routed at a deleted project's sessions, main slot included", async () => {
+    const workspace = workspaceStore.getState();
+    const mainPaneId = workspace.openPane("session", { ref: "local:old1" });
+    const siblingPaneId = workspace.openPane("session", { ref: "local:old2" }, { slot: "secondary" });
+    const survivorPaneId = workspace.openPane("session", { ref: "local:s1" }, { slot: "secondary" });
+    postResponses["/api/project/delete"] = { status: 200, body: { deleted: ["old1", "old2"], skipped: [] } };
+
+    await deleteArchivedProject();
+
+    // Another project's pane survives; the deleted project's do not, and the
+    // main slot is left empty rather than routed at a deleted session
+    // (DockHost's relaunchWelcome refills it - see confirmDeleteSession).
+    await vi.waitFor(() => expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([survivorPaneId]));
+    expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(mainPaneId);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(siblingPaneId);
+    expect(workspaceStore.getState().mainPane()).toBeNull();
+  });
+
+  test("keeps a pane open for a session the project delete skipped", async () => {
+    const workspace = workspaceStore.getState();
+    const skippedPaneId = workspace.openPane("session", { ref: "local:old1" });
+    const deletedPaneId = workspace.openPane("session", { ref: "local:old2" }, { slot: "secondary" });
+    postResponses["/api/project/delete"] = {
+      status: 200,
+      body: { deleted: ["old2"], skipped: [{ id: "old1", reason: "resumed live" }] },
+    };
+
+    await deleteArchivedProject();
+
+    await screen.findByText(/could not be removed/i);
+    await vi.waitFor(() => expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([skippedPaneId]));
+    expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(deletedPaneId);
+  });
+
+  test("a failed project delete leaves every open pane in place", async () => {
+    const paneId = workspaceStore.getState().openPane("session", { ref: "local:old1" });
+    postResponses["/api/project/delete"] = { status: 500, body: { error: "past index not configured" } };
+
+    await deleteArchivedProject();
+
+    await screen.findByText(/past index not configured/i);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([paneId]);
+  });
 });
 
 describe("delete session flow", () => {
