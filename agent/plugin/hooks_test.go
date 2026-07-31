@@ -182,7 +182,11 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 		if i > 0 {
 			innerSb186.WriteString(",")
 		}
-		innerSb186.WriteString(`"` + string(e) + `": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo ` + string(e) + `"}]}]`)
+		innerSb186.WriteString(`"`)
+		innerSb186.WriteString(string(e))
+		innerSb186.WriteString(`": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo `)
+		innerSb186.WriteString(string(e))
+		innerSb186.WriteString(`"}]}]`)
 	}
 	inner += innerSb186.String()
 	data := []byte(`{` + inner + `}`)
