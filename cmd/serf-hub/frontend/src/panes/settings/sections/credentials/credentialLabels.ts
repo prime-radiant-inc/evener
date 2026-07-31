@@ -40,6 +40,15 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
   return layers;
 }
 
+// keylessByDesign: the instance holds no credential and none is wanted - the
+// hub's credentialRequired gate (InstanceEntry, appwire/types.go) says there
+// is nothing to look for, as with a gateway that inherits no type-level key.
+// Both halves of the row's display key on this one bit: the words below and
+// the heading's status dot, which otherwise disagreed about the same instance.
+export function keylessByDesign(instance: InstanceEntry): boolean {
+  return instance.activeSource === "absent" && !instance.credentialRequired;
+}
+
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
 // display when credentialLayers(instance) is empty - mirrors the legacy's
 // sourceLabel() lookup for the absent/none/unknown cases (file/env/oauth are
@@ -57,7 +66,7 @@ export function unconfiguredLabel(instance: InstanceEntry): string | null {
     case "none":
       return "No credentials required";
     case "absent":
-      return instance.credentialRequired ? "Not configured" : "No key set · optional";
+      return keylessByDesign(instance) ? "No key set · optional" : "Not configured";
     default:
       return instance.activeSource || "Not configured";
   }

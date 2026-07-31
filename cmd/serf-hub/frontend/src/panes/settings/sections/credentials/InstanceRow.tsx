@@ -8,6 +8,7 @@ import { Button, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   credentialLayers,
+  keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
@@ -71,7 +72,7 @@ export function InstanceRow({
   return (
     <li className={CLASS.row}>
       <div className={CLASS.heading}>
-        <StatusDot state={layers.length > 0 ? "idle" : "ended"} />
+        <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
         <span className={CLASS.name}>{instance.name}</span>
         {instance.isDefault && <Chip>★ default</Chip>}
         {styleInfo && <span className={CLASS.styleInfo}>{styleInfo}</span>}
