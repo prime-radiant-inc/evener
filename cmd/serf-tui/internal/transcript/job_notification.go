@@ -48,7 +48,15 @@ func ParseJobNotificationHeadline(text string) (jobID, headline string, isError,
 	exit := strings.TrimSpace(attrs["exit_code"])
 	isError = strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
 
-	headline = communicateHeadline(decodeNotificationEntities(m[2]))
+	// Only a delegate's terminal block legitimately carries a communicate
+	// envelope in its excerpt (agent/session_tools_communicate.go writes it;
+	// agent/job_notify.go stamps job_type on every job block). Shell stdout
+	// is literal output even when it coincidentally parses as the envelope's
+	// shape — the same gate the web parser applies (steeringClassify.ts,
+	// kata 9cnq; this is its TUI twin, kata sdvc).
+	if attrs["job_type"] == "delegate" {
+		headline = communicateHeadline(decodeNotificationEntities(m[2]))
+	}
 	if headline == "" && status != "" {
 		headline = status
 	}

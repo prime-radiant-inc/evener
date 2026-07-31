@@ -41,8 +41,11 @@ func TestParseJobNotificationHeadline(t *testing.T) {
 		}
 	})
 
-	t.Run("success with communicate excerpt", func(t *testing.T) {
-		text := `<job-notification job_id="j3" status="completed" exit_code="0">` +
+	t.Run("delegate success with communicate excerpt", func(t *testing.T) {
+		// job_type="delegate" is what the real producer stamps on a delegate's
+		// terminal block (agent/job_notify.go emits job_type unconditionally);
+		// it is also what admits the excerpt to envelope parsing (kata sdvc).
+		text := `<job-notification job_id="j3" job_type="delegate" status="completed" exit_code="0">` +
 			`excerpt: {"data":{"test_summary":"12 passed","commit_hashes":["abcdef1234567890"],"concerns":["c1","c2"]}}` +
 			`</job-notification>`
 		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
@@ -55,6 +58,27 @@ func TestParseJobNotificationHeadline(t *testing.T) {
 		want := "12 passed · abcdef12 · 2 concerns"
 		if headline != want {
 			t.Fatalf("headline = %q, want %q", headline, want)
+		}
+	})
+
+	t.Run("kata sdvc: shell stdout that happens to be envelope-shaped JSON stays literal", func(t *testing.T) {
+		// The exact bug 9cnq fixed on the web side: only sources that can
+		// legitimately carry a communicate envelope get envelope parsing.
+		// A shell job whose stdout coincidentally matches the envelope's
+		// shape must fall back to the status headline, never surface the
+		// stdout's own test_summary/concerns as if a delegate reported them.
+		text := `<job-notification job_id="j4" job_type="shell" status="completed" exit_code="0">` +
+			`excerpt: {"data":{"test_summary":"12 passed","commit_hashes":["abcdef1234567890"],"concerns":["c1","c2"]}}` +
+			`</job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if isErr {
+			t.Fatal("isError = true, want false for exit 0 completed")
+		}
+		if headline != "completed" {
+			t.Fatalf("headline = %q, want %q (status fallback, not the stdout's fake envelope)", headline, "completed")
 		}
 	})
 }
