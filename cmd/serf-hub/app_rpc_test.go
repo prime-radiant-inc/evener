@@ -2316,6 +2316,81 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 	}
 }
 
+// TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon is the same check as
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage on the fanout a REAL local
+// daemon takes: LocalDaemonSource is a RelaySessionSource, so its frames reach
+// the browser through the acknowledged-fanout loop rather than the
+// non-atomic broadcast loop, and the two are separate call sites.
+func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("b", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local",
+			Serf: appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       21 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+
+	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_1",
+		Item: appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+			ToolName: "screenshot", CallID: "call_shot", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha}},
+		},
+	})
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyItemCompleted {
+				continue
+			}
+			var params struct {
+				Item appwire.ThreadItem `json:"item"`
+			}
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal completed params: %v", err)
+			}
+			imgs := params.Item.OutputImages
+			if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+				t.Fatalf("OutputImages=%+v, want the sha route stamped on the fanned-out descriptor", imgs)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for the relayed completed notification")
+		}
+	}
+}
+
 // TestHubRPCThreadReadRelaysSHARoutedToolResultImage is the live-streaming path
 // end to end through the relay (kata 2fxm): the daemon publishes an
 // item/completed whose tool-result image is named by sha and nothing else, and
