@@ -156,6 +156,21 @@ describe("initNotifications lifecycle", () => {
     await boot(treeOf([]));
     expect(() => initNotifications()).not.toThrow();
   });
+
+  // The tree is this engine's whole data source, and nothing else guarantees a
+  // fetch: the rail is the app's only other mount-time fetcher and it does not
+  // mount at all on a mobile boot (it lives inside the tree drawer's sheet,
+  // which renders null while closed). AppShell calls initNotifications() at
+  // module evaluation, so this baseline fetch is what makes the tree arrive on
+  // every host. Kata bbsv mis-read its absence as the cause of mobile deep
+  // links being discarded; it is present, and the shell relies on it.
+  test("fetches the tree itself, so the tree still arrives where no rail ever mounts", async () => {
+    initNotifications();
+    await tick();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tree", expect.anything());
+    expect(treeStore.getState().tree).not.toBeNull();
+  });
 });
 
 describe("counts apply unconditionally", () => {
