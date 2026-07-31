@@ -1,11 +1,12 @@
-// The reasoning ("think block") item renderer. Live: fully open, streaming
-// (parity #7: "the projector emits a single reasoning item per turn" -
-// stays open the whole time it's the current thought, never collapsed
-// mid-stream this wave - see the wave-4 T2 scope's own "OPEN + StreamingText
-// while live", a deliberate simplification of legacy's mid-stream-
-// collapsible button). Settled: collapses to "Thought [for duration]" plus a
-// bounded final context line, while the full Markdown body remains available
-// at the one disclosure level.
+// The reasoning ("think block") item renderer. Live: open and streaming the
+// whole time it is the turn's CURRENT thought (wave-4 T2's "OPEN +
+// StreamingText while live"), then settling the moment anything later starts
+// in the turn - the wire never completes a reasoning item mid-turn, so tail
+// position stands in for the completion the wire withholds (see
+// isCurrentThought). Settled: collapses to "Thought [· duration] · context"
+// with a trailing rotate-on-open chevron (the draft restyle, mockup #4 of
+// /dev/thoughts, Jesse's pick 2026-07-31), while the full Markdown body
+// remains available at the one disclosure level.
 //
 // reasoningSummaries is string[][] - per-summaryIndex chunk lists
 // (protocol/model.ts). Each index's chunks only ever grow by appending
@@ -45,8 +46,9 @@
 // AgentMessageItem's identical live-plain/settled-markdown split, so both
 // message types behave the same way under streaming.
 
-import { memo } from "react";
-import { Markdown, ToolIcon } from "../../../../widgets";
+import { memo, useLayoutEffect, useRef } from "react";
+import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
@@ -66,9 +68,12 @@ const CLASS = {
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
   icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
+  liveScroll: requireClass(styles.liveScroll, "thinkblock.module.css", "liveScroll"),
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
+  summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
+  chevron: requireClass(styles.chevron, "thinkblock.module.css", "chevron"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
 };
 
@@ -86,29 +91,69 @@ const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
 // thoughtLabel never fabricates a duration: `durationMs` is undefined whenever
 // neither the wire pair nor the observed pair is available or valid (see
-// reasoningFormat.ts). The context is a bounded plain-text rendering of the
-// final meaningful line, not a second Markdown body; opening the disclosure
-// still reveals the complete source through Markdown.
+// reasoningFormat.ts). Every part joins on the same " · " separator - the
+// draft restyle's "Thought · 12s · preview" grammar (mockup #4), one delimiter
+// instead of the old "Thought for 12s" phrase. The context is a bounded
+// plain-text rendering of the final meaningful line, not a second Markdown
+// body; opening the disclosure still reveals the complete source through
+// Markdown.
 function thoughtLabel(durationMs: number | undefined, preview: string): string {
-  const duration = durationMs === undefined ? "Thought" : `Thought for ${formatThoughtDuration(durationMs)}`;
-  return preview ? `${duration} · ${preview}` : duration;
+  const parts = ["Thought"];
+  if (durationMs !== undefined) parts.push(formatThoughtDuration(durationMs));
+  if (preview) parts.push(preview);
+  return parts.join(" · ");
 }
 
-// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
-// component never reads `turn` at all (only `item`/`live`, destructured
-// below), so a fresh turn object on every streaming delta targeting a
-// DIFFERENT item must not re-render an already-settled think block.
-export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: ItemRenderProps) {
-  const isLive = live || item.status === "inProgress";
-  if (isLive) {
-    return (
-      <div className={CLASS.block} data-testid="think-block" data-live="true">
-        <div className={CLASS.live}>
-          <span className={CLASS.label}>
-            {thoughtIcon}
-            Thinking…
-          </span>
-          <div className={CLASS.liveBody}>
+// The live view (mockup #4's draft treatment) is its own component because it
+// alone needs hooks, and ThinkBlock's settled branch must not have to thread a
+// matching hook order past its own early return.
+//
+// The bounded stream: .liveScroll caps the open thought at ~6 body lines and
+// pinTail() keeps it scrolled to its own end, so the newest reasoning is what
+// stays on screen (a hard clip at the cap edge - the fade that marked the cut
+// was tried and removed, Jesse's call after seeing it live). Two triggers
+// cover the two ways geometry changes:
+//
+//   - The per-commit layout effect (deliberately NO dependency array): every
+//     delta to this item re-renders this component (thinkBlockPropsEqual
+//     below ignores only turn identity), and the child StreamingText's own
+//     layout effect appends its text BEFORE a parent layout effect runs - so
+//     by the time this pins, the new text is in the DOM.
+//   - The ResizeObserver on the scroller: a pane narrowing/widening, a font
+//     scale change, or a dockview reveal from display:none rewraps the text
+//     with NO delta and NO re-render (the memo skips them all), and a live
+//     thought can sit delta-less for the rest of a long turn. Absent in
+//     jsdom, hence the guard - the observer path is browser-only.
+//
+// scrollTop on an overflow: hidden box is programmatic-only, which is the
+// point: while live the tail is the only honest viewport (the reader cannot
+// hold a position in text that is still moving); the full body is one click
+// away the moment the thought settles.
+function LiveThinkBlock({ item }: { item: ItemModel }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pinTail = () => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
+  };
+  useLayoutEffect(pinTail);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pinTail reads only the ref; the first render's closure is as good as any
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(pinTail);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className={CLASS.block} data-testid="think-block" data-live="true">
+      <div className={CLASS.live}>
+        <span className={CLASS.label}>
+          {thoughtIcon}
+          Thinking…
+        </span>
+        <div className={CLASS.liveBody} data-testid="think-block-live-body">
+          <div className={CLASS.liveScroll} data-testid="think-block-live-scroll" ref={scrollRef}>
             {(item.reasoningSummaries ?? []).map((chunks, i) =>
               // A zero-chunk index (a later summaryIndex has started streaming
               // before this earlier one has) renders nothing rather than an
@@ -135,8 +180,40 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
           </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
+// isCurrentThought: whether this reasoning item is still the turn's CURRENT
+// activity - the tail of turn.items. The wire never emits item/completed for
+// a reasoning item (only turn/completed settles it; TurnBlock's isItemLive
+// comment defers this per-type nuance HERE), so wire status alone would keep
+// a thought "live" for the whole rest of the turn - and with the live view
+// capped to a six-line tail, that would hide the head of a finished thought
+// for as long as the turn keeps running. Tail position is the honest signal:
+// the projector abandons its reasoning item exactly when the next activity
+// starts. An item absent from turn.items falls back to current (true), which
+// keeps wire status the only signal for a renderer exercised outside
+// TurnBlock and fails toward showing MORE, never less.
+function isCurrentThought(item: ItemModel, turn: TurnModel): boolean {
+  const items = turn.items;
+  if (items.length === 0 || !items.some((candidate) => candidate.id === item.id)) return true;
+  return items[items.length - 1]?.id === item.id;
+}
+
+// The memo comparator: ignoringTurn's contract (a fresh turn object on every
+// unrelated delta must not re-render a settled block), plus the one turn-
+// derived bit this renderer reads - isCurrentThought - compared by VALUE, so
+// the single flip from current to superseded re-renders exactly once and
+// every other turn.items append stays skipped. types.ts's ignoringTurn
+// comment demands exactly this of a renderer that starts reading `turn`.
+function thinkBlockPropsEqual(prev: ItemRenderProps, next: ItemRenderProps): boolean {
+  return ignoringTurn(prev, next) && isCurrentThought(prev.item, prev.turn) === isCurrentThought(next.item, next.turn);
+}
+
+export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRef }: ItemRenderProps) {
+  const isLive = (live || item.status === "inProgress") && isCurrentThought(item, turn);
+  if (isLive) return <LiveThinkBlock item={item} />;
 
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   if (paragraphs.length === 0) return null; // empty thoughts removed
@@ -166,7 +243,25 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
           }}
         >
           {thoughtIcon}
-          {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
+          {/* The label text in its own shrinkable span (not bare summary text):
+              as a flex item it can ellipsize under pressure, so the trailing
+              chevron always stays on screen at the end of the words instead of
+              being pushed past the summary's clipped edge. */}
+          <span className={CLASS.summaryText}>
+            {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
+          </span>
+          {/* Mockup #4's trailing affordance: the shared widgets/chevron at the
+              tail of the collapsed line, turning 90° when open via the same
+              data-open idiom ToolRow uses (rotation turns the SQUARE svg, so it
+              cannot widen its painted box - see toolcallitem.module.css). */}
+          <span
+            className={CLASS.chevron}
+            aria-hidden="true"
+            data-open={open ? "true" : "false"}
+            data-testid="think-block-chevron"
+          >
+            <Chevron />
+          </span>
         </summary>
         <div className={CLASS.body}>
           {/* One document, not one per summaryIndex: a markdown parser needs
@@ -183,6 +278,6 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
       </details>
     </div>
   );
-}, ignoringTurn);
+}, thinkBlockPropsEqual);
 
 registerItemRenderer("reasoning", ThinkBlock);

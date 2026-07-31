@@ -40,6 +40,18 @@ test("the motion sits behind a prefers-reduced-motion gate", () => {
   expect(text.replace(gate![0], "")).not.toMatch(/\banimation:/);
 });
 
+test("the chevron turn is a token-timed transition behind the reduced-motion gate", () => {
+  const text = css();
+  const gate = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\n\}/g;
+  const gated = text.match(gate)?.join("\n") ?? "";
+  expect(gated).toMatch(
+    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform\s+var\(--motion-duration-overlay\)\s+var\(--motion-easing-standard\)/,
+  );
+  // Outside the gates there is no transition at all - reduced motion means
+  // the chevron snaps, exactly like ToolRow's own chevron.
+  expect(text.replace(gate, "")).not.toMatch(/\btransition:/);
+});
+
 test("the motion is a fade, not a slide or a bounce", () => {
   const keyframes = /@keyframes\s+thinkblock-body-in\s*\{([\s\S]*?)\n\}/.exec(css());
   expect(keyframes).not.toBeNull();
@@ -50,12 +62,16 @@ test("the motion is a fade, not a slide or a bounce", () => {
 
 // Not motion, but the same declaration-level style of check: thinking is body
 // text like the turns around it (Jesse's review call) - quiet through INK,
-// not size. Both the settled "Thought · preview" summary and the live
-// streaming paragraph render at --font-size-body.
+// not size. The settled "Thought · preview" summary, the live streaming
+// paragraph AND the live "Thinking…" eyebrow all render at --font-size-body
+// (the eyebrow joined with the draft restyle, mockup #4: a caption-sized
+// label was quiet through size, which the design law bans).
 test("settled and live thinking render at body size, not caption/ui", () => {
   const text = css();
   expect(text).toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
   expect(text).toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
+  expect(text).toMatch(/\.label\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
   expect(text).not.toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
+  expect(text).not.toMatch(/\.label\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
   expect(text).not.toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-ui\)/);
 });

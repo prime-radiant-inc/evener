@@ -220,6 +220,26 @@ Markdown body. The newer kgp2 record explicitly supersedes the earlier
 no-preview choice; session-keyed disclosure state remains unchanged. The preview
 is closed-only; the open state shows just the short label, per `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 4.
 
+Restyled 2026-07-31 (the **draft restyle** — mockup #4 of the `/dev/thoughts`
+candidates, Jesse's pick): the collapsed label grammar is dot-joined
+(`Thought · 12s · preview`, superseding kgp2's `Thought for <duration>`
+wording) and trails a rotate-on-open chevron (ToolRow's data-open idiom); the
+live stream renders as italic draft text — settling to roman — with the
+eyebrow at body size (quiet through ink, never size), capped at six body
+lines, pinned to its own tail (a ResizeObserver re-pins on delta-less
+reflows). The mockup's soft fade marking the cut was implemented — corrected
+from its surface-0 to the pane's actual surface-1 backdrop — then **removed
+entirely on Jesse's call after seeing it live** (2026-07-31): the cap's cut
+is a hard clip at the box edge.
+Because the cap made the wire's missing reasoning `item/completed`
+load-bearing, the renderer now settles a thought the moment anything later
+starts in its turn (tail position stands in for the completion the wire
+withholds; no duration is invented before the turn's own settle stamps one) —
+restoring kgp2's "collapses once the assistant starts answering" behavior
+that the always-open-while-inProgress reading had quietly repealed. The
+no-caret law, the closed-only preview, and session-keyed disclosure state
+all stand.
+
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
 

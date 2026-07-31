@@ -8,8 +8,9 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import rawStreamingStyles from "../streamingtext.module.css";
 import { TurnBlock } from "../TurnBlock";
-import { ignoringTurn, itemRendererFor } from "../types";
+import { itemRendererFor } from "../types";
 import { ThinkBlock } from "./ThinkBlock";
+import rawThinkStyles from "./thinkblock.module.css";
 
 const STREAMING_LIVE = requireClass(rawStreamingStyles.live, "streamingtext.module.css", "live");
 
@@ -33,9 +34,19 @@ test('self-registers under the wire\'s reasoning item type ("reasoning")', () =>
   expect(itemRendererFor("reasoning")).toBe(ThinkBlock);
 });
 
-test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled think block", () => {
+test("is memoized: the comparator ignores turn identity but tracks the current-thought flip", () => {
   expect(ThinkBlock.$$typeof).toBe(Symbol.for("react.memo"));
-  expect((ThinkBlock as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
+  const compare = (ThinkBlock as unknown as { compare: (a: unknown, b: unknown) => boolean }).compare;
+  const think = item({ id: "cmp_think", status: "inProgress", reasoningSummaries: [["x"]] });
+  const later: ItemModel = { id: "cmp_later", turnId: "turn_1", type: "agentMessage", text: "", status: "inProgress" };
+  const base = { item: think, turn: { ...turn, items: [think] }, live: true };
+  // A fresh turn object with the thought still the tail: no re-render - the
+  // whole point of ignoring turn identity on unrelated deltas survives.
+  expect(compare(base, { ...base, turn: { ...turn, items: [think] } })).toBe(true);
+  // A later item lands: the current-thought flip MUST re-render, or the
+  // superseded thought would stay capped-live forever (the wire never
+  // completes a reasoning item mid-turn).
+  expect(compare(base, { ...base, turn: { ...turn, items: [think, later] } })).toBe(false);
 });
 
 // --- live: open, StreamingText, "Thinking…" ---------------------------------
@@ -185,6 +196,152 @@ test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-p
   expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
 });
 
+// --- superseded live thoughts settle --------------------------------------
+// The wire never emits item/completed for a reasoning item (TurnBlock's
+// isItemLive comment defers the per-type nuance to this renderer): once
+// anything later starts in the turn, the thought is no longer the current
+// activity, and with the live view now CAPPED, leaving it live would hide
+// the head of the thought for the rest of the turn. Tail position - not
+// wire status - is what "still thinking" means.
+
+test("an inProgress reasoning item that is no longer the turn's tail renders the settled disclosure, with no invented duration", () => {
+  const think = item({
+    id: "think_superseded",
+    status: "inProgress",
+    reasoningSummaries: [["done reasoning\n\nfinal line"]],
+  });
+  const later: ItemModel = {
+    id: "msg_after",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "answering",
+    status: "inProgress",
+  };
+  render(<ThinkBlock item={think} turn={{ ...turn, items: [think, later] }} live={true} />);
+  const summary = document.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought · final line");
+  expect(summary?.textContent).not.toMatch(/\d/);
+  expect(screen.queryByText("Thinking…")).toBeNull();
+});
+
+test("an inProgress reasoning item that IS the turn's tail stays live", () => {
+  const think = item({ id: "think_tail", status: "inProgress", reasoningSummaries: [["still going"]] });
+  render(<ThinkBlock item={think} turn={{ ...turn, items: [think] }} live={true} />);
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+test("through TurnBlock: a later item landing in the turn collapses the live thought to its disclosure", () => {
+  const think = item({ id: "think_flow", status: "inProgress", reasoningSummaries: [["deep thought line"]] });
+  const { rerender } = render(<TurnBlock turn={{ ...turn, items: [think] }} />);
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+
+  const later: ItemModel = {
+    id: "msg_next",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "now answering",
+    status: "inProgress",
+  };
+  rerender(<TurnBlock turn={{ ...turn, items: [think, later] }} />);
+  expect(screen.queryByText("Thinking…")).toBeNull();
+  expect(document.querySelector('[data-testid="think-block"] summary')?.textContent).toBe(
+    "Thought · deep thought line",
+  );
+});
+
+// --- live: the draft treatment + the bounded stream (mockup #4) -------------
+// In-flight reasoning reads as a DRAFT - italic while streaming, settling to
+// roman - and the open stream stops claiming the whole viewport: the body caps
+// at ~6 body lines, pinned to its own tail (a hard clip at the cap edge -
+// Jesse cut the fade after seeing it live). The thought stays OPEN the whole
+// time (the live-state law); it just stops growing without bound on screen.
+
+test("the live body carries the draft treatment - italic in flight, roman once settled (declaration-level)", () => {
+  const css = thinkCss();
+  const rule = /\.liveBody\s*\{([^}]*)\}/.exec(css);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("font-style: italic");
+  // Nothing re-italicizes the settled views: summary and body stay roman.
+  expect(css).not.toMatch(/\.body\s*\{[^}]*font-style/);
+  expect(css).not.toMatch(/\.summary\s*\{[^}]*font-style/);
+});
+
+test("the live stream is bounded to six body lines and hides its overflow (declaration-level)", () => {
+  const rule = /\.liveScroll\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("max-height: calc(6 * var(--font-size-body) * var(--line-height-body))");
+  expect(rule![1]).toContain("overflow: hidden");
+});
+
+test("the live stream pins to its own tail as chunks land - the newest text is what stays on screen", () => {
+  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["one\n"]] })} turn={turn} live={true} />);
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  // jsdom lays nothing out, so real metrics are all zero; stub the geometry a
+  // grown stream would have, then land another chunk.
+  Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
+  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["one\n", "two\n"]] })} turn={turn} live={true} />);
+  // A real browser clamps scrollTop to scrollHeight - clientHeight (200);
+  // jsdom stores the raw 300. Assert the pin reached the tail without
+  // encoding either engine's artifact.
+  expect(scroller.scrollTop).toBeGreaterThanOrEqual(scroller.scrollHeight - scroller.clientHeight);
+});
+
+test("the live wrapper and scroller carry their stylesheet classes - the cap and italic actually bind to the DOM", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["bound"]] })} turn={turn} live={true} />);
+  const body = screen.getByTestId("think-block-live-body");
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  expect(body.classList.contains(requireClass(rawThinkStyles.liveBody, "thinkblock.module.css", "liveBody"))).toBe(
+    true,
+  );
+  expect(
+    scroller.classList.contains(requireClass(rawThinkStyles.liveScroll, "thinkblock.module.css", "liveScroll")),
+  ).toBe(true);
+});
+
+test("a geometry change BETWEEN deltas re-pins the tail: the observer is wired to the scroller", () => {
+  // jsdom ships no ResizeObserver (see virtuallist.test.tsx's own note), so
+  // this installs a minimal recording fake: the assertions are about the
+  // component's wiring - which element it observes, and that firing the
+  // callback re-pins with NO React re-render - not about the fake.
+  const observed: Element[] = [];
+  let fire: (() => void) | undefined;
+  class RecordingObserver {
+    private readonly cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+      fire = () => this.cb();
+    }
+    observe(el: Element): void {
+      observed.push(el);
+    }
+    disconnect(): void {}
+  }
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = RecordingObserver;
+  try {
+    render(<ThinkBlock item={item({ reasoningSummaries: [["rewrap me"]] })} turn={turn} live={true} />);
+    const scroller = screen.getByTestId("think-block-live-scroll");
+    expect(observed).toContain(scroller);
+
+    // The pane narrows: same item, no delta, text rewraps past the cap.
+    Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+    fire?.();
+    expect(scroller.scrollTop).toBeGreaterThanOrEqual(200);
+  } finally {
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  }
+});
+
+test("no fade, no clip flag: the cap is a hard clip (Jesse's call after seeing the fade live)", () => {
+  const css = thinkCss();
+  expect(css).not.toMatch(/data-clipped/);
+  expect(css).not.toMatch(/\.liveBody(\[[^\]]*\])?::before/);
+  render(<ThinkBlock item={item({ reasoningSummaries: [["plain"]] })} turn={turn} live={true} />);
+  expect(screen.getByTestId("think-block-live-body").dataset.clipped).toBeUndefined();
+});
+
 // --- settled: duration + final context --------------------------------------
 
 test("settled collapses to a closed details with duration and the final nonblank context line", () => {
@@ -213,6 +370,64 @@ test("opening the disclosure drops the preview from the summary", () => {
   expect(preview).toBeTruthy();
   fireEvent.click(summary);
   expect(summary.textContent).not.toContain(preview);
+});
+
+test("the open disclosure keeps the dot-joined duration label - never the old 'for' phrasing", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        id: "think_open_duration",
+        reasoningSummaries: [["content"]],
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:04.000Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summary = document.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought · 4s · content");
+  fireEvent.click(summary!);
+  expect(summary?.textContent).toBe("Thought · 4s");
+});
+
+// --- the trailing chevron: mockup #4's disclosure affordance ----------------
+// The draft restyle's collapsed line is "close to today plus a chevron" - the
+// same shared widgets/chevron every disclosure uses, riding at the tail of the
+// summary and turning 90° when open (ToolRow's data-open idiom).
+
+test("the settled summary trails with a chevron that tracks the open state", () => {
+  render(
+    <ThinkBlock
+      item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summary = document.querySelector("summary");
+  const chevron = screen.getByTestId("think-block-chevron");
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(chevron.querySelector("svg")).not.toBeNull();
+  expect(summary?.lastElementChild).toBe(chevron);
+  expect(chevron.dataset.open).toBe("false");
+  fireEvent.click(summary!);
+  expect(chevron.dataset.open).toBe("true");
+});
+
+test("the live eyebrow carries no chevron - there is nothing to disclose while streaming", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
+  expect(screen.queryByTestId("think-block-chevron")).toBeNull();
+});
+
+test("the chevron turns via the shared rotate-on-open idiom, scoped to data-open (declaration-level, jsdom runs no cascade)", () => {
+  expect(thinkCss()).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+});
+
+test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
+  const rule = /\.summaryText\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("overflow: hidden");
+  expect(rule![1]).toContain("text-overflow: ellipsis");
 });
 
 test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
@@ -385,7 +600,7 @@ test("a replay item's real startedAt/completedAt pair produces a duration label"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
 });
 
 test("a live-observed timing pair (no wire pair) produces a real duration label once settled", () => {
@@ -400,7 +615,7 @@ test("a live-observed timing pair (no wire pair) produces a real duration label 
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 3s · content");
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
@@ -417,7 +632,7 @@ test("the wire pair wins over the observed pair when both are present", () => {
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
 });
 
 test("a completed sub-second thought reports milliseconds, not a rounded second", () => {
@@ -432,7 +647,7 @@ test("a completed sub-second thought reports milliseconds, not a rounded second"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 250ms · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 250ms · content");
 });
 
 test("an in-progress streaming thought never shows a duration summary", () => {
@@ -449,7 +664,7 @@ test("an in-progress streaming thought never shows a duration summary", () => {
     />,
   );
   expect(screen.getByText("Thinking…")).toBeTruthy();
-  expect(screen.queryByText(/Thought for/)).toBeNull();
+  expect(screen.queryByText(/Thought/)).toBeNull();
   expect(document.querySelector("details")).toBeNull();
 });
 
