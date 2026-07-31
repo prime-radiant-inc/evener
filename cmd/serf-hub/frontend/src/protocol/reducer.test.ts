@@ -1349,6 +1349,61 @@ test("item/completed preserves an output image's name/path/source alongside a sr
   ]);
 });
 
+// A still-streaming session's tool result is described by sha and routed by the
+// hub (kata 2fxm), so the live descriptor arrives with a url and no path. src
+// has to resolve to that url — a fallback to name would try to load the tool's
+// own name as an image.
+test("item/completed resolves a sha-routed tool-result image's src from its url", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_shot",
+          turnId: "turn_1",
+          toolName: "screenshot",
+          callId: "call_shot",
+          status: "completed",
+          outputImages: [
+            {
+              source: "tool-result",
+              name: "screenshot",
+              mediaType: "image/png",
+              size: 11,
+              sha: "abc",
+              url: "/s/02wMz5Txv733WHFsVy66SR/images/abc",
+            },
+          ],
+        },
+      },
+    },
+    1002,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    {
+      src: "/s/02wMz5Txv733WHFsVy66SR/images/abc",
+      name: "screenshot",
+      path: undefined,
+      source: "tool-result",
+    },
+  ]);
+});
+
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
 // the wire at each injection site, through to SerfSteeringInjectedParams.kind
 // on the live notification. The model must carry it the last hop onto the

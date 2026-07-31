@@ -2316,6 +2316,82 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 	}
 }
 
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage is the live-streaming path
+// end to end through the relay (kata 2fxm): the daemon publishes an
+// item/completed whose tool-result image is named by sha and nothing else, and
+// the browser must receive a descriptor it can actually fetch.
+func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("a", 64)
+	source := &relayBroadcastSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_shot",
+			SessionID: sessionID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: "local:th_shot", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_shot"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", ToolName: "screenshot", CallID: "call_shot",
+			Output: "captured", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{
+				Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha,
+			}},
+		},
+	}).Notification
+
+	var completed appwire.Notification
+	for range 3 {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyItemCompleted {
+				completed = got
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relayed completed notification")
+		}
+		if completed.Method != "" {
+			break
+		}
+	}
+	if completed.Method == "" {
+		t.Fatal("completed notification was not relayed")
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(completed.Params, &params); err != nil {
+		t.Fatalf("unmarshal completed params: %v", err)
+	}
+	imgs := params.Item.OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped on the relayed descriptor", imgs)
+	}
+}
+
 func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T) {
 	threadID := "shared_thread"
 	sourceA := &relayBroadcastSource{
