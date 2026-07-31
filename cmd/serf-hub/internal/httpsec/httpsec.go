@@ -10,12 +10,14 @@ import "net/http"
 // migrating them all to asset files is tracked separately.
 //
 // `img-src` allows `https:` for remote AppWire replay images, and `blob:` so
-// the composer-attachments helper
-// (cmd/serf-hub/assets/composer-attachments.js:reencodeToPng) can decode a
-// pasted / dropped / picked image by loading a `URL.createObjectURL(blob)`
-// reference into an `Image` element before re-encoding to PNG (kata 1pgw —
-// without `blob:` here every image attachment surface renders "Not an image"
-// because the Image element refuses the blob URL).
+// the composer's attachment encoder
+// (cmd/serf-hub/frontend/src/panes/session/composer/attachments/encodePng.ts)
+// can decode a pasted / dropped / picked image by loading a
+// `URL.createObjectURL(blob)` reference into an `Image` element before
+// re-encoding to PNG (kata 1pgw — without `blob:` here the Image element
+// refuses the blob URL, so every image attachment surface rejects a
+// perfectly valid PNG and toasts "Couldn't attach <name> (image decode
+// failed)").
 //
 // `style-src` allows `https://fonts.googleapis.com` so app.html can load the
 // Google Fonts CSS that pulls in Hanken Grotesk + JetBrains Mono. The CSS
