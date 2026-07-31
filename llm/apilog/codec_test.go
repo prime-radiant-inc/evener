@@ -91,6 +91,70 @@ func TestAPIAttemptDecoderRejectsInteriorCorruptionWithLineAndOffset(t *testing.
 	}
 }
 
+// TestDecoderRecordOffsetAndLineTrackMostRecentAttempt proves the structured
+// getters agree with the offsets serf-doctor's whole-history validation reads
+// (kata 7x84): a consumer that wants offsets programmatically must not have to
+// scrape them out of Next()'s formatted error text.
+func TestDecoderRecordOffsetAndLineTrackMostRecentAttempt(t *testing.T) {
+	first := marshalRecordLine(t, validAPIAttemptRecord(t))
+	second := marshalRecordLine(t, validSettlement(t))
+	data := append(append(append([]byte{}, first...), '\n'), second...)
+	data = append(data, '\n')
+	maxLineBytes := max(len(first), len(second))
+	decoder := NewDecoder(bytes.NewReader(data), maxLineBytes)
+
+	if _, err := decoder.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if decoder.RecordOffset() != 0 || decoder.RecordLine() != 1 {
+		t.Fatalf("first record offset/line = %d/%d, want 0/1", decoder.RecordOffset(), decoder.RecordLine())
+	}
+
+	if _, err := decoder.Next(); err != nil {
+		t.Fatal(err)
+	}
+	wantOffset := int64(len(first) + 1)
+	if decoder.RecordOffset() != wantOffset || decoder.RecordLine() != 2 {
+		t.Fatalf("second record offset/line = %d/%d, want %d/2", decoder.RecordOffset(), decoder.RecordLine(), wantOffset)
+	}
+}
+
+func TestDecoderRecordOffsetAndLineMatchInteriorCorruptionError(t *testing.T) {
+	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
+	data := append(append(append([]byte{}, complete...), '\n'), []byte("{broken}\n")...)
+	decoder := NewDecoder(bytes.NewReader(data), len(complete)+1)
+
+	if _, err := decoder.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decoder.Next(); err == nil {
+		t.Fatal("Next() accepted corrupt interior record")
+	}
+	wantOffset := int64(len(complete) + 1)
+	if decoder.RecordOffset() != wantOffset || decoder.RecordLine() != 2 {
+		t.Fatalf("corrupt record offset/line = %d/%d, want %d/2", decoder.RecordOffset(), decoder.RecordLine(), wantOffset)
+	}
+}
+
+func TestDecoderRecordOffsetAndLineMatchPartialTail(t *testing.T) {
+	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
+	partial := marshalRecordLine(t, validSettlement(t))
+	data := append(append(append([]byte{}, complete...), '\n'), partial...)
+	maxLineBytes := max(len(complete), len(partial))
+	decoder := NewDecoder(bytes.NewReader(data), maxLineBytes)
+
+	if _, err := decoder.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decoder.Next(); !errors.Is(err, ErrPartialTail) {
+		t.Fatalf("Next() error = %v, want ErrPartialTail", err)
+	}
+	wantOffset := int64(len(complete) + 1)
+	if decoder.RecordOffset() != wantOffset || decoder.RecordLine() != 2 {
+		t.Fatalf("partial tail offset/line = %d/%d, want %d/2", decoder.RecordOffset(), decoder.RecordLine(), wantOffset)
+	}
+}
+
 func TestAPIAttemptDecoderRejectsUnknownRecordKind(t *testing.T) {
 	decoder := NewDecoder(strings.NewReader("{\"kind\":\"future_record\",\"schema_version\":1}\n"), 1024)
 	if _, err := decoder.Next(); err == nil {

@@ -185,6 +185,144 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 	return res, nil
 }
 
+// doctorAPILogValidationMaxProblems bounds retained validation problems, like
+// doctorAPILogMaxCalls/doctorAPILogMaxSettlements bound APILog's rows. Unlike
+// those (which retain the latest activity for live debugging), validation
+// retains the FIRST N problems: for a corruption scan the earliest trouble is
+// the most diagnostic, and everything after it may just be cascade.
+const doctorAPILogValidationMaxProblems = 100
+
+// APILogValidationIssue is one complete or interior record that Next rejected
+// during whole-history validation: corrupt bytes, a malformed shape, an
+// oversized record, or an unsupported record kind. Offset and Line pinpoint
+// it in the file; Message is the decoder's own error text verbatim (it
+// already carries the offset/line plus the specific defect, so this avoids
+// re-deriving or hand-parsing a second description of the same failure).
+type APILogValidationIssue struct {
+	Offset  int64  `json:"offset"`
+	Line    int    `json:"line"`
+	Message string `json:"message"`
+}
+
+// APILogPartialTail reports a final record fragment that hit EOF before a
+// terminating newline. It is not a defect: an in-flight append can leave
+// exactly this shape. Its presence means whole-history validation could not
+// reach a clean EOF -- it does not, by itself, mean anything is wrong, and it
+// is never counted as a Problem.
+type APILogPartialTail struct {
+	Offset int64 `json:"offset"`
+	Line   int   `json:"line"`
+}
+
+// APILogValidationResult is the whole-history structural-integrity outcome:
+// every complete record from offset zero through clean EOF (or a trailing
+// partial fragment) was strictly decoded with apilog.Decoder.
+type APILogValidationResult struct {
+	SessionID         string                  `json:"session_id"`
+	APILogPath        string                  `json:"api_log_path"`
+	FileSize          int64                   `json:"file_size"`
+	RecordsOK         int                     `json:"records_ok"`
+	Problems          []APILogValidationIssue `json:"problems"`
+	ProblemCount      int                     `json:"problem_count"`
+	ProblemsTruncated bool                    `json:"problems_truncated"`
+	PartialTail       *APILogPartialTail      `json:"partial_tail,omitempty"`
+	// Clean is true iff ProblemCount is zero. A bare partial tail does not
+	// clear it: that is routine (an in-flight append), not corruption -- see
+	// APILogPartialTail.
+	Clean bool `json:"clean"`
+}
+
+// ValidateAPILog strictly decodes every complete record in a session's
+// canonical API log from offset zero through clean EOF, reusing
+// apilog.Decoder as the sole decode authority -- no second decoder. Unlike
+// APILog (which stops at the first decode error), this scan never stops
+// early: it keeps decoding past a corrupt/malformed/oversized/unsupported
+// record and reports every one it finds, each with its byte offset, instead
+// of surfacing only the first. This is explicit operator diagnostics, so the
+// scan is allowed to be proportional to file size; it is never run at logger
+// open (see llm/apilog.ScanRecovery for the bounded open-time recovery scan
+// this deliberately does not replace).
+func ValidateAPILog(stateBase, selector string) (APILogValidationResult, error) {
+	paths, err := Locate(stateBase, selector)
+	if err != nil {
+		return APILogValidationResult{}, err
+	}
+	f, err := os.Open(paths.APILogPath)
+	if err != nil {
+		return APILogValidationResult{}, fmt.Errorf("open API log %s: %w", paths.APILogPath, err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return APILogValidationResult{}, fmt.Errorf("stat API log %s: %w", paths.APILogPath, err)
+	}
+
+	res := APILogValidationResult{
+		SessionID:  paths.SessionID,
+		APILogPath: paths.APILogPath,
+		FileSize:   info.Size(),
+	}
+	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
+	for {
+		_, decodeErr := decoder.Next()
+		if errors.Is(decodeErr, io.EOF) {
+			break
+		}
+		if errors.Is(decodeErr, apilog.ErrPartialTail) {
+			res.PartialTail = &APILogPartialTail{Offset: decoder.RecordOffset(), Line: decoder.RecordLine()}
+			break
+		}
+		if decodeErr != nil {
+			res.ProblemCount++
+			if len(res.Problems) < doctorAPILogValidationMaxProblems {
+				res.Problems = append(res.Problems, APILogValidationIssue{
+					Offset:  decoder.RecordOffset(),
+					Line:    decoder.RecordLine(),
+					Message: decodeErr.Error(),
+				})
+			}
+			continue
+		}
+		res.RecordsOK++
+	}
+	res.ProblemsTruncated = res.ProblemCount > len(res.Problems)
+	res.Clean = res.ProblemCount == 0
+	return res, nil
+}
+
+// RenderAPILogValidation renders a whole-history validation result as fixed
+// human text: a summary line, a problems table (offset/line/message) when any
+// were found, a truncation footer when the retained list was capped, a
+// partial-tail note when the file ended mid-record, and a final clean/dirty
+// line.
+func RenderAPILogValidation(r APILogValidationResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "session %s\n", r.SessionID)
+	fmt.Fprintf(&b, "api log %s\n", r.APILogPath)
+	fmt.Fprintf(&b, "file_size=%d records_ok=%d problems=%d\n", r.FileSize, r.RecordsOK, r.ProblemCount)
+	if len(r.Problems) == 0 {
+		fmt.Fprintln(&b, "(no structural problems)")
+	} else {
+		fmt.Fprintf(&b, "%-12s %-6s %s\n", "offset", "line", "message")
+		for _, p := range r.Problems {
+			fmt.Fprintf(&b, "%-12d %-6d %s\n", p.Offset, p.Line, p.Message)
+		}
+	}
+	if r.ProblemsTruncated {
+		fmt.Fprintf(&b, "problems=%d/%d (earliest; truncated)\n", len(r.Problems), r.ProblemCount)
+	}
+	if r.PartialTail != nil {
+		fmt.Fprintf(&b, "partial tail at offset %d (line %d): incomplete final fragment, unknown finality -- not counted as a problem\n",
+			r.PartialTail.Offset, r.PartialTail.Line)
+	}
+	if r.Clean {
+		fmt.Fprintln(&b, "clean: every complete record decoded through EOF")
+	} else {
+		fmt.Fprintln(&b, "not clean: see problems above")
+	}
+	return b.String()
+}
+
 type optionalIntSum struct {
 	total int
 	seen  bool

@@ -498,6 +498,95 @@ func TestRun_APILogNoSelector(t *testing.T) {
 	}
 }
 
+// fixtureWithCorruptAPILogData writes a session whose API log has one valid
+// attempt followed by one corrupt raw line, for exercising `apilog
+// --validate`'s problem-reporting and nonzero-exit path.
+func fixtureWithCorruptAPILogData(t *testing.T) (base, sid string) {
+	t.Helper()
+	base = t.TempDir()
+	sid = "02wLIRxqmq3AUo6vl2OW38"
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	sess := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), `{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n")
+	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`"}`)
+	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), "")
+
+	attempt := commandAPIAttempt(1, apilog.AttemptSuccess, 100, 10, 5, 0, 1, 0)
+	attemptLine, err := json.Marshal(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(sess, sid+".api.jsonl"), string(attemptLine)+"\n"+"{bad json}\n")
+	return base, sid
+}
+
+func TestRun_APILogValidateHuman(t *testing.T) {
+	base, sid := fixtureWithAPILogData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"apilog", "--state-dir", base, "--validate", sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, "records_ok=8") {
+		t.Errorf("validate output missing records_ok=8 (4 attempts + 4 settlements); got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "clean: every complete record decoded through EOF") {
+		t.Errorf("validate output missing clean marker; got:\n%s", outStr)
+	}
+}
+
+func TestRun_APILogValidateJSON(t *testing.T) {
+	base, sid := fixtureWithAPILogData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"apilog", "--json", "--state-dir", base, "--validate", sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionID    string `json:"session_id"`
+		RecordsOK    int    `json:"records_ok"`
+		Problems     []any  `json:"problems"`
+		ProblemCount int    `json:"problem_count"`
+		Clean        bool   `json:"clean"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if res.SessionID != sid || res.RecordsOK != 8 || !res.Clean || res.ProblemCount != 0 {
+		t.Errorf("validate json = %+v", res)
+	}
+}
+
+// TestRun_APILogValidateReportsProblemsAndNonzeroExit is the load-bearing CLI
+// test: --validate is the first serf-doctor subcommand whose exit code
+// signals "findings", not just "the tool ran" (recorded in kata 7x84's
+// exit-code decision).
+func TestRun_APILogValidateReportsProblemsAndNonzeroExit(t *testing.T) {
+	base, sid := fixtureWithCorruptAPILogData(t)
+	var out, errb bytes.Buffer
+	code := run([]string{"apilog", "--state-dir", base, "--validate", sid}, &out, &errb)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (structural problems found); stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, "not clean") {
+		t.Errorf("validate output missing not-clean marker; got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "offset") {
+		t.Errorf("validate output missing offset column; got:\n%s", outStr)
+	}
+}
+
+func TestRun_APILogValidateNoSelector(t *testing.T) {
+	base, _ := fixtureWithAPILogData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"apilog", "--state-dir", base, "--validate"}, &out, &errb); code != 1 {
+		t.Errorf("no selector should exit 1, got %d", code)
+	}
+}
+
 func TestRun_TreeHuman(t *testing.T) {
 	base, sid := fixtureWithTreeData(t)
 	var out, errb bytes.Buffer
