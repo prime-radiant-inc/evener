@@ -74,8 +74,19 @@ func (s *sandboxFS) isGranted(abs string) bool {
 
 // newSandboxFS builds a sandboxFS for an enforced resolved policy. The caller
 // (e.sandbox()) guarantees policy != nil and policy.Enforced().
-func newSandboxFS(p *sandbox.ResolvedPolicy) *sandboxFS {
-	return &sandboxFS{policy: p, rootFds: map[string]int{}}
+//
+// scratchDir, when non-empty, is the concrete per-session scratch directory
+// (agent/sandbox.SessionScratch.Dir, via the env's Wrapper.SessionTmp()) folded
+// into the policy's file-tool grants via WithSessionScratch: Resolve ran before
+// the directory existed, so p alone never carries it. A blank scratchDir (an
+// unsandboxed caller, or a policy resolved without a wrapper) leaves p untouched.
+func newSandboxFS(p *sandbox.ResolvedPolicy, scratchDir string) *sandboxFS {
+	policy := p
+	if scratchDir != "" {
+		granted := p.WithSessionScratch(scratchDir)
+		policy = &granted
+	}
+	return &sandboxFS{policy: policy, rootFds: map[string]int{}}
 }
 
 // close releases every cached root fd. Safe to call more than once.

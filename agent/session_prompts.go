@@ -177,9 +177,16 @@ func (s *Session) canPromptDelegation() bool {
 
 // sandboxPromptLine renders the environment-section sandbox line for a sandboxed
 // env ("<mode> (network on|off) — fixed for this session"), so the model knows the
-// immutable box it runs under. Empty for an unsandboxed env so the line is omitted
-// entirely (byte-identical prompt to today). Takes the resolved env directly — the
-// prompt-render path holds s.mu, so it must not re-fetch via s.currentEnv().
+// immutable box it runs under. When a kernel wrapper has provisioned a real
+// scratch directory, its path is appended (kata g8q6): a spawned shell command
+// learns the scratch dir through $TMPDIR/$SERF_SCRATCH_DIR, but the model's own
+// file tools (write_file, read_file, …) never see process environment
+// variables, so without this line a model has no way to discover the one
+// directory its file tools can actually write to outside the worktree — it was
+// observed guessing a literal "/tmp/...", which every sandboxed mode denies.
+// Empty for an unsandboxed env so the line is omitted entirely (byte-identical
+// prompt to today). Takes the resolved env directly — the prompt-render path
+// holds s.mu, so it must not re-fetch via s.currentEnv().
 func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
@@ -189,7 +196,13 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	if !le.Sandbox.Network {
 		netStr = "off"
 	}
-	return fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
+	line := fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
+	if le.Wrapper != nil {
+		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
+			line += fmt.Sprintf(". Scratch directory (read-write even in this sandbox; also $TMPDIR / $SERF_SCRATCH_DIR for shell commands): %s", scratch)
+		}
+	}
+	return line
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver.

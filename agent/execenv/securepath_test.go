@@ -59,7 +59,7 @@ func newSB(t *testing.T, mode sandbox.Mode) (*sandboxFS, string, string) {
 		t.Fatal(err)
 	}
 	rp := resolvePolicy(t, mode, home, worktree)
-	s := newSandboxFS(rp)
+	s := newSandboxFS(rp, "")
 	t.Cleanup(s.close)
 	return s, home, worktree
 }

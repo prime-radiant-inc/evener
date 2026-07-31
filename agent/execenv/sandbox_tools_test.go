@@ -452,6 +452,41 @@ func TestWriteConfinedToWritableRoots(t *testing.T) {
 	}
 }
 
+// TestWriteFileReachesSessionScratch: the per-session scratch directory
+// (sandbox.SessionScratch, provisioned by EnableSandbox and exported to spawned
+// processes as $TMPDIR/$SERF_SCRATCH_DIR) must also be writable AND readable back
+// through the file tools in every enforced mode — docs/sandboxing.md documents
+// "temp only" (read-only) and "worktree + temp" (workspace-write/restricted) as
+// part of the file-tool grant, not just the kernel-wrapped spawned-process layer.
+// Regression coverage for kata g8q6: a model's write_file into its own session
+// scratch dir was denied because ResolvedPolicy.FileTool never carried the
+// concrete scratch path (Resolve runs before NewSessionScratch creates it).
+func TestWriteFileReachesSessionScratch(t *testing.T) {
+	t.Parallel()
+	for _, mode := range sandboxedModes {
+		t.Run(mode.String(), func(t *testing.T) {
+			t.Parallel()
+			env, _, worktree := sandboxedEnv(t, mode)
+			tmp, err := sandbox.NewSessionScratch("", worktree)
+			if err != nil {
+				t.Fatalf("NewSessionScratch: %v", err)
+			}
+			env.ownedSessionTmp = tmp
+			granted := env.Sandbox.WithSessionScratch(tmp.Dir)
+			env.Sandbox = &granted
+
+			target := filepath.Join(tmp.Dir, "scratch.txt")
+			if _, err := env.WriteFile(target, "hello scratch\n"); err != nil {
+				t.Fatalf("%v: write_file to the session's own scratch dir should succeed: %v", mode, err)
+			}
+			got, err := env.ReadFile(target, nil, nil)
+			if err != nil || !strings.Contains(got, "hello scratch") {
+				t.Fatalf("%v: read_file of the just-written scratch file failed: got %q err %v", mode, got, err)
+			}
+		})
+	}
+}
+
 // TestEditFileSandboxedPreservesContract: edit_file under sandbox reads via the fd,
 // applies the same fuzzy/uniqueness logic, and writes back atomically.
 func TestEditFileSandboxedPreservesContract(t *testing.T) {

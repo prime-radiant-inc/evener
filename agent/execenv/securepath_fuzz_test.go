@@ -82,7 +82,7 @@ func FuzzSecurePathResolve(f *testing.F) {
 			if err != nil {
 				t.Fatalf("Resolve(%v): %v", mode, err)
 			}
-			s := newSandboxFS(&rp)
+			s := newSandboxFS(&rp, "")
 
 			// The tool method absolutizes relative paths against the worktree root
 			// before calling the resolver; mirror that here.

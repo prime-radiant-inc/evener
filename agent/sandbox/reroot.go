@@ -96,6 +96,39 @@ func (rp *ResolvedPolicy) ControlPolicy(mainRepoRoot string) (*ResolvedPolicy, e
 	return &out, nil
 }
 
+// WithSessionScratch returns a copy of rp with dir folded into the file-tool
+// layer's grants: a write root always (every mode's file-tool "temp only"/"+
+// temp" carve-out per docs/sandboxing.md IS this grant — without it read-only
+// has no writable file-tool root at all), and a read root too when the mode is
+// worktree-confined (restricted), whose ReadRoots would otherwise exclude a
+// directory the session just wrote into.
+//
+// Resolve cannot grant dir directly: EnableSandbox creates the concrete scratch
+// directory only AFTER resolving the policy (the directory does not exist yet at
+// resolve time), so this is the one late-bound file-tool grant — the execenv
+// package calls it when it builds the file-tool enforcement layer, passing the
+// concrete sandbox.SessionScratch.Dir / Wrapper.SessionTmp() path. The
+// kernel-wrapped spawned-process layer needs no equivalent: it already reaches
+// the scratch dir through its own sessionTmp parameter at Wrap-build time
+// (buildBwrapArgv / SeatbeltPolicy both take sessionTmp separately from
+// rp.Spawned), so Spawned's roots are left untouched here.
+//
+// A blank dir or an unenforced (off) policy returns rp unchanged. The result
+// still upholds the "never grant a masked path" invariant (filterMasked), though
+// a freshly created session-private directory is never itself denylisted.
+func (rp ResolvedPolicy) WithSessionScratch(dir string) ResolvedPolicy {
+	if dir == "" || !rp.Enforced() {
+		return rp
+	}
+	rp.FileTool.WriteRoots = filterMasked(
+		dedupeRoots(append(append([]string{}, rp.FileTool.WriteRoots...), dir)), rp.MaskedPaths)
+	if rp.FileTool.Read == ReadWorktreeOnly {
+		rp.FileTool.ReadRoots = filterMasked(
+			dedupeRoots(append(append([]string{}, rp.FileTool.ReadRoots...), dir)), rp.MaskedPaths)
+	}
+	return rp
+}
+
 // Inputs returns the backend-independent policy REQUEST this policy was resolved
 // from (mode, network, denylist deltas, extra roots). It is what a delegate
 // descriptor persists so a resumed delegate can RE-RESOLVE against its lane plus

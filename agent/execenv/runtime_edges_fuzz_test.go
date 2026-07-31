@@ -197,7 +197,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal("write on invalid descriptor succeeded")
 		}
 		policy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}
-		sfs := newSandboxFS(&policy)
+		sfs := newSandboxFS(&policy, "")
 		defer sfs.close()
 		if err := sfs.walkDirFd(-1, "", t.TempDir(), 2, new([]DirEntry)); err == nil {
 			t.Fatal("directory walk on invalid descriptor succeeded")
@@ -220,7 +220,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal("canonical recheck failure did not deny anywhere read")
 		}
 		rootPolicy := sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, FileTool: sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{root}, WriteRoots: []string{root}}}
-		rootFS := newSandboxFS(&rootPolicy)
+		rootFS := newSandboxFS(&rootPolicy, "")
 		defer rootFS.close()
 		if err := os.Chmod(file, 0o700); err != nil {
 			t.Fatal(err)
@@ -233,7 +233,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 			t.Fatal("canonical recheck failure did not deny rooted write")
 		}
 		grantPolicy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere}}
-		grantFS := newSandboxFS(&grantPolicy)
+		grantFS := newSandboxFS(&grantPolicy, "")
 		grantFS.grant = file
 		if _, _, err := grantFS.grantedWriteParent("write_file", file); err == nil {
 			t.Fatal("canonical recheck failure did not deny granted write")
@@ -270,7 +270,7 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		}
 		secureReadDirEntries = readDirForInfo
 		missingRootPolicy := sandbox.ResolvedPolicy{FileTool: sandbox.AccessScope{WriteRoots: []string{filepath.Join(root, "missing-root")}}}
-		if _, _, err := newSandboxFS(&missingRootPolicy).openWriteParent("write_file", filepath.Join(root, "missing-root", "file"), true); err == nil {
+		if _, _, err := newSandboxFS(&missingRootPolicy, "").openWriteParent("write_file", filepath.Join(root, "missing-root", "file"), true); err == nil {
 			t.Fatal("missing write root unexpectedly opened")
 		}
 		if _, _, err := rootFS.openWriteParent("write_file", filepath.Join(root, "missing-dir", "file"), false); err == nil {
