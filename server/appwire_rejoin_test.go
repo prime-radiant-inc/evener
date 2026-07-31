@@ -81,15 +81,19 @@ func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t 
 	<-laterCompleted
 
 	records := srv.AppNotificationsAfter(before, "th_1")
-	if len(records) != 2 {
+	// Three, not two: the later delta opens its own agent-message item (the
+	// completion above closed the previous one) and so commits item/started
+	// alongside the delta itself.
+	if len(records) != 3 {
 		t.Fatalf("committed notifications = %d, want item completion and later delta", len(records))
 	}
+	last := len(records) - 1
 	if records[0].Notification.Method != appwire.NotifyItemCompleted ||
-		records[1].Notification.Method != appwire.NotifyAgentMessageDelta {
+		records[last].Notification.Method != appwire.NotifyAgentMessageDelta {
 		t.Fatalf(
 			"commit order = [%s, %s], want [%s, %s]",
 			records[0].Notification.Method,
-			records[1].Notification.Method,
+			records[last].Notification.Method,
 			appwire.NotifyItemCompleted,
 			appwire.NotifyAgentMessageDelta,
 		)
@@ -482,15 +486,23 @@ func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.
 		Data: events.AssistantTextDeltaData{Delta: "qualified"},
 	})
 
+	// Two: the delta opens its own agent-message item before carrying the text.
+	// Both records are the commit's, so both must name the authoritative thread.
 	records := srv.AppNotificationsAfter(0, "authoritative")
-	if len(records) != 1 {
-		t.Fatalf("authoritative notifications = %d, want 1", len(records))
+	if len(records) != 2 {
+		t.Fatalf("authoritative notifications = %d, want 2", len(records))
 	}
-	if records[0].ThreadID != "authoritative" {
-		t.Fatalf("record thread ID = %q, want authoritative", records[0].ThreadID)
+	for _, record := range records {
+		if record.ThreadID != "authoritative" {
+			t.Fatalf("record thread ID = %q, want authoritative", record.ThreadID)
+		}
+	}
+	delta := records[len(records)-1]
+	if delta.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("last notification method = %q, want %q", delta.Notification.Method, appwire.NotifyAgentMessageDelta)
 	}
 	var params appwire.AgentMessageDeltaParams
-	if err := json.Unmarshal(records[0].Notification.Params, &params); err != nil {
+	if err := json.Unmarshal(delta.Notification.Params, &params); err != nil {
 		t.Fatalf("decode notification: %v", err)
 	}
 	if params.ThreadID != "authoritative" || params.Ref != "local:authoritative" {
@@ -555,7 +567,11 @@ func TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription(t *testing.T)
 	// A turn opens while the read waits for the gate. This commit runs to
 	// completion here: the read holds no lock at the gate barrier, in either
 	// the atomic shape or the one it replaced.
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1"})
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data:      events.UserInputData{Text: "question"},
+	})
 	close(openGate)
 
 	outcome := <-reads

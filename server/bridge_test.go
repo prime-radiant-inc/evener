@@ -30,8 +30,10 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("expected at least one appwire notification")
 	}
-	if items[0].Notification.Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("notification method: got %q, want %q", items[0].Notification.Method, appwire.NotifyAgentMessageDelta)
+	// The delta arrives last: it opens the agent-message item it appends to.
+	last := items[len(items)-1]
+	if last.Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("notification method: got %q, want %q", last.Notification.Method, appwire.NotifyAgentMessageDelta)
 	}
 }
 
