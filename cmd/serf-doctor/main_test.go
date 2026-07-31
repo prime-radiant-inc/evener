@@ -133,8 +133,10 @@ func TestRun_Help(t *testing.T) {
 		t.Errorf("help exit = %d, want 0", code)
 	}
 	got := out.String()
-	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree", "plugins"} {
-		if !strings.Contains(got, sub) {
+	// Match the SUBCOMMANDS block's own line shape ("  <name>  <description>"),
+	// not a bare substring: "jobs" and "watches" also appear in the prose above it.
+	for _, sub := range []string{"locate", "transcript", "apilog", "jobs", "watches", "tree", "plugins"} {
+		if !strings.Contains(got, "\n  "+sub+" ") {
 			t.Errorf("help should list subcommand %q; got:\n%s", sub, got)
 		}
 	}
@@ -583,6 +585,121 @@ func TestRun_APILogValidateNoSelector(t *testing.T) {
 	base, _ := fixtureWithAPILogData(t)
 	var out, errb bytes.Buffer
 	if code := run([]string{"apilog", "--state-dir", base, "--validate"}, &out, &errb); code != 1 {
+		t.Errorf("no selector should exit 1, got %d", code)
+	}
+}
+
+// fixtureWithJobsData writes a session whose jobs.jsonl records one completed
+// job and one the run timeout stopped with no output — the shape the 2026-07-31
+// diagnosis could only reach through the live daemon's /status endpoint.
+const (
+	commandCompletedJobID = "job_02wLIRxqmq3AUo6vl2OW40"
+	commandTimeoutJobID   = "job_02wLIRxqmq3AUo6vl2OW41"
+)
+
+func fixtureWithJobsData(t *testing.T) (base, sid string) {
+	t.Helper()
+	base = t.TempDir()
+	sid = "02wLIRxqmq3AUo6vl2OW37"
+	bucket := filepath.Join(base, "serf", "projects", "project-test-0123456789")
+	sess := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), `{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n")
+	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`"}`)
+
+	jobs := strings.Join([]string{
+		`{"kind":"job_started","seq":1,"job_id":"` + commandCompletedJobID + `","type":"shell","command":"make test","started_at":"2026-07-31T18:00:00Z"}`,
+		`{"kind":"job_finished","seq":2,"job_id":"` + commandCompletedJobID + `","status":"completed","exit_code":0,"ended_at":"2026-07-31T18:01:00Z","output_bytes":4096}`,
+		`{"kind":"job_started","seq":3,"job_id":"` + commandTimeoutJobID + `","type":"shell","command":"npm run dev","started_at":"2026-07-31T18:00:00Z"}`,
+		`{"kind":"job_finished","seq":4,"job_id":"` + commandTimeoutJobID + `","status":"stopped","reason":"run_timeout","exit_code":-1,"ended_at":"2026-07-31T18:02:00Z","output_bytes":0}`,
+	}, "\n") + "\n"
+	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
+	return base, sid
+}
+
+func TestRun_JobsHuman(t *testing.T) {
+	base, sid := fixtureWithJobsData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"jobs", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"job " + commandCompletedJobID + "  (completed)",
+		"job " + commandTimeoutJobID + "  (stopped: run_timeout)",
+		"exit=-1",
+		"output_bytes=0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("jobs output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRun_JobsJSON(t *testing.T) {
+	base, sid := fixtureWithJobsData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"jobs", "--json", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	var res struct {
+		SessionID string `json:"session_id"`
+		Jobs      []struct {
+			JobID       string `json:"job_id"`
+			Status      string `json:"status"`
+			Reason      string `json:"reason"`
+			ExitCode    *int   `json:"exit_code"`
+			OutputBytes int64  `json:"output_bytes"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, out.String())
+	}
+	if res.SessionID != sid {
+		t.Errorf("session_id = %q, want %q", res.SessionID, sid)
+	}
+	if len(res.Jobs) != 2 {
+		t.Fatalf("jobs = %d, want 2:\n%s", len(res.Jobs), out.String())
+	}
+	stopped := res.Jobs[1]
+	if stopped.JobID != commandTimeoutJobID || stopped.Status != "stopped" || stopped.Reason != "run_timeout" {
+		t.Errorf("stopped job = %+v", stopped)
+	}
+	if stopped.ExitCode == nil || *stopped.ExitCode != -1 || stopped.OutputBytes != 0 {
+		t.Errorf("stopped job exit/output = %v/%d, want -1/0", stopped.ExitCode, stopped.OutputBytes)
+	}
+}
+
+// --job must parse after the selector, the documented flag position.
+func TestRun_JobsJobFilterAfterSelector(t *testing.T) {
+	base, sid := fixtureWithJobsData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"jobs", sid, "--state-dir", base, "--job", commandTimeoutJobID}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	if strings.Contains(out.String(), commandCompletedJobID) {
+		t.Errorf("--job should scope to one job; got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), commandTimeoutJobID) {
+		t.Errorf("--job should render the named job; got:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"jobs", sid, "--state-dir", base, "--job", "job_nonexistent"}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	if !strings.Contains(out.String(), "job job_nonexistent not found") {
+		t.Errorf("unmatched --job should say so; got:\n%s", out.String())
+	}
+}
+
+func TestRun_JobsNoSelector(t *testing.T) {
+	base, _ := fixtureWithJobsData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"jobs", "--state-dir", base}, &out, &errb); code != 1 {
 		t.Errorf("no selector should exit 1, got %d", code)
 	}
 }
