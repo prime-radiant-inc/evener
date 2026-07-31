@@ -94,6 +94,19 @@ export const STATUS_TONE: Record<JobStatus, ChipTone> = {
   exhausted: "danger",
 };
 
+// A Map, not an object lookup: a wire status of "constructor" would answer
+// off Object.prototype and hand Chip something that is not a tone at all.
+const TONE_BY_STATUS = new Map<string, ChipTone>(Object.entries(STATUS_TONE));
+
+// The tone for whatever status the wire actually sent (jobData.ts: JobRow.
+// status is the wire's string, never narrowed to JobStatus). A status this
+// bundle doesn't know comes from a newer daemon: it is not known to be alive
+// and not known to have failed, so it recedes neutral rather than borrowing
+// either signal. The row still renders, labelled with the wire's own word.
+export function statusTone(status: string): ChipTone {
+  return TONE_BY_STATUS.get(status) ?? "neutral";
+}
+
 // The one name this panel's failure goes by - TasksPanel's LOAD_FAILURE
 // convention: toast and inline state are built from this and the same
 // discriminator, so the panel never says two different things about one
@@ -279,7 +292,7 @@ function JobRowView({ row, sessionRef, now }: { row: JobRow; sessionRef: string;
   const duration = jobDuration(row, now);
   const summary = (
     <>
-      <Chip tone={STATUS_TONE[row.status]}>{row.status}</Chip>
+      <Chip tone={statusTone(row.status)}>{row.status}</Chip>
       <span aria-hidden="true">{TYPE_GLYPH[row.type] ?? "•"}</span>
       <span className={CLASS.description}>{row.description}</span>
       {duration && <span className={CLASS.state}>{duration}</span>}

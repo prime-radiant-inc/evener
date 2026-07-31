@@ -11,7 +11,7 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { JobsPanel, type JobsPanelHandle } from "./JobsPanel";
+import { JobsPanel, type JobsPanelHandle, statusTone } from "./JobsPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -143,6 +143,21 @@ const ONE_STILL_RUNNING_DATA = [
     description: "review diff",
     background: true,
     startedAt: "2026-07-31T12:04:40Z",
+    outputBytes: 0,
+    hasOutput: false,
+  },
+];
+
+// A status no version of this bundle has heard of - JobSummary.Status is a
+// plain Go string, so a newer daemon can send one.
+const UNKNOWN_STATUS_DATA = [
+  {
+    jobId: "job_7",
+    type: "shell",
+    status: "quarantined",
+    description: "held for review",
+    background: false,
+    startedAt: "2026-07-31T12:04:00Z",
     outputBytes: 0,
     hasOutput: false,
   },
@@ -654,4 +669,31 @@ test("a zero-time startedAt shows no clock rather than a two-millennia one", asy
   const row = (await screen.findAllByTestId("job-row"))[0];
   expect(row?.textContent).toContain("orphan");
   expect(row?.textContent).not.toMatch(/\d+[smh]/);
+});
+
+// 23. A status this bundle doesn't know is not known to be alive and not
+// known to have failed, so it recedes neutral rather than borrowing either
+// signal. "constructor" is in here because a bare object lookup would answer
+// it off Object.prototype.
+test("pins the chip tone for a status outside the known set: neutral, never alive or danger", () => {
+  expect(statusTone("running")).toBe("alive");
+  expect(statusTone("failed")).toBe("danger");
+  expect(statusTone("quarantined")).toBe("neutral");
+  expect(statusTone("constructor")).toBe("neutral");
+});
+
+// 24. The row itself is never hidden by an unrecognised status: a job that
+// really ran stays in the list, labelled with the wire's own word for it.
+test("a row with an unknown status still renders, labelled with the wire's own status", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: UNKNOWN_STATUS_DATA }));
+
+  render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+
+  const rows = await screen.findAllByTestId("job-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain("quarantined");
+  expect(rows[0]?.textContent).toContain("held for review");
 });

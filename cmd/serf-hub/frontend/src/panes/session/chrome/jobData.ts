@@ -7,12 +7,23 @@
 // only when no jobsFn is registered server-side (an old daemon), reported
 // as `null` — distinct from a real empty list (`[]`, "zero jobs").
 
+// The statuses this bundle KNOWS (jobstore's Status constants, record.go:23-28)
+// - deliberately not a claim about what the wire can carry. JobSummary.Status
+// is a plain Go string, so a newer daemon can name a status that is not in
+// here. Consumers switch over this union and must say what they do with
+// everything else; JobRow.status below is what actually arrives.
 export type JobStatus = "running" | "completed" | "failed" | "cancelled" | "stopped" | "exhausted";
 
 export interface JobRow {
   jobId: string;
   type: string;
-  status: JobStatus;
+  // The wire's status verbatim, NOT narrowed to JobStatus. Narrowing by cast
+  // would tell every consumer an unrecognised status had been handled when
+  // it had not; dropping the row would hide a job that really ran; remapping
+  // it to a known status would misreport that job. Keeping it a string makes
+  // the compiler ask each consumer what it does with a status it does not
+  // recognise, which is the only one of the four that can't quietly lie.
+  status: string;
   reason?: string;
   description: string;
   command?: string;
@@ -65,7 +76,7 @@ function parseRow(raw: unknown): JobRow | null {
   const row: JobRow = {
     jobId,
     type,
-    status: status as JobStatus,
+    status,
     description,
     background,
     startedAt,
