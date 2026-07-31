@@ -437,6 +437,16 @@ wrong tab within your own profile (e.g. after a `new_tab` you forgot to
 a loud failure — it just no longer has to defend against the whole
 fleet.
 
+**The human's keyboard wins.** A visible shared Chrome takes real window
+focus, so a human using the same machine can interleave keystrokes or a
+paste with your `type` action — measured once as a vite dev-server URL
+landing inside a word mid-type, storing
+`askttp://192.168.118.83:5173/_user` where `ask_user` was typed, all the
+way into the daemon transcript. When a human may be active, either drive
+an isolated profile or read the field (or the stored turn) back and
+compare against what you sent before trusting any result derived from
+typed input.
+
 **Report the gap, don't paper over it.** If a browser step is skipped,
 degraded, or gives an ambiguous read (an assertion failed, a tab looked
 foreign, a screenshot got discarded), say so explicitly in your
