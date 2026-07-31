@@ -189,6 +189,14 @@ export interface ThreadsStoreState {
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
   listTasks(ref: string): Promise<unknown>;
+  // Lists the session's jobs (serf/jobs/list) and fetches one job's output
+  // tail (serf/jobs/output). Both Data fields are `any` on the wire catalog
+  // (appwire/types.go) - these return the raw field verbatim, never wrapped,
+  // so the store stays shape-agnostic; the caller owns interpreting it (the
+  // chrome stream's parseJobListData / parseJobOutputData). Wire truth:
+  // agent/jobs_panel.go's JobSummary / JobOutputTail.
+  listJobs(ref: string): Promise<unknown>;
+  jobOutput(ref: string, jobId: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -2001,6 +2009,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels above.
     const resp = await client.request("serf/tasks/list", { ref });
+    return resp.data;
+  },
+
+  async listJobs(ref) {
+    const client = requireClient();
+    // No mapConflict here either, same reasoning as listModels/listTasks above.
+    const resp = await client.request("serf/jobs/list", { ref });
+    return resp.data;
+  },
+
+  async jobOutput(ref, jobId) {
+    const client = requireClient();
+    const resp = await client.request("serf/jobs/output", { ref, jobId });
     return resp.data;
   },
 
