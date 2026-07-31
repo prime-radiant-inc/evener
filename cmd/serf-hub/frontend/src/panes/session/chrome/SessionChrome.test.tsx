@@ -409,3 +409,50 @@ test("the cadence slot is desktop-hidden and mobile-shown (CSS source, jsdom has
   expect(slot).not.toBeNull();
   expect(slot![1]).not.toContain("display: none");
 });
+
+// The "..." menu must never overflow onto a line of its own. It used to:
+// with StatusRow, the goal chip and .right as flat items of a
+// flex-wrap:wrap .chrome, .right was the item the wrap pushed down whole
+// whenever the status facts plus the triggers exceeded the chrome width -
+// a full extra footer row holding only the "...", and a reflow every time
+// the content crossed the threshold. The fix is structural: .chrome never
+// wraps and has exactly two children - .body (which owns ALL wrapping)
+// and .right (flex:none, so the menu always shares the one top-level
+// line). These two tests lock both halves of that.
+test("the chrome row is exactly [.body, .right], with the status content inside .body", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_structure"));
+  await threadsStore.getState().ensureThread("ref_structure");
+
+  render(<SessionChrome ref="ref_structure" />);
+
+  const chrome = await screen.findByTestId("session-chrome");
+  const body = screen.getByTestId("session-chrome-body");
+  // Exactly two direct children: the wrapping body, then the right group.
+  expect(chrome.children).toHaveLength(2);
+  expect(chrome.children[0]).toBe(body);
+  const right = chrome.children[1] as Element;
+  // The menu lives in .right, the wrappable content in .body.
+  expect(right.querySelector('[data-testid="session-chrome-body"]')).toBeNull();
+  expect(right.contains(screen.getByRole("button", { name: /session actions/i }))).toBe(true);
+  expect(body.contains(screen.getByTestId("status-row"))).toBe(true);
+  expect(body.contains(screen.getByTestId("session-chrome-cadence"))).toBe(true);
+});
+
+test("the chrome CSS keeps the menu off its own line (CSS source, jsdom has no layout)", () => {
+  const css = readFileSync(join(here, "sessionchrome.module.css"), "utf8");
+  const chrome = css.match(/\.chrome \{([^}]*)\}/);
+  expect(chrome).not.toBeNull();
+  // The top-level row must not wrap: wrapping is what used to move .right
+  // onto a line of its own.
+  expect(chrome![1]).not.toContain("flex-wrap: wrap");
+  const body = css.match(/\.body \{([^}]*)\}/);
+  expect(body).not.toBeNull();
+  // .body owns the wrapping instead, and may shrink below its content
+  // width so the wrap happens there rather than as sideways overflow.
+  expect(body![1]).toContain("flex-wrap: wrap");
+  expect(body![1]).toContain("min-width: 0");
+  const right = css.match(/\.right \{([^}]*)\}/);
+  expect(right).not.toBeNull();
+  expect(right![1]).toContain("flex: none");
+});
