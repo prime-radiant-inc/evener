@@ -31,7 +31,12 @@ card proves it against a built binary on a real state-dir shape.
   root is itself the bucket, so sessions sit directly under `sessions/`):
 
   ```bash
-  SCR=$(mktemp -d); SESS="$SCR/sessions"; SID=01SCNDOCTORAAAAAAAAAAAAAAAA
+  # SID must be a REAL session id: serf-doctor validates the selector before
+  # reading anything (identifier.ValidateSessionID -> 22-char base62 UUIDv7,
+  # identifier/uuid.go:12,64-73), so a readable fake like 01SCNDOCTOR... is
+  # rejected with `invalid session id` and no step below runs. This literal is
+  # a generated, validated id; keep it or generate another.
+  SCR=$(mktemp -d); SESS="$SCR/sessions"; SID=033z4xc9zDkqiOXWEe1X4l
   mkdir -p "$SESS/$SID"
   printf '{"kind":"header","session_id":"%s"}\n' "$SID" > "$SESS/$SID.transcript.jsonl"
   printf '{"id":"%s"}'                          "$SID" > "$SESS/$SID.meta.json"
@@ -56,9 +61,9 @@ card proves it against a built binary on a real state-dir shape.
    ```bash
    /tmp/serf-doctor locate "$SID" --state-dir "$SCR" --json
    ```
-   ASSERT `jobs_path` ends with `sessions/01SCNDOCTORAAAAAAAAAAAAAAAA/jobs.jsonl`
+   ASSERT `jobs_path` ends with `sessions/033z4xc9zDkqiOXWEe1X4l/jobs.jsonl`
    (the subdir, NOT a flat `…AAAA.jobs.jsonl`), and `transcript_path` ends with
-   `sessions/01SCNDOCTORAAAAAAAAAAAAAAAA.transcript.jsonl`.
+   `sessions/033z4xc9zDkqiOXWEe1X4l.transcript.jsonl`.
 
 2. **`watches` collapses coalescing — the headline correction.**
    ```bash

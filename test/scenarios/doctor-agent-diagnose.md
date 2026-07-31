@@ -63,7 +63,12 @@ depth up to the fuse: a delivered send plus a send DROPPED with
 is normal; the diagnosable event is the fired fuse):
 
 ```bash
-SCR=$(mktemp -d); BSID=01BROKENLOOPAAAAAAAAAAAAAAA; mkdir -p "$SCR/sessions/$BSID"
+# BSID must be a REAL session id: serf-doctor validates the selector before
+# reading anything (identifier.ValidateSessionID -> 22-char base62 UUIDv7,
+# identifier/uuid.go:12,64-73), so a readable fake like 01BROKENLOOP... is
+# rejected with `invalid session id` and nothing below runs. This literal is
+# a generated, validated id; keep it or generate another.
+SCR=$(mktemp -d); BSID=033z4xc9zG2DUwYAg4Pcdh; mkdir -p "$SCR/sessions/$BSID"
 printf '{"kind":"header","session_id":"%s"}\n' "$BSID" > "$SCR/sessions/$BSID.transcript.jsonl"
 printf '{"id":"%s"}' "$BSID" > "$SCR/sessions/$BSID.meta.json"
 cat > "$SCR/sessions/$BSID/jobs.jsonl" <<'JOBS'
@@ -88,7 +93,9 @@ ASSERT the doctor emits **exactly one** Finding conforming to the contract:
   ran to the machinery floor — report the loop's participants; the drop itself
   is the breaker working as designed).
 
-Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini): the doctor
+Observed (real run 2026-07-03, merged main, openai/gpt-5.4-mini — recorded
+verbatim, so its session id is the pre-identifier-refactor 26-char form this
+card no longer uses; a re-run's signature carries `$BSID` instead): the doctor
 read the runbook + data-model references, ran exactly
 `serf-doctor watches 01BROKENLOOPAAAAAAAAAAAAAAA --state-dir $SCR
 --self-loops --json`, and emitted ONE Finding verbatim to the contract:
