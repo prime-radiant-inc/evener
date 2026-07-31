@@ -13,7 +13,18 @@ cross-session find/read seam working end to end.
 
 ## Pre-state
 
-- Built serf binary (`go build -o /tmp/serf ./cmd/serf` if absent).
+- One run directory holding the binary and this run's state, so two
+  agents running this card at once share nothing:
+  ```bash
+  run=$(mktemp -d -t serf-e2e-xsession-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  export XDG_STATE_HOME="$run/state"
+  ```
+  The exported state home keeps every session this card writes out of
+  Jesse's real `~/.local/state/serf/projects` while preserving the
+  `<state-home>/serf/projects/<project-id>/sessions/` layout the card is
+  actually testing (`agent.RuntimeDirWithStateHome`). Keep it exported for
+  BOTH runs — A and B must resolve the same bucket.
 - Creds exported into the child env (bare `.env`; `set -a` mandatory or
   `oai-work` drops out with `unknown provider: oai-work`):
   ```bash
@@ -26,7 +37,7 @@ cross-session find/read seam working end to end.
 ## Bucket-sharing precondition (the load-bearing setup)
 
 Sessions are stored in a per-project **bucket** under
-`~/.local/state/serf/projects/<project-id>/sessions/`, where
+`$XDG_STATE_HOME/serf/projects/<project-id>/sessions/`, where
 `<project-id>` is the readable canonical project ID. **Two serf
 runs invoked with the same `--dir` land in the same bucket.** That shared
 bucket is the entire reason B's `current_project` search can see A.
@@ -44,7 +55,7 @@ both transcripts live under the same bucket before B searches.
    so B's content search is unambiguous:
    ```bash
    marker="lighthouse-$(date +%s)"
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Create a file named beacon.txt containing exactly the line: project codename ${marker}. Then create a Python script summarize.py that reads beacon.txt and prints its contents in uppercase. Run summarize.py with python3 and let the output through. Finally report the codename and what the script printed."
    ```
    Wait for exit 0. Sanity-check A's work:
@@ -56,7 +67,7 @@ both transcripts live under the same bucket before B searches.
    and (after step 4) B's must sit under the same project ID. Capture the
    bucket that now contains A's transcript:
    ```bash
-   bucket=$(find ~/.local/state/serf/projects -name "*.transcript.jsonl" \
+   bucket=$(find "$XDG_STATE_HOME/serf/projects" -name "*.transcript.jsonl" \
      -newermt "@$(( $(date +%s) - 600 ))" -path "*/sessions/*" \
      -exec grep -l "$marker" {} \; 2>/dev/null | sed -E 's#.*/projects/([^/]+)/sessions/.*#\1#' | sort -u)
    echo "A is in bucket: $bucket"   # exactly one project ID expected
@@ -65,14 +76,14 @@ both transcripts live under the same bucket before B searches.
 4. **Session B — discover and reconstruct A.** B is given the search
    term but NOT A's ref. It must find the ref, then read it:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Another serf session in this project recently worked on something with the codename ${marker}. You do NOT know its transcript ref. Steps: (1) call find_session_transcripts with query '${marker}' to locate that session and report the transcript_ref you got back; (2) call read_session_transcript on that ref and reconstruct, from the conversation, exactly: the filename it created for the codename, the name of the Python script it wrote, and the uppercase line that script printed. Report all three plus the transcript_ref. Do not guess — read the transcript."
    ```
 
 5. Confirm B's own transcript also landed in the same bucket (proving
    "same dir ⇒ same bucket", not a coincidence):
    ```bash
-   ls ~/.local/state/serf/projects/"$bucket"/sessions/*.transcript.jsonl | wc -l   # >= 2 now (A and B, plus any others)
+   ls "$XDG_STATE_HOME/serf/projects/$bucket"/sessions/*.transcript.jsonl | wc -l   # >= 2 now (A and B, plus any others)
    ```
 
 ## Expected
@@ -103,12 +114,11 @@ both transcripts live under the same bucket before B searches.
 
 ## Cleanup
 
-```bash
-rm -rf "$proj"
-```
+The project dir, the binary, and this run's whole state root:
 
-Bucket dir under `~/.local/state/serf/projects/$bucket/` lingers but is
-harmless; delete its `sessions/` entries for a hermetic rerun.
+```bash
+rm -rf "$proj" "$run"
+```
 
 ## Sharp edges
 

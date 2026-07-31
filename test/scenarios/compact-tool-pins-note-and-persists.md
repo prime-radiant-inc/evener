@@ -28,7 +28,7 @@ compaction runs.
   # Symlink read-only creds + config that DON'T carry absolute state paths:
   for f in credentials.toml providers.toml auth-token launch.toml; do
     ln -s "$REALSERF/$f" "$TH/.serf/$f"; done
-  # DO NOT `cp` the real hub.toml — it hardcodes absolute paths to /home/.../.serf
+  # DO NOT `cp` the real hub.toml — it hardcodes absolute paths under `~/.serf`
   # (hub_state_root, run_dir, state_glob, past_index_db) and the test hub will
   # then read/write REAL state. WRITE a fresh one pointed entirely at $TH:
   cat > "$TH/.serf/hub.toml" <<EOF
