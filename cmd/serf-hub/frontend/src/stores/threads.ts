@@ -969,9 +969,24 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
+  // The authoritative read has succeeded, so the replay gate opens HERE — in
+  // the same synchronous step publishThreadHydration deleted the ref's
+  // pending-hydration entry — not after the storage hygiene below. Between
+  // that delete and the end of these awaits, a lifecycle discovery scan sees
+  // "no hydration in flight, not dispatchable" and mints a redundant targeted
+  // resync; opening the gate first routes that scan to dispatch instead
+  // (a no-op drain when nothing is dispatchable). The add in
+  // refreshTrackedThread stays as the gate for its own await-completion path.
+  if (pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
   const runtime = getMutationRuntime();
   if (runtime) {
-    await runtime.dispatcher.reconcileIdentities(collectAuthoritativeMutationIds(hydration.response));
+    const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
+    await runtime.dispatcher.reconcileIdentities(authoritativeIds);
+    // The same read that settles what the authority knows also proves what it
+    // does not: a blockedUnknown record absent from every authoritative set
+    // was never journaled, so it returns to dispatch here rather than parking
+    // forever behind an outage that has since recovered (kata gwea).
+    await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
     await refreshMutationPins(runtime, [ref]);
   }
   return published;

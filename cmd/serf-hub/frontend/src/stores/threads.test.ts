@@ -4740,6 +4740,40 @@ describe("retry-safe mutation outbox integration", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
   });
 
+  // A blockedUnknown record parks until its outcome is provable. The
+  // authoritative read this rejoin performs IS the proof: readResponse's
+  // authoritative sets don't contain the id, so the daemon never journaled
+  // it, and the record must return to dispatch instead of sitting parked
+  // forever — across reloads, with the composer showing it queued and no
+  // recovery affordance (kata gwea, observed live 2026-07-31).
+  test("restores and replays a blocked-unknown intent once the authoritative read proves it absent", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: {
+        ref: "ref_a",
+        expectedTurnId: "",
+        input: [{ type: "text", text: "queued before the outage" }],
+      },
+      attachments: [],
+      optimisticDisplay: { text: "queued before the outage" },
+    });
+    await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a"));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    fake.emitReady();
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await inspector.getOutbox(record.clientMutationId)).toBeUndefined();
+    inspector.close();
+  });
+
   test("hydrates a durable optimistic ref without redispatching its settled transport intent", async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-a" });
     const record = await storage.enqueueIntent({
