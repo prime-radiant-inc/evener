@@ -18,7 +18,7 @@ LINT_PARALLEL=${LINT_PARALLEL:-4}
 case "$LINT_PARALLEL" in
 	''|*[!0-9]*|0*)
 		printf 'lint: LINT_PARALLEL must be a positive integer without leading zeroes (got %s)\n' "$LINT_PARALLEL" >&2
-		exit 2
+		fail_lint 'setup: LINT_PARALLEL must be a positive integer without leading zeroes' 2
 		;;
 esac
 
@@ -76,7 +76,7 @@ trap 'interrupted 143' TERM
 
 if ! logdir="$(mktemp -d -t serf-module-lint.XXXXXX)"; then
 	printf 'lint: unable to create temporary log directory\n' >&2
-	exit 1
+	fail_lint 'setup: unable to create temporary log directory' 1
 fi
 
 # Invoke an absent command once so Bash retains its original diagnostic without
@@ -96,14 +96,14 @@ run_wave() {
 	gate="$logdir/wave.start"
 	if ! mkfifo "$gate"; then
 		printf 'lint: unable to create module start gate\n' >&2
-		exit 1
+		fail_lint 'setup: unable to create module start gate' 1
 	fi
 	# Without the gate open, every child of this wave blocks forever opening a
 	# FIFO nobody will write, so refuse the wave rather than hang in wait.
 	if ! exec 7<>"$gate"; then
 		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 		printf 'lint: unable to open module start gate: %s\n' "$gate" >&2
-		exit 1
+		fail_lint 'setup: unable to open module start gate' 1
 	fi
 	for ((i = first; i < last; i++)); do
 		module="${modules[$i]}"

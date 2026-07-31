@@ -213,7 +213,9 @@ for value in 0 -1 nope 00 08 010; do
 	rc=$bounded_rc
 	if [ "$rc" -ne 0 ]; then ok "LINT_PARALLEL=$value exits nonzero"; else bad "LINT_PARALLEL=$value exits zero"; fi
 	assert_has "$out" "LINT_PARALLEL must be a positive integer" "LINT_PARALLEL=$value has one useful diagnostic"
-	assert_eq "$(wc -l <"$out" | tr -d ' ')" "1" "LINT_PARALLEL=$value emits one diagnostic"
+	assert_eq "$(wc -l <"$out" | tr -d ' ')" "2" "LINT_PARALLEL=$value emits one diagnostic and one summary"
+	assert_eq "$(tail -n 1 "$out")" "FAIL lint (setup: LINT_PARALLEL must be a positive integer without leading zeroes)" "LINT_PARALLEL=$value summarises as a setup failure"
+	assert_one_summary "$out" "LINT_PARALLEL=$value summarises exactly once"
 	if [ ! -e "$state/calls" ]; then ok "LINT_PARALLEL=$value launches no checks"; else bad "LINT_PARALLEL=$value launched a check"; fi
 	assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "LINT_PARALLEL=$value creates no log directory"
 done
@@ -246,8 +248,47 @@ out="$case_dir/mktemp.out"
 if run_lint ". agent" "$out"; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "temporary-log creation failure exits nonzero"; else bad "temporary-log creation failure exits zero"; fi
 assert_has "$out" "mktemp: injected failure" "temporary-log creation keeps the original diagnostic"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (setup: unable to create temporary log directory)" "temporary-log creation failure summarises the run"
+assert_one_summary "$out" "temporary-log creation failure summarises exactly once"
+assert_eq "$(wc -l <"$out" | tr -d ' ')" "4" "temporary-log creation failure adds a summary without repeating itself"
 if [ ! -e "$state/calls" ]; then ok "temporary-log failure launches no checks"; else bad "temporary-log failure launched a check"; fi
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "temporary-log failure leaves no runner directory"
+
+# Start-gate setup failure stops the wave before any child exists to wait on it.
+new_case
+cat >"$bin/mkfifo" <<'FAKE_MKFIFO'
+#!/usr/bin/env bash
+printf 'mkfifo: injected failure\n' >&2
+exit 1
+FAKE_MKFIFO
+chmod +x "$bin/mkfifo"
+out="$case_dir/mkfifo.out"
+if run_lint ". agent" "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "start-gate creation failure exits nonzero"; else bad "start-gate creation failure exits zero"; fi
+assert_has "$out" "mkfifo: injected failure" "start-gate creation keeps the original diagnostic"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (setup: unable to create module start gate)" "start-gate creation failure summarises the run"
+assert_one_summary "$out" "start-gate creation failure summarises exactly once"
+if [ ! -e "$state/calls" ]; then ok "start-gate creation failure launches no checks"; else bad "start-gate creation failure launched a check"; fi
+assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "start-gate creation failure leaves no runner directory"
+
+# A gate that exists but cannot be opened is the same refusal: without the
+# runner's own open, every child of the wave blocks on a FIFO nobody writes.
+new_case
+cat >"$bin/mkfifo" <<'FAKE_UNOPENABLE_GATE'
+#!/usr/bin/env bash
+set -u
+# A directory takes the gate's place: created without complaint, never openable.
+exec /bin/mkdir "$@"
+FAKE_UNOPENABLE_GATE
+chmod +x "$bin/mkfifo"
+out="$case_dir/gate-unopenable.out"
+if run_lint ". agent" "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "an unopenable start gate exits nonzero"; else bad "an unopenable start gate exits zero"; fi
+assert_has "$out" "lint: unable to open module start gate:" "an unopenable start gate names the gate that would not open"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (setup: unable to open module start gate)" "an unopenable start gate summarises the run"
+assert_one_summary "$out" "an unopenable start gate summarises exactly once"
+if [ ! -e "$state/calls" ]; then ok "an unopenable start gate launches no checks"; else bad "an unopenable start gate launched a check"; fi
+assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "an unopenable start gate leaves no runner directory"
 
 # Concurrency: all fake linters hold an atomic active slot until the test sends
 # release tokens. This makes an over-limit launch observable without sleeps.
