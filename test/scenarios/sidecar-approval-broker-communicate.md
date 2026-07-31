@@ -76,7 +76,7 @@ hand it back as an observer callback. Driving mechanism:
   `communicate(end_turn=true)`; the parent receives it as an `Observer
   callback:` block (`agent/session_tools_communicate.go:118`) and
   finishes from it.
-- The parent does not use `job_list` or `job_read_output` as a waiting
+- The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.
 - The watch has no dropped deliveries or self-loop verdict.
 - Falsification (dead surface): if the task asks the observer for
@@ -98,7 +98,7 @@ go run ./cmd/serf-doctor tree "$SID" --observers
 go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$SID" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --count job_read_output
+go run ./cmd/serf-doctor transcript "$SID" --count job_status
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
