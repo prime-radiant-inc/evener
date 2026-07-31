@@ -59,6 +59,62 @@ func TestParseJobNotificationHeadline(t *testing.T) {
 	})
 }
 
+// agent/job_notify.go's escapeNotificationText HTML-entity-escapes &, <, >,
+// and " before interpolating job/watch-derived text into a
+// <job-notification> wrapper (kata 77sf), so this parser's regex-extracted
+// attribute values and body text now carry entities and need the paired
+// decode - otherwise the reader sees literal &amp;/&lt; text, and a
+// delegate's JSON communicate envelope (which is escaped the same way,
+// since its own quotes are just body content to the wrapper) never parses:
+// &quot; in place of every " is not valid JSON.
+func TestParseJobNotificationHeadlineDecodesProducerEscapedEntities(t *testing.T) {
+	t.Run("an escaped attribute value decodes for its headline fallback", func(t *testing.T) {
+		text := `<job-notification job_id="j6" status="ok &amp; done &lt;fast&gt;"></job-notification>`
+		_, headline, _, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if want := "ok & done <fast>"; headline != want {
+			t.Fatalf("headline = %q, want %q (attribute value must decode)", headline, want)
+		}
+	})
+
+	t.Run("an escaped communicate envelope in the body decodes before headline extraction", func(t *testing.T) {
+		text := `<job-notification job_id="j7" job_type="delegate" status="completed" exit_code="0">` +
+			"Job j7 completed.\nexcerpt:\n" +
+			`{&quot;data&quot;:{&quot;test_summary&quot;:&quot;R &amp; D: 12 &lt;passed&gt;&quot;,&quot;concerns&quot;:[&quot;edge &amp; case&quot;]}}` +
+			`</job-notification>`
+		_, headline, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if isErr {
+			t.Fatal("isError = true, want false for exit 0 completed")
+		}
+		if want := "R & D: 12 <passed> · 1 concern"; headline != want {
+			t.Fatalf("headline = %q, want %q (escaped JSON body must decode before json.Unmarshal, or the envelope never parses)", headline, want)
+		}
+	})
+
+	// The incidental fix: since the producer now escapes attribute values,
+	// a delimiter-bearing reason can no longer shift where this parser's
+	// naive (\w+)="([^"]*)" match believes that attribute ends, so the
+	// attribute after it (exit_code, here) is still found correctly.
+	t.Run("a delimiter-bearing (producer-escaped) attribute value no longer breaks extraction of attributes after it", func(t *testing.T) {
+		text := `<job-notification job_id="j8" status="completed" reason="bad &quot;reason&gt; with &lt;delimiters" exit_code="2"></job-notification>`
+		jobID, _, isErr, ok := ParseJobNotificationHeadline(text)
+		if !ok {
+			t.Fatal("ok = false, want true (delimiter-bearing attribute value must not break extraction)")
+		}
+		if jobID != "j8" {
+			t.Fatalf("jobID = %q, want j8", jobID)
+		}
+		if !isErr {
+			t.Fatal("isError = false, want true (exit_code=2 must still be recognized after a delimiter-bearing reason attribute)")
+		}
+	})
+}
+
 func TestCommunicateHeadline(t *testing.T) {
 	tests := []struct {
 		name string

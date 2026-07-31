@@ -273,6 +273,84 @@ excerpt:
   expect(excerpt.querySelector("[data-ansi-dim]")?.textContent).toBe(" Test Files ");
 });
 
+// --- kata cq7j: the bounded primary shell excerpt must be tail-directional -
+// the newest (most useful) retained output visible, the oldest elided - and
+// must never cut inside an SGR escape sequence. NotificationCard's
+// EXCERPT_PREVIEW is 500; this constructs retained shell output long enough
+// to force truncation, with an EARLY_TAIL sentinel near the start (must be
+// elided) and a FINAL_RESULT sentinel at the end (must stay visible), and an
+// SGR "turn red" sequence positioned so the naive `decoded.slice(0, 500)`
+// head-cut - and even a naive tail-cut - would land inside the escape bytes
+// themselves (mirrors shellTool.test.tsx's "a live shell tail never starts
+// inside an ANSI sequence", scaled to the notification card's smaller
+// preview budget).
+test("a completed shell job's primary excerpt shows the final retained output, not the oldest, and never cuts inside an SGR sequence", () => {
+  const EARLY_TAIL = "EARLY_TAIL_MARKER";
+  const FINAL_RESULT = "FINAL_RESULT_MARKER";
+  const prefix = EARLY_TAIL + "e".repeat(50 - EARLY_TAIL.length); // exactly 50 chars
+  const colorOn = "[31m"; // 5 chars; the kept tail starts 2 chars into this
+  const suffixFiller = "x".repeat(497 - FINAL_RESULT.length);
+  const decoded = prefix + colorOn + suffixFiller + FINAL_RESULT; // 552 chars total, 52 over the 500 budget
+
+  const text = `<job-notification job_id="job_tail" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="552" exit_code="0">
+Job job_tail completed.
+excerpt:
+${decoded}
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  const excerpt = screen.getByTestId("notification-field-excerpt");
+  // Explicit truncation affordance, final content visible, older content
+  // elided, and the reconstructed style spans exactly the kept text - no
+  // leaked "31m" or "[31m" fragment from the cut escape sequence.
+  expect(excerpt.textContent).toBe(`…${suffixFiller}${FINAL_RESULT}`);
+  expect(excerpt.textContent).not.toContain(EARLY_TAIL);
+  expect(excerpt.querySelector('[data-ansi-fg="red"]')?.textContent).toBe(`${suffixFiller}${FINAL_RESULT}`);
+});
+
+// --- kata 9cnq: communicate-envelope parsing must be gated on job_type, not
+// detected from JSON shape. A shell job's stdout is literal output; it must
+// render literally even when it coincidentally parses as JSON with the same
+// message/data keys a delegate's communicate envelope uses. -----------------
+
+test("a completed shell job whose stdout happens to be JSON renders the literal JSON, not a communicate card", () => {
+  const text = `<job-notification job_id="job_shell" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="80" exit_code="0">
+Job job_shell completed.
+excerpt:
+{"message":"**literal shell output**","data":{"status":"ok","concerns":["from stdout"]}}
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  const root = screen.getByTestId("notification-card-root");
+  // The raw JSON text is reader-visible verbatim (not consumed as an envelope).
+  expect(root.textContent).toContain('{"message":"**literal shell output**"');
+  // Markdown is not activated: "**literal shell output**" stays literal text,
+  // never a <strong> element.
+  expect(root.querySelector("strong")).toBeNull();
+  // The coincidental data.concerns array is not promoted to the card's
+  // concerns line.
+  expect(root.textContent).not.toContain("Concerns:");
+  // A clean exit with no promoted concerns reads as success, not warning.
+  expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("success");
+});
+
+// Companion coverage for the same kata: the communicate-envelope gate must
+// not disturb the unrelated ANSI excerpt path for ordinary (non-JSON) shell
+// output - the fix is a job_type gate, not a change to excerpt rendering.
+test("a shell excerpt that merely starts with '{' still renders through the ANSI path when it is not valid JSON", () => {
+  const text = `<job-notification job_id="job_shell2" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="20" exit_code="0">
+Job job_shell2 completed.
+excerpt:
+{not json} [31mFAIL[39m
+</job-notification>`;
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+
+  expect(screen.getByText("FAIL").closest('[data-ansi-fg="red"]')).toBeTruthy();
+});
+
 test("a notification restores its owning session to main before opening the child beside it", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   const user = userEvent.setup();

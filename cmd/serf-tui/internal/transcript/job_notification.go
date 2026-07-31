@@ -12,6 +12,24 @@ var (
 	jobNotificationAttrRe = regexp.MustCompile(`(\w+)="([^"]*)"`)
 )
 
+// decodeNotificationEntities is the paired decoder for
+// agent/job_notify.go's escapeNotificationText: the producer HTML-entity-
+// escapes &, <, >, and " before interpolating job/watch-derived text into a
+// <job-notification> wrapper, so this parser's regex-extracted attribute
+// values and body text must be decoded back before use - both for display
+// (a reader should see "&", not "&amp;") and so a delegate's JSON
+// communicate envelope, whose own quotes are escaped the same way, is valid
+// JSON again before json.Unmarshal. &amp; is decoded LAST so double-escaped
+// content only unwraps one level (mirrors NotificationCard's decodeEntities
+// on the web side, cmd/serf-hub/frontend).
+func decodeNotificationEntities(s string) string {
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	return s
+}
+
 // ParseJobNotificationHeadline extracts the job id, a one-line result headline
 // (test summary / status · short commit · concern count), and whether it
 // reported a failure, from a <job-notification> steering payload. ok=false when
@@ -23,14 +41,14 @@ func ParseJobNotificationHeadline(text string) (jobID, headline string, isError,
 	}
 	attrs := map[string]string{}
 	for _, a := range jobNotificationAttrRe.FindAllStringSubmatch(m[1], -1) {
-		attrs[a[1]] = a[2]
+		attrs[a[1]] = decodeNotificationEntities(a[2])
 	}
 	jobID = strings.TrimSpace(attrs["job_id"])
 	status := strings.ToLower(strings.TrimSpace(firstNonEmptyStr(attrs["status"], attrs["event"])))
 	exit := strings.TrimSpace(attrs["exit_code"])
 	isError = strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
 
-	headline = communicateHeadline(m[2])
+	headline = communicateHeadline(decodeNotificationEntities(m[2]))
 	if headline == "" && status != "" {
 		headline = status
 	}
