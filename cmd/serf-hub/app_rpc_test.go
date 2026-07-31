@@ -7429,6 +7429,116 @@ func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
 	}
 }
 
+// A replacement spawn cannot win the session's exclusive API-log reservation
+// while the daemon it is replacing is still running, so the operator's only
+// way forward is to stop that process. The hub holds its pid and address in
+// the roster at the moment it refuses to reuse it; the failure must hand both
+// over instead of leaving the operator to find the holder with lsof (kata
+// ew86, demonstrated live against a real v1 daemon).
+func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *testing.T) {
+	const (
+		sessionID   = "sess_old"
+		blockerPID  = 104
+		blockerHTTP = "127.0.0.1:61535"
+		// Verbatim shape of the failure a real replacement daemon dies with.
+		spawnFailure = "resume timed out: process exited before rendezvous: exit status 1: " +
+			"serf serve: session sess_old is already running; send work to the live session or fork it: " +
+			"API log target is already running: /state/sessions/sess_old.api.jsonl"
+	)
+
+	tests := []struct {
+		name        string
+		rosterEntry *rendezvous.Entry
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "live incompatible daemon still owns the session",
+			rosterEntry: &rendezvous.Entry{
+				PID:       blockerPID,
+				Protocol:  "serf-appwire-v1",
+				Address:   blockerHTTP,
+				Endpoint:  "ws://" + blockerHTTP + "/rpc",
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			},
+			wantContain: []string{
+				// the holder
+				"pid 104",
+				// why the hub will not just talk to it
+				"serf-appwire-v1",
+				appwire.ProtocolVersion,
+				// the remedy the operator can actually run
+				"http://" + blockerHTTP + "/shutdown",
+				// the underlying cause, preserved
+				spawnFailure,
+			},
+		},
+		{
+			name:        "no live daemon to blame",
+			rosterEntry: nil,
+			wantContain: []string{spawnFailure},
+			// Nothing died holding the session, so the hub must not invent a
+			// holder or a pid.
+			wantAbsent: []string{"pid ", "/shutdown"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			var roster *hubcore.Roster
+			if tc.rosterEntry != nil {
+				writeRendezvous(t, runDir, *tc.rosterEntry)
+				roster = hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+			} else {
+				roster = hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+			}
+			roster.Refresh()
+
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					return rendezvous.Entry{}, errors.New(spawnFailure)
+				},
+			}
+
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        hubcore.NewPastIndex(""),
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			_, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if err == nil {
+				t.Fatal("ThreadResume succeeded, want the replacement spawn to fail")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("ThreadResume error %T=%v, want WireError", err, err)
+			}
+			for _, want := range tc.wantContain {
+				if !strings.Contains(wire.Message, want) {
+					t.Fatalf("resume error is missing %q:\n%s", want, wire.Message)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(wire.Message, absent) {
+					t.Fatalf("resume error should not contain %q:\n%s", absent, wire.Message)
+				}
+			}
+		})
+	}
+}
+
 func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
 	var resumeCalled bool
