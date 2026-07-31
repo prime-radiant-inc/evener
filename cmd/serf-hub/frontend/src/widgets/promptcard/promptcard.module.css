@@ -28,6 +28,15 @@
   display: none;
 }
 
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .card {
+    corner-shape: squircle;
+  }
+}
+
 .controls {
   display: flex;
   align-items: center;

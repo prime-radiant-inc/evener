@@ -9,6 +9,15 @@
   background: var(--surface-1);
 }
 
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .root {
+    corner-shape: squircle;
+  }
+}
+
 /* The positioning context .header's absolute offset is relative to - split
  * out from .root (rather than making .root itself the context) so a fold
  * banner (.fold) can sit in normal flow ABOVE this without the copy control

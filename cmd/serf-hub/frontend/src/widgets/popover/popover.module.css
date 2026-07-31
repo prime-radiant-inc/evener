@@ -38,6 +38,15 @@
   }
 }
 
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .panel {
+    corner-shape: squircle;
+  }
+}
+
 /* stretchTrigger: the wrapper fills its container instead of hugging, for a
  * trigger that IS a form control and must align with the fields beside it
  * (the model picker). Still in normal flow, still the panel's anchor rect. */

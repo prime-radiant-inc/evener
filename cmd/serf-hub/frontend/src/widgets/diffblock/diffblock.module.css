@@ -7,6 +7,15 @@
   line-height: var(--line-height-body);
 }
 
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .root {
+    corner-shape: squircle;
+  }
+}
+
 .line {
   display: flex;
   padding: 0 var(--space-2);

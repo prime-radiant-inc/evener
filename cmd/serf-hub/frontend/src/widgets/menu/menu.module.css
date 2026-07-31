@@ -82,6 +82,15 @@
   }
 }
 
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. */
+@supports (corner-shape: squircle) {
+  .popup {
+    corner-shape: squircle;
+  }
+}
+
 .item {
   padding: var(--space-2) var(--space-4);
   font-family: var(--font-sans);

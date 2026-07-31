@@ -102,3 +102,13 @@
     display: none;
   }
 }
+
+/* squircle-proto: continuous (Apple-style) corner curvature where the engine
+ * supports corner-shape; border-radius stays the fallback and supplies the
+ * corner area this shapes. Mobile's border-radius: 0 makes this a no-op
+ * there. */
+@supports (corner-shape: squircle) {
+  .pane {
+    corner-shape: squircle;
+  }
+}
