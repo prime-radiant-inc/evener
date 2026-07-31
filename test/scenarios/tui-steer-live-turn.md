@@ -11,10 +11,18 @@ behaviour this scenario originally covered — the user now presses
 When the queue is empty and the composer has text, this is the
 direct equivalent of the old "type a steer, press Enter" path —
 just bound to a different key. The wiring lives in:
-- `cmd/serf-tui/composer_panel.go:hubComposerModeQueue` — footer
-  hint `enter: queue  ctrl+s: send as steer …`.
-- `cmd/serf-tui/hub_model.go:handleSessionForceSteer`.
-- `cmd/serf-tui/queue_send.go:sendHubQueueThenDrain`.
+- `cmd/serf-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
+  sets the `queue` label and `CanSteer`. The footer a live session
+  actually renders comes from `composerFooterHints`
+  (`cmd/serf-tui/composer_render.go:348-360`) via `tuiprim.KbdHint`,
+  which joins key and action with a space — `enter queue  ctrl+s steer
+  …`, no colons. `composer_panel.go`'s colon'd `Keys` strings are only
+  the fallback for a panel built without a `ChipContext`
+  (`composer_panel.go:264-273`), i.e. unit fixtures, never a live pane.
+- `cmd/serf-tui/hub_session_keys.go:491` (`handleSessionForceSteer`).
+- `cmd/serf-tui/queue_send.go:80` (`sendHubDrainAsSteer`) — the composer
+  text rides directly on ONE `turn/drainAsSteer` call. There is no
+  `sendHubQueueThenDrain` two-RPC chain any more.
 
 For the queue-only and queue+composer drain paths, see
 `tui-queue-then-drain-as-steer.md`.
@@ -69,9 +77,9 @@ For the queue-only and queue+composer drain paths, see
    second status row reads
    `status: hub connected  provider: anthropic  queue: ready
    busy: turn_1`, and the composer label is now `queue` (not
-   `message`, not `steer`) with footer `enter: queue
-   ctrl+s: send as steer  esc: browse  ctrl+p: palette
-   ctrl+o: dashboard  /help`.
+   `message`, not `steer`) with footer
+   `enter queue  ctrl+s steer  esc browse  ⌘P palette  ⌘O dashboard`
+   (no colons, ⌘-glyphs, and no `/help` in queue mode).
 
 5. **Wait for the model to actually start producing tokens**
    so the steer is unambiguously mid-turn:
@@ -89,7 +97,8 @@ For the queue-only and queue+composer drain paths, see
    tmux capture-pane -t serf-steer-test -p
    ```
    A `Force-steer sent.` system line appears (per
-   `cmd/serf-tui/hub_model.go:hubDrainAsSteerMsg` handler). The
+   `cmd/serf-tui/hub_update.go:233` `hubDrainAsSteerMsg` handler,
+   message text at `:272`). The
    composer clears. Because the queue was empty when Ctrl+S
    fired, `handleSessionForceSteer` took the "queue composer
    then drain" branch — but the drain pops a single line, so
@@ -102,7 +111,7 @@ For the queue-only and queue+composer drain paths, see
    ```
    The closing assistant output is a single haiku, not a fifth
    essay paragraph. The composer label flips back from `queue`
-   to `message`, footer from `enter: queue` to `enter: send`.
+   to `message`, footer from `enter queue` to `enter send`.
 
 8. **Cross-check the transcript on disk**:
    ```
@@ -132,11 +141,13 @@ For the queue-only and queue+composer drain paths, see
 
 - Step 4: composer flips to `queue` mode while the turn is
   processing. The signature is two correlated changes — label
-  `queue` above the prompt **and** footer `enter: queue
-  ctrl+s: send as steer …`. Falsification: footer still reads
-  `enter: steer` (means the old auto-switch path was restored
-  by mistake), or `enter: send` (means the source isn't
-  advertising the `queue` capability — file a regression).
+  `queue` above the prompt **and** footer `enter queue  ctrl+s steer
+  …`. Falsification: footer still reads `enter steer` (means the old
+  auto-switch path was restored by mistake), or `enter send` (means the
+  source isn't advertising the `queue` capability — file a regression).
+  Do not grep for the colon'd `enter: queue` form: it renders only in
+  unit fixtures, so a literal match against a live pane fails on a
+  healthy build.
 - Step 6: `Force-steer sent.` system line appears within ~1 s.
   Falsification: nothing changes (means the Ctrl+S handler
   regressed); or the steer text shows up as a new `USER_INPUT`

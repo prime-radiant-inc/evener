@@ -13,11 +13,12 @@ The end-to-end steer is already covered by `tui-steer-live-turn.md`
 check on the TUI side.
 
 The wiring lives in:
-- `cmd/serf-tui/pending.go:pendingCoordinator.TryReconcile` —
-  matches an in-flight pending entry by method + normalized text.
-- `cmd/serf-tui/hub_model.go:applyHubNotification` — invokes
-  `TryReconcile` before the authoritative reducer append.
-- `cmd/serf-tui/message.go` — Pending sets `⠋ ` prefix; the
+- `cmd/serf-tui/internal/pending/pending.go:164`
+  (`PendingCoordinator.TryReconcile`) — matches an in-flight pending
+  entry by method + normalized text.
+- `cmd/serf-tui/hub_notifications.go:15` (`applyHubNotification`) —
+  invokes `TryReconcile` before the authoritative reducer append.
+- `cmd/serf-tui/internal/msgrender/message.go` — Pending sets `⠋ ` prefix; the
   reconcile drops `msg.Pending` so the prefix disappears and the
   row collapses into the authoritative steering chip.
 
@@ -99,7 +100,9 @@ Driver: tmux send-keys / capture-pane.
 - **/tmp/pane-reconciled.txt** no longer contains the `⠋ ` prefix
   on the steer text. A `↻ Change of plans: …` line (the
   authoritative steering chip, rendered by the same `↻ ` prefix
-  in `message.go:msgSteering`) is present.
+  by the `case transcript.MsgSteering:` branch of `RenderMessage`,
+  `cmd/serf-tui/internal/msgrender/message.go:235` — there is no
+  `msgSteering` identifier) is present.
   ```
   ! grep -q '⠋' /tmp/pane-reconciled.txt
   grep -q '↻ Change of plans' /tmp/pane-reconciled.txt
@@ -146,8 +149,8 @@ rm -f /tmp/pane-pending.txt /tmp/pane-reconciled.txt
   notification arrives, `pane-pending.txt` will not contain the
   `⠋ ` glyph. Insert a `sleep 0.2` immediately before the first
   capture if needed; the pending entry is still visible because
-  the optimistic timeout is 10 s (see `pendingTimeout` in
-  `pending.go:12`).
+  the optimistic timeout is 10 s (see `pendingTimeout`,
+  `cmd/serf-tui/internal/pending/pending.go:12`).
 - **Same `↻ ` glyph for pending and authoritative**. Both rows
   use the steering `↻ ` prefix. The pending differentiator is the
   preceding `⠋ ` glyph and the faint lipgloss style; the
