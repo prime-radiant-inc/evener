@@ -126,6 +126,31 @@ func notificationTranscriptRef(n jobNotification) string {
 	return ""
 }
 
+// escapeNotificationText HTML-entity-escapes text before it is interpolated
+// into a <job-notification> wrapper. Job output (a shell tail, a delegate
+// report head, a matched watch line) and agent-composed text (a disposal
+// hint, a watch frame) are under no obligation to avoid &, <, >, or " - so
+// without this step that content can prematurely close an attribute value,
+// close the opening tag early, terminate the block via a literal
+// </job-notification>, or forge a second block. & is escaped first so the
+// other entities are not themselves escaped a second time. NotificationCard's
+// decodeEntities (cmd/serf-hub/frontend) is the paired decoder.
+func escapeNotificationText(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
+}
+
+// notificationAttr renders one key="value" wrapper attribute with value
+// escaped by escapeNotificationText, so a delimiter inside value cannot move
+// the opening tag's own boundary (the web parser's tag match is naive about
+// quoting and stops at the first literal '>').
+func notificationAttr(key, value string) string {
+	return fmt.Sprintf(`%s="%s"`, key, escapeNotificationText(value))
+}
+
 // formatJobNotificationBlock renders one notification block. excerpt is the
 // bounded result excerpt for a finished job (shell tail / delegate head),
 // appended only to the terminal job_finished branch; it is ignored for watch
@@ -133,13 +158,13 @@ func notificationTranscriptRef(n jobNotification) string {
 func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) string {
 	if n.WatchSend != nil {
 		attrs := []string{
-			fmt.Sprintf("job_id=%q", n.JobID),
+			notificationAttr("job_id", n.JobID),
 			`event="watch_send"`,
-			fmt.Sprintf("delivery_id=%q", n.WatchSend.DeliveryID),
-			fmt.Sprintf("trigger=%q", n.Reason),
+			notificationAttr("delivery_id", n.WatchSend.DeliveryID),
+			notificationAttr("trigger", n.Reason),
 		}
 		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), strings.ToValidUTF8(n.watchSendFrame, "\uFFFD"))
+			strings.Join(attrs, " "), escapeNotificationText(strings.ToValidUTF8(n.watchSendFrame, "\uFFFD")))
 	}
 
 	event := n.Status
@@ -148,25 +173,25 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	}
 
 	attrs := []string{
-		fmt.Sprintf("job_id=%q", n.JobID),
-		fmt.Sprintf("event=%q", event),
-		fmt.Sprintf("job_type=%q", n.JobType),
-		fmt.Sprintf("status=%q", n.Status),
-		fmt.Sprintf("reason=%q", n.Reason),
+		notificationAttr("job_id", n.JobID),
+		notificationAttr("event", event),
+		notificationAttr("job_type", n.JobType),
+		notificationAttr("status", n.Status),
+		notificationAttr("reason", n.Reason),
 	}
-	attrs = append(attrs, fmt.Sprintf("output_bytes=%q", strconv.FormatInt(n.OutputBytes, 10)))
+	attrs = append(attrs, notificationAttr("output_bytes", strconv.FormatInt(n.OutputBytes, 10)))
 	if n.Status == string(jobstore.StatusExhausted) {
 		attrs = append(attrs,
-			fmt.Sprintf("budget=%q", n.ExhaustionBudget),
-			fmt.Sprintf("limit=%q", strconv.Itoa(n.ExhaustionLimit)),
-			fmt.Sprintf("resumable=%q", strconv.FormatBool(n.Resumable != nil && *n.Resumable)),
+			notificationAttr("budget", n.ExhaustionBudget),
+			notificationAttr("limit", strconv.Itoa(n.ExhaustionLimit)),
+			notificationAttr("resumable", strconv.FormatBool(n.Resumable != nil && *n.Resumable)),
 		)
 	}
 	if n.ExitCode != nil {
-		attrs = append(attrs, fmt.Sprintf("exit_code=%q", strconv.Itoa(*n.ExitCode)))
+		attrs = append(attrs, notificationAttr("exit_code", strconv.Itoa(*n.ExitCode)))
 	}
 	if n.TranscriptRef != "" {
-		attrs = append(attrs, fmt.Sprintf("transcript_ref=%q", n.TranscriptRef))
+		attrs = append(attrs, notificationAttr("transcript_ref", n.TranscriptRef))
 	}
 	// An isolated delegate's terminal notification carries its lane report so
 	// the parent can merge the lane between jobs even in the default
@@ -174,10 +199,10 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	// response (native worktree tools spec §9 lifecycle step 3).
 	if wt := excerpt.worktree; wt != nil {
 		attrs = append(attrs,
-			fmt.Sprintf("worktree_path=%q", wt.Path),
-			fmt.Sprintf("worktree_branch=%q", wt.Branch),
-			fmt.Sprintf("worktree_ahead=%q", strconv.Itoa(wt.Ahead)),
-			fmt.Sprintf("worktree_dirty=%q", strconv.FormatBool(wt.Dirty)),
+			notificationAttr("worktree_path", wt.Path),
+			notificationAttr("worktree_branch", wt.Branch),
+			notificationAttr("worktree_ahead", strconv.Itoa(wt.Ahead)),
+			notificationAttr("worktree_dirty", strconv.FormatBool(wt.Dirty)),
 		)
 	}
 
@@ -187,7 +212,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 				"Watch event triggered: %s.\n"+
 				"</job-notification>",
 			strings.Join(attrs, " "),
-			strings.ToValidUTF8(n.Reason, "\uFFFD"),
+			escapeNotificationText(strings.ToValidUTF8(n.Reason, "\uFFFD")),
 		)
 	}
 
@@ -203,13 +228,13 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 	}
 	body := fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)
 	if excerpt.text != "" {
-		body += "\nexcerpt:\n" + excerpt.text
+		body += "\nexcerpt:\n" + escapeNotificationText(excerpt.text)
 	}
 	// The spec §P2 completion nudge rides the same lane report as the inline
 	// tool result, gated identically (has-op AND owns-delegate) — the report's
 	// DisposalHint is non-empty only when both gates hold.
 	if wt := excerpt.worktree; wt != nil && wt.DisposalHint != "" {
-		body += "\n" + wt.DisposalHint
+		body += "\n" + escapeNotificationText(wt.DisposalHint)
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",

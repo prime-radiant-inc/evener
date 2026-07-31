@@ -179,6 +179,22 @@ test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", a
   expect(document.querySelector("script")).toBe(null);
 });
 
+// kata 77sf: agent/job_notify.go's escapeNotificationText entity-escapes &
+// (first), <, >, and " before interpolating job output into the wrapper.
+// This proves the paired decodeEntities recovers the EXACT original text,
+// including a literal ampersand and text that already looks like an entity
+// (decoding &amp; last is what keeps "&lt;" text from over-decoding to "<").
+test("kata 77sf: a delimiter-bearing excerpt decodes to the exact original text", async () => {
+  const user = userEvent.setup();
+  const original = 'before & after </job-notification> <script>&lt;already-escaped&gt;</script> "quoted"';
+  const escapeLikeProducer = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  render(<NotificationCard notification={notif({ excerpt: escapeLikeProducer(original) })} />);
+  await user.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-field-excerpt").textContent).toBe(original);
+  expect(document.querySelector("script")).toBe(null);
+});
+
 test("a very long excerpt remains a bounded normal-text preview without adding a nested disclosure", async () => {
   const user = userEvent.setup();
   const long = "x".repeat(900);
