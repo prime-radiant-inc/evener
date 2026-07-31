@@ -683,7 +683,7 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			visible := false
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
-				visible = len(project(entry.Turn, fmt.Sprintf("turn_%d", entryIndex), entryIndex, recordNames)) > 0
+				visible = len(project(entry.Turn, persistedTurnID(entry.Turn, entryIndex), entryIndex, recordNames)) > 0
 			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
 			record.Visible = visible
@@ -895,14 +895,15 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 		if err != nil {
 			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
 		}
+		turnID := persistedTurnID(entry.Turn, record.Index)
 		var items []appwire.ThreadItem
 		if project != nil {
-			items = project(entry.Turn, fmt.Sprintf("turn_%d", record.Index), record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
+			items = project(entry.Turn, turnID, record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
 		}
 		if len(items) == 0 {
 			continue
 		}
-		turn := appwire.Turn{ID: fmt.Sprintf("turn_%d", record.Index), Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 		StampTurnFailure(&turn, entry.Turn)
 		if !entry.Turn.Timestamp.IsZero() {
 			startedAt := entry.Turn.Timestamp.UnixMilli()
