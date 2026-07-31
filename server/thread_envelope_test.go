@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -458,6 +459,70 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	}
 	if n := *got.response.Thread.Serf.FailedToolCalls; n != 5 {
 		t.Fatalf("response failedToolCalls = %d, want 5: the envelope was sampled before the commit", n)
+	}
+}
+
+// statusOverWire serves /status and decodes the response, so an assertion sees
+// what a client sees rather than the struct the handler filled in.
+func statusOverWire(t *testing.T, srv *Server) StatusInfo {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var got StatusInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode /status: %v", err)
+	}
+	return got
+}
+
+// TestStatusServesTheEnvelopesFailureCountAndEscalationBit pins the two /status
+// fields materialization collapsed onto the envelope.
+//
+// Both used to pull their own session callback, and both were unasserted on
+// this endpoint before the collapse and after it. The escalation BIT is now the
+// snapshot's own emptiness rather than a separate HasPendingEscalations() call,
+// which is the collapse: with nothing holding it, /status could report no
+// escalation while thread/read carries the card, and the hub's needs-you badge
+// would never light for the session that is actually blocked.
+//
+// The unmeasured case is asserted because FailedToolCalls is a pointer on
+// purpose: absent and zero are different claims, and a daemon that counted
+// nothing must not report a clean run.
+func TestStatusServesTheEnvelopesFailureCountAndEscalationBit(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+
+	unmeasured := statusOverWire(t, srv)
+	if unmeasured.FailedToolCalls != nil {
+		t.Fatalf("failed_tool_calls = %d with nothing counted, want absent",
+			*unmeasured.FailedToolCalls)
+	}
+	if unmeasured.PendingEscalation {
+		t.Fatal("pending_escalation = true with no card on the envelope")
+	}
+
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.failedToolCalls, e.failuresMeasured = 3, true
+		e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}}
+	})
+
+	got := statusOverWire(t, srv)
+	if got.FailedToolCalls == nil {
+		t.Fatal("failed_tool_calls is absent from /status while the envelope carries a measured " +
+			"count: the two endpoints are back to disagreeing about one value")
+	}
+	if n := *got.FailedToolCalls; n != 3 {
+		t.Fatalf("failed_tool_calls = %d, want 3", n)
+	}
+	if !got.PendingEscalation {
+		t.Fatal("pending_escalation = false while the envelope holds a blocked card: the hub's " +
+			"needs-you badge never lights for the session waiting on a human")
+	}
+
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.escalations = nil })
+	if statusOverWire(t, srv).PendingEscalation {
+		t.Fatal("pending_escalation stayed true after the last card cleared")
 	}
 }
 
