@@ -1,4 +1,4 @@
-import { mutationErrorData } from "../protocol/errors";
+import { mutationErrorData, WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { MethodName, MutationReceipt } from "../protocol/types.gen";
 import type { MutationOutboxRecord } from "./mutationOutbox";
@@ -112,7 +112,28 @@ export class MutationDispatcher {
       return "advance";
     } catch (error) {
       const data = mutationErrorData(error);
-      if (data?.clientMutationId !== record.clientMutationId) return "stop";
+      if (data?.clientMutationId !== record.clientMutationId) {
+        // A rejection that names a DIFFERENT mutation is not this record's to
+        // judge. One that names none can still be terminal: the appwire
+        // client correlates this rejection to THIS request, and an
+        // invalid-params / invalid-request code means the server refused the
+        // payload's shape without executing it (the hub validates before
+        // forwarding, appwire.InvalidParams, which names no clientMutationId)
+        // — an identical retry can never succeed. Retaining "submitting"
+        // here turned one malformed intent at the FIFO head into a
+        // permanently parked thread (kata wr3s). Recovery preserves the text
+        // and surfaces the failure; the FIFO advances.
+        if (
+          data?.clientMutationId === undefined &&
+          error instanceof WireError &&
+          (error.code === JSONRPC_INVALID_PARAMS || error.code === JSONRPC_INVALID_REQUEST)
+        ) {
+          await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
+          this.#onStorageChange([record.targetRef]);
+          return "advance";
+        }
+        return "stop";
+      }
       if (data?.mutationOutcome === "notAccepted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected");
         this.#onStorageChange([record.targetRef]);
@@ -137,6 +158,13 @@ export class MutationDispatcher {
     }
   }
 }
+
+// Wire values of appwire's CodeInvalidRequest / CodeInvalidParams
+// (appwire/errors.go) — the standard JSON-RPC codes. Both mean the request
+// was refused on shape alone, before execution, so they are deterministic:
+// resending the identical payload can never produce a different answer.
+const JSONRPC_INVALID_REQUEST = -32600;
+const JSONRPC_INVALID_PARAMS = -32602;
 
 const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/start",

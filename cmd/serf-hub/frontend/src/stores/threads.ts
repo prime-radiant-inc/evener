@@ -712,6 +712,16 @@ function composerMutationIntent(
       optimisticDisplay: { method, input },
     };
   }
+  // Drain steers the ACTIVE turn by contract — the hub and the daemon both
+  // reject an empty expectedTurnId (appwire InvalidParams, "drain: no active
+  // turn to steer"). Minting a durable intent that violates the contract at
+  // birth would poison the outbox head: the rejection names no
+  // clientMutationId, so nothing can ever settle it (kata wr3s). Refuse
+  // before anything durable exists; callers surface this like any submit
+  // failure. Queue and steer intents are NOT gated here: the status-flip /
+  // turn-started race window deliberately lets them race the daemon (see
+  // deriveSendQueueAvailability), and a lost race now lands in recovery.
+  if (!expectedTurnId) throw new Error("Drain failed: no active turn to steer");
   const expectedQueueRevision = model?.queue?.revision ?? 0;
   return {
     ...base,
