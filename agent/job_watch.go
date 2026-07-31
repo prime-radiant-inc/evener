@@ -89,6 +89,17 @@ func formatQuietWindow(window time.Duration) string {
 	return window.String()
 }
 
+// watchEndedUnfiredMessage is the single end-notice text a watch delivers on its
+// own channel when its target went terminal without the watch ever firing. It
+// names the target's terminal outcome because that outcome is the whole reason
+// the condition can never match now.
+func watchEndedUnfiredMessage(target string, status jobstore.Status, reason string, outputBytes int64) string {
+	return fmt.Sprintf(
+		"watch ended: %s is terminal (status=%s reason=%s output_bytes=%d); condition never matched",
+		target, status, reason, outputBytes,
+	)
+}
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -2700,14 +2711,17 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Clone(rootProvenance)}
+	endStatus, endReason, endOutputBytes := jm.terminalJobFactsLocked(jobID)
 	for _, e := range expired {
 		if jm.watches[e.key] != e.cfg {
 			continue
 		}
 		cfg := e.cfg
+		spoke := watchEverDelivered(cfg)
 		if cfg.outputMatcher != nil {
 			trackTerminalFlush := len(cfg.pending) != 0
 			for _, match := range cfg.outputMatcher.FlushWithProvenance(root.Provenance) {
+				spoke = true
 				matchRoot := root
 				matchRoot.Provenance = provenance.Clone(match.Provenance)
 				if cfg.send != nil {
@@ -2732,11 +2746,54 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 		} else if len(cfg.pending) != 0 {
 			jm.rememberDetachedPendingLocked(cfg)
 		}
+		if !spoke {
+			// The watch is ending without ever having put anything on its own
+			// channel. Its watcher is waiting on a condition that can no longer
+			// match, and for a cross-session send_to there is no owner-side
+			// job-stopped notification to fall back on, so this one frame is the
+			// only thing that ever tells it to stop waiting.
+			//
+			// It is teardown, not a condition fire, which settles both accounting
+			// questions: it is not counted into cfg.deliveries (that count is what
+			// reports "this watch never matched" to job_list), and it carries no
+			// self-influence depth (a runaway fuse drop would silently reopen the
+			// hole this frame exists to close, and one frame from a config that is
+			// deleted on the next line cannot cascade).
+			trigger := watchEndedUnfiredMessage(jobID, endStatus, endReason, endOutputBytes)
+			if cfg.send != nil {
+				delivery := jm.watchSendSnapshot(cfg, jobID, trigger, root)
+				delivery.allowAfterTerminalExpiry = true
+				deliveries = append(deliveries, delivery)
+				jm.rememberDetachedPendingLocked(cfg)
+			} else {
+				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, trigger, root.Provenance))
+			}
+		}
 		jm.recordWatchEndedLocked(e.key, e.cfg, e.endReason)
 		closeWatchConfig(e.cfg)
 		delete(jm.watches, e.key)
 	}
 	return notifications, deliveries
+}
+
+// watchEverDelivered reports whether cfg has ever put a frame on its own
+// channel. deliveries counts settled model-facing deliveries (no-send
+// notifications immediately, sends when they settle); nextUpdateSeq rises once
+// per send frame built, so a send that fired and is still in flight counts as
+// spoken even though nothing has settled yet.
+func watchEverDelivered(cfg *watchConfig) bool {
+	return cfg != nil && (cfg.deliveries > 0 || cfg.nextUpdateSeq > 0)
+}
+
+// terminalJobFactsLocked reads the watched job's terminal outcome for the
+// end-notice text. The caller holds jm.mu and runs inside the finalize path,
+// before the run record is deleted, so the terminal is still reachable.
+func (jm *jobManager) terminalJobFactsLocked(jobID string) (status jobstore.Status, reason string, outputBytes int64) {
+	run := jm.running[jobID]
+	if run == nil || run.terminal == nil {
+		return "", "", 0
+	}
+	return run.terminal.status, run.terminal.reason, run.terminal.outputBytes
 }
 
 func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {

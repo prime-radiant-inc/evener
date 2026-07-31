@@ -2002,14 +2002,19 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 	for _, tc := range []struct {
 		name string
 		args watchArgs
+		// A send watch that never fired still owes its target one end notice, so
+		// its config stays detached until that notice drains. A notification watch
+		// puts its end notice straight on the owner queue and detaches nothing.
+		wantDetachedBeforeDrain int
 	}{
 		{
 			name: "notification only",
 			args: watchArgs{OutputMatch: "ready"},
 		},
 		{
-			name: "send without flushed match",
-			args: watchArgs{OutputMatch: "ready", Send: &watchSendArgs{To: "dlg_obs", Message: "observe"}},
+			name:                    "send without flushed match",
+			args:                    watchArgs{OutputMatch: "ready", Send: &watchSendArgs{To: "dlg_obs", Message: "observe"}},
+			wantDetachedBeforeDrain: 1,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2029,8 +2034,19 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 			jm.mu.Lock()
 			detached := len(jm.terminalFlush)
 			jm.mu.Unlock()
+			if detached != tc.wantDetachedBeforeDrain {
+				t.Fatalf("detached terminal flush configs = %d, want %d", detached, tc.wantDetachedBeforeDrain)
+			}
+			if err := drainWatchSendsVia(t, jm, func(context.Context, sendMessageArgs) sendMessageResult {
+				return sendMessageResult{}
+			}); err != nil {
+				t.Fatalf("drain end notice: %v", err)
+			}
+			jm.mu.Lock()
+			detached = len(jm.terminalFlush)
+			jm.mu.Unlock()
 			if detached != 0 {
-				t.Fatalf("detached terminal flush configs = %d, want 0", detached)
+				t.Fatalf("detached terminal flush configs after drain = %d, want 0", detached)
 			}
 			// No detached config is retained, yet clearing an expired watch on a
 			// terminal target is an idempotent no-op success rather than
