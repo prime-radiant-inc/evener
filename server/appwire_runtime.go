@@ -303,11 +303,13 @@ func (s *Server) stampCapabilitiesOnStatusChange(method string, params any) any 
 	// stop running, and what that thread can still be asked to do is the HUB's
 	// to say: it answers an exited session's read from the past index and
 	// resumes it on the next send, advertising Send there
-	// (cmd/serf-hub/app_threadread.go's pastEntryThread). This daemon's own
-	// all-false set would take the follow-up composer away from a session the
-	// hub would happily wake — the same wedge in the other direction. So the
-	// close frame updates nothing and leaves the set to the hub's next
-	// snapshot.
+	// (cmd/serf-hub/app_threadread.go's pastThreadCapabilities). This daemon's
+	// own all-false set would take the follow-up composer away from a session
+	// the hub would happily wake — the same wedge in the other direction. So
+	// the close frame leaves the field empty and the hub fills it in with its
+	// own answer as it relays the frame (app_relay.go's
+	// stampClosedThreadCapabilities): a client is never left reading a set the
+	// departing daemon cut for a turn that is over (kata pk2d).
 	if status.Status.Type == appwire.ThreadStatusClosed {
 		return params
 	}

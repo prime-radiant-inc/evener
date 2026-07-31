@@ -65,11 +65,13 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 // stop running, and the actions still on offer for that thread are the HUB's
 // to state: it answers an exited session's read from the past index and
 // resumes it on the next send (cmd/serf-hub/app_threadread.go's
-// pastEntryThread advertises Send: true for exactly that). A daemon's own
-// "send: false" would therefore take the follow-up composer away from a
+// pastThreadCapabilities advertises Send: true for exactly that). A daemon's
+// own "send: false" would therefore take the follow-up composer away from a
 // session the hub would happily wake — the same wedge in the other direction.
-// So the close frame updates nothing and leaves the client's set to the hub's
-// next snapshot.
+// So the close frame leaves the field empty; the hub stamps its own answer
+// onto it as it relays the frame (app_relay.go's
+// stampClosedThreadCapabilities), which is what keeps a client from reading
+// back a set the departing daemon cut for a turn that is over (kata pk2d).
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
