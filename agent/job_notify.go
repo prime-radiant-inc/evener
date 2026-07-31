@@ -148,7 +148,7 @@ func escapeNotificationText(s string) string {
 // the opening tag's own boundary (the web parser's tag match is naive about
 // quoting and stops at the first literal '>').
 func notificationAttr(key, value string) string {
-	return fmt.Sprintf(`%s="%s"`, key, escapeNotificationText(value))
+	return key + `="` + escapeNotificationText(value) + `"`
 }
 
 // formatJobNotificationBlock renders one notification block. excerpt is the

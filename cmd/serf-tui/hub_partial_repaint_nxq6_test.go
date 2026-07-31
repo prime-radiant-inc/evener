@@ -185,7 +185,7 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 	apply("tool-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool-2", CallID: "call-2", TurnID: "turn_2", ToolName: "read_file", ArgumentsJSON: `{"file_path":"/tmp/x.txt"}`, Status: appwire.TurnStatusInProgress},
 	})})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		apply("tool-output-delta", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyToolOutputDelta, appwire.ToolOutputDeltaParams{
 			Ref: nxq6SessionRef, TurnID: "turn_2", ItemID: "tool-2", CallID: "call-2", Delta: "line of tool output\n",
 		})})

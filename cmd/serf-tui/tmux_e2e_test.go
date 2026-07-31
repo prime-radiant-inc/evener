@@ -947,9 +947,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -958,13 +956,13 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 			}
 			hub.BroadcastAgentDelta("01LIVE", "streamed word ")
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		close(stop)
 		wg.Wait()
 	})
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		screen := app.CaptureStable()
 		if !strings.Contains(screen, "serf / session / live task") {
 			t.Fatalf("capture %d: CaptureStable returned a frame missing the session breadcrumb:\n%s", i, screen)

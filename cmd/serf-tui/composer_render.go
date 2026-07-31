@@ -133,10 +133,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 		if fixedW > 0 {
 			dirSepW = sepW
 		}
-		budget := inner - fixedW - dirSepW - rightW - 1
-		if budget > composerWorkingDirMaxWidth {
-			budget = composerWorkingDirMaxWidth
-		}
+		budget := min(inner-fixedW-dirSepW-rightW-1, composerWorkingDirMaxWidth)
 		if budget >= composerWorkingDirMinWidth {
 			dirChip := dim.Render(modeldisplay.AbbreviatePath(ctx.WorkingDir, budget))
 			if fixedW > 0 {

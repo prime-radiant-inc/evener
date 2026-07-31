@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/promptpath"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/llm"
 )
@@ -199,7 +200,8 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	line := fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
 	if le.Wrapper != nil {
 		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
-			line += fmt.Sprintf(". Scratch directory (read-write even in this sandbox; also $TMPDIR / $SERF_SCRATCH_DIR for shell commands): %s", scratch)
+			line += ". Scratch directory (read-write even in this sandbox; also $" +
+				envvars.TmpDir.Name + " / $" + envvars.SERFScratchDir.Name + " for shell commands): " + scratch
 		}
 	}
 	return line
