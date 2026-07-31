@@ -56,7 +56,7 @@ func TestRunDispatchAndFlagFailures(t *testing.T) {
 	if got := run([]string{"unknown"}, &out, &failAfterWriter{}); got != 1 {
 		t.Fatalf("unknown usage write fail = %d", got)
 	}
-	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree", "plugins"} {
+	for _, sub := range []string{"locate", "transcript", "apilog", "jobs", "watches", "tree", "plugins"} {
 		out.Reset()
 		errOut.Reset()
 		if got := run([]string{sub, "--definitely-invalid"}, &out, &errOut); got != 2 {
@@ -72,13 +72,14 @@ func TestDoctorRemainingOutputs(t *testing.T) {
 		{"transcript", "--json", "--state-dir", base, sid},
 		{"transcript", "--json", "--count", "communicate", "--state-dir", base, sid},
 		{"watches", "--json", "--state-dir", base, sid},
+		{"jobs", "--json", "--state-dir", base, sid},
 	} {
 		var out, errOut bytes.Buffer
 		if got := run(args, &out, &errOut); got != 0 {
 			t.Errorf("%v = %d, %s", args, got, errOut.String())
 		}
 	}
-	for _, sub := range []string{"transcript", "apilog", "watches", "tree"} {
+	for _, sub := range []string{"transcript", "apilog", "jobs", "watches", "tree"} {
 		var out, errOut bytes.Buffer
 		if got := run([]string{sub, "--state-dir", t.TempDir(), "missing"}, &out, &errOut); got != 1 || !strings.Contains(errOut.String(), sub) {
 			t.Errorf("%s missing = %d %q", sub, got, errOut.String())

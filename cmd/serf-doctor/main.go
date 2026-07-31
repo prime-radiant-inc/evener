@@ -10,6 +10,7 @@
 //	serf-doctor locate     <selector> [--all-buckets]
 //	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
 //	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
+//	serf-doctor jobs       <selector> [--job <id>]
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //
@@ -50,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTranscript(rest, stdout, stderr)
 	case "apilog":
 		return cmdAPILog(rest, stdout, stderr)
+	case "jobs":
+		return cmdJobs(rest, stdout, stderr)
 	case "watches":
 		return cmdWatches(rest, stdout, stderr)
 	case "tree":
@@ -79,6 +82,7 @@ SUBCOMMANDS:
   locate      resolve a selector to its transcript/API-log/meta/jobs paths
   transcript  render a session's turns; --count <tool> prints the structural call count
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
+  jobs        job inspector: every job the session ran, with status, reason, exit code, output bytes, and timings
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
@@ -264,6 +268,24 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, res)
 	}
 	return writeText(stdout, doctor.RenderAPILog(res, opts))
+}
+
+func cmdJobs(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("jobs", stderr)
+	jobID := fs.String("job", "", "scope to one job_id")
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	res, err := doctor.Jobs(base, sel, doctor.JobOpts{JobID: *jobID})
+	if err != nil {
+		return fail(stderr, "jobs", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	return writeText(stdout, doctor.RenderJobs(res))
 }
 
 func cmdWatches(args []string, stdout, stderr io.Writer) int {

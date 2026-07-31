@@ -129,6 +129,20 @@ record). You never read raw events for answers — you read the **folds**:
 | `FoldDelegates` | `DelegateRecord`s | `delegate_created` / job_started / … |
 | `FoldGrants` | observer→watched-job grants | `watch_read_grant` |
 
+### Jobs
+
+A `JobRecord` is the folded state of one job: `Status` (running / completed /
+failed / cancelled / stopped / exhausted), the `Reason` that produced it (e.g.
+`run_timeout`), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
+`NotifyState` (`terminal_notification_state` on disk — a terminal job still
+`pending` never told its caller), and the links to pivot on (`DelegateID`,
+`TranscriptRef`, `ParentJobID`). Note what the durable log does **not** carry: `Background` and
+`Phase` live only on the runtime's in-memory record, so no folded record can say
+whether a job ran in the background.
+
+**Read it via:** `serf-doctor jobs <selector>` (every job in durable append
+order), or `serf-doctor jobs <selector> --job <job_id>` for one job's state.
+
 ### Watches and the four watch-send terminals
 
 A watch fires and emits a `watch_send_pending` frame keyed by `WatchSendKey`
@@ -149,9 +163,15 @@ deliveries (terminal kind + `DiagnosticReason` + provenance) are read by a **raw
 scan** of the `watch_send_delivered/dropped/evicted` events. The doctor tool does
 this for you.
 
+A watch targets either a concrete `job_<id>` or the session itself, so a watch
+row is only half the story: the other half is the **target job's** folded state.
+A watch that ended unfired on a job that was already `stopped` with zero output
+bytes never had a matchable condition — nothing was wrong with delivery.
+
 **Read it via:** `serf-doctor watches <selector>` (distinct deliveries vs pending
 lines, per-delivery terminal + reason + provenance, self-influence/breaker
-telemetry).
+telemetry, and the joined `target job:` state — `target_job` / `target_job_missing`
+under `--json`).
 
 ### Delegates and grants → the session tree
 
