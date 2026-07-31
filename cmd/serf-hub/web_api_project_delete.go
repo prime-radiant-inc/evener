@@ -28,9 +28,17 @@ var (
 	removeProjectSessionDir             = os.RemoveAll
 	removeProjectSessionRendezvousEntry = rendezvous.Remove
 	rebuildProjectDeletionPast          = func(past *hubcore.PastIndex) (bool, error) { return past.Rebuild() }
-	projectSessionLive                  = func(roster *hubcore.Roster, id string) bool {
-		_, ok := roster.Find(id)
-		return ok
+	// projectSessionLive is the deletion-safety liveness predicate (kata
+	// 8at6): a retained crash marker (LiveEntry.Crashed=true, written by
+	// hubcore.Roster.Refresh only once a daemon's PID is confirmed gone) is
+	// historical error state, not a live daemon, and must not block deletion.
+	// A reachable daemon and a live PID whose status probe merely timed out
+	// both carry Crashed=false, so they still block it. Used at both the
+	// whole-project entry preflight and the per-session ownership re-check
+	// below, so the TOCTOU protection applies the same rule at both sites.
+	projectSessionLive = func(roster *hubcore.Roster, id string) bool {
+		entry, ok := roster.Find(id)
+		return ok && !entry.Crashed
 	}
 )
 
@@ -312,6 +320,30 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 	return release, nil
 }
 
+// cleanupProjectDeletionTargetAndDecisions removes one target's artifacts via
+// cleanupProjectDeletionTarget, then scrubs its session-kind archive/favorite
+// decisions on success. A failed artifact removal reports skip (with a
+// reason) and never touches decisions, so a retried delete finds them intact.
+// Shared by whole-project deletion (cleanupProjectDeletion, below) and
+// single-session deletion (handleAPISessionDelete) so both apply the exact
+// same per-target contract instead of two copies of it.
+func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
+	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
+		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, nil
+	}
+	if s.cfg.Archive != nil {
+		if err := s.cfg.Archive.Delete("session", threadID); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
+		}
+	}
+	if s.cfg.Favorite != nil {
+		if err := s.cfg.Favorite.Delete("session", threadID); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
+		}
+	}
+	return true, nil, decisionErrors
+}
+
 func (s *WebServer) cleanupProjectDeletion(
 	record hubcore.DeletionRecord,
 	stateDirs map[string]string,
@@ -319,21 +351,13 @@ func (s *WebServer) cleanupProjectDeletion(
 	result := projectDeletionCleanupResult{}
 	for _, target := range record.Targets {
 		stateDir := s.projectDeletionStateDir(record.ProjectID, target.ThreadID, stateDirs)
-		if err := s.cleanupProjectDeletionTarget(stateDir, target.ThreadID); err != nil {
-			result.Skipped = append(result.Skipped, projectDeleteSkip{ID: target.ThreadID, Reason: err.Error()})
+		deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(stateDir, target.ThreadID)
+		result.DecisionErrors = append(result.DecisionErrors, decisionErrors...)
+		if !deleted {
+			result.Skipped = append(result.Skipped, *skip)
 			continue
 		}
 		result.Deleted = append(result.Deleted, target.ThreadID)
-		if s.cfg.Archive != nil {
-			if err := s.cfg.Archive.Delete("session", target.ThreadID); err != nil {
-				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("archive store error: %v", err))
-			}
-		}
-		if s.cfg.Favorite != nil {
-			if err := s.cfg.Favorite.Delete("session", target.ThreadID); err != nil {
-				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("favorite store error: %v", err))
-			}
-		}
 	}
 	if len(result.Skipped) == 0 && record.WholeProject {
 		if s.cfg.Archive != nil {

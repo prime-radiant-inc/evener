@@ -67,6 +67,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
     onToggleFavorite: vi.fn(),
     onToggleArchiveSession: vi.fn(),
     onRenameRequest: vi.fn(),
+    onDeleteSessionRequest: vi.fn(),
     onToggleFavoriteProject: vi.fn(),
     onToggleArchiveProject: vi.fn(),
     onDeleteProjectRequest: vi.fn(),
@@ -745,6 +746,43 @@ describe("session row", () => {
     });
   }
 
+  // Delete (kata n15j) is a decision about a TOP-LEVEL LOCAL session: it
+  // targets a stable local session ref (identifier.ValidateSessionID via
+  // cmd/serf-hub/web_api_session_delete.go), so it is offered unconditionally
+  // for a top-level local row - including a live one, which the server
+  // refuses via the same skipped/toast path deleteProject already uses for a
+  // session that raced back to live (no client-side liveness gate to
+  // duplicate the server's own crash-vs-live predicate).
+  test("menu offers 'Delete…' for a top-level local session and calls onDeleteSessionRequest on select", async () => {
+    const acts = actions();
+    const session = apiNode({ host_id: "local" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    expect(acts.onDeleteSessionRequest).toHaveBeenCalledWith(session);
+  });
+
+  // "do not offer this capability for remote-source threads" (kata n15j) -
+  // the menu itself withholds Delete for a non-local session rather than
+  // relying solely on the server's own isLocalRouteID refusal.
+  test("menu omits Delete for a remote-source session", async () => {
+    render(<RailRow node={sessionRailNode(apiNode({ host_id: "codex" }))} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+  });
+
+  // Delete is scoped like Archive: only a top-level row names a real,
+  // independently deletable session (see the Archive loop's own comment
+  // above for why these three kinds are never top-level).
+  for (const kind of ["subagent", "fork", "cluster"]) {
+    test(`menu omits Delete on a ${kind} row - only top-level sessions are deletable`, async () => {
+      render(<RailRow node={sessionRailNode(apiNode({ kind, host_id: "local" }))} info={info()} actions={actions()} />);
+      const trigger = screen.queryByRole("button", { name: /actions for/i });
+      if (trigger) await openMenu(/actions for/i);
+      expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+    });
+  }
+
   // Favorite is scoped for the same reason as Archive, and the server proves
   // it: POST /api/favorite accepts a subagent id and writes the decision, but
   // the Pinned tier is drawn only from a project's top-level Current+Recent
@@ -775,14 +813,19 @@ describe("session row", () => {
     expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
   });
 
-  test("a top-level session still offers all three actions", async () => {
+  test("a top-level local session still offers all four actions", async () => {
     render(
-      <RailRow node={sessionRailNode(apiNode({ kind: "session", rename: true }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={sessionRailNode(apiNode({ kind: "session", rename: true, host_id: "local" }))}
+        info={info()}
+        actions={actions()}
+      />,
     );
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Add to pinned" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
   });
 
   // Title-first row (rail truncation round): the branch is secondary metadata

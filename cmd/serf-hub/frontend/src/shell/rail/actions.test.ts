@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
+import { deleteProject, deleteSession, renameSession, setArchived, setFavorite } from "./actions";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -126,5 +126,25 @@ describe("deleteProject", () => {
   test("a 409 conflict (live sessions) rejects with the server's error message", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "project has live sessions", live: ["sess1"] }, 409));
     await expect(deleteProject("proj-key", "/dir")).rejects.toThrow("project has live sessions");
+  });
+});
+
+describe("deleteSession", () => {
+  test("POSTs /api/sessions/<url-encoded ref>/delete and returns the parsed result", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: ["local:abc"], skipped: [] }));
+    const result = await deleteSession("local:abc/def");
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/local%3Aabc%2Fdef/delete", JSON_INIT({}));
+    expect(result).toEqual({ deleted: ["local:abc"], skipped: [] });
+  });
+
+  test("a refused delete (live or reserved target) resolves with the session in skipped, not an error", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] }));
+    const result = await deleteSession("local:abc");
+    expect(result).toEqual({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] });
+  });
+
+  test("rejects with the server's error message on failure", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "invalid session ID: boom" }, 400));
+    await expect(deleteSession("local:abc")).rejects.toThrow("invalid session ID: boom");
   });
 });

@@ -71,3 +71,14 @@ export async function setArchived(
 export async function deleteProject(key: string, workingDir: string): Promise<ProjectDeleteResult> {
   return postJSON<ProjectDeleteResult>("/api/project/delete", { key, working_dir: workingDir });
 }
+
+/** POST /api/sessions/{ref}/delete. No body - the ref in the URL is the only
+ * input the handler reads. Destructive - removes one ended or crashed local
+ * session's artifacts, decisions, and rendezvous records without touching
+ * project siblings (cmd/serf-hub/web_api_session_delete.go). Same response
+ * shape as deleteProject: a live or concurrently-reserved target resolves
+ * with itself in `skipped` rather than rejecting - only a validation or
+ * server error (400/500) rejects. */
+export async function deleteSession(ref: string): Promise<ProjectDeleteResult> {
+  return postJSON<ProjectDeleteResult>(`/api/sessions/${encodeURIComponent(ref)}/delete`, {});
+}
