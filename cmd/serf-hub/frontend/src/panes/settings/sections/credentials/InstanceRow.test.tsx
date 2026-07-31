@@ -204,6 +204,23 @@ describe("the heading dot agrees with the credential label", () => {
     expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
   });
 
+  test("an auth-none provider - one that authenticates nothing - is not announced as ended", () => {
+    const handlers = noopHandlers();
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "ollama",
+          type: "ollama",
+          activeSource: "none",
+          credentialRequired: false,
+        })}
+        {...handlers}
+      />,
+    );
+    expect(screen.getByText("No credentials required")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+  });
+
   test("a provider whose required key is missing keeps the ended dot", () => {
     const handlers = noopHandlers();
     render(

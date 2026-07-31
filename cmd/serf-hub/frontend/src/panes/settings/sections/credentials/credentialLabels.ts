@@ -45,8 +45,14 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
 // is nothing to look for, as with a gateway that inherits no type-level key.
 // Both halves of the row's display key on this one bit: the words below and
 // the heading's status dot, which otherwise disagreed about the same instance.
+//
+// "absent" and "none" are the two ways of holding no credential: "absent" is
+// nothing resolved, while "none" is the hub's word for a provider that
+// authenticates nothing at all (instanceStatus, cmd/serf-hub/app_auth.go).
+// credentialRequired stays the sole authority on whether one is wanted.
 export function keylessByDesign(instance: InstanceEntry): boolean {
-  return instance.activeSource === "absent" && !instance.credentialRequired;
+  const holdsNoCredential = instance.activeSource === "absent" || instance.activeSource === "none";
+  return holdsNoCredential && !instance.credentialRequired;
 }
 
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
