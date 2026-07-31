@@ -416,3 +416,60 @@ test("a late-arriving question growing the batch keeps the in-progress answer's 
   expect(document.activeElement).toBe(freeInput);
   expect((freeInput as HTMLInputElement).value).toBe("partial");
 });
+
+// --- kata w2zy: the primary button advances before it submits ------------
+//
+// AskDock's footer has exactly one primary action (the bottom-right
+// button). Before this kata it was hardcoded to "Send answers" and always
+// submitted the WHOLE batch on click, even with other questions still
+// unanswered - correct for a single question (there is nothing else to do
+// with it) but wrong once kata 99yf's one-question-at-a-time tab strip
+// shipped: a free-text/multi-select/decide answer (askDockStore's
+// advancesOnAnswer intentionally never auto-advances those - more typing or
+// more boxes may follow) leaves the reader looking at the question they
+// just answered, and the only button on screen would silently submit
+// everything else as skipped.
+
+test("the primary button advances to the next unanswered question, not sends, once the current one is answered", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Free text does not auto-advance (kata 99yf), so after answering Q1
+  // this way the reader is still looking at Q1 - Jesse's exact repro: one
+  // answer filled in, the bottom-right button is the only next move.
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  expect(screen.getByText("q1")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: /next question/i }));
+
+  expect(screen.getByText("q2")).toBeTruthy();
+  expect(screen.queryByText("q1")).toBeNull();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("the primary button sends once the last unanswered question is answered - the final advance position", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "first");
+  await user.click(screen.getByRole("button", { name: /next question/i }));
+
+  // Answer Q2 with another non-auto-advancing resolution kind - nothing is
+  // left unanswered once this lands, so the button's job reverts to send.
+  await user.click(screen.getByRole("radio", { name: /let serf decide/i }));
+
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+
+  await waitFor(async () => {
+    const [record] = (await readMutationPersistence("ref_a")).outbox;
+    expect(record?.payload).toMatchObject({ ref: "ref_a" });
+  });
+});
