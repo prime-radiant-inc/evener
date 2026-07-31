@@ -222,7 +222,11 @@ type JobRecord struct {
 	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
 	Description      string  `json:"description,omitempty"`
 	Command          string  `json:"command,omitempty"`
-	Background       bool    `json:"background,omitempty"`
+	// Background reports that a shell job was launched to run in the background
+	// rather than waited on inline. No event carries it, so it is stamped on the
+	// in-memory record at launch and nowhere else: a record folded from the store
+	// always reads false, whatever the job did. Live-only, like LastActivity.
+	Background bool `json:"-"`
 	// WorkingDir is the launch-time working directory of a background shell
 	// job (the executing env's WorkingDirectory() when the shell tool call
 	// started it), recorded so manage_worktree remove/prune's live-work guard
@@ -253,7 +257,12 @@ type JobRecord struct {
 	// resumability check happens to resolve.
 	Disposed  bool      `json:"disposed,omitempty"`
 	StartedAt time.Time `json:"started_at"`
-	Phase     string    `json:"phase,omitempty"`
+	// Phase is the running job's finer-grained supervision state (starting,
+	// process_running, awaiting_model, model_streaming, tool_running),
+	// restamped as the runtime observes activity. No event carries it, so a
+	// record folded from the store has it empty and defaultJobPhase substitutes
+	// a per-type default. Live-only, like LastActivity.
+	Phase string `json:"-"`
 	// LastActivity is the in-memory timestamp of the job's most recent
 	// parent-observable activity (output append or start). It is a supervision
 	// signal for RUNNING jobs and is intentionally NOT folded from a durable

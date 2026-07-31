@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/identifier"
 )
@@ -52,6 +53,53 @@ func TestWatchSendState_TimestampsAlwaysShipOnWire(t *testing.T) {
 	}
 	if !strings.Contains(got, `"updated_at":`) {
 		t.Errorf("expected updated_at key present even for zero time.Time, got %s", got)
+	}
+}
+
+// TestJobRecord_BackgroundAndPhaseStayOffTheWire locks in that Background and
+// Phase never appear in a JobRecord's JSON — the live-only contract
+// LastActivity already carries. No Event field feeds either one, so a record
+// folded from the durable log always reports "foreground, no phase" whatever
+// the job actually did; only the runtime's in-memory record knows better.
+// Emitting them advertises durable state no fold can reproduce, and a reader
+// trusting a folded record's silence reads every job as foreground.
+func TestJobRecord_BackgroundAndPhaseStayOffTheWire(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	folded := Fold([]Event{
+		ev(EventJobStarted, 1, "job_bg", func(e *Event) {
+			e.Type = JobShell
+			e.Command = "npm run dev"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+	})["job_bg"]
+	if folded == nil {
+		t.Fatal("expected record for job_bg")
+	}
+	if folded.Background || folded.Phase != "" {
+		t.Fatalf("folded record claims background/phase the log never carried: %+v", folded)
+	}
+
+	live := *folded
+	live.Background = true
+	live.Phase = "process_running"
+	b, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	if _, ok := wire["background"]; ok {
+		t.Errorf("background reached the wire: %s", b)
+	}
+	if _, ok := wire["phase"]; ok {
+		t.Errorf("phase reached the wire: %s", b)
+	}
+	if !live.Background || live.Phase != "process_running" {
+		t.Errorf("live record lost its in-memory background/phase: %+v", live)
 	}
 }
 
