@@ -137,14 +137,31 @@ test("ArrowLeft steps to the previous image, same as clicking Previous", async (
   expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/b");
 });
 
-test("arrow keys wrap at the ends, same as the buttons", async () => {
+// Three images, not two: with only two, +1 and -1 from either end both land
+// on the SAME other index, so a wrap test that can't tell the two directions
+// apart would still pass even if ArrowLeft/ArrowRight were swapped.
+test("ArrowRight wraps from the last image back to the first", async () => {
   const user = userEvent.setup();
-  render(<ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }]} />);
-  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[1]!); // start at b (last)
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[2]!); // start at c (last)
 
   await user.keyboard("{ArrowRight}");
 
   expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/a");
+});
+
+test("ArrowLeft wraps from the first image back to the last", async () => {
+  const user = userEvent.setup();
+  render(
+    <ImageGallery images={[{ src: "/s/ref/images/a" }, { src: "/s/ref/images/b" }, { src: "/s/ref/images/c" }]} />,
+  );
+  fireEvent.click(screen.getAllByTestId("image-gallery-thumb")[0]!); // start at a (first)
+
+  await user.keyboard("{ArrowLeft}");
+
+  expect(screen.getByTestId("image-gallery-lightbox-img").getAttribute("src")).toBe("/s/ref/images/c");
 });
 
 test("arrow keys do nothing with only one image open (no Previous/Next controls either)", async () => {
