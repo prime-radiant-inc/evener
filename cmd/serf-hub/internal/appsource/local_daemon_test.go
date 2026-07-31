@@ -426,6 +426,50 @@ func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 }
 
+func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(_ context.Context, _ appwire.JobsListParams) (appwire.JobsListResponse, error) {
+		return appwire.JobsListResponse{Data: []map[string]any{{"id": "job_1", "state": "running"}}}, nil
+	})
+	var outputParams appwire.JobsOutputParams
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+		outputParams = params
+		return appwire.JobsOutputResponse{Data: map[string]any{"jobId": params.JobID, "output": "hello"}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	ctx := context.Background()
+	list, err := source.ListJobs(ctx, appwire.JobsListParams{Ref: "local:th_1"})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if list.Data == nil {
+		t.Fatal("ListJobs returned nil data")
+	}
+
+	out, err := source.JobOutput(ctx, appwire.JobsOutputParams{Ref: "local:th_1", JobID: "job_1", MaxBytes: 1024})
+	if err != nil {
+		t.Fatalf("JobOutput: %v", err)
+	}
+	if out.Data == nil {
+		t.Fatal("JobOutput returned nil data")
+	}
+	if outputParams.JobID != "job_1" || outputParams.MaxBytes != 1024 {
+		t.Fatalf("params forwarded = %+v", outputParams)
+	}
+}
+
 func fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	var drained appwire.TurnDrainAsSteerParams

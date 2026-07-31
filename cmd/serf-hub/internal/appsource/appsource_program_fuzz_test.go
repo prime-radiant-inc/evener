@@ -31,6 +31,7 @@ func FuzzAppSourceProgram(f *testing.F) {
 		fuzzScenarioLocalDaemonSourceListsOnlyAppWireRendezvousThreads,
 		fuzzScenarioLocalDaemonSourceThreadTimestampsUseStartedAtAndZeroForMissing,
 		fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire,
+		fuzzScenarioLocalDaemonSourceJobsOverAppWire,
 		fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly,
 		fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue,
 		fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads,

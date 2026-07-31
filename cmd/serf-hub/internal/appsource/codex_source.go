@@ -365,6 +365,14 @@ func (s *CodexSource) ListTasks(context.Context, appwire.TaskListParams) (appwir
 	return appwire.TaskListResponse{}, appwire.Unavailable("codex source does not expose serf tasks")
 }
 
+func (s *CodexSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	return appwire.JobsListResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+}
+
+func (s *CodexSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("codex source does not expose serf jobs")
+}
+
 func (s *CodexSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {

@@ -31,6 +31,8 @@ type Source interface {
 	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
+	ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error)
+	JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
 

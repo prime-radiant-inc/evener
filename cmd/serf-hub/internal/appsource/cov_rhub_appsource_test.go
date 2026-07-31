@@ -424,6 +424,12 @@ func fuzzScenarioCodexSourceUnavailableMethods(t *testing.T) {
 	if _, err := s.ListTasks(ctx, appwire.TaskListParams{}); err == nil {
 		t.Error("ListTasks should be unavailable")
 	}
+	if _, err := s.ListJobs(ctx, appwire.JobsListParams{}); err == nil {
+		t.Error("ListJobs should be unavailable")
+	}
+	if _, err := s.JobOutput(ctx, appwire.JobsOutputParams{JobID: "job_1"}); err == nil {
+		t.Error("JobOutput should be unavailable")
+	}
 }
 
 // Turn actions validate their arguments before dialing the daemon, so bad input

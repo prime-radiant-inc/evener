@@ -81,6 +81,12 @@ func (f fakeSource) ListModels(context.Context, appwire.ModelListParams) (appwir
 func (f fakeSource) ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 	return appwire.TaskListResponse{}, nil
 }
+func (f fakeSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	return appwire.JobsListResponse{}, nil
+}
+func (f fakeSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return appwire.JobsOutputResponse{}, nil
+}
 func (f fakeSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	return nil, nil
 }
