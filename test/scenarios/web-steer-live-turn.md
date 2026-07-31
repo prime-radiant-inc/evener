@@ -1,40 +1,39 @@
-# web-steer-live-turn: inject steering via the web UI mid-turn
+# web-steer-live-turn: inject steering into a live turn from the web composer
 
-**What this covers**: kata `a08v` plus the post-kata-`111a`/`0bq1`
-button repurposing. The workspace exposes two paths to inject a
-steering message into the live model loop: the input-area
-"send as steer" button (formerly labelled "steer";
-`[data-steer-trigger]` in `renderer.js`) and the `/steer` palette
-command (`search.js`). Both POST to `/s/<id>/steer` (REST shim) or
-call appwire `turn/steer` and rely on `activeTurnId` being
-populated by the live stream.
+**What this covers**: kata `a08v` plus the post-kata-`111a`/`0bq1` button
+repurposing. The web UI exposes two paths that inject a steering message into
+a running model loop — the composer's **Steer** button (and its Shift+Enter
+chord), and the command palette's `/steer` command. Both land on the AppWire
+`turn/steer` method, both require a live `activeTurnId`, and both must reach
+the model: the transcript grows a `STEERING` entry and the model's next
+output visibly follows the new instruction.
 
-This scenario covers the **classic single-text steer path**: the
-input queue is empty, the user types into the textarea, and the
-button takes the "no queue, just steer" branch in
-`renderer.js` `bindInputForm`. That branch is unchanged from kata
-`a08v`. The new "drain the queue as steer" branch is covered by
-`web-queue-then-drain-as-steer.md`.
+This is the **classic single-text steer path**: the queue is empty and there
+are no staged attachments, so `decideSteerRoute` takes the `"steer"` branch
+(`panes/session/composer/submitRouting.ts:33-39`). The drain-the-queue branch
+is covered by `web-queue-then-drain-as-steer.md`.
 
-The jstest suite covers the empty/no-active-turn rejections
-(`test-input-area.js`, `test-search-commands.js`,
-`test-queue-and-drain.js`); this is the server-side end-to-end
-counterpart for the classic path.
+The card previously drove `[data-steer-trigger]` and POSTed `/s/<id>/steer`.
+Both died with the vanilla frontend (`660376f78`): there is no steer REST
+route at all any more, and the composer is a React component addressed by
+`data-testid`.
+
+**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+REST surface, and what is no longer on it".
 
 ## Pre-state
 
 - Hub running on an isolated `$HOME` and free port (never `9180`,
   Jesse's real one — see the Setup checklist in
   `docs/agentic-testing.md`) with `--serf` resolvable.
-- OpenAI OAuth signed in (`./serf openai status` shows
-  `source=oauth`).
+- A provider credential that can sustain a slow multi-tool turn. Any model
+  that honours the pacing trick works; `anthropic/claude-haiku-4-5-20251001`
+  is the cheap default the runbook recommends.
 - `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
-- A Chrome session that can authenticate against the hub (visit
-  `/auth?token=<auth-token>&next=/s/<sid>` once to set the cookie).
+- The SPA built (`make build-web`) **before** the hub binary, or the browser
+  gets `dist/PLACEHOLDER` instead of an app.
 
 ## Steps
-
-Set up shared state:
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-steer-XXXXX)
@@ -42,249 +41,160 @@ TOKEN=$(cat "$HOME/.serf/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
-1. **Drop a pacing AGENTS.md into the workspace.** Without this the
-   model finishes a 5-paragraph essay in ~10s, well before a human
-   (or browser-driving agent) can open the palette and type a steer.
-   This file forces several `exec_command bash -c 'sleep N'` calls
-   per turn, stretching the active-turn window to ~60-120s:
-   ```bash
-   cat > "$tmpdir/AGENTS.md" <<'EOF'
-   # Working agreement
+1. **Drop a pacing `AGENTS.md` into the workspace** — see "AGENTS.md pacing
+   trick" in `docs/agentic-testing.md`. Without it the model finishes before
+   a browser-driving agent can type a steer.
 
-   For every user request, follow these procedural rules EXACTLY:
-
-   1. Pause between every action by calling exec_command with
-      bash -c "sleep 8".
-   2. After every model thought, call exec_command bash -c "sleep 8"
-      BEFORE composing the next part of your reply.
-   3. Insert these sleep pauses between EVERY paragraph and EVERY
-      tool call. There must be at least 4 sleep calls per turn.
-   4. Always think carefully and methodically; never rush.
-   EOF
-   ```
-
-2. **Spawn** with `openai/gpt-5.4-mini`:
+2. **Spawn**, wait for the first turn to settle, then start a second, slow
+   turn and wait for it to actually be in flight:
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long 5-paragraph essay about software engineering practices, in slow careful detail.\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long, careful 5-paragraph essay about software engineering practices.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
-   SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
-   echo "SID=$SID"
-   ```
+   SID=$(echo "$resp" | jq -r '.session_id')
 
-   This first turn may finish before you can steer it (the agent
-   does not always read AGENTS.md on the very first prompt). Wait
-   for `state=idle`, then send a SECOND turn that explicitly cites
-   the pacing rules — that turn will reliably stay processing long
-   enough to steer:
-   ```bash
-   for i in $(seq 1 60); do
-     state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-              | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "idle" ] && break
-     sleep 2
-   done
+   wait_state() {  # $1 = state to wait for
+     for i in $(seq 1 90); do
+       detail=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
+       [ "$(echo "$detail" | jq -r '.state // ""')" = "$1" ] && return 0
+       sleep 1
+     done
+     return 1
+   }
+   wait_state idle
+
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{"text":"Re-read AGENTS.md in your cwd (mandatory). Then write a long, careful 5-paragraph essay about software engineering practices. Follow the pacing rules in AGENTS.md exactly — insert exec_command sleep calls between every paragraph. This must take at least a minute."}' \
-     "$HUB/s/$SID/send" &
-   # wait until the turn is actually active
-   for i in $(seq 1 30); do
-     d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
-     state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     turn=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('active_turn_id',''))")
-     [ "$state" = "active" ] && break
-     sleep 1
-   done
-   echo "state=$state turn=$turn"
+     -d '{"text":"Re-read AGENTS.md in your cwd (mandatory). Then write a long, careful 5-paragraph essay about software engineering practices. Follow the pacing rules exactly — insert exec_command sleep calls between every paragraph. This must take at least a minute."}' \
+     "$HUB/api/sessions/local:$SID/send" &
+   wait_state active
+   echo "$detail" | jq '{state, active_turn_id, steer: .capabilities.steer}'
    ```
 
-3. **Authenticate the browser** and load the workspace:
-   ```
-   /auth?token=<TOKEN>&next=/s/<SID>
-   ```
-   The auth endpoint sets the `serf-auth` cookie and redirects.
-   Verify the live stream has caught up:
-   ```javascript
-   const conv = document.querySelector("[data-role='conversation']");
-   ({ state: conv.dataset.state, activeTurnId: conv.dataset.activeTurnId });
-   // { state: "active", activeTurnId: "turn_<n>" }
-   ```
-   Confirm the input-area "send as steer" button is enabled:
-   ```javascript
-   const b = document.querySelector("[data-steer-trigger]");
-   ({ disabled: b.disabled, text: b.textContent.trim() });
-   // { disabled: false, text: "send as steer ⇧↵" }
-   ```
-
-4. **PATH A — direct button click** (`renderer.js` `bindInputForm`).
-   Type the steer text into the input-area textarea, then click
-   the "send as steer" button. With the queue mirror empty this
-   branch posts a single-text `/steer` and clears the textarea —
-   identical to the kata `a08v` behavior. (When the queue mirror
-   is non-empty the button changes behavior; see
-   `web-queue-then-drain-as-steer.md`.)
-   ```javascript
-   const ta = document.querySelector("textarea.message-input");
-   ta.focus(); ta.value = "Make it 1 paragraph instead of 5. Make it about Go testing specifically.";
-   ta.dispatchEvent(new Event("input", { bubbles: true }));
-   document.querySelector("[data-steer-trigger]").click();
-   ```
-   Then check:
+3. **Open the workspace in the browser** at
+   `/auth?token=$TOKEN&next=/s/local:$SID` and confirm the live stream has
+   caught up — the Steer button renders only while the turn is genuinely in
+   flight (`showSteer = busy && capabilities.steer`, `Composer.tsx:382`), so
+   its presence *is* the hydration check `data-active-turn-id` used to be:
    ```javascript
    ({
-     taVal: document.querySelector("textarea.message-input").value,
-     steerCount: document.querySelectorAll(".steering").length,
-     steerText: document.querySelector(".steering")?.textContent,
+     port: location.port,
+     path: location.pathname,
+     steer: !!document.querySelector('[data-testid="composer-steer"]'),
+     stop: !!document.querySelector('[data-testid="composer-stop"]'),
    })
-   // taVal: ""  (cleared)
-   // steerCount: 1
-   // steerText: "↻ steering injectedMake it 1 paragraph instead of 5. …"
    ```
 
-5. **PATH B — ⌘K palette command** (`search.js:244`). Wait for
-   another long-running turn (re-send the slow prompt to get a
-   fresh `active_turn_id`), then dispatch Cmd/Ctrl+K, type
-   `/steer`, Enter, then the steer text, Enter:
+4. **Path A — the Steer button.** Type the steer text into the composer and
+   click `[data-testid="composer-steer"]`. Take the synchronous snapshot
+   before the ack lands (see "Synchronous vs. async assertion shape" in the
+   runbook): a `Steering` chip should be in `[data-testid="pending-chips"]`
+   immediately, and gone once the daemon acknowledges.
    ```javascript
-   // open palette
-   document.dispatchEvent(new KeyboardEvent("keydown", {
-     key: "k", ctrlKey: true, bubbles: true, cancelable: true
-   }));
-   // dialog opens; type /steer, Enter (selects "Steer model" command,
-   // enters args mode with pill "Steer model" + placeholder "steer text…")
-   // type body text, Enter to submit
+   (async () => {
+     const chips = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-chips"] li'), (li) => li.textContent);
+     const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
+     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+     setter.call(ta, "Make it 1 paragraph instead of 5, about Go testing specifically.");
+     ta.dispatchEvent(new Event("input", { bubbles: true }));
+     document.querySelector('[data-testid="composer-steer"]').click();
+     const sync = chips();                                   // optimistic chip, right now
+     await new Promise((r) => setTimeout(r, 3000));
+     return JSON.stringify({
+       sync,
+       after: chips(),
+       textAfter: ta.value,
+       steers: document.querySelectorAll(
+         '[data-testid="user-message-item"]:not([data-opens-exchange])').length,
+       toast: document.querySelector('[aria-label="Notifications"]')?.textContent,
+     }, null, 2);
+   })()
    ```
-   After submit the dialog closes and (with `activeTurnId` still
-   populated) a new `.steering` divider appears in the conversation
-   pane.
 
-6. **Wait for the turn to settle** to idle and inspect the
-   transcript:
+5. **Path B — the `/steer` palette command.** Wait for another long turn, then
+   open the palette (⌘K / Ctrl-K, or `/` as the first character of an empty
+   composer — `shell/AppShell.tsx:266-271`, `Composer.tsx:673-676`), type
+   `steer`, select **Steer model** (`shell/palette/commands.ts:431-433`),
+   type the steer body and submit.
+
+6. **Wait for the turn to settle and read the durable record.** Do not
+   hand-parse the JSONL — use the doctor:
    ```bash
-   for i in $(seq 1 90); do
-     state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-              | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "idle" ] && break
-     sleep 2
-   done
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
-   python3 - <<EOF
-   import json
-   for i, line in enumerate(open("$TFILE")):
-       j = json.loads(line)
-       t = j.get("turn", {})
-       if t.get("kind") == "STEERING":
-           for c in t.get("message", {}).get("content", []):
-               if c.get("kind") == "text":
-                   print(f"[{i}]", c.get("text", "")[:200])
-   EOF
+   wait_state idle
+   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40 | grep STEERING
    ```
 
 ## Expected
 
-- **Step 3 (browser hydration)**: live stream sets
-  `data-state="active"` and `data-active-turn-id="turn_<n>"` on
-  the conversation pane; `[data-steer-trigger].disabled === false`.
-  Falsification: button stays disabled while server shows
-  `state=active` (would mean the live stream isn't propagating
-  `THREAD_STATUS_CHANGED` or `TURN_STARTED`).
-- **Step 4 (PATH A)**: button click POSTs to `/s/<sid>/steer`
-  (or `turn/steer` via appwire) with the textarea body. Hub returns
-  `204 No Content`. The textarea clears (`renderer.js:1161`). A
-  `<details class="steering">` is appended to the conversation pane
-  with summary text `"↻ steering injected"` and body
-  `"Make it 1 paragraph instead of 5. …"`. Falsification: textarea
-  retains its text, no `.steering` element appears, OR an `error`
-  banner is appended with title `Hub steer error`.
-- **Step 5 (PATH B)**: palette closes after second Enter; same
-  `.steering` divider appears with the palette-supplied text.
-  Falsification: palette closes but no divider appears AND no
-  error banner — implies the palette swallowed the steer (likely
-  because `activeTurnId()` was empty at submit time, see Sharp
-  edges). The system should at least surface the unavailable error.
-- **Step 6 (transcript)**: the transcript contains a `kind=STEERING`
-  entry whose `message.content[0].text` exactly equals the steer
-  text from step 4 (and another from step 5 if both paths were
-  exercised). The model's NEXT assistant message after the
-  STEERING entry is observably influenced — for the PATH A text
-  above, the assistant produces a single short paragraph about Go
-  testing (not the 5-paragraph software-engineering essay it was
-  originally asked for). Session state ends at `idle` with
-  `live=true`; it does NOT terminate. `turn_count` advances by one
-  for the user-input that started the turn (steering itself does
-  not count as a turn). Falsification: no STEERING entry in the
-  transcript, OR the model's next output is the original 5-paragraph
-  essay unchanged, OR the session reaches `state=ended`/`closed`
-  after the steer (the steer would have terminated the turn).
+- **Step 2 (server)**: `state=active` with a non-empty `active_turn_id` and
+  `capabilities.steer:true`. Falsify: `steer:false` while a turn is running —
+  the capability gate (`server/appwire_runtime.go:1047`) regressed and no UI
+  path can steer.
+- **Step 3 (hydration)**: `[data-testid="composer-steer"]` is present, as is
+  `composer-stop`, and `location.port` is your hub's. Falsify: the Steer
+  button never appears while the server reports `state=active` — the AppWire
+  socket did not hydrate; check `$run/hub.log` before blaming the composer.
+- **Step 4 (Path A)**: `sync` contains one chip reading `Steering` plus the
+  steer text (`pending/PendingChips.tsx:38-42,56`); `after` is empty (the
+  chip reconciled off the `clientMutationId` echoed back on
+  `serf/steering/injected`, `stores/threads.ts:797-801`); the composer text is
+  cleared; the steer appears in the transcript as a **user-message item with
+  no `data-opens-exchange` attribute** — a steer the human typed reuses
+  `UserMessageView` with `opensExchange={false}`
+  (`transcript/messages/SteeringItem.tsx:143-146`,
+  `UserMessageItem.tsx:98,112`), which is precisely what distinguishes it
+  from an ordinary prompt; and the toast region is empty. Falsify: no chip in
+  `sync` (the optimistic path never rendered — the bug kata `wymv` was
+  about), a chip still present in `after` (the ack never arrived), the
+  composer keeps its text, or an error toast appears.
+- **Step 5 (Path B)**: the palette closes and the same kind of steer entry
+  appears. Falsify: the palette closes with nothing added and nothing said —
+  the command's own guard is supposed to be loud
+  (`commands.ts:443`, `blocked("steer failed: no active turn")`) when the
+  turn ends underneath it.
+- **Step 6 (durable)**: the outline contains a `STEERING` entry per steer,
+  whose text matches what was typed. The model's next assistant message
+  visibly follows it — for the Path A text above, a single short paragraph
+  about Go testing, not the original five-paragraph essay. The session ends
+  at `state=idle` and stays live; it does **not** end or close. Falsify: no
+  `STEERING` entry (the steer never reached the daemon), the model's output
+  is unchanged (it reached the transcript but not the running loop), or the
+  session reaches `ended`/`closed` — steering must not terminate the turn.
 
 ## Cleanup
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{}' "$HUB/s/$SID/shutdown" >/dev/null
+  -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 rm -rf "$tmpdir"
-# Optional: drop the persisted artifacts.
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges
 
-- **The first turn often races to idle before you can steer**. A
-  5-paragraph essay against `gpt-5.4-mini` takes ~10-15s without
-  pacing. The fix in step 1 is to drop an `AGENTS.md` with explicit
-  sleep-between-paragraphs rules, then send a follow-up turn that
-  cites those rules. This stretches each turn to 60-120s. If you
-  see `state=idle` immediately after sending, the model didn't
-  honour the pacing rules — try a stronger reminder or a slower
-  model.
-- **Button vs palette discoverability**. The input-area
-  "send as steer" button is the canonical UX: it sits next to
-  send/attach, becomes active automatically when there's an
-  in-flight turn, and reuses whatever's already in the textarea.
-  The palette command (`/steer`) works but requires three
-  keystroke phases (Cmd+K → `/steer` Enter → body Enter). For
-  typical interactive use prefer the button; the palette is
-  useful for keyboard-only workflows or when the input area is
-  offscreen. Note: the button doubles as the drain-as-steer
-  trigger (kata `0bq1`); when the local queue mirror is empty it
-  behaves exactly as the legacy steer button, but when the queue
-  has entries it drains them instead. ⇧↵ is the keybind
-  equivalent of the button click.
-- **`activeTurnId` is required for both paths**. The button reads
-  `this.activeTurnId` (`renderer.js:1143`); the palette reads
-  `activeTurnId()` from the conversation `data-active-turn-id`
-  attribute (`search.js:171,247`). If the turn ends BETWEEN opening
-  the palette and pressing Enter, the palette closes silently —
-  there is currently NO visible error banner in that race
-  (`showTurnActionUnavailable` shows a transient toast, but the
-  dialog still closes). The button path always shows an inline
-  banner with `title="Hub steer error"` because it sets
-  `disabled=true` synchronously and falls into the catch branch.
-- **`appendSteeringMessage` classifier suppresses some steers**
-  (`renderer.js:989-1037`). Daemon-generated current-task nudges
-  (`<TASK current_id="N" title="…">`) and the task-list reminder
-  rendered as `<SYSTEM-REMINDER>You have a task_list tool…` are
-  routed to `system-line` widgets or suppressed entirely. Use
-  plain-prose steer text (no `<TASK>` / `<SYSTEM-REMINDER>` /
-  task-list markers) to hit the default `details.steering`
-  rendering. The transcript entry is unaffected by the classifier —
-  it always lands as `kind=STEERING`.
-- **The browser hydration window after a long-running navigate**.
-  If you load `/s/<sid>` while the daemon is mid-turn, the
-  rendered page reflects the server-side snapshot at request time
-  AND the live stream catches up via SSE/appwire within a few
-  hundred ms. If you check `data-active-turn-id` immediately after
-  navigate it may be empty; wait for the next event or reload once
-  the server reports `state=active`.
-- **STEERING entry vs `turn_count`**. `turn_count` (in
-  `<sid>.meta.json` and `/api/sessions/local:<sid>`) counts
-  committed user→assistant exchanges. A steering injection writes a
-  transcript line but does NOT increment `turn_count`. Don't confuse
-  transcript line counts with turn counts when verifying.
-- **Steering does not terminate the active turn**. Unlike
-  `/interrupt` (which cancels the in-flight context), `/steer`
-  injects a system-reminder into the model's running loop. The
-  current turn keeps going; the model sees the steer in its next
-  round and adapts. The session stays `processing` until the model
-  decides to call `communicate`.
+- **A human steer is NOT `[data-testid="steering-item"]`.** That element is
+  the collapsible divider for *daemon*-originated steering (labelled
+  "System steered: …"); a steer the human typed is indistinguishable from a
+  prompt and renders as `user-message-item`. Selecting on `steering-item`
+  after a manual steer finds nothing and reads as a regression. Use
+  `[data-testid="user-message-item"]:not([data-opens-exchange])`.
+- **The first turn usually races to idle before you can steer it.** The model
+  does not reliably read `AGENTS.md` on the very first prompt. Send a second
+  turn that cites the pacing rules explicitly, as step 2 does.
+- **Steer needs the turn id, not just the status.** `isTurnActive` requires
+  both `statusType === "active"` and a populated `activeTurnId`
+  (`submitRouting.ts:48-50`), which is why the Steer button can lag the
+  server's `state=active` by one notification. Wait for the button, not for
+  the clock.
+- **Shift+Enter is the same action as the button**, but only while the
+  `serf.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
+- **An empty queue is part of the premise.** Any queued message, or any
+  staged attachment, reroutes the same button to `turn/drainAsSteer`
+  (`submitRouting.ts:33-39`) — a different method, a `Draining` chip, and a
+  different card.
+- **`turn_count` does not move.** It counts committed user→assistant
+  exchanges; a steer writes a transcript entry without starting a turn. Don't
+  read transcript growth as turn growth.
+- **Steering does not terminate the turn.** Unlike interrupt, it injects into
+  the running loop — the turn keeps going and the model adapts on its next
+  round.
