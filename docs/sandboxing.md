@@ -217,9 +217,16 @@ attributed best-effort from the command and its output-so-far. Denials are
 audit-logged with a redaction contract — the log records the mode, tool, a redacted
 path, and a truncated command, never the file contents or a full secret path.
 
-In a non-interactive session a denial is final. (In-UI escalation — a human-gated
-approval card for a specific denied invocation — is specified but not yet built; the
-model can never trigger, approve, or observe an approval.)
+In a non-interactive session a denial is final. In an interactive root session with a
+UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
+`edit_file` denial for being outside the sandbox's roots can be escalated to a
+human-gated approval card — "Allow" / "Deny" in the web UI, `ctrl+y` / `ctrl+g` in the
+TUI hub — that blocks the tool-exec goroutine until answered
+(`serf/sandbox/escalation/requested` → `serf/sandbox/escalation/resolve`, see
+[docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
+the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
+exactly as a non-interactive session. The model can never trigger, approve, or
+observe an approval: the escalation and its resolution never enter session history.
 
 ## Subagents and worktrees
 
