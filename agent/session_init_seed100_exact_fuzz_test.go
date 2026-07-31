@@ -145,7 +145,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			cancel()
 			pending.pendingSessionStartForUserTurn(cancelled)
 			pending.deferSessionStartHooks(plugin.SessionStartKindResume)
-			pending.runPendingSessionStartHooksForRestoreSideEffects(nil)
+			pending.runPendingSessionStartHooksForRestoreSideEffects(context.Background())
 			if _, ok := nilSession.beginPendingSessionStartHooksForRestoreSideEffects(); ok {
 				t.Fatal("nil session began pending hooks")
 			}
@@ -155,8 +155,8 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 
 			hookSession := newSession(t)
 			hookSession.hookRunner = hooks.NewRunner(hookSession.client, hookSession.profile.Model())
-			hookSession.runSessionStartHooksWithContext(nil, plugin.SessionStartKindStartup)
-			nilSession.runSessionStartHooksWithContext(nil, plugin.SessionStartKindStartup)
+			hookSession.runSessionStartHooksWithContext(context.Background(), plugin.SessionStartKindStartup)
+			nilSession.runSessionStartHooksWithContext(context.Background(), plugin.SessionStartKindStartup)
 
 			blocked := t.TempDir()
 			logDir := filepath.Join(blocked, sessionsSubdir)
