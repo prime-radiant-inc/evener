@@ -32,8 +32,14 @@ work="$(mktemp -d -t tmux-send-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
 # Each case gets its own fake-tmux bin dir + state dir, so scenarios never leak
-# call counts or session lists into each other.
+# call counts or session lists into each other. Also resets the FAKE_TMUX_*
+# knobs: `FAKE_TMUX_SESSIONS=x FAKE_TMUX_FAIL_ON_CALL=y args=(...)` is a plain
+# assignment (not a command), so unlike `VAR=val cmd`, bash does NOT scope
+# these to one call — a scenario setting FAKE_TMUX_FAIL_ON_CALL would silently
+# stay in effect for every scenario after it without this reset.
 new_case() {
+	FAKE_TMUX_SESSIONS=""
+	FAKE_TMUX_FAIL_ON_CALL=""
 	case_dir="$(mktemp -d "$work/case.XXXXXX")"
 	bin="$case_dir/bin"
 	state="$case_dir/state"
@@ -48,6 +54,14 @@ set -u
 n=$(($(cat "$FAKE_STATE/call-count" 2>/dev/null || echo 0) + 1))
 printf '%s' "$n" >"$FAKE_STATE/call-count"
 printf '%s\0' "$@" >"$FAKE_STATE/call-$n.argv"
+
+# FAKE_TMUX_FAIL_ON_CALL=N: force invocation N to fail regardless of target,
+# simulating the session vanishing mid-operation (e.g. between the literal
+# send and the Enter submit that follows it).
+if [ "$n" = "${FAKE_TMUX_FAIL_ON_CALL:-}" ]; then
+	echo "fake-tmux: forced failure on call $n (FAKE_TMUX_FAIL_ON_CALL)" >&2
+	exit 1
+fi
 
 if [ "${1:-}" != "send-keys" ]; then
 	echo "fake-tmux: unsupported command: ${1:-}" >&2
@@ -102,7 +116,8 @@ run_tmux_send() (
 	# bash 3.2 (macOS's /bin/bash) treats "${args[@]}" on a zero-element array as
 	# an unbound-variable error under `set -u`; "${args[@]+"${args[@]}"}" is the
 	# portable safe-empty-array-expansion idiom.
-	env PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_TMUX_SESSIONS="${FAKE_TMUX_SESSIONS:-}" "$script" "${args[@]+"${args[@]}"}"
+	env PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_TMUX_SESSIONS="${FAKE_TMUX_SESSIONS:-}" \
+		FAKE_TMUX_FAIL_ON_CALL="${FAKE_TMUX_FAIL_ON_CALL:-}" "$script" "${args[@]+"${args[@]}"}"
 )
 
 calls_made() { cat "$state/call-count" 2>/dev/null || echo 0; }
@@ -181,6 +196,20 @@ assert_eq "$out" "" "missing session prints nothing to stdout"
 assert_has "$work/err5.txt" "nosuchsession" "error names the requested session"
 assert_has "$work/err5.txt" "tmux list-sessions" "error hints how to list live sessions"
 assert_eq "$(calls_made)" "1" "only the failed literal-send call is attempted, no Enter follows a failure"
+
+# --- scenario 5b: the literal text lands but the Enter submit itself fails
+# (session vanished between the two calls) — a distinct error, not the
+# generic "no session named exactly" one, because by then it plainly did. ---
+new_case
+FAKE_TMUX_SESSIONS="mysession" FAKE_TMUX_FAIL_ON_CALL=2 args=(mysession "hi")
+out="$(run_tmux_send 2>"$work/err5b.txt")"
+rc=$?
+assert_eq "$rc" "1" "a failed Enter submit after a successful literal send exits 1"
+assert_eq "$out" "" "a failed Enter submit prints nothing to stdout"
+assert_eq "$(calls_made)" "2" "both calls were attempted (the literal send did succeed)"
+assert_eq "$(cat "$state/call-1.kind")" "literal" "call 1 (the literal send) is the one that succeeded"
+assert_has "$work/err5b.txt" "mysession" "the partial-failure error names the session"
+assert_has "$work/err5b.txt" "sent" "the partial-failure error says the text WAS already sent"
 
 # --- scenario 6: exact match only — a same-prefix session must not be guessed ---
 new_case
