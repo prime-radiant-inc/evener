@@ -20,10 +20,20 @@ import (
 // which put a transcript fsync, a synchronous jobs.jsonl read, and the session's
 // own mutex under the gate; now the read copies this value and reaches nothing.
 //
-// THE ONE RULE: a field here has exactly one writer, refreshFacets, and exactly
-// one reader, the copy in appThread/handleStatus. Never wire a callback beside a
-// field as a fallback: a field with two sources is how a stale value survives a
-// refactor while still reading as correct.
+// THE ONE RULE: a field here has exactly one writing FUNCTION, refreshFacets,
+// and exactly one reader, the copy in appThread/handleStatus. Never wire a
+// callback beside a field as a fallback: a field with two sources is how a
+// stale value survives a refactor while still reading as correct.
+//
+// One writing function is not one serialized writer, and the gap is real rather
+// than pedantic. refreshFacets samples outside s.mu, deliberately, and runs
+// concurrently from the bridge goroutine and from every mutation handler, so
+// two overlapping refreshes of one facet can commit in the opposite order to
+// their samples and leave the older value installed. That loss is bounded, not
+// permanent: the next event touching the facet corrects it and TURN_ENDED
+// re-samples everything. A live subscriber never sees it either, because the
+// notification stream carries the truth. The exposure is a cold thread/read
+// landing inside the window.
 //
 // Slices and pointers stored here are owned by the envelope once written.
 // refreshFacets always stores a freshly sampled value and never mutates one in

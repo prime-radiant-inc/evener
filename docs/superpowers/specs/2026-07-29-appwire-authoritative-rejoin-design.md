@@ -449,6 +449,17 @@ What remains, precisely:
   two orders of magnitude past a healthy drain, which is just the session's
   buffered tail — so an expiry always means a genuine wedge and never absorbs
   real work.
+- **Two overlapping refreshes of one facet can lose the newer sample.**
+  `refreshFacets` samples with no lock held — that is the point, it is the I/O
+  this work moved off the read path — and commits under `s.mu`. It runs
+  concurrently from the bridge goroutine and from all eight mutation handlers,
+  so sample(A) → sample(B) → commit(B) → commit(A) leaves A's older value
+  installed. Bounded, not permanent: the next event that touches the facet
+  corrects it and `TURN_ENDED` re-samples every one. A live subscriber is
+  unaffected, because the notification stream carries the truth. The exposure is
+  a cold `thread/read` landing inside the window and reading a stale queue depth
+  or goal. Closing it needs a per-facet sequence number, which is not worth it
+  here.
 - **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
   Losslessness turns "emit under a lock" from a dropped event into a deadlock,
   for every lock reachable from the bridge. Three call sites were found and
