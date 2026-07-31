@@ -1,14 +1,106 @@
 package codexlaunch
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/appwire"
 )
+
+// syncBuffer collects the launcher's log the way the hub's stderr does: both
+// of an app-server's pipes are scanned concurrently and write to the one sink.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A codex app-server that fails after launch says so on the pipes the hub is
+// scanning, and the hub owns both of them — nothing else can read that output,
+// so a line the scanner drops is a line nobody will ever see. Every line that
+// is not the endpoint announcement therefore reaches the hub log, attributed
+// to the launch that produced it so one log carrying several app-servers stays
+// readable (kata d35w).
+func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
+	endpoints := make(chan string, 4)
+	var log syncBuffer
+	scanCodexEndpoint(
+		strings.NewReader("codex: error: address already in use\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"),
+		endpoints, &log, "[codex:live]")
+	close(endpoints)
+
+	var got []string
+	for endpoint := range endpoints {
+		got = append(got, endpoint)
+	}
+	if strings.Join(got, ",") != "ws://one:1,ws://two:2" {
+		t.Fatalf("scanned endpoints = %v", got)
+	}
+	// Exact, not Contains: an announcement consumed as an endpoint must not
+	// also be logged as prose.
+	if want := "[codex:live] codex: error: address already in use\n"; log.String() != want {
+		t.Fatalf("log = %q, want %q", log.String(), want)
+	}
+}
+
+// The launch wires both of the app-server's pipes to the hub log, since the
+// endpoint announcement itself arrives on either one and so does the failure
+// that replaces it. Each case drives one pipe and leaves the other empty: the
+// announcement that ends the launch is written after the diagnostic line by
+// the same scanner, so a launch that has returned has already logged it.
+func TestCodexLaunchForwardsAppServerOutputFromBothPipes(t *testing.T) {
+	const diagnostic = "codex: warning: falling back to no sandbox"
+	const output = diagnostic + "\n{\"endpoint\":\"ws://127.0.0.1:4567\"}\n"
+	tests := []struct {
+		name           string
+		stdout, stderr string
+	}{
+		{name: "stdout", stdout: output},
+		{name: "stderr", stderr: output},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewCodexLauncher(nil)
+			l.client = seedClient(http.StatusOK, nil)
+			var log syncBuffer
+			l.logOutput = &log
+			process := newSeedProcess(tt.stdout, tt.stderr)
+			useSeedRuntime(l, process, 0, false)
+
+			launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{ID: "live"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = launched.process.Kill()
+				<-launched.Exited
+			})
+			if launched.endpoint != "ws://127.0.0.1:4567" {
+				t.Fatalf("discovered endpoint = %q", launched.endpoint)
+			}
+			if want := "[codex:live] " + diagnostic + "\n"; log.String() != want {
+				t.Fatalf("log = %q, want %q", log.String(), want)
+			}
+		})
+	}
+}
 
 // A ready-wait that never saw the app-server come up ended one of two
 // unrelated ways, and the message must name which: the readiness budget
