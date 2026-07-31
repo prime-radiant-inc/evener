@@ -393,7 +393,7 @@ test("clearSubmitted removes exactly the submitted markers, leaving items added 
 // a genuinely stale, un-removable "[image N]" marker was left orphaned in
 // the textarea/draft whenever the text had ALREADY diverged from the
 // submitted snapshot (a concurrent edit mid-flight) - the marker's own
-// backing item vanishes from `items` (no chip, no bytes) while its literal
+// backing item vanishes from `items` (no tile, no bytes) while its literal
 // text lingers with nothing left to represent it.
 test("clearSubmitted strips the submitted markers' own text from the editor too - a concurrent edit must not leave an orphaned marker behind", async () => {
   const editor = makeFakeEditor("", 0);

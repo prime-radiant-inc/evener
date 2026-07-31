@@ -36,7 +36,7 @@ export function arrayBufferToBase64(buf: ArrayBuffer): string {
 // to its natural dimensions, and re-encodes that canvas to PNG - the same
 // pipeline for every input type (a JPEG gets converted; a PNG still gets
 // round-tripped, which is what strips its color profile/EXIF). Resolves
-// with the re-encoded bytes (base64) and the decoded width/height (for chip
+// with the re-encoded bytes (base64) and the decoded width/height (for tile
 // display - neither the wire's InputItem nor stores/threads.ts's
 // InputAttachment carries dimensions, so this is UI-layer-only metadata the
 // caller keeps separately from what it hands to the store).

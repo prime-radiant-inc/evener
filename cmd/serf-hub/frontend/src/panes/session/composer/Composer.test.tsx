@@ -1449,7 +1449,7 @@ test("clicking Stop calls turn/interrupt", async () => {
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
 
-// --- attachments (paste -> chip -> submit) ----------------------------------
+// --- attachments (paste -> tile -> submit) ----------------------------------
 
 function pastePngInto(el: HTMLElement, name = "shot.png"): void {
   const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
@@ -1518,7 +1518,7 @@ function installStalledDecodeStub(): void {
   URL.revokeObjectURL = () => {};
 }
 
-test("pasting an image renders a removable attachment chip and inserts its marker", async () => {
+test("pasting an image renders a removable attachment tile and inserts its marker", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
 

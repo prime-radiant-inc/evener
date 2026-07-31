@@ -1,6 +1,6 @@
 // The composer anchors each staged image to a positional "[image N]" marker
 // in the textarea (textareaMarkers.ts) - that marker is an EDITING affordance:
-// it is what a chip removes, what a decode failure strips, and what a draft
+// it is what a tile removes, what a decode failure strips, and what a draft
 // round-trips. It is not something to say to a model. A raw marker on the wire
 // misleads small models: measured 2026-07-31, haiku received
 // "[image 1]Describe the attached image" alongside a real vision block, read
@@ -12,7 +12,7 @@
 // separate parts, so the wire has already lost the marker's position in the
 // text. So each marker is TRANSLATED to prose at send (Jesse, 2026-07-31),
 // not stripped and not left raw: the model gets a sentence it can read, and
-// the composer's own text keeps its chips' anchors.
+// the composer's own text keeps its tiles' anchors.
 // Every attachment carries the marker number it was staged under, so this
 // pairing is an identity lookup, never an inference from array position or
 // from where the marker sits in the text: a marker number is a stable id

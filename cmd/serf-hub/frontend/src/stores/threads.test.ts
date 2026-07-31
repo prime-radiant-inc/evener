@@ -2668,7 +2668,7 @@ describe("useThreadsStore.send", () => {
   // kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
   // haiku read one as a file path and called read_file("[image 1]") instead of
   // looking at the vision block it was sitting next to. The composer keeps the
-  // marker as its chip anchor; the wire gets prose.
+  // marker as its tile anchor; the wire gets prose.
   test("translates the composer's [image N] markers to prose on the wire (kata 6nmz)", async () => {
     const fake = connectMutationClient();
     fake.on("turn/start", (params) => ({

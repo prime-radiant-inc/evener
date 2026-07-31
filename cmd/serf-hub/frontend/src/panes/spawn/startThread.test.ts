@@ -102,7 +102,7 @@ test("a whitespace-only prompt with an attachment sends an image-only input (no 
 // kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
 // haiku read one as a file path and called read_file("[image 1]") instead of
 // looking at the vision block it was sitting next to. The composer keeps the
-// marker as its chip anchor; the wire gets prose.
+// marker as its tile anchor; the wire gets prose.
 test("translates the prompt's [image N] markers to prose at send (kata 6nmz)", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/start", () => startResponse("local:r"));
