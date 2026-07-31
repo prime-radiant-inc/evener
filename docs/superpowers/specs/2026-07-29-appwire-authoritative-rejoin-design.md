@@ -440,6 +440,15 @@ What remains, precisely:
   so the failure mode is a visible hang rather than a silently wrong
   `thread/read`. That is the intended trade; the consumer's per-event work is
   bounded to keep it unreachable.
+- **Shutdown abandons a wedged drain rather than waiting it out.** Teardown
+  waits `shutdownDrainWaitBudget` for its bridge drains and then returns
+  *without* closing the verbose tee: closing it under a live drain is the exact
+  crash the wait exists to prevent, so expiry skips the close instead of
+  trading a hang for the bug. The cost is a truncated NDJSON tail on a process
+  that is exiting anyway. The budget bounds the pathological case only — it is
+  two orders of magnitude past a healthy drain, which is just the session's
+  buffered tail — so an expiry always means a genuine wedge and never absorbs
+  real work.
 - **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
   Losslessness turns "emit under a lock" from a dropped event into a deadlock,
   for every lock reachable from the bridge. Three call sites were found and
