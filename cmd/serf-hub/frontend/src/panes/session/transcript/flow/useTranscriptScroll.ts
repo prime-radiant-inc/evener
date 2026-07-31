@@ -22,9 +22,8 @@
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ThreadModel, TurnModel } from "../../../../protocol/model";
-import { threadsStore } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
@@ -64,13 +63,6 @@ export interface UseTranscriptScrollResult {
    * NewContentPill. */
   jumpToBottom: () => void;
 }
-
-// A short coalescing window for the scroll-position persistence write only
-// (never for the stick/pill/near-top decisions themselves, which react
-// immediately) - nobody needs the stored value to be live-accurate every
-// pixel, only eventually-accurate for the next mount, and every open pane
-// sharing this store doesn't need a setState per scrolled pixel.
-const PERSIST_DEBOUNCE_MS = 200;
 
 function totalItemCount(model: ThreadModel | undefined): number {
   if (!model) return 0;
@@ -147,8 +139,6 @@ export function useTranscriptScroll({
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingSaveRef = useRef<number | null>(null);
   // Turn IDs whose failure (if any) has already been accounted for - seen
   // live while at the bottom, already anchored-and-cleared, or currently
   // the active anchor (added the moment it's chosen - see the
@@ -220,26 +210,6 @@ export function useTranscriptScroll({
   const modelRef = useRef(model);
   modelRef.current = model;
 
-  const flushPendingSave = useCallback(() => {
-    if (debounceTimerRef.current !== null) {
-      clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
-    if (pendingSaveRef.current !== null) {
-      threadsStore.getState().setScrollPosition(ref, pendingSaveRef.current);
-      pendingSaveRef.current = null;
-    }
-  }, [ref]);
-
-  const schedulePersist = useCallback(
-    (position: number) => {
-      pendingSaveRef.current = position;
-      if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = setTimeout(flushPendingSave, PERSIST_DEBOUNCE_MS);
-    },
-    [flushPendingSave],
-  );
-
   const clearPill = useCallback(() => {
     setPillCount(0);
     baselineItemCountRef.current = itemCountRef.current;
@@ -285,13 +255,13 @@ export function useTranscriptScroll({
     if (!el) return;
 
     if (!initializedRef.current) {
-      const saved = threadsStore.getState().scrollPositions.get(ref);
-      if (saved !== undefined) {
-        el.scrollTop = saved;
-      } else {
-        const count = turnsLengthRef.current;
-        if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-      }
+      // Opening a session always lands at the end (kata cmjb, Jesse's call):
+      // the latest content is what a reader clicks in for. This deliberately
+      // replaced the earlier per-ref restore of a stored scroll offset — the
+      // whole persistence (threads.ts scrollPositions + the debounced writer
+      // that lived below) was removed with it, not just bypassed.
+      const count = turnsLengthRef.current;
+      if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
       prevScrollHeightRef.current = m.scrollHeight;
@@ -356,7 +326,6 @@ export function useTranscriptScroll({
       // regression - confirmed empirically: a genuinely uncaught rejection
       // exits 1 even though the individual test that triggered it "passes".)
       if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
-      schedulePersist(m.scrollTop);
     }
 
     el.addEventListener("scroll", handleScroll);
@@ -371,22 +340,14 @@ export function useTranscriptScroll({
     // true, when this gated block no longer runs at all - so a later
     // effect re-run with a stale firstTurnId in its closure, if one ever
     // happened, still wouldn't read it. The listener itself also needs no
-    // re-attachment when content changes: schedulePersist/clearPill/
-    // loadOlderRef.current all read fresh state at call time regardless.
+    // re-attachment when content changes: clearPill/loadOlderRef.current
+    // read fresh state at call time regardless.
     //
     // hasContent is listed despite not being read in this effect's body at
     // all - it exists purely to force a re-run at the "VirtualList mounts
     // for the first time" transition (a ref becoming non-null triggers no
     // re-render/effect on its own; hasContent flipping does).
-  }, [ref, listRef, measure, clearPill, schedulePersist, hasContent]);
-
-  // Flushes any pending debounced persistence write on true unmount (a fast
-  // tab-switch right after scrolling must not lose it) - a dedicated,
-  // dep-stable effect so this ONLY fires on unmount, not on every content
-  // change the listener-attach effect above might otherwise re-run for.
-  useEffect(() => {
-    return () => flushPendingSave();
-  }, [flushPendingSave]);
+  }, [ref, listRef, measure, clearPill, hasContent]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

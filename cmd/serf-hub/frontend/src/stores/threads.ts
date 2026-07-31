@@ -108,17 +108,6 @@ export interface ThreadsStoreState {
   // never disturb the other's tracked data or lifecycle.
   watchedThreads: Map<string, ThreadModel>;
   watchedFrameTimes: Map<string, number[]>;
-  // Per-ref scroll offset (transcript/flow's own coordinate - see that
-  // module), persisted independently of the ensureThread/releaseThread
-  // refcount lifecycle: unlike `threads`/`frameTimes` (cheaply re-derived
-  // from a fresh thread/read on the next mount), a scroll position has no
-  // server-side source of truth to recover it from, so it must survive a
-  // pane unmount (dockview unmounts an inactive pane's whole tree - see
-  // Session.tsx's own comment) even once its refcount hits zero. Grows for
-  // the lifetime of the store (one entry per ref ever visited this session)
-  // - no eviction; unbounded growth across a single browser session visiting
-  // many distinct refs is not a problem this wave needs to solve.
-  scrollPositions: Map<string, number>;
   ensureThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a subagent-module
@@ -207,11 +196,6 @@ export interface ThreadsStoreState {
   // maps). On rejection, propagates unchanged - the caller (the
   // escalation rail) owns surfacing the failure.
   resolveEscalation(ref: string, escalationId: string, approve: boolean): Promise<void>;
-  // The one synchronous, no-network action on this store: flow/'s scroll
-  // hook calls it directly off a real scroll event, not through
-  // requireClient() - there is nothing to request, just client-side UI
-  // state to remember for the next mount.
-  setScrollPosition(ref: string, position: number): void;
 }
 
 // Module-private bookkeeping the locked interface doesn't expose: pane
@@ -1504,7 +1488,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   frameTimes: new Map(),
   watchedThreads: new Map(),
   watchedFrameTimes: new Map(),
-  scrollPositions: new Map(),
 
   async ensureThread(ref) {
     let client = requireClient();
@@ -2020,15 +2003,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return Object.keys(patch).length > 0 ? patch : s;
     });
   },
-
-  setScrollPosition(ref, position) {
-    threadsStore.setState((s) => {
-      if (s.scrollPositions.get(ref) === position) return s; // same reference: no-op, like handleNotification's own guard
-      const next = new Map(s.scrollPositions);
-      next.set(ref, position);
-      return { scrollPositions: next };
-    });
-  },
 }));
 
 export function useThreadsStore(): ThreadsStoreState;
@@ -2100,6 +2074,5 @@ export function resetThreadsStoreForTests(): void {
     frameTimes: new Map(),
     watchedThreads: new Map(),
     watchedFrameTimes: new Map(),
-    scrollPositions: new Map(),
   });
 }

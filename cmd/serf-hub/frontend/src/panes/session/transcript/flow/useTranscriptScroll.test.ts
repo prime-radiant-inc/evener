@@ -3,7 +3,7 @@ import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { ThreadCapabilities } from "../../../../protocol/types.gen";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
 import { useTranscriptScroll } from "./useTranscriptScroll";
@@ -819,74 +819,29 @@ describe("mount positioning", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
   });
 
-  test("a ref with a saved scroll position restores it instead of defaulting to the bottom", () => {
-    threadsStore.getState().setScrollPosition("ref_a", 777);
+  test("kata cmjb: reopening a session lands at the end even when the viewport was left scrolled away", () => {
+    // Pre-cmjb, a per-ref scroll offset persisted across close/reopen
+    // (threads.ts scrollPositions + a debounced writer here) and was
+    // restored on mount in preference to the bottom. Jesse's call on the
+    // kata: clicking into a session defaults to the latest content, always
+    // — so the whole persistence was removed, and mount unconditionally
+    // scrolls to the last turn. SCROLLED_AWAY metrics stand in for "the
+    // reader left this pane mid-history"; el.scrollTop staying 0 proves no
+    // stored offset was written back.
     const { ref, el, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     renderHook(() =>
       useTranscriptScroll({
         ref: "ref_a",
-        model: model([turn("t1", ["i1"])]),
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
         listRef: ref,
         loadOlder: vi.fn(),
         measure,
       }),
     );
 
-    expect(el.scrollTop).toBe(777);
-    expect(scrollToIndex).not.toHaveBeenCalled();
-  });
-});
-
-describe("persisting scroll position", () => {
-  test("scrolling writes the position back to the threads store (debounced)", () => {
-    vi.useFakeTimers();
-    const { ref, el } = makeListHandle();
-    const { measure, set } = makeMeasure(SCROLLED_AWAY);
-    renderHook(() =>
-      useTranscriptScroll({
-        ref: "ref_a",
-        model: model([turn("t1", ["i1"])]),
-        listRef: ref,
-        loadOlder: vi.fn(),
-        measure,
-      }),
-    );
-
-    act(() => {
-      set({ scrollTop: 321 });
-      el.dispatchEvent(new Event("scroll"));
-    });
-    // Not written synchronously - debounced.
-    expect(threadsStore.getState().scrollPositions.get("ref_a")).not.toBe(321);
-
-    act(() => vi.runAllTimers());
-
-    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBe(321);
-  });
-
-  test("unmounting flushes any pending debounced write immediately, so a fast tab-switch doesn't lose it", () => {
-    vi.useFakeTimers();
-    const { ref, el } = makeListHandle();
-    const { measure, set } = makeMeasure(SCROLLED_AWAY);
-    const { unmount } = renderHook(() =>
-      useTranscriptScroll({
-        ref: "ref_a",
-        model: model([turn("t1", ["i1"])]),
-        listRef: ref,
-        loadOlder: vi.fn(),
-        measure,
-      }),
-    );
-
-    act(() => {
-      set({ scrollTop: 654 });
-      el.dispatchEvent(new Event("scroll"));
-    });
-
-    unmount(); // before the debounce timer would otherwise fire
-
-    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBe(654);
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    expect(el.scrollTop).toBe(0);
   });
 });
 

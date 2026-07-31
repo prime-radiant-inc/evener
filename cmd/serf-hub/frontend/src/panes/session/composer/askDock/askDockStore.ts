@@ -306,8 +306,8 @@ function reconcileRef(ref: string, model: ThreadModel): void {
 // Registered once, at module load (same lifetime as threads.ts's own
 // connectionStore.subscribe wiring) - fires on every threadsStore change,
 // but only actually reconciles the refs whose tracked ThreadModel reference
-// changed (a same-reference no-op elsewhere in threadsStore, e.g. a
-// scrollPositions-only update, correctly does nothing here).
+// changed (a same-reference no-op elsewhere in threadsStore, e.g. an update
+// touching only an unrelated store field, correctly does nothing here).
 threadsStore.subscribe((state, prevState) => {
   if (state.threads === prevState.threads) return;
   for (const [ref, model] of state.threads) {
