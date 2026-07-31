@@ -80,16 +80,13 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "serf", "live task", "ops task", "1 recent")
-	if strings.Contains(screen, "ended maintenance") {
-		t.Fatalf("dashboard should fold ended sessions by default:\n%s", screen)
-	}
+	// Ended sessions fold by default: awaited as an absence so the check
+	// cannot race a partial repaint (see WaitForWithout).
+	app.WaitForWithout([]string{"ended maintenance"},
+		"SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "serf", "live task", "ops task", "1 recent")
 	app.SendKeys("/")
 	app.TypeText("ops")
-	screen = app.WaitFor("Command palette", "Filter: ops", "ops task")
-	if strings.Contains(screen, "live task") {
-		t.Fatalf("dashboard palette should hide non-matching sessions:\n%s", screen)
-	}
+	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ops", "ops task")
 	app.SendKeys("Escape")
 	app.WaitFor("SERF LIVE", "live task", "ops task")
 
@@ -101,10 +98,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// and folds its child sessions out of the tree.
 	app.WaitFor("SERF LIVE", "Project:  serf", "Action:   enter toggles project")
 	app.SendKeys("Enter")
-	screen = app.WaitFor("SERF LIVE", "▸ ● serf")
-	if strings.Contains(screen, "live task") || strings.Contains(screen, "ended maintenance") {
-		t.Fatalf("collapsed project should hide child sessions:\n%s", screen)
-	}
+	app.WaitForWithout([]string{"live task", "ended maintenance"}, "SERF LIVE", "▸ ● serf")
 	app.SendKeys("Right")
 	app.WaitFor("SERF LIVE", "live task", "1 recent")
 	// Down to the ended-sessions toggle, Enter to reveal the ended session.
@@ -114,10 +108,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 	app.SendKeys("/")
 	app.TypeText("ended")
-	screen = app.WaitFor("Command palette", "Filter: ended", "ended maintenance")
-	if strings.Contains(screen, "live task") {
-		t.Fatalf("dashboard palette should hide non-matching live session:\n%s", screen)
-	}
+	app.WaitForWithout([]string{"live task"}, "Command palette", "Filter: ended", "ended maintenance")
 	app.SendKeys("Escape")
 	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 
@@ -1270,6 +1261,50 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
+	return ""
+}
+
+// WaitForWithout polls until every wanted substring is present AND every
+// substring in without is absent, on the SAME captured frame. Checking
+// absence on a frame chosen only by positive matches races the repaint: a
+// capture can land after the filter line updates but before the list below
+// it does, so "the old row is gone" must be part of the awaited condition,
+// not a one-shot assertion on whichever frame satisfied the positives first.
+func (a *tmuxTUI) WaitForWithout(without []string, wants ...string) string {
+	a.t.Helper()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	nextDeadCheck := time.Now()
+	var screen string
+	for time.Now().Before(deadline) {
+		now := time.Now()
+		if !now.Before(nextDeadCheck) {
+			if status, dead := a.PaneDeadStatus(); dead {
+				a.t.Fatalf("serf-tui exited before %q without %q (status %s)\nvisible pane:\n%s\nrecent history:\n%s", wants, without, status, a.Capture(), a.CaptureHistory())
+			}
+			nextDeadCheck = now.Add(tuiE2EDeadCheckInterval)
+		}
+		screen = a.Capture()
+		ok := true
+		for _, want := range wants {
+			if !strings.Contains(screen, want) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			for _, absent := range without {
+				if strings.Contains(screen, absent) {
+					ok = false
+					break
+				}
+			}
+		}
+		if ok {
+			return screen
+		}
+		time.Sleep(tuiE2EPollInterval)
+	}
+	a.t.Fatalf("timed out waiting for %q without %q\nvisible pane:\n%s\nrecent history:\n%s", wants, without, screen, a.CaptureHistory())
 	return ""
 }
 
