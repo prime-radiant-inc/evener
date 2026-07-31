@@ -8,16 +8,19 @@
 # node_modules or a changed lockfile both trigger a fresh npm ci). (`-nt` is
 # a POSIX test(1) primitive, supported by /bin/sh on macOS and dash on
 # Linux; note it follows symlinks, so a symlinked node_modules compares the
-# SHARED target's mtime against this worktree's own lockfile.)
+# SHARED target's mtime against this worktree's own lockfile — a comparison
+# every fresh worktree loses, which is why the symlink branch settles that
+# case on lockfile content instead.)
 #
 # Two guards, both from real incidents:
 #
-# 1. Refuse to npm ci through a symlinked node_modules. Agent worktrees
-#    symlink node_modules to one shared install, and npm ci deletes an
-#    existing node_modules before installing — through a symlink that means
-#    deleting the shared install out from under every other worktree, which
-#    has emptied it repeatedly. Refusing loudly costs one explicit refresh
-#    at the target; the silent "self-heal" costs every other worktree.
+# 1. Never npm ci through a symlinked node_modules. Agent worktrees symlink
+#    node_modules to one shared install, and npm ci deletes an existing
+#    node_modules before installing — through a symlink that means deleting
+#    the shared install out from under every other worktree, which has
+#    emptied it repeatedly. So a symlinked install is either already the one
+#    this worktree wants (identical lockfiles) or a loud refusal; npm ci is
+#    not on the menu. The silent "self-heal" costs every other worktree.
 # 2. Prove the install is real by asking the LOCAL tsc for its version. A
 #    bare or npx `tsc` resolves to the unrelated tsc@2.0.4 package, which is
 #    not the TypeScript compiler — so an empty install can otherwise read as
@@ -35,12 +38,21 @@ cd "$frontend"
 if [ node_modules -nt package-lock.json ]; then
 	:
 elif [ -L node_modules ]; then
+	# A shared install's mtime says nothing about this worktree: the worktree
+	# checks its lockfile out long after the install was populated, so mtime
+	# calls every fresh worktree stale. What settles it is the lockfile the
+	# install was built from, sitting beside it — byte-identical to this
+	# worktree's means the install already contains exactly what's wanted.
 	target=$(readlink node_modules)
-	echo "ERROR: node_modules is a symlink to $target," >&2
-	echo "  and is older than this worktree's package-lock.json." >&2
-	echo "  npm ci would DELETE that shared install for every worktree using it." >&2
-	echo "  Refresh it at the target, then: touch \"$target\"" >&2
-	exit 1
+	shared=$(dirname "$target")
+	if ! cmp -s "$shared/package-lock.json" package-lock.json; then
+		echo "ERROR: node_modules is a symlink to $target," >&2
+		echo "  and $shared/package-lock.json does not match this worktree's." >&2
+		echo "  npm ci would DELETE that shared install for every worktree using it." >&2
+		echo "  Refresh the shared install in $shared, or give this worktree its own" >&2
+		echo "  real node_modules — never npm ci through the symlink." >&2
+		exit 1
+	fi
 else
 	npm ci
 fi
