@@ -238,14 +238,116 @@ func TestScenarioCardsNeverNameALiteralHostPort(t *testing.T) {
 	}
 }
 
-// TestScenarioPortAllowlistEntriesActuallyExist guards both port allowlists:
-// every configured (file, substring) pair must still be findable in the
-// named file, so a rewritten warning silently drops its exemption instead of
-// the exemption rotting into a stale, unchecked entry.
+// scenarioHandPickedPortPattern matches an address whose port the card left
+// for whoever runs it to invent: `127.0.0.1:<random-unused-port>`,
+// `localhost:<free port>`, `0.0.0.0:<PORT>`. It is the blind spot
+// TestScenarioCardsNeverNameALiteralHostPort documents and then walks past —
+// that rule keys on digits, and a placeholder has none, so a card handing the
+// port decision to a human passed every port audit in this file while being
+// the exact thing they exist to prevent.
+var scenarioHandPickedPortPattern = regexp.MustCompile(`(?:127\.0\.0\.1|0\.0\.0\.0|localhost):<[^>]*>`)
+
+// scenarioHandPickedPortAllowedMentions exempts a line that writes the
+// placeholder to describe where a port is READ FROM rather than to ask for one
+// to be chosen. That is the only reviewed reason: the rule below is otherwise
+// absolute, because both things a card can want from a port have a
+// deterministic recipe now — a port something listens on comes from the hub
+// that bound `127.0.0.1:0` and logged it (kata 68fm), and a port nothing
+// listens on comes from bind-read-close (kata nv03).
+var scenarioHandPickedPortAllowedMentions = map[string][]string{
+	// The placeholder here stands in for the digits serf-hub prints, in a
+	// sentence naming the log line the card reads its port back from — and
+	// that same sentence goes on to forbid writing a port into the card.
+	"test/scenarios/spawn-keyboard-contract.md": {
+		"own `listening on 127.0.0.1:<port>` log line — never a port written",
+	},
+}
+
+// TestScenarioCardsNeverAskAHumanToPickAPort rejects the last spelling of a
+// hand-picked port. Kata nv03: cli-sibling-binary.md told its executing agent
+// to run `serf-tui --hub-addr 127.0.0.1:<random-unused-port>`, which is the
+// same collision domain as a literal — two agents inventing a port each can
+// invent the same one, and neither knows whether anything is already there —
+// with none of the visibility, because no audit in this file could see a
+// placeholder.
+//
+// A card wanting an address nothing answers on does not have to guess: bind
+// `127.0.0.1:0`, read back the port the kernel assigned, close the listener,
+// and target that port (Jesse's ruling on nv03). Plain `:0` is not a
+// substitute — it binds, so it is an address something DOES come up on.
+func TestScenarioCardsNeverAskAHumanToPickAPort(t *testing.T) {
+	files := scenarioCardFiles(t)
+	var findings []string
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		allowed := scenarioHandPickedPortAllowedMentions[path]
+		for i, line := range strings.Split(string(raw), "\n") {
+			if !scenarioHandPickedPortPattern.MatchString(line) {
+				continue
+			}
+			if lineIsAllowed(line, allowed) {
+				continue
+			}
+			findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("scenario cards must never leave the port for whoever runs the "+
+			"card to invent — a placeholder is a hand-picked port that no port "+
+			"audit can see, and two agents running the card at once can pick the "+
+			"same number. For an address something listens on, take the port from "+
+			"the hub that bound `127.0.0.1:0` and logged it (docs/agentic-testing.md "+
+			"\"Setup checklist\"). For an address nothing listens on, bind "+
+			"`127.0.0.1:0`, read the port back, close the listener, and use that "+
+			"port (kata nv03, test/scenarios/cli-sibling-binary.md). If the "+
+			"placeholder describes where a port is read from rather than asking "+
+			"for one, add the line to scenarioHandPickedPortAllowedMentions:\n%s",
+			strings.Join(findings, "\n"))
+	}
+}
+
+// TestScenarioHandPickedPortPatternMatchesTheShapesItClaims pins the detector
+// itself. Every other test in this file is a corpus audit, and a corpus audit
+// goes green either because the corpus is clean or because the pattern stopped
+// matching anything — indistinguishable from the outside once the last
+// offender is fixed. These cases keep the second reading falsifiable.
+func TestScenarioHandPickedPortPatternMatchesTheShapesItClaims(t *testing.T) {
+	picked := []string{
+		"4. Run `./serf-tui --hub-addr 127.0.0.1:<random-unused-port>` with a",
+		"curl http://localhost:<free port>/api/spawn",
+		`"$run/serf-hub" -addr 0.0.0.0:<PORT>`,
+	}
+	for _, line := range picked {
+		if !scenarioHandPickedPortPattern.MatchString(line) {
+			t.Errorf("hand-picked port not detected: %q", line)
+		}
+	}
+	derived := []string{
+		`"$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &`,
+		"HUB=http://127.0.0.1:$PORT",
+		"Run `./serf-tui --hub-addr 127.0.0.1:$PORT` with a 5 second timeout",
+		"s.bind((\"127.0.0.1\", 0)); port = s.getsockname()[1]",
+	}
+	for _, line := range derived {
+		if scenarioHandPickedPortPattern.MatchString(line) {
+			t.Errorf("derived port reported as hand-picked: %q", line)
+		}
+	}
+}
+
+// TestScenarioPortAllowlistEntriesActuallyExist guards all three port
+// allowlists: every configured (file, substring) pair must still be findable
+// in the named file, so a rewritten warning silently drops its exemption
+// instead of the exemption rotting into a stale, unchecked entry.
 func TestScenarioPortAllowlistEntriesActuallyExist(t *testing.T) {
 	for _, allowlist := range []map[string][]string{
 		scenarioPortAllowedMentions,
 		scenarioLiteralHostPortAllowedMentions,
+		scenarioHandPickedPortAllowedMentions,
 	} {
 		for path, substrs := range allowlist {
 			raw, err := os.ReadFile(path)
