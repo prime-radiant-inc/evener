@@ -430,7 +430,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "failedToolCalls": undefined,
   "gitBranch": undefined,
   "goal": null,
-  "jobsUpdatedAt": null,
+  "jobsUpdatedAt": 1006,
   "lastFrameAt": 1008,
   "model": "anthropic/claude-sonnet-4-5",
   "modelProvider": "anthropic/claude-sonnet-4-5",

@@ -285,13 +285,6 @@ export interface ItemLifecycleParams {
   failedToolCalls?: number;
 }
 
-export interface JobUpdatedParams {
-  threadId: string;
-  ref: string;
-  jobId: string;
-  status: string;
-}
-
 export interface JobsListParams {
   ref?: string;
 }
@@ -1390,7 +1383,6 @@ export const NOTIFICATION_NAMES = [
   "serf/plugin/updated",
   "serf/thread/resync",
   "serf/task/updated",
-  "serf/job/updated",
   "serf/sandbox/escalation/requested",
   "serf/sandbox/escalation/resolved",
   "serf/tree/changed",
@@ -1540,7 +1532,6 @@ export interface NotificationTypes {
   "serf/plugin/updated": EmptyParams;
   "serf/thread/resync": ThreadResyncParams;
   "serf/task/updated": TaskUpdatedParams;
-  "serf/job/updated": JobUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
   "serf/sandbox/escalation/resolved": SandboxEscalationResolved;
   "serf/tree/changed": EmptyParams;

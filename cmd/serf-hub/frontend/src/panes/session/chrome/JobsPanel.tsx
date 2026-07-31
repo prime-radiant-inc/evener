@@ -3,8 +3,8 @@
 // Mirrors TasksPanel's structure onto the jobs wire (agent/jobs_panel.go's
 // JobSummary/JobOutputTail via jobData.ts's parsers): fetch-on-open, refetch
 // whenever model.jobsUpdatedAt changes while the panel stays open (a live
-// serf/job/updated push while the user is looking - Task 7's reducer case
-// bumps it on every such event), and the same failure taxonomy. Unlike
+// serf/job/started or serf/job/finished push while the user is looking - the
+// reducer bumps it on both), and the same failure taxonomy. Unlike
 // TasksPanel there is no live-pushed aggregate to badge the trigger with:
 // the running count comes from the last fetched list itself, so the trigger
 // starts bare and gains its ●N only after the first fetch lands.
@@ -300,8 +300,8 @@ export const JobsPanel = forwardRef<JobsPanelHandle, JobsPanelProps>(function Jo
   const [reloads, setReloads] = useState(0);
 
   // Re-fetches on every open, on every Try again, and again whenever
-  // model.jobsUpdatedAt changes while still open (a live serf/job/updated
-  // push while the user is looking) - see this file's own header comment.
+  // model.jobsUpdatedAt changes while still open (a live job lifecycle push
+  // while the user is looking) - see this file's own header comment.
   // `toasts` is deliberately not a dependency: useToasts() returns a fresh
   // wrapper object every render (see widgets/toast/index.tsx), so depending
   // on it would refire this effect on every unrelated re-render;

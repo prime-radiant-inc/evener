@@ -294,8 +294,8 @@ function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): vo
 }
 
 // Opens the panel, waits for the first fetch to land, then bumps
-// jobsUpdatedAt the way a serf/job/updated push does - which is the only
-// thing that re-fetches while the panel stays open.
+// jobsUpdatedAt the way a serf/job/started|finished push does - which is the
+// only thing that re-fetches while the panel stays open.
 async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEvent.setup>> {
   const user = userEvent.setup();
   const panel = (bump: number) => (

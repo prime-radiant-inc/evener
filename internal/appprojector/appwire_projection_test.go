@@ -167,40 +167,42 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
-func TestProject_JobStartedUpdated(t *testing.T) {
+// A job lifecycle event projects ONE notification, not two. serf/job/started
+// already carries the (jobId, status) pair a jobs-panel client refetches on,
+// so a second lightweight notification at the same instant would duplicate a
+// stream every client already receives (kata j7y6).
+func TestProject_JobStartedIsTheOnlyStartNotification(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventJobStarted,
 		Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"},
 	})
-	// The job lifecycle case emits the full serf/job/started notification plus
-	// the lightweight serf/job/updated the webui jobs panel reducer consumes.
-	if len(out) != 2 || out[1].Method != appwire.NotifySerfJobUpdated {
-		t.Fatalf("want serf/job/updated after serf/job/started, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobStarted {
+		t.Fatalf("want exactly one serf/job/started notification, got %+v", out)
 	}
-	params, ok := out[1].Params.(appwire.JobUpdatedParams)
+	params, ok := out[0].Params.(appwire.SerfJobParams)
 	if !ok {
-		t.Fatalf("params type = %T, want appwire.JobUpdatedParams", out[1].Params)
+		t.Fatalf("params type = %T, want appwire.SerfJobParams", out[0].Params)
 	}
-	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.JobID != "job_1" || params.Status != "running" {
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "running" {
 		t.Fatalf("params = %+v", params)
 	}
 }
 
-func TestProject_JobFinishedUpdated(t *testing.T) {
+func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventJobFinished,
 		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed"},
 	})
-	if len(out) != 2 || out[1].Method != appwire.NotifySerfJobUpdated {
-		t.Fatalf("want serf/job/updated after serf/job/finished, got %+v", out)
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfJobFinished {
+		t.Fatalf("want exactly one serf/job/finished notification, got %+v", out)
 	}
-	params, ok := out[1].Params.(appwire.JobUpdatedParams)
+	params, ok := out[0].Params.(appwire.SerfJobParams)
 	if !ok {
-		t.Fatalf("params type = %T, want appwire.JobUpdatedParams", out[1].Params)
+		t.Fatalf("params type = %T, want appwire.SerfJobParams", out[0].Params)
 	}
-	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.JobID != "job_1" || params.Status != "completed" {
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "completed" {
 		t.Fatalf("params = %+v", params)
 	}
 }
@@ -1025,7 +1027,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_delegate",
 		},
 	})
-	if len(started) != 2 || started[0].Method != appwire.NotifySerfJobStarted {
+	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
 		t.Fatalf("started=%+v", started)
 	}
 	startedParams, ok := started[0].Params.(appwire.SerfJobParams)
@@ -1058,7 +1060,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_delegate",
 		},
 	})
-	if len(finished) != 2 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished=%+v", finished)
 	}
 	finishedParams, ok := finished[0].Params.(appwire.SerfJobParams)
@@ -1095,7 +1097,7 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 			Resumable:        &resumable,
 		},
 	})
-	if len(finished) != 2 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished = %+v", finished)
 	}
 	params, ok := finished[0].Params.(appwire.SerfJobParams)

@@ -236,7 +236,6 @@ var Notifications = []NotificationSpec{
 	{NotifySerfPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
 	{NotifySerfThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
 	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
-	{NotifySerfJobUpdated, JobUpdatedParams{}, "A job's lifecycle state changed (started or finished)."},
 	{NotifySerfSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve."},
 	{NotifySerfSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
 	{NotifySerfTreeChanged, EmptyParams{}, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
