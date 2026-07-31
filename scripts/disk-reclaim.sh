@@ -200,8 +200,9 @@ if [ "$CHECK_ONLY" = 1 ]; then
 				kill -KILL "$probe_pid" 2>/dev/null
 				# bash announces a signal-killed background job on stderr the
 				# next time it forks, which would staple a "Killed: 9" line
-				# onto the diagnosis below. Dropping the job from its table
-				# says the same thing to nobody.
+				# onto the diagnosis below. Dropping the job from bash's own
+				# table leaves the kill exactly as it is and the diagnosis
+				# alone on stderr.
 				disown "$probe_pid" 2>/dev/null
 				cat >&2 <<-MSG
 					disk-reclaim: GOCACHE at "$gocache" did not answer in ${probe_timeout}s — the volume it lives on is STALLED (kata r07s).
