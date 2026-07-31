@@ -1157,3 +1157,103 @@ func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 	}
 	return params.Delta
 }
+
+// TestRelaySessionCommandReadResyncsListenersOnReplacementConnection (kata
+// 8nyk) pins the resync to the RECONNECT rather than to the goroutine that
+// usually drives it.
+//
+// A daemon that exits and is relaunched is a new turn-id generation. Live
+// "turn_%d" ids and the transcript's entry-index "turn_%d" ids are one
+// namespace with two counters, and only the live one can run ahead: a
+// no-active-turn announcement between two real turns mints a turn id that
+// never becomes a transcript entry (preTurnAnnouncementTurnID, kata 9ekv), and
+// a released turn reservation burns one too. The replacement daemon seeds its
+// projector from the transcript (PrepareAppIdentity -> SeedPersistedTurns), so
+// its first live turn can carry an id the DEAD generation already published.
+// A browser still holding the dead generation's model then takes turn/started
+// for a turn it already has, which is the turn-id-uniqueness invariant the
+// reducer logs.
+//
+// The repair for that is the resync this session already publishes when it
+// resumes a feed on a replacement connection: the client re-reads and its
+// model is replaced. The defect is WHERE that publication lives. Today only
+// recoverCanonicalFeed emits it, and recovery is asleep in backoff for up to
+// five seconds while a user's send relaunches the daemon and drives a
+// command-path read through the very same reconnect -- so the send that
+// resumes the feed is exactly the one that skips the resync.
+//
+// The listener is attached AFTER the drop here so recoverCanonicalFeed never
+// starts (it is gated on listeners existing at disconnect). In the live hub
+// the fanout listener is attached throughout and recovery merely loses the
+// race; removing the goroutine from the test removes the race instead of
+// depending on which side of it wins.
+func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	lease, err := source.AcquireRelaySession(params)
+	if err != nil {
+		t.Fatalf("AcquireRelaySession: %v", err)
+	}
+	defer lease.Close()
+
+	// Generation 1: the daemon whose turns the browser is holding.
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "generation 1"))
+	outcome := <-read
+	if outcome.err != nil {
+		t.Fatalf("first Read: %v", outcome.err)
+	}
+	if !outcome.result.Handoff.Commit() {
+		t.Fatal("first handoff commit lost")
+	}
+
+	// The daemon exits.
+	session := relaySessionFor(t, source)
+	session.mu.Lock()
+	epoch := session.connection.epoch
+	session.mu.Unlock()
+	session.disconnect(epoch)
+
+	// The hub's fanout is delivering to browser subscribers that hydrated from
+	// generation 1.
+	listenCtx, stopListening := context.WithCancel(t.Context())
+	defer stopListening()
+	deliveries, err := lease.Listen(listenCtx)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	// The user's send relaunches the daemon and reads through it. That read is
+	// what puts generation 2's frames on the feed.
+	replacementRead := readRelayAsync(context.Background(), lease, params)
+	replacementCall := <-daemon.reads
+	replacementCall.transport.recv <- appwire.Message{
+		Notification: notificationPointer(relayDelta("thread-1", "generation 2")),
+	}
+	replacementCall.transport.recv <- appwire.ResponseMessage(
+		replacementCall.request.ID,
+		relaySnapshot("thread-1", "generation 2"),
+	)
+
+	first := <-deliveries
+	if first.Notification.Method != appwire.NotifySerfThreadResync {
+		t.Fatalf("first delivery after the replacement connection = %q, want %q -- generation 2's frames reached a listener still holding generation 1's model",
+			first.Notification.Method, appwire.NotifySerfThreadResync)
+	}
+	first.Acknowledge()
+
+	second := <-deliveries
+	if got := decodeRelayDelta(t, second.Notification); got != "generation 2" {
+		t.Fatalf("delivery after the resync = %q, want the replacement connection's own frame", got)
+	}
+	second.Acknowledge()
+
+	replacementOutcome := <-replacementRead
+	if replacementOutcome.err != nil {
+		t.Fatalf("replacement Read: %v", replacementOutcome.err)
+	}
+	if !replacementOutcome.result.Handoff.Commit() {
+		t.Fatal("replacement handoff commit lost")
+	}
+}

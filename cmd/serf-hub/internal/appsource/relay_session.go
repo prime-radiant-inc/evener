@@ -33,7 +33,12 @@ type relaySession struct {
 	commandOwners  int
 	readParams     appwire.ThreadReadParams
 	recovering     bool
-	closed         bool
+	// resyncPending records that the feed listeners are on was interrupted and
+	// has not yet been resumed. The next connection this session installs
+	// publishes one serf/thread/resync ahead of anything that connection
+	// produces, whichever caller drove the reconnect (kata 8nyk).
+	resyncPending bool
+	closed        bool
 }
 
 type relayConnection struct {
@@ -222,6 +227,7 @@ func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams
 		s.releaseCommand()
 		return RelayReadResult{}, err
 	}
+	s.publishPendingResync(params)
 
 	s.mu.Lock()
 	s.nextGeneration++
@@ -364,6 +370,10 @@ func (s *relaySession) disconnect(epoch uint64) {
 	}
 	connection := s.connection
 	capture := s.capture
+	// Whatever listeners have seen so far belongs to the daemon behind this
+	// connection. A replacement daemon is a new turn-id generation, so the
+	// feed cannot resume against that state without a re-read first.
+	s.resyncPending = true
 	if capture != nil && capture.epoch == epoch && capture.prepared {
 		connection.disconnected = true
 		s.mu.Unlock()
@@ -394,10 +404,42 @@ func (s *relaySession) disconnect(epoch uint64) {
 	}
 }
 
+// publishPendingResync tells listeners to re-read once, before any frame from
+// the connection that just replaced an interrupted one reaches them.
+//
+// It lives on the read path rather than in recoverCanonicalFeed because the
+// reconnect is what invalidates a listener's state, and recovery is not the
+// only caller that performs one. A user's send relaunches an exited daemon and
+// reads through it (hub startTurn -> prepareRelay -> readThread), which
+// resumes the feed on a brand-new daemon generation while recovery is still
+// asleep in backoff -- so the resync has to be attached to the reconnect
+// itself or that send delivers the new generation's turn ids into a model
+// still holding the old generation's (kata 8nyk).
+//
+// The publish is queued, not awaited: publishLoop is FIFO and this job is
+// enqueued before the read that follows can produce one, so ordering holds
+// without blocking the command gate on listener acknowledgement.
+func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
+	s.mu.Lock()
+	if !s.resyncPending || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.resyncPending = false
+	resync := *appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
+		ThreadID: params.ThreadID,
+		Ref:      params.Ref,
+	}).Notification
+	s.queuePublishLocked([]appwire.Notification{resync}, nil)
+	s.mu.Unlock()
+}
+
 func (s *relaySession) recoverCanonicalFeed() {
 	// Recovery uses the same serialized atomic read as a downstream rejoin.
 	// Only after the replacement connection has a live subscribed continuation
-	// do listeners receive resync and resume the canonical feed.
+	// do listeners receive resync and resume the canonical feed. The resync is
+	// published by the read itself (publishPendingResync), so a command-path
+	// reconnect that beats this loop to the daemon emits it too.
 	attempt := 0
 	for {
 		s.mu.Lock()
@@ -411,26 +453,19 @@ func (s *relaySession) recoverCanonicalFeed() {
 
 		result, err := s.read(s.ctx, params)
 		if err == nil {
-			resync := *appwire.NotificationMessage(appwire.NotifySerfThreadResync, appwire.ThreadResyncParams{
-				ThreadID: result.Response.Thread.ID,
-				Ref:      result.Response.Thread.Serf.Ref,
-			}).Notification
-			if s.publishAndWait(resync) {
-				handoffResolved := result.Handoff.Abort()
-				s.mu.Lock()
-				live := handoffResolved &&
-					s.connection != nil &&
-					!s.connection.disconnected
-				if live {
-					s.recovering = false
-				}
-				s.mu.Unlock()
-				if live {
-					return
-				}
-				continue
+			handoffResolved := result.Handoff.Abort()
+			s.mu.Lock()
+			live := handoffResolved &&
+				s.connection != nil &&
+				!s.connection.disconnected
+			if live {
+				s.recovering = false
 			}
-			result.Handoff.Abort()
+			s.mu.Unlock()
+			if live {
+				return
+			}
+			continue
 		}
 
 		attempt++
@@ -451,23 +486,6 @@ func (s *relaySession) recoverCanonicalFeed() {
 			s.mu.Unlock()
 			return
 		}
-	}
-}
-
-func (s *relaySession) publishAndWait(notification appwire.Notification) bool {
-	done := make(chan struct{})
-	s.mu.Lock()
-	if s.closed || len(s.listeners) == 0 {
-		s.mu.Unlock()
-		return false
-	}
-	s.queuePublishLocked([]appwire.Notification{notification}, done)
-	s.mu.Unlock()
-	select {
-	case <-done:
-		return true
-	case <-s.ctx.Done():
-		return false
 	}
 }
 
