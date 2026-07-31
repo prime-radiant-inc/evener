@@ -318,6 +318,26 @@ func assertPromptFile(t *testing.T, path, stateDir, want string) {
 	}
 }
 
+// waitForRendezvous drives the launch wait with no child process to watch: a
+// nil exited channel never fires in the loop's select, so the rendezvous file
+// and the context are all that decide the outcome.
+//
+// That is precisely what the deleted exported WaitForRendezvous was — the same
+// loop minus the exited arm — and it had already drifted from the live one
+// twice: 0c3g had to patch the identical <-ctx.Done() arm in both copies just
+// to keep the sentinel meaning one thing, and the copy still polled
+// rendezvous.List while the live wait polled the listRendezvousForWait seam.
+// Nothing outside these tests could ever have called it; it lived in package
+// main, so no other package could import it (kata waf1).
+//
+// The tests below are the only place the wait's matching rules — PID, the
+// startedAfter staleness filter, and which sentinel a done context yields — are
+// asserted at all. Pointing them at the live loop puts that coverage on the
+// code that ships instead of on a copy of it.
+func waitForRendezvous(ctx context.Context, runDir string, pid int, opts ...WaitOption) (rendezvous.Entry, error) {
+	return waitForRendezvousOrExit(ctx, runDir, pid, nil, opts...)
+}
+
 func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 	dir := t.TempDir()
 
@@ -331,9 +351,9 @@ func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	got, err := WaitForRendezvous(ctx, dir, 12345)
+	got, err := waitForRendezvous(ctx, dir, 12345)
 	if err != nil {
-		t.Fatalf("WaitForRendezvous: %v", err)
+		t.Fatalf("waitForRendezvous: %v", err)
 	}
 	if got.Address != "127.0.0.1:50000" {
 		t.Errorf("Address: %q", got.Address)
@@ -344,20 +364,20 @@ func TestWaitForRendezvous_TimesOut(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := WaitForRendezvous(ctx, dir, 99999)
+	_, err := waitForRendezvous(ctx, dir, 99999)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
 }
 
-// WaitForRendezvous shares errRendezvousTimeout with the launch wait, so it
-// owes the same distinction: a caller that gave up is not the wait running out
-// of time, and a caller classifying by sentinel must not be told otherwise
-// (kata 0c3g).
+// A caller that gave up is not the wait running out of time, and a caller
+// classifying by sentinel must not be told otherwise (kata 0c3g). This is the
+// only place that distinction is asserted at the sentinel rather than through a
+// launch failure's rendered message.
 func TestWaitForRendezvous_AbandonedCallerIsNotATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := WaitForRendezvous(ctx, t.TempDir(), 99999)
+	_, err := waitForRendezvous(ctx, t.TempDir(), 99999)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -375,7 +395,7 @@ func TestWaitForRendezvous_WrongPID(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := WaitForRendezvous(ctx, dir, 22222); err == nil {
+	if _, err := waitForRendezvous(ctx, dir, 22222); err == nil {
 		t.Fatal("expected timeout for wrong PID")
 	}
 
@@ -406,9 +426,9 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	got, err := WaitForRendezvous(ctx, dir, 55555, WithStartedAfter(startedAfter))
+	got, err := waitForRendezvous(ctx, dir, 55555, WithStartedAfter(startedAfter))
 	if err != nil {
-		t.Fatalf("WaitForRendezvous: %v", err)
+		t.Fatalf("waitForRendezvous: %v", err)
 	}
 	if got.Address != "127.0.0.1:22222" {
 		t.Errorf("matched stale entry: address=%q", got.Address)
@@ -928,6 +948,130 @@ func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 	err := validateProviderCredentials("ollama", store, nil, "")
 	if err != nil {
 		t.Fatalf("validateProviderCredentials for ollama: %v", err)
+	}
+}
+
+// A launch-check that never produced a verdict was stopped for one of two
+// unrelated reasons — the serfLaunchCheckTimeout budget ran out, or the caller
+// that asked for the answer went away — and checkCtx.Err() is non-nil for both.
+// Calling the second one a timeout sends an operator triaging it after a slow
+// machine or a hung `serf launch-check`, when nothing was slow and nobody is
+// waiting for the answer any more (kata zg02).
+//
+// This is the FIRST place a mid-launch cancellation lands. The launch-check runs
+// ahead of the rendezvous wait 0c3g covers and carries its own budget, so it is
+// the message an operator actually sees when a client drops mid-launch.
+//
+// Every outcome stays an appwire.HubLaunchError. That is the discriminator each
+// surface keys off — the web client's isHubLaunchError (protocol/errors.ts) and
+// the TUI notice panel both read serfErrorInfo "hubLaunch" to headline the
+// failure "Couldn't start this session" — so the label is what changes and the
+// family of failure is not. Unlike the daemon launch failures of 42ck and 0c3g,
+// these strings are never keyword-classified: no surface runs
+// diagnostic.Classify over them, because the structured error carries the
+// attribution instead.
+func TestSerfLaunchCheckFailureNamesWhatActuallyHappened(t *testing.T) {
+	t.Parallel()
+	const neverAnswers = `#!/bin/sh
+sleep 30
+`
+	const rejectsTheLaunch = `#!/bin/sh
+echo 'unknown provider: openrouter' >&2
+exit 2
+`
+	checks := []struct {
+		name string
+		call func(ctx context.Context, serfBinary string) error
+	}{
+		{
+			name: "validate",
+			call: func(ctx context.Context, serfBinary string) error {
+				return validateSerfLaunchContract(ctx, serfBinary, "openrouter/free", nil)
+			},
+		},
+		{
+			name: "models",
+			call: func(ctx context.Context, serfBinary string) error {
+				_, err := listSerfLaunchModelContract(ctx, serfBinary, nil)
+				return err
+			},
+		},
+	}
+	outcomes := []struct {
+		name   string
+		script string
+		// The context the hub hands the check. Every hub path that reaches one
+		// passes a live request context: r.Context() on the REST resume, the
+		// websocket connection's ctx on the RPC one.
+		callerCtx   func(t *testing.T) context.Context
+		wantContain string
+		wantAbsent  []string
+	}{
+		{
+			// A browser that navigates away, a dropped connection, or a
+			// keepalive that gives up cancels the check without any budget
+			// having elapsed. Nobody was slow; the requester simply left.
+			name:   "caller abandons the request",
+			script: neverAnswers,
+			callerCtx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				t.Cleanup(cancel)
+				return ctx
+			},
+			wantContain: "serf launch-check canceled",
+			wantAbsent:  []string{"timed out", "timeout"},
+		},
+		{
+			// A check that starts and never answers is the real timeout, and it
+			// must keep saying so. A deadline the caller brought with it is the
+			// same thing as the hub's own budget — time genuinely ran out —
+			// which is why this drives the branch through the caller's context
+			// rather than waiting out serfLaunchCheckTimeout.
+			name:   "the check never answers",
+			script: neverAnswers,
+			callerCtx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx
+			},
+			wantContain: "serf launch-check timed out",
+			wantAbsent:  []string{"canceled"},
+		},
+		{
+			// The control: a check that ran, answered, and refused the launch is
+			// neither of the above, and none of the three may borrow another's
+			// label.
+			name:        "the check refuses the launch",
+			script:      rejectsTheLaunch,
+			wantContain: "serf launch-check failed",
+			wantAbsent:  []string{"timed out", "timeout", "canceled"},
+		},
+	}
+
+	for _, check := range checks {
+		for _, tc := range outcomes {
+			t.Run(check.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				serfBinary := filepath.Join(t.TempDir(), "fake-serf")
+				writeFakeSerf(t, serfBinary, tc.script)
+
+				ctx := context.Background()
+				if tc.callerCtx != nil {
+					ctx = tc.callerCtx(t)
+				}
+				err := check.call(ctx, serfBinary)
+				assertHubLaunchError(t, err)
+				if !strings.Contains(err.Error(), tc.wantContain) {
+					t.Fatalf("failure is missing %q:\n%v", tc.wantContain, err)
+				}
+				for _, absent := range tc.wantAbsent {
+					if strings.Contains(err.Error(), absent) {
+						t.Fatalf("failure should not contain %q:\n%v", absent, err)
+					}
+				}
+			})
+		}
 	}
 }
 

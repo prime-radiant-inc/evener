@@ -34,10 +34,10 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 		now := time.Now()
 		entry := rendezvous.Entry{PID: 77, Address: "127.0.0.1:1", StartedAt: now.Add(time.Second)}
 		_, _ = rendezvous.Write(dir, entry)
-		_, _ = WaitForRendezvous(ctx, dir, 77)
+		_, _ = waitForRendezvous(ctx, dir, 77)
 		staleCtx, cancel := context.WithCancel(ctx)
 		cancel()
-		_, _ = WaitForRendezvous(staleCtx, dir, 77, WithStartedAfter(now.Add(2*time.Second)))
+		_, _ = waitForRendezvous(staleCtx, dir, 77, WithStartedAfter(now.Add(2*time.Second)))
 		exited := make(chan error, 1)
 		if mode%2 == 0 {
 			exited <- errors.New("exit")
