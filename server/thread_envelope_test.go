@@ -425,6 +425,63 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	}
 }
 
+// TestEnvelopeLeadsTheCommitThatAnnouncesIt pins the ordering in BridgeEvent.
+//
+// The refresh must run BEFORE RecordAppEvent's commit. Swap them and a read
+// that cuts between the commit and the later refresh snapshots the STALE
+// envelope and then discards, as pre-cut, the very notification that announced
+// the new value: neither side carries it, and nothing afterwards corrects it.
+// That is the response-cut invariant inverted, which is the defect this whole
+// line of work exists to remove.
+//
+// TestEnvelopeCommittedBeforeTheCutIsInTheResponse looks like this pin and is
+// not: feedBridge returns only after the whole bridge pass, so it pins "refresh
+// before the reader's gate", which the inverted order still satisfies. This one
+// observes from INSIDE the commit, through the insideAppProjectionCommit seam,
+// where the difference is the whole question. No parking and no second
+// goroutine: the commit runs on feedBridge's own.
+//
+// One row is enough. The ordering is a property of BridgeEvent, not of a facet.
+func TestEnvelopeLeadsTheCommitThatAnnouncesIt(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+
+	var atCommit *int
+	var sawCommit bool
+	srv.mu.Lock()
+	srv.insideAppProjectionCommit = func() {
+		sawCommit = true
+		srv.mu.RLock()
+		if srv.appEnvelope.FailedToolCalls != nil {
+			v := *srv.appEnvelope.FailedToolCalls
+			atCommit = &v
+		}
+		srv.mu.RUnlock()
+	}
+	srv.mu.Unlock()
+
+	// A tool call fails: the session writes its count, then emits the event
+	// announcing it. That is the production ordering the bridge samples under.
+	src.failedToolCalls, src.failuresMeasured = 5, true
+	feedBridge(srv, events.SessionEvent{
+		Kind: events.EventToolCallEnd, SessionID: "th_1",
+		Data: events.ToolCallEndData{CallID: "call_1", ToolName: "shell", Error: "boom"},
+	})
+
+	if !sawCommit {
+		t.Fatal("the commit never ran; this test proves nothing")
+	}
+	if atCommit == nil {
+		t.Fatal("the envelope carried no failure count at commit time: the refresh runs " +
+			"AFTER the commit, so a read cutting between them snapshots the stale value " +
+			"and then discards the notification that announced the new one")
+	}
+	if *atCommit != 5 {
+		t.Fatalf("envelope failure count at commit time = %d, want 5", *atCommit)
+	}
+}
+
 // countingThreadEnvelopeSource counts every call made into it. It reports the
 // zero value for everything: what is under test is whether it is called at all.
 type countingThreadEnvelopeSource struct {
