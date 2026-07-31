@@ -225,15 +225,21 @@ appwire ref is `local:$SID`.
 
 ### Polling for state transitions
 
-The session's state field walks through `idle` → `processing` → … →
-`idle` (or `awaiting_input`, or `closed`). Wait for the state the
-scenario needs:
+The state vocabulary is fixed and shared by the web rail, the TUI, and
+this REST shim: `idle`, `active`, `awaiting`, `warning`, `errored`,
+`ended`, `notLoaded` (`hubcore.NormalizeState`,
+`cmd/serf-hub/internal/hubcore/tree.go:391-414`, normalizing
+`appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
+**`active`**, never `processing` — `processing` is not a wire value at
+all, and `test/scenarios/scenario_docs_test.go`'s
+`TestScenarioDocsUseCanonicalActiveState` fails the build on any card
+that writes `state=processing`. Wait for the state the scenario needs:
 
 ```bash
 for i in $(seq 1 60); do
   state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
             | jq -r '.state // ""' 2>/dev/null)
-  [ "$state" = "idle" ] && break          # change "idle" to "processing" as needed
+  [ "$state" = "idle" ] && break          # change "idle" to "active" as needed
   sleep 1
 done
 echo "state=$state"
@@ -241,7 +247,49 @@ echo "state=$state"
 
 The same `/api/sessions/local:$SID` response carries
 `capabilities.steer`, `capabilities.queue`, etc. — useful for
-asserting daemon-side gating (kata `wymv`).
+asserting daemon-side gating (kata `wymv`). It also carries
+`active_turn_id`, which the steer paths need: a turn is only truly in
+flight once both the status flip and the turn id have landed
+(`submitRouting.ts:48-50`'s `isTurnActive`).
+
+### The REST surface, and what is no longer on it
+
+There is exactly one session REST namespace now: `/api/sessions/<ref>`,
+where `<ref>` is the canonical `local:<SID>` form. The dispatcher is
+`handleAPISession` (`cmd/serf-hub/web_api_tree.go:1360-1419`) and the
+whole verb list is:
+
+| Route | Method | Notes |
+|---|---|---|
+| `/api/sessions/local:$SID` | GET | the detail object polled above |
+| `/api/sessions/local:$SID/details` | GET | same payload |
+| `/api/sessions/local:$SID/send` | POST | `{"text":"…"}` — a follow-up user turn |
+| `/api/sessions/local:$SID/interrupt` | POST | |
+| `/api/sessions/local:$SID/compact` | POST | the one action that can resume an ended session |
+| `/api/sessions/local:$SID/shutdown` | POST | |
+| `/api/sessions/local:$SID/clear` | POST | |
+| `/api/sessions/local:$SID/fork` | POST | |
+| `/api/sessions/local:$SID/model` | POST | |
+| `/api/sessions/local:$SID/reasoning-effort` | POST | |
+| `/api/sessions/local:$SID/rename` | POST | |
+| `/api/sessions/local:$SID/delete` | POST | |
+| `/api/sessions/local:$SID/tasks` | GET | |
+
+**The old `/s/<id>/<action>` form-POST shim is gone** — commit
+`660376f78` deleted it along with the vanilla-JS frontend, and
+`web_session.go:16-22` says so in a comment: `/s/<id>` now serves only
+the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
+returns 404. A card that still curls `$HUB/s/$SID/shutdown` gets a 404
+and a silently-not-shut-down session, which then poisons the next run's
+`state: idle` poll.
+
+**There is no REST route for steer, queue, or drain-as-steer at all.**
+Those three live only on the AppWire WebSocket as `turn/steer`,
+`turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`), so
+a scenario that needs them has to drive the composer in a browser — see
+"Driving the web UI" below. `capabilities.steer`/`capabilities.queue` on
+the detail object still report whether the daemon *would* accept them,
+which is enough for a gating-only assertion without a browser.
 
 ## Auditing sidecar scenarios
 
@@ -297,7 +345,28 @@ enough to use freely.
 
 ## Driving the web UI with superpowers-chrome:browsing
 
-The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use_browser`) with action verbs. After the auth-token redirect lands, the renderer constructs the singleton `window.SerfRenderer`; you drive it through `eval`.
+The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use_browser`) with action verbs.
+
+**There is no renderer handle to drive.** The vanilla-JS frontend that
+published `window.SerfRenderer` and `window.SerfAppwire` was deleted
+wholesale at commit `660376f78` (2026-07-22), and the React app that
+replaced it exposes nothing on `window` — the only `window.*` reference
+left in `cmd/serf-hub/frontend/src` outside tests is an `AudioContext`
+lookup (`notifications/channels.ts:45`). Anything in an older card that
+reads `window.SerfRenderer?.state` or calls `window.SerfAppwire.steer(…)`
+returns `undefined` / throws, and an `eval` that does so **fails open**:
+it reports "no chips found", which reads exactly like a real regression.
+
+So the driving surface is the DOM, and only the DOM:
+
+1. `data-testid` hooks, for controls whose accessible name is ambiguous.
+2. Accessible names and visible text, for everything else — this is what
+   `test/scenarios/README.md` already asks for ("prefer labels the user
+   sees").
+3. `localStorage` under the `serf.prefs.*` / `serf.rail.*` contracts, for
+   preconditions, seeded **before** the first page load.
+4. The REST shim and the on-disk transcript, for anything the DOM can
+   only hint at.
 
 ### Claim your own Chrome instance first (kata `8ecz`)
 
@@ -348,69 +417,179 @@ fact.
 ### Authenticated navigation
 
 ```text
-navigate $HUB/auth?token=<TOKEN>&next=/s/<SID>
-await_element [data-steer-trigger]      # or any element you expect
+navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+await_element [data-testid="composer-input-card"]
 ```
 
-The `/auth` route sets the session cookie then redirects to `next`.
-Use the literal token from `$HOME/.serf/auth-token` (the isolated
-`$HOME` from the Setup checklist), not the path. If you get
+The `/auth` route (`web.go:174`) sets the session cookie then redirects
+to `next`. Use the literal token from `$HOME/.serf/auth-token` (the
+isolated `$HOME` from the Setup checklist), not the path. If you get
 `"invalid token"` rendered, you passed the path.
+
+**A session URL is `/s/<hostID>:<sessionID>`, and a bare session id is
+not a URL.** `isRef` (`shell/routing.ts:29-32`) requires a colon with
+non-empty text on both sides; `urlToPane` returns `null` for anything
+else and `AppShell` renders `NotFound` — the words "Page not found" and
+"This link doesn't match anything in serf." (`shell/NotFound.tsx:16-17`).
+That is deliberate (commit `8cea30ca6`, "no back-compat"): the rail
+opens sessions as `local:<id>`, so a bare-id deep link used to open the
+same session a second time in a second pane. The Go side is not the
+gate — `/s/` serves the SPA shell for any id (`web_session.go:37-38`) —
+so the 404 you see is client-side, and `curl`ing `/s/<bare-id>` still
+returns 200 with the shell. Assert the rendered text, not the status code.
+
+### The selector map
+
+Every hook below was read out of the current tree. Prefer these over
+inventing a CSS path; if you need one that isn't here, grep
+`data-testid` in `cmd/serf-hub/frontend/src` rather than guessing.
+
+**Composer** (`panes/session/composer/Composer.tsx`):
+
+| Hook | What it is |
+|---|---|
+| `[data-testid="composer-input-card"]` | the prompt card; the textarea inside is `[aria-label="Message"]`, placeholder `Message the agent…` (`:783-784`) |
+| `[data-testid="composer-submit"]` | **Send**. Routes to `turn/queue` while a turn runs, `turn/start` otherwise (`submitRouting.ts:19-23`) — one label, two timings |
+| `[data-testid="composer-steer"]` | **Steer**. Renders only while `busy && capabilities.steer` (`:382`) |
+| `[data-testid="composer-stop"]` | **Stop** (interrupt) |
+| `[data-testid="composer-attach"]` | the paperclip; opens the hidden `input[type=file]` |
+| `[data-testid="pending-chips"]` | optimistic in-flight chips, labelled `Sending` / `Steering` / `Draining` (`pending/PendingChips.tsx:38-42,56`) |
+
+Shift+Enter is the Steer chord and reaches `handleSteerClick`
+(`Composer.tsx:685-689`) **even when the Steer button is not rendered** —
+that is the only way to attempt a steer against an idle session from the
+UI. `/` in an empty composer opens the command palette (`:673-676`).
+
+**Queue strip** (`composer/queue/QueueStrip.tsx`) has no testids; address
+it by its text: the heading `Queued messages (N)` (`:278`), the
+drain-everything button `Steer queue now` (`:282`), and per-row actions
+`Steer now`, `Edit message`, `Remove from queue` (`:305-333`). Rows for
+mutations whose fate is unknown read `Delivery uncertain — <text>` with a
+`Retry` button; rows whose session was deleted read `Destination
+deleted — <text>` with `Copy` (`:349-374`).
+
+**Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
+`[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`) — note
+`data-session-ref`, not the legacy `data-ref`, and there is no `.sb-row`
+class anywhere. Inside it: `[data-testid="rail-row-activity"]` (the
+second, gloss line — this is where the state word lands, **lowercased**
+by `humanizeState`, unlike `hubapi.StateWord`'s sentence case),
+`[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
+`[data-testid="favorite-star"]`, `[data-testid="rail-row-overflow"]`.
+Rail chrome: `[data-testid="rail-search"]`, `[data-testid="rail-settings"]`,
+`[data-testid="rail-brand"]`, `[data-testid="rail-chevron"]`. There is no
+separate "needs you" section — the Rail deliberately does not build one
+(`Rail.tsx:563`).
+
+**Transcript** (`panes/session/transcript/`): `[data-testid="turn-block"]`
+(carries `data-turn-id`), `[data-testid="user-message-item"]`,
+`[data-testid="agent-message-item"]`, `[data-testid="steering-item"]`,
+`[data-testid="tool-row"]`, `[data-testid="tool-call-item"]` (carries
+`data-tool-name`), `[data-testid="think-block"]`,
+`[data-testid="turn-failure"]`, `[data-testid="system-notice-line"]`,
+`[data-testid="notification-card"]`, `[data-testid="image-gallery-thumb"]`
+and `[data-testid="image-gallery-lightbox-img"]`,
+`[data-testid="load-older-row"]` / `[data-testid="load-older-sentinel"]` /
+`[data-testid="load-older-retry"]` (`flow/LoadOlderRow.tsx:82-91`),
+`[data-testid="new-content-pill"]`, `[data-testid="seen-divider"]`.
+
+**Session chrome** (`panes/session/chrome/`):
+`[data-testid="session-chrome"]`, `[data-testid="status-row"]` and its
+facts (`status-row-effort`, `status-row-context`, `status-row-cost`,
+`status-row-queue`, `status-row-work-time`, `status-row-failures`),
+`[data-testid="model-switch-trigger"]` / `[data-testid="model-switch-value"]`,
+`[data-testid="goal-popover"]`, `[data-testid="task-row"]`.
+
+**Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`,
+`[data-testid="spawn-submit"]`, `[data-testid="spawn-attach"]`,
+`[data-testid="spawn-branch"]`. The model picker is the shared ARIA
+combobox in `widgets/modelCatalog/` — `role="option"` rows, not the
+legacy `.chip-picker-*` classes.
+
+**Toasts** are the error channel for actions that fail without a
+dedicated surface: `section[aria-live="polite"][aria-label="Notifications"]`
+(`widgets/toast/index.tsx:36`).
+
+### Seeding preferences before the first load
+
+Preferences are flat `localStorage` keys under `serf.prefs.<name>`,
+hydrated **once at module load** (`stores/prefs.ts:110-125`), so a write
+after the page is up does not retroactively change behavior — navigate to
+any authenticated page first, write the keys, then reload:
+
+```javascript
+// values are the strings "1" / "0", never JSON
+localStorage.setItem("serf.prefs.notificationsTitle", "1");
+localStorage.setItem("serf.prefs.notificationsFavicon", "1");
+```
+
+Notification prefs are `notificationsTitle`, `notificationsFavicon`,
+`notificationsOs`, `notificationsSound` (`prefs.ts:223-228`) and **all
+four default to OFF** (`:266-273`) — a card that expects a tab-title
+badge without opting in is asserting the wrong default. There is no
+`serf-hub.notifications` JSON blob any more. Rail expansion state is one
+JSON blob under `serf.rail.expanded.v1` (`shell/rail/railExpansion.ts:19`).
 
 ### Synchronous vs. async assertion shape
 
-For any "did the optimistic UI update happen before the RPC
-resolved?" scenario, this is the pattern. Fire the action, **don't
-await it**, then take a synchronous DOM snapshot. Then await and take
-a post-ack snapshot:
+For any "did the optimistic UI update happen before the RPC resolved?"
+scenario, this is still the pattern — but the trigger is now a real
+click, because there is no promise-returning API to hold. Click without
+awaiting anything, snapshot synchronously, then settle and snapshot
+again:
 
 ```javascript
 (async () => {
-  const before = {
-    pendingChips: document.querySelectorAll(".optimistic-pending").length,
-  };
-  // Fire — capture promise but don't await yet.
-  const promise = window.SerfAppwire.steer(
-    window.SerfRenderer.sessionId, "", "this should fail visibly"
-  ).catch(e => e);
-  // Synchronous: pending placeholder is in the DOM RIGHT NOW.
-  const sync = {
-    pendingChips: document.querySelectorAll(".optimistic-pending").length,
-    pendingText: document.querySelector(".optimistic-pending")?.textContent,
-  };
-  await promise;
-  await new Promise(r => setTimeout(r, 200));  // let DOM settle
-  const after = {
-    pendingChips: document.querySelectorAll(".optimistic-pending").length,
-    failedChips: document.querySelectorAll(".optimistic-failed").length,
-    reason: document.querySelector(".optimistic-failed-reason")?.textContent,
-  };
-  return JSON.stringify({ before, sync, after }, null, 2);
+  const chips = () => Array.from(
+    document.querySelectorAll('[data-testid="pending-chips"] li'),
+    (li) => li.textContent,
+  );
+  const before = chips();
+  document.querySelector('[data-testid="composer-steer"]').click();
+  // Synchronous: the optimistic chip is in the DOM RIGHT NOW.
+  const sync = chips();
+  await new Promise((r) => setTimeout(r, 2000)); // let the ack land
+  const after = chips();
+  const toast = document.querySelector('[aria-label="Notifications"]')?.textContent;
+  return JSON.stringify({ port: location.port, before, sync, after, toast }, null, 2);
 })()
 ```
 
-Without the no-await capture, the test can't distinguish "pending
-chip rendered and was reconciled" from "pending chip never rendered."
+Without the no-await capture, the test can't distinguish "pending chip
+rendered and was reconciled" from "pending chip never rendered." A chip
+that is still present after the settle window is the failure signal:
+reconciliation is driven by the `clientMutationId` coming back on
+`thread/queueChanged`, `serf/steering/injected`, `item/*` or `turn/*`
+(`stores/threads.ts:797-810`), so a stuck chip means the ack never
+arrived.
 
-### Probing internal renderer state
+### Probing without a renderer handle
 
-`window.SerfRenderer` is the renderer's singleton. Useful introspection:
+`window.SerfRenderer` is gone; ask the DOM and the server instead.
 
 ```javascript
 JSON.stringify({
-  state: window.SerfRenderer?.state,         // idle | processing | …
-  activeTurnId: window.SerfRenderer?.activeTurnId,
-  appwireHydrated: window.SerfRenderer?.appwireHydrated,
-  pendingType: typeof window.SerfRenderer?.pending,
-  windowKeys: Object.keys(window).filter(k => k.toLowerCase().includes("serf")),
+  port: location.port,                     // page-identity check, always
+  path: location.pathname,                 // should be /s/local:<SID>
+  steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
+  stopRendered: !!document.querySelector('[data-testid="composer-stop"]'),
+  turns: document.querySelectorAll('[data-testid="turn-block"]').length,
+  activity: document.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+  queueHeading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
 })
 ```
 
-If `appwireHydrated` is `false` after navigation, the appwire
-WebSocket didn't connect — check the hub log. If `pendingType` is
-`"undefined"` when you expect an object, the renderer's
-optimistic-rendering registry never installed (this was the kata
-`wymv` debug entry point).
+`steerRendered` is the closest thing left to the old `activeTurnId`
+probe: Steer renders only while the turn is genuinely in flight
+(`Composer.tsx:382`). If it never appears while
+`/api/sessions/local:$SID` reports `state=active`, the AppWire socket
+did not hydrate — check `$run/hub.log`, and confirm the page is really
+the one you think it is via the `location.port` assertion above.
+
+The authoritative counterpart to any of this is the REST detail object
+and the on-disk transcript. When a DOM read is ambiguous, do not add
+more selectors — cross-check `/api/sessions/local:$SID` and
+`serf-doctor transcript`, which cannot be fooled by a stale tab.
 
 ## Driving the TUI with tmux
 
@@ -539,10 +718,10 @@ has six rebuild points:
 
 1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o "$run/serf" ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
 2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/serf-hub" ./cmd/serf-hub && "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" & HUBPID=$!`.
-3. **Web renderer** — `cmd/serf-hub/assets/*.js`. These files are embedded into `serf-hub`; rebuild and restart the hub, then refresh the browser tab.
+3. **Web UI** — `cmd/serf-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/serf-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install — `make web-preflight` refuses to `npm ci` through that symlink on purpose (it would empty the install for every other worktree); refresh it at the target instead.
 4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o "$run/serf-tui" ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
-5. **AppWire types** — `internal/appwire/`. Both daemon and hub statically link these; rebuild both.
-6. **Pending-coordinator / pending-registry** — owned by the TUI and the renderer respectively; same rebuild rules as 3 and 4.
+5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`frontend/src/protocol/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
+6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
 
 Stderr probes are cheap and unambiguous. Example from the kata `wymv`
 debug session — wanted to know whether the TUI's reconcile path was
@@ -572,11 +751,13 @@ scaffolding.
 Idempotent cleanup that won't fail if anything's already gone:
 
 ```bash
-# Shut down any sessions you spawned.
+# Shut down any sessions you spawned. The canonical ref form is
+# local:<SID> and the namespace is /api/sessions — the old
+# /s/<id>/shutdown shim 404s silently, leaving the daemon running.
 for sid in $SID1 $SID2 $SID3; do
   curl -s -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN" -d '{}' \
-    "$HUB/s/$sid/shutdown" >/dev/null 2>&1
+    "$HUB/api/sessions/local:$sid/shutdown" >/dev/null 2>&1
 done
 
 # Kill any tmux sessions you opened.
@@ -682,7 +863,8 @@ file a kata. Don't try to drive past the gate from the scenario.
   checklist, never Jesse's real `9180`.
 - **Auth token**: `$HOME/.serf/auth-token` — the isolated `$HOME` from
   the Setup checklist, never Jesse's real one.
-- **Follow-up turn** (after the initial spawn prompt): `POST /s/<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here).
+- **Follow-up turn** (after the initial spawn prompt): `POST /api/sessions/local:<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here). See "The REST surface" above for the full verb list and for the three verbs — steer, queue, drain-as-steer — that have no REST route at all.
+- **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
 - **Per-session transcript**: `$HOME/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
