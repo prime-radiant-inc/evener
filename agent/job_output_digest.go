@@ -25,10 +25,13 @@ func trimTrailingPartialRune(b []byte) []byte {
 }
 
 // trimLeadingPartialRune drops UTF-8 continuation bytes left dangling at the START
-// of a byte slice cut at an arbitrary offset.
+// of a byte slice cut at an arbitrary offset. It drops at most three: that is the
+// longest continuation run a 4-byte rune can leave behind a cut, so output that
+// is not UTF-8 at all (binary logs are legal) keeps every byte past that bound
+// instead of having a whole run of 0x80-0xBF bytes eaten.
 func trimLeadingPartialRune(b []byte) []byte {
 	i := 0
-	for i < len(b) && !utf8.RuneStart(b[i]) {
+	for i < len(b) && i < utf8.UTFMax-1 && !utf8.RuneStart(b[i]) {
 		i++
 	}
 	return b[i:]
