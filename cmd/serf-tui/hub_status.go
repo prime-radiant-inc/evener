@@ -210,7 +210,8 @@ func appendDiagnosticsSections(b *strings.Builder, ds *appwire.SerfDiagnostics, 
 			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
 		}
 		sort.Strings(parts)
-		b.WriteString("\n  " + strings.Join(parts, "  "))
+		b.WriteString("\n  ")
+		b.WriteString(strings.Join(parts, "  "))
 	}
 
 	fmt.Fprintf(b, "\n\nJobs (%d):", len(ds.Jobs))
@@ -246,7 +247,8 @@ func writeWrappedStatusList(b *strings.Builder, label string, items []string, wi
 	prefix := "  " + label + " "
 	indent := strings.Repeat(" ", len(prefix))
 
-	b.WriteString("\n" + prefix)
+	b.WriteString("\n")
+	b.WriteString(prefix)
 	col := len(prefix)
 	for i, item := range items {
 		entry := item
@@ -258,7 +260,8 @@ func writeWrappedStatusList(b *strings.Builder, label string, items []string, wi
 			needed++ // space before item
 		}
 		if col+needed > width && col > len(prefix) {
-			b.WriteString("\n" + indent)
+			b.WriteString("\n")
+			b.WriteString(indent)
 			col = len(indent)
 		} else if i > 0 {
 			b.WriteString(" ")
