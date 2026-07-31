@@ -134,8 +134,8 @@ var scenarioStateRootIsolationMarker = regexp.MustCompile(
 // and neither matched. Anchor and root are separate alternations now, so a new
 // spelling of either half is one entry rather than a new blind spot.
 const (
-	scenarioHomeAnchor  = `(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+)`
 	scenarioLiteralHome = `(?:/home|/Users)/[^/\s]+`
+	scenarioHomeAnchor  = `(?:~|\$\{?HOME\}?|` + scenarioLiteralHome + `)`
 	scenarioStateRoots  = `(?:\.serf|\.local/state/serf)`
 )
 
