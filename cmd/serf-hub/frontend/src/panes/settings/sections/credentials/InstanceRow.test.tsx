@@ -13,6 +13,7 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
     isDefault: false,
     activeSource: "absent",
     hasStoredOAuth: false,
+    credentialRequired: true,
     ...overrides,
   };
 }

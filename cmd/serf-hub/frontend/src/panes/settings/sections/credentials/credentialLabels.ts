@@ -45,13 +45,19 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
 // sourceLabel() lookup for the absent/none/unknown cases (file/env/oauth are
 // unreachable here, since any of those being true would make
 // credentialLayers non-empty).
+//
+// "absent" splits on credentialRequired, the hub's own gate (InstanceEntry,
+// appwire/types.go): an instance that needs no key of ours - a gateway that
+// inherits no type-level key, such as a local llama.cpp - has nothing missing
+// when it holds none, so calling it "Not configured" reports a working
+// provider as broken.
 export function unconfiguredLabel(instance: InstanceEntry): string | null {
   if (credentialLayers(instance).length > 0) return null;
   switch (instance.activeSource) {
     case "none":
       return "No credentials required";
     case "absent":
-      return "Not configured";
+      return instance.credentialRequired ? "Not configured" : "No key set · optional";
     default:
       return instance.activeSource || "Not configured";
   }
