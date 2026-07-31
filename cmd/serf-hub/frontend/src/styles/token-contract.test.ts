@@ -632,5 +632,5 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
-  expect(darkBlock).toContain("--surface-1: #161B22;");
+  expect(darkBlock).toContain("--surface-1: #171E28;");
 });

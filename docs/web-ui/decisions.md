@@ -480,4 +480,24 @@ worktrees own those files:
   deleted. A parent row's colour reflects only its own status today.
 - The inactive-subagents disclosure from mockup 23.
 
+## 2026-07-31 re-theme: Fjord + Ledger
+
+The wave-2 palette (neutral dark ink + steel-blue accent, cool light grey)
+was replaced wholesale — the first deliberate palette change since the
+rewrite. Five complete candidate palettes were built as `[data-theme="cand-*"]`
+overrides in `tokens.css` and evaluated with the real widget library (one
+session pane plus the core control set rendered per candidate). Every
+candidate was held to the same bars the canonical themes are: ink-hi ≥ 7:1,
+ink-mid ≥ 4.5:1, ink-low ≥ 3:1 on both pane surfaces, accent ≥ 4.5:1 for
+link text, and the DiffBlock quiet-contrast rules from
+`token-contract.test.ts`.
+
+**Chosen:** dark = **Fjord** (cool blue-grey surfaces, frost-blue accent,
+teal-leaning alive); light = **Ledger** (warm paper surfaces, warm
+near-black ink, brass attention, deep indigo accent). Rejected: Carbon
+(dark neutral, indigo accent), Hearth (dark warm sepia), Studio (light
+crisp, product-blue). Type scale, space grid, radius, and motion are
+unchanged — the re-theme touched color tokens only, which is exactly the
+seam the token contract was built to provide.
+
 <!-- decision-tables:end -->

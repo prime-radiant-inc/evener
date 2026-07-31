@@ -43,7 +43,7 @@
     // single source of truth for every color in the design system (it is the
     // ONLY file in the tree with a literal hex color; every other file only
     // references `var(--token)`) - where Biome force-downcases hex color
-    // literals (#0E1116 -> #0e1116) with no config knob to preserve case
+    // literals (#10151C -> #10151c) with no config knob to preserve case
     // (confirmed: CssFormatterConfiguration has no color-case option in the
     // 2.5.5 schema). That rewrites a deliberate existing convention rather
     // than reformatting, so per the brief's own fallback this is left off.

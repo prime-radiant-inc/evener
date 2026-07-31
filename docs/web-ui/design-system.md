@@ -20,29 +20,32 @@ what the implementation actually shipped.
 
 ## 1. Direction (the design law)
 
-> Reproduced verbatim from the wave-2 plan. If this section and the plan ever disagree, the
+> Reproduced verbatim from the wave-2 plan — **except the palette**, which the
+> 2026-07-31 re-theme replaced (see `decisions.md`, "2026-07-31 re-theme: Fjord +
+> Ledger"). For everything else, if this section and the plan ever disagree, the
 > plan is source of truth and this section is stale — file it as a doc bug.
 
-**Palette (dark, default):**
+**Palette (dark, default — "Fjord"):**
 
 ```css
---surface-0: #0E1116;  /* app background — deep neutral ink        */
---surface-1: #161B22;  /* panes, rail                              */
---surface-2: #1D242E;  /* raised: menus, dialogs, hover            */
---edge:      #262E3A;  /* hairline borders — replaces shadows      */
---ink-hi:    #E6EAF0;  /* primary text                             */
---ink-mid:   #9AA4B2;  /* secondary text                           */
---ink-low:   #5C6673;  /* placeholders, disabled, timestamps       */
---attention: #E8A33D;  /* a human is needed — THE amber. Nothing else may be amber. */
---alive:     #3FB68B;  /* agent working/streaming. Muted sea-green, never acid.     */
---danger:    #E5484D;  /* failure/destructive                       */
---accent:    #6CA0F5;  /* focus ring, selection, links — steel-blue */
+--surface-0: #10151C;  /* app background — deep cool ink             */
+--surface-1: #171E28;  /* panes, rail                              */
+--surface-2: #1F2833;  /* raised: menus, dialogs, hover            */
+--edge:      #2A3542;  /* hairline borders — replaces shadows      */
+--ink-hi:    #E5ECF4;  /* primary text                             */
+--ink-mid:   #93A3B5;  /* secondary text                           */
+--ink-low:   #5E6E80;  /* placeholders, disabled, timestamps       */
+--attention: #E8B04B;  /* a human is needed — THE amber. Nothing else may be amber. */
+--alive:     #4FBF9A;  /* agent working/streaming. Teal-leaning green, never acid.  */
+--danger:    #E06C75;  /* failure/destructive                       */
+--accent:    #81B4E8;  /* focus ring, selection, links — frost-blue */
 ```
 
 Each semantic family gets `-bg` and `-edge` companions mixed in `tokens.css` via
 `color-mix(in oklab, var(--attention) 15%, var(--surface-1))` — no new hex literals.
-Light theme: same names, values flipped around `#F5F7FA`/`#FFFFFF` surfaces with the same four
-semantic hues darkened one step for contrast (validated ≥ 4.5:1 for text, 3:1 for UI).
+Light theme ("Ledger"): same names, values flipped around warm `#F4F1EC`/`#FBFAF7`
+paper surfaces with the same four semantic hues re-voiced for light (brass
+attention, deep indigo accent), each validated ≥ 4.5:1 for text, 3:1 for UI.
 
 **Type:** IBM Plex Sans (UI + prose; display = weight 600, tracking −1%) and IBM Plex Mono
 (code, tool output, paths, timings). Scale (px): 12 caption / 13 ui / 14 body / 16 pane-title /
@@ -84,9 +87,9 @@ semantic families (`--attention`, `--alive`, `--danger`, `--accent`), each with 
 into the surface) and `-edge` (40% mix into the hairline border) companions. The two dedicated
 diff-notation backgrounds (`--diff-add-bg`/`--diff-del-bg`) are separate from that semantic
 family — 21 color tokens total, all declared identically-named in both theme blocks.
-Light-theme semantic hues are
-WCAG-computed (not eyeballed): `--attention: #9D6513`, `--alive: #2B7D60`, `--danger: #DB1F25`,
-`--accent: #1668EF`, each clearing ≥4.5:1 against both `#F5F7FA` and `#FFFFFF`.
+Light-theme ("Ledger") semantic hues are
+WCAG-computed (not eyeballed): `--attention: #8A5A0B`, `--alive: #2E6E4E`, `--danger: #B3382C`,
+`--accent: #2450B8`, each clearing ≥4.5:1 against both `#F4F1EC` and `#FBFAF7`.
 
 **Type** — `--font-sans` / `--font-mono` (IBM Plex, self-hosted from the `@ibm/plex-sans` /
 `@ibm/plex-mono` npm packages, latin1 subset, imported by relative `url()` straight from

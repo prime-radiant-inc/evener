@@ -9,8 +9,12 @@
  * theme.
  *
  * Source: docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md
- * (search that file for "Direction" — palette hex, type scale, space
- * grid, and motion budget are all specified there and reproduced here).
+ * specified the original palette (search that file for "Direction"). The
+ * 2026-07-31 re-theme replaced it: the dark theme is now "Fjord" (cool
+ * blue-grey, frost-blue accent) and the light theme is "Ledger" (warm
+ * paper, deep indigo accent), chosen from five candidates evaluated with
+ * real widgets — see docs/web-ui/decisions.md. Type scale, space grid,
+ * and motion budget are unchanged from the wave-2 plan.
  */
 
 :root,
@@ -18,13 +22,13 @@
   color-scheme: dark;
 
   /* --- surfaces + ink (dark, default) ---------------------------------- */
-  --surface-0: #0E1116; /* app background — deep neutral ink */
-  --surface-1: #161B22; /* panes, rail */
-  --surface-2: #1D242E; /* raised: menus, dialogs, hover */
-  --edge: #262E3A; /* hairline borders — replaces shadows */
-  --ink-hi: #E6EAF0; /* primary text */
-  --ink-mid: #9AA4B2; /* secondary text */
-  --ink-low: #5C6673; /* placeholders, disabled, timestamps */
+  --surface-0: #10151C; /* app background — deep cool ink */
+  --surface-1: #171E28; /* panes, rail */
+  --surface-2: #1F2833; /* raised: menus, dialogs, hover */
+  --edge: #2A3542; /* hairline borders — replaces shadows */
+  --ink-hi: #E5ECF4; /* primary text */
+  --ink-mid: #93A3B5; /* secondary text */
+  --ink-low: #5E6E80; /* placeholders, disabled, timestamps */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -32,10 +36,10 @@
    * bug, not a style choice — see that test for the allowlist and how a
    * widget earns an entry.
    */
-  --attention: #E8A33D; /* a human is needed — THE amber. Nothing else may be amber. */
-  --alive: #3FB68B; /* agent working/streaming. Muted sea-green, never acid. */
-  --danger: #E5484D; /* failure/destructive */
-  --accent: #6CA0F5; /* focus ring, selection, links — steel-blue */
+  --attention: #E8B04B; /* a human is needed — THE amber. Nothing else may be amber. */
+  --alive: #4FBF9A; /* agent working/streaming. Teal-leaning green, never acid. */
+  --danger: #E06C75; /* failure/destructive */
+  --accent: #81B4E8; /* focus ring, selection, links — frost-blue */
 
   /* -bg (15% into the pane surface) and -edge (40% into the hairline
    * border) companions for each hue above, so a "danger chip" or
@@ -56,25 +60,25 @@
    * grayscale as well as green/rose shifted, so the distinction does not
    * depend on saturation or perfect color vision.
    */
-  --diff-add-bg: #131A1B;
-  --diff-del-bg: #1D1519;
+  --diff-add-bg: #121D1B;
+  --diff-del-bg: #221721;
 
   /* --- terminal notation (dark) -------------------------------------- */
-  --ansi-black: #5C6673;
-  --ansi-red: #E5484D;
-  --ansi-green: #3FB68B;
-  --ansi-yellow: #E8A33D;
-  --ansi-blue: #6CA0F5;
-  --ansi-magenta: #B892F6;
-  --ansi-cyan: #5CC8D7;
-  --ansi-white: #E6EAF0;
-  --ansi-bright-black: #7D8794;
-  --ansi-bright-red: #FF6B70;
-  --ansi-bright-green: #62D5A9;
-  --ansi-bright-yellow: #F5BE62;
-  --ansi-bright-blue: #8DB7FF;
-  --ansi-bright-magenta: #D0AEFF;
-  --ansi-bright-cyan: #80DDEA;
+  --ansi-black: #5E6E80;
+  --ansi-red: #E06C75;
+  --ansi-green: #4FBF9A;
+  --ansi-yellow: #E8B04B;
+  --ansi-blue: #81B4E8;
+  --ansi-magenta: #A88FD8;
+  --ansi-cyan: #6BC4D4;
+  --ansi-white: #E5ECF4;
+  --ansi-bright-black: #71839A;
+  --ansi-bright-red: #EC858D;
+  --ansi-bright-green: #6CD3B1;
+  --ansi-bright-yellow: #F0C374;
+  --ansi-bright-blue: #9CC6EF;
+  --ansi-bright-magenta: #BFA9E6;
+  --ansi-bright-cyan: #8AD4E1;
   --ansi-bright-white: #FFFFFF;
 
   /* --- type -------------------------------------------------------------
@@ -120,12 +124,13 @@
   --motion-easing-standard: ease-out;
 }
 
-/* Light theme: same token names, values flipped around #F5F7FA/#FFFFFF
- * surfaces. The four attention-family hues are darkened one step each so
- * text usage clears WCAG AA (>=4.5:1) against both light surfaces — see
- * the report for this task for the computed ratios. Non-color tokens
- * (type/space/radius/motion) are theme-invariant and stay in the block
- * above; nothing here overrides them.
+/* Light theme ("Ledger"): same token names, values flipped around warm
+ * #F4F1EC/#FBFAF7 paper surfaces with warm near-black ink. The four
+ * attention-family hues each clear WCAG AA (>=4.5:1) for text usage against
+ * both light surfaces — ratios computed during the 2026-07-31 re-theme
+ * selection (Fjord dark + Ledger light, chosen from five candidates).
+ * Non-color tokens (type/space/radius/motion) are theme-invariant and stay
+ * in the block above; nothing here overrides them.
  *
  * Both selector forms are declared so the flip works whether data-theme
  * lands on <html> (real app) or on a nested wrapper div (gallery
@@ -135,18 +140,18 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --surface-0: #F5F7FA;
-  --surface-1: #FFFFFF;
+  --surface-0: #F4F1EC;
+  --surface-1: #FBFAF7;
   --surface-2: #FFFFFF;
-  --edge: #D8DEE6;
-  --ink-hi: #161B22;
-  --ink-mid: #545E6E;
-  --ink-low: #7D8794;
+  --edge: #E0DACF;
+  --ink-hi: #1F1B16;
+  --ink-mid: #5C554A;
+  --ink-low: #8A8172;
 
-  --attention: #9D6513;
-  --alive: #2B7D60;
-  --danger: #DB1F25;
-  --accent: #1668EF;
+  --attention: #8A5A0B;
+  --alive: #2E6E4E;
+  --danger: #B3382C;
+  --accent: #2450B8;
 
   --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
   --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
@@ -158,25 +163,25 @@
   --accent-edge: color-mix(in oklab, var(--accent) 40%, var(--edge));
 
   /* Diff notation remains domain-specific rather than a status signal. */
-  --diff-add-bg: #E9F3EC;
-  --diff-del-bg: #F5E7EB;
+  --diff-add-bg: #E3EDDD;
+  --diff-del-bg: #F2E4DC;
 
-  --ansi-black: #161B22;
-  --ansi-red: #B4232A;
-  --ansi-green: #216E4E;
-  --ansi-yellow: #805500;
-  --ansi-blue: #1558B0;
+  --ansi-black: #1F1B16;
+  --ansi-red: #A33226;
+  --ansi-green: #2E6E4E;
+  --ansi-yellow: #7A5208;
+  --ansi-blue: #2450B8;
   --ansi-magenta: #7A3E9D;
-  --ansi-cyan: #006B75;
-  --ansi-white: #545E6E;
-  --ansi-bright-black: #545E6E;
-  --ansi-bright-red: #DB1F25;
-  --ansi-bright-green: #2B7D60;
-  --ansi-bright-yellow: #9D6513;
-  --ansi-bright-blue: #1668EF;
+  --ansi-cyan: #0E6B6E;
+  --ansi-white: #5C554A;
+  --ansi-bright-black: #5C554A;
+  --ansi-bright-red: #B3382C;
+  --ansi-bright-green: #35835F;
+  --ansi-bright-yellow: #8A5A0B;
+  --ansi-bright-blue: #2E5FD0;
   --ansi-bright-magenta: #8E4EC6;
   --ansi-bright-cyan: #0E7490;
-  --ansi-bright-white: #161B22;
+  --ansi-bright-white: #1F1B16;
 }
 
 /* --- font-size + phone-density preference application ------------------
