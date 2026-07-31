@@ -137,8 +137,8 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		_ = os.MkdirAll(filepath.Join(root, "sessions"), 0o755)
 		_ = os.WriteFile(filepath.Join(root, "sessions", "01PAST.transcript.jsonl"), []byte("bad\n"), 0o600)
 		_, _ = pastEntryTurns(entry)
-		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{}}}}}, map[string]string{})
-		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult}}}}, map[string]string{})
+		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{}}}}}, map[string]string{})
+		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult}}}}, map[string]string{})
 
 		// Web construction and all manifest failures, including impossible encoding.
 		web.manifestFS = pass6BadFS{body: "missing"}

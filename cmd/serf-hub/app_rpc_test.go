@@ -785,7 +785,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
@@ -801,7 +801,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		t.Fatalf("communicate items=%+v", items)
 	}
 
-	results := appItemsFromReplayTurn("01TEST", "turn_2", 2, schema.Turn{
+	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
@@ -814,7 +814,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_result",
@@ -844,7 +844,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -866,7 +866,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -884,7 +884,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
 		t.Fatalf("web_search items=%+v", items)
 	}
@@ -906,7 +906,7 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
@@ -923,7 +923,7 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "commandExecution",
@@ -942,7 +942,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
@@ -966,7 +966,7 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	img := []byte("png")
-	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, schema.Turn{
+	items := appItemsFromReplayTurn("turn_3", 3, schema.Turn{
 		Kind: "STEERING",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "image",
@@ -1003,7 +1003,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1023,7 +1023,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_4", 4, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1034,7 +1034,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 }
 
 func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
-	checkpoint := appItemsFromReplayTurn("01TEST", "turn_4", 4, schema.Turn{
+	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
 	}, map[string]string{})
@@ -1045,7 +1045,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 		t.Fatalf("checkpoint item=%+v", got)
 	}
 
-	summary := appItemsFromReplayTurn("01TEST", "turn_5", 5, schema.Turn{
+	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
 	}, map[string]string{})
@@ -1987,6 +1987,67 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 	}
 }
 
+// TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns is the reload-into-a-
+// running-session half of the sha-addressed path. The daemon's own snapshot
+// carries tool-result descriptors that name their bytes by sha and no route;
+// the hub is what turns them into something the browser can fetch.
+func TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns(t *testing.T) {
+	sessionID := "02wMz5Txv9yYdSRJat13MZ"
+	sha := strings.Repeat("f", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{
+				ID: "turn_1",
+				Items: []appwire.ThreadItem{{
+					Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+					ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
+					Status:       appwire.TurnStatusCompleted,
+					OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12, SHA: sha}},
+				}},
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       19 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	imgs := resp.Thread.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped onto the daemon's descriptor", imgs)
+	}
+}
+
 func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
@@ -2252,6 +2313,157 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 	imgs := params.Item.OutputImages
 	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
 		t.Fatalf("OutputImages=%+v, want written-file plot.png /doc/image descriptor", imgs)
+	}
+}
+
+// TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon is the same check as
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage on the fanout a REAL local
+// daemon takes: LocalDaemonSource is a RelaySessionSource, so its frames reach
+// the browser through the acknowledged-fanout loop rather than the
+// non-atomic broadcast loop, and the two are separate call sites.
+func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("b", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local",
+			Serf: appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       21 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+
+	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_1",
+		Item: appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+			ToolName: "screenshot", CallID: "call_shot", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha}},
+		},
+	})
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyItemCompleted {
+				continue
+			}
+			var params struct {
+				Item appwire.ThreadItem `json:"item"`
+			}
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal completed params: %v", err)
+			}
+			imgs := params.Item.OutputImages
+			if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+				t.Fatalf("OutputImages=%+v, want the sha route stamped on the fanned-out descriptor", imgs)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for the relayed completed notification")
+		}
+	}
+}
+
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage is the live-streaming path
+// end to end through the relay (kata 2fxm): the daemon publishes an
+// item/completed whose tool-result image is named by sha and nothing else, and
+// the browser must receive a descriptor it can actually fetch.
+func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("a", 64)
+	source := &relayBroadcastSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_shot",
+			SessionID: sessionID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: "local:th_shot", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_shot"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", ToolName: "screenshot", CallID: "call_shot",
+			Output: "captured", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{
+				Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha,
+			}},
+		},
+	}).Notification
+
+	var completed appwire.Notification
+	for range 3 {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyItemCompleted {
+				completed = got
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relayed completed notification")
+		}
+		if completed.Method != "" {
+			break
+		}
+	}
+	if completed.Method == "" {
+		t.Fatal("completed notification was not relayed")
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(completed.Params, &params); err != nil {
+		t.Fatalf("unmarshal completed params: %v", err)
+	}
+	imgs := params.Item.OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped on the relayed descriptor", imgs)
 	}
 }
 

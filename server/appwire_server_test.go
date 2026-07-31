@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1694,5 +1696,51 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	}
 	if len(gotImages) != 1 || gotImages[0].Name != "shot.png" || !bytes.Equal(gotImages[0].Data, []byte("png")) {
 		t.Fatalf("images=%+v", gotImages)
+	}
+}
+
+// TestAppTurnsFromTranscriptFileProjectsToolResultImages covers the daemon's
+// only cold read of its own history (kata 2fxm). The seed it installs is the
+// sole turn authority for the rest of the session, so an image it drops here
+// stays missing from every later read of that thread — including the reload a
+// reader does mid-session.
+func TestAppTurnsFromTranscriptFileProjectsToolResultImages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 's', 'e', 'e', 'd'}
+	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_shot", Name: "screenshot", Content: "captured",
+				ImageData: png, ImageMediaType: "image/png",
+			},
+		}},
+	})); err != nil {
+		t.Fatalf("append tool result: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	turns := requireTranscriptFileTurns(t, path)
+	if len(turns) != 1 || len(turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", turns)
+	}
+	images := turns[0].Items[0].OutputImages
+	if len(images) != 1 {
+		t.Fatalf("OutputImages=%+v, want the tool result's own image described", images)
+	}
+	sum := sha256.Sum256(png)
+	want := appwire.OutputImage{
+		Source: "tool-result", Name: "screenshot", MediaType: "image/png",
+		Size: int64(len(png)), SHA: hex.EncodeToString(sum[:]),
+	}
+	if images[0] != want {
+		t.Fatalf("OutputImages[0]=%+v, want %+v", images[0], want)
 	}
 }

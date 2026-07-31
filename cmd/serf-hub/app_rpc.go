@@ -203,7 +203,11 @@ func registerThreadHandlers(
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp.Thread = enrichThreadFileBackedOutputImages(resp.Thread)
+		// A live daemon's turns carry sha-addressed tool-result descriptors with
+		// no route on them (the daemon does not serve the bytes; this hub does),
+		// so the route is stamped here before the file-backed pass adds any
+		// /doc/image descriptors of its own.
+		resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
 		annotateThreadProjects([]appwire.Thread{resp.Thread})
 		// Window any turns the source itself didn't (Codex thread/read and the
 		// past-merge return the full transcript); a daemon read already set
@@ -239,12 +243,12 @@ func registerThreadHandlers(
 					// File-backed output-image enrichment is intentionally page-local
 					// here: args can only be correlated from command-call items present
 					// in this returned page (or on the completed item itself).
-					thread := enrichThreadFileBackedOutputImages(appwire.Thread{
+					thread := enrichThreadFileBackedOutputImages(stampThreadImageURLs(appwire.Thread{
 						ID:        meta.Thread.ID,
 						SessionID: meta.Thread.SessionID,
 						CWD:       meta.Thread.CWD,
 						Turns:     live.Data,
-					})
+					}))
 					live.Data = thread.Turns
 				}
 				return live, nil

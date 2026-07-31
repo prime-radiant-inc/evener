@@ -486,6 +486,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		ArgumentsJSON: string(call.Arguments),
 		ToolState:     res.ToolState,
 	}
+	// A tool that returned image bytes says so here, by sha. The bytes
+	// themselves ride to the transcript with the tool-result turn and are never
+	// on this event -- a dashboard fetches them from whichever server publishes
+	// the thread, which is why the descriptor carries no URL. Without this the
+	// image is invisible to anyone watching live: it only reappears when the
+	// session is read back off disk.
+	if img, ok := events.ToolResultOutputImage(res.ToolName, res.ImageData, res.ImageMediaType); ok {
+		endData.OutputImages = []events.OutputImage{img}
+	}
 	if res.IsError {
 		endData.Error = res.FullOutput
 		endData.PrevalOnly = res.PrevalOnly

@@ -1,7 +1,10 @@
 package events
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -143,6 +146,61 @@ type OutputImage struct {
 	URL       string `json:"url,omitempty"`
 	SHA       string `json:"sha,omitempty"`
 	Path      string `json:"path,omitempty"`
+}
+
+// OutputImageSourceToolResult tags a descriptor whose bytes came back inside
+// the tool result itself, as opposed to a file the call named that a reader
+// can re-read off disk ("written-file", "read-file", "shell-path").
+const OutputImageSourceToolResult = "tool-result"
+
+// defaultOutputImageMediaType is what a tool result carrying image bytes but no
+// media type is reported as. Callers that know better pass their own.
+const defaultOutputImageMediaType = "image/png"
+
+// ToolResultOutputImage describes the image bytes a tool returned alongside its
+// text, addressed by the sha256 of those bytes.
+//
+// It is the ONE place the sha-addressed descriptor's field values are decided.
+// The same image is described twice over a session's life — once live, from the
+// tool result in hand (agent/session_tools.go), and once on reload, from the
+// same bytes read back out of the transcript
+// (internal/apptranscript.ToolResultOutputImages) — and the two must agree
+// field for field or a session changes appearance when it is reloaded.
+//
+// URL is deliberately absent: the route that serves the bytes belongs to
+// whichever server is publishing this thread, and neither the agent nor the
+// transcript projector knows it. The sha is the content identity; the server
+// stamps the URL.
+//
+// Reports false when there is no image to describe: no bytes at all, or bytes
+// that are not an image. A tool result can carry a PDF (read_file routes a
+// document through the same ImageResult the vision side-channel consumes), and
+// a document is not something a thumbnail strip can render — describing one as
+// an OutputImage only buys a fetch whose bytes the browser discards.
+func ToolResultOutputImage(name string, data []byte, mediaType string) (OutputImage, bool) {
+	if len(data) == 0 {
+		return OutputImage{}, false
+	}
+	if mediaType == "" {
+		mediaType = defaultOutputImageMediaType
+	}
+	if !strings.HasPrefix(mediaType, "image/") {
+		return OutputImage{}, false
+	}
+	return OutputImage{
+		Source:    OutputImageSourceToolResult,
+		Name:      name,
+		MediaType: mediaType,
+		Size:      int64(len(data)),
+		SHA:       imageSHA(data),
+	}, true
+}
+
+// imageSHA is the content address every sha-addressed image route in serf keys
+// on: lowercase hex sha256 of the raw bytes.
+func imageSHA(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ToolCallEndData is the payload for an EventToolCallEnd event.

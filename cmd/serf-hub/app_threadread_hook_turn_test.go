@@ -44,7 +44,7 @@ func TestReplayedCleanHookKeepsItsZeroExit(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnHookCompleted, llm.System("SessionStart hook exit 0"))
 	persisted.Hook = &schema.HookInfo{Event: "SessionStart", ExitCode: 0}
 
-	items := appItemsFromReplayTurn("s", "turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want exactly one", items)

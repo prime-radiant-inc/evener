@@ -38,7 +38,7 @@ func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 		if entryIndex > entries {
 			entries = entryIndex
 		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, nil)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 	})
 	return turns, entries, err
 }
@@ -425,6 +425,9 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	}
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
+	}
+	if len(incoming.OutputImages) == 0 {
+		incoming.OutputImages = existing.OutputImages
 	}
 	if incoming.ToolName == "" {
 		incoming.ToolName = existing.ToolName
