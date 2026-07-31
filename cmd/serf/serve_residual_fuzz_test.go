@@ -17,7 +17,6 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
@@ -28,27 +27,26 @@ import (
 
 type residualServeServer struct {
 	*server.Server
-	input              chan server.InputMessage
-	escalate           func(string, bool) error
-	compact            func(context.Context) error
-	steer              func(string)
-	steerImages        func(string, []server.ImageAttachment)
-	queue              func(string) error
-	queueImages        func(string, []server.ImageAttachment) error
-	goal               func(string) (bool, error)
-	drain              func() error
-	drainInput         func(string, []server.ImageAttachment) error
-	promote            func(int, string) error
-	cancel             func(int, string) (string, int, error)
-	envelopeSource     server.ThreadEnvelopeSource
-	meta               func() schema.SessionMeta
-	pendingEscalations func() []appwire.SandboxEscalationRequested
-	model              func(string) error
-	name               func(string)
-	effort             func(string)
-	tasks              func() any
-	clear              func(context.Context) error
-	shutdown           func()
+	input          chan server.InputMessage
+	escalate       func(string, bool) error
+	compact        func(context.Context) error
+	steer          func(string)
+	steerImages    func(string, []server.ImageAttachment)
+	queue          func(string) error
+	queueImages    func(string, []server.ImageAttachment) error
+	goal           func(string) (bool, error)
+	drain          func() error
+	drainInput     func(string, []server.ImageAttachment) error
+	promote        func(int, string) error
+	cancel         func(int, string) (string, int, error)
+	envelopeSource server.ThreadEnvelopeSource
+	meta           func() schema.SessionMeta
+	model          func(string) error
+	name           func(string)
+	effort         func(string)
+	tasks          func() any
+	clear          func(context.Context) error
+	shutdown       func()
 }
 
 func newResidualServeServer(cfg server.ServerConfig) *residualServeServer {
@@ -117,7 +115,6 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	_ = s.envelopeSource.PendingEscalations()
 	_, _, _ = s.envelopeSource.ReasoningInfo()
 	_ = s.envelopeSource.SessionMeta()
-	_ = s.pendingEscalations()
 	_ = s.model("test2")
 	s.name("renamed")
 	s.effort("low")

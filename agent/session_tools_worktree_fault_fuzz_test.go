@@ -1763,6 +1763,14 @@ func (f *worktreeFaults) run(args ...string) (string, error) {
 		case worktreeFaultMergeError:
 			f.record(args)
 			return "", errors.New("scripted merge-base failure")
+		default: // worktreeFaultMerged: an ancestor, the pre-bc1e4a064 unconditional
+			// answer this zero-value mode's name promises. bc1e4a064 hardened the
+			// raw scripted model to refuse this verdict outright ("no test reaches
+			// them today"), so a caller that falls through to it now gets an
+			// unmodeled-verdict error instead of the merged result this mode
+			// exists to script.
+			f.record(args)
+			return "", nil
 		}
 	}
 	if len(args) == 4 && args[0] == "cherry" {
@@ -1776,6 +1784,9 @@ func (f *worktreeFaults) run(args ...string) (string, error) {
 		case worktreeFaultMergeError:
 			f.record(args)
 			return "", errors.New("scripted cherry failure")
+		default: // worktreeFaultMerged: same pre-bc1e4a064 unconditional answer.
+			f.record(args)
+			return "", nil
 		}
 	}
 	return f.git.run(args...)

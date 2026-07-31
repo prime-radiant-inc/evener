@@ -74,10 +74,28 @@ func jdTailCreatePrepareRollback(t *testing.T) {
 	rig := newWtDlgRepo(t, delegateTestClient(func(llm.Request) llm.Response {
 		return communicateWithDefaultOutput("unused")
 	}))
-	res := rig.s.createDelegate(nil, delegateArgs{
-		Task: "prepare failure", Isolation: "worktree", AgentType: "missing-agent-type",
+	// Saturate the tree counter so prepare fails AFTER worktree creation and ID
+	// minting, matching TestDelegateIsolation_TreeAtCapacityAfterWorktreeCreateRollsBackLane
+	// (job_delegate_isolation_test.go). An invalid AgentType no longer reaches this
+	// branch: c138c4deb moved agent-type/model selection before ID minting, so it
+	// now fails via delegateStartFailed (no DelegateID) instead of the post-worktree
+	// delegateStartFailedWithIDs rollback path this case exists to cover.
+	if rig.s.treeCounter == nil {
+		t.Fatal("root session has no tree counter; cannot saturate")
+	}
+	reserved := 0
+	for rig.s.treeCounter.reserve(slotKindJob) {
+		reserved++
+	}
+	t.Cleanup(func() {
+		for range reserved {
+			rig.s.treeCounter.releaseKind(slotKindJob)
+		}
 	})
-	if res.Err == nil || res.DelegateID == "" {
+	res := rig.s.createDelegate(nil, delegateArgs{
+		Task: "prepare failure", Isolation: "worktree",
+	})
+	if !errors.Is(res.Err, errTreeAtCapacity) || res.DelegateID == "" {
 		t.Fatalf("prepare rollback = %+v", res)
 	}
 }

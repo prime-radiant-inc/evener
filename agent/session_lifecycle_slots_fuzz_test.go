@@ -14,7 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/plugin"
-	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/appwire"
 )
 
 // This file fuzzes four session-lifecycle + subagent-slot cores:
@@ -70,12 +70,6 @@ func lcycImages(n int) []ImageAttachment {
 	return out
 }
 
-// lcycProv returns a fixed non-empty causal provenance so the drain's
-// provenance.Union fold is exercised deterministically.
-func lcycProv() *provenance.Causal {
-	return &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "lcyc_w", WatchGeneration: "1"}}}
-}
-
 // ============================================================================
 // DrainAsSteerWithInput
 // ============================================================================
@@ -85,11 +79,14 @@ type lcycDrainOp struct {
 	code   int // 0 enqueue, 1 -> Processing, 2 -> Idle, 3 drain, 4 pop-head, 5 close
 	text   string
 	images int
-	prov   bool
 }
 
 // lcycDecodeDrain maps bytes to a stable op program (append fields, never
-// reorder, so the persisted corpus keeps its meaning).
+// reorder, so the persisted corpus keeps its meaning). The 4th byte per op was
+// historically "prov" (whether an enqueued entry carried causal provenance);
+// the client-mutation queue has no provenance field on a queued entry (see
+// lcycRunDrain case 0), so it is still consumed to hold the corpus's existing
+// byte layout but no longer decoded into anything.
 func lcycDecodeDrain(data []byte) []lcycDrainOp {
 	r := &seqReader{data: data}
 	n := r.intn(12) + 1
@@ -98,7 +95,7 @@ func lcycDecodeDrain(data []byte) []lcycDrainOp {
 		op := lcycDrainOp{code: r.intn(6)}
 		op.text = lcycDrainTexts[r.intn(len(lcycDrainTexts))]
 		op.images = r.intn(3)
-		op.prov = r.intn(2) == 1
+		_ = r.intn(2) // formerly prov; see doc comment above
 		ops = append(ops, op)
 	}
 	return ops
@@ -149,16 +146,33 @@ func lcycRunDrain(t *testing.T, sess *Session, ops []lcycDrainOp) string {
 	var sb strings.Builder
 	for idx, op := range ops {
 		switch op.code {
-		case 0: // enqueue directly so empty-text / image-only / provenance entries are reachable
-			entry := queuedInput{Text: op.text, Images: lcycImages(op.images)}
-			if op.prov {
-				entry.Provenance = lcycProv()
+		case 0:
+			// Enqueue through the client-mutation store (sess.inputQueue is now
+			// only a read projection of it, rebuilt by reflectDurableInputQueue;
+			// DrainAsSteerWithInput reads the store directly, so a direct append
+			// to the legacy field is invisible to it). This goes around
+			// EnqueueWithImages's validation, the same way the old direct-field
+			// append went around it, so an image-only entry is still reachable.
+			// A blank-or-whitespace-only, image-less entry has no representation
+			// at this layer either: appwire.NormalizeMutationInput drops a
+			// text item whose TrimSpace is empty, and clientMutationQueue then
+			// rejects the resulting empty input exactly as EnqueueWithImages
+			// does ("input is required") — so it is skipped, matching
+			// lcycCheckDrain's own driveAdded predicate below.
+			if strings.TrimSpace(op.text) != "" || op.images > 0 {
+				sess.mu.Lock()
+				closing := sess.closingOrClosedLocked()
+				sess.mu.Unlock()
+				if !closing {
+					if _, err := sess.clientMutationQueue(appwire.TurnQueueParams{
+						Ref:              sess.ID(),
+						ClientMutationID: "lcyc_" + newQueueEntryID(),
+						Input:            clientMutationInput(op.text, lcycImages(op.images)),
+					}); err != nil {
+						t.Fatalf("enqueue op %d: %v", idx, err)
+					}
+				}
 			}
-			sess.mu.Lock()
-			if !sess.closingOrClosedLocked() {
-				sess.inputQueue = append(sess.inputQueue, entry)
-			}
-			sess.mu.Unlock()
 		case 1:
 			sess.mu.Lock()
 			sess.setStateIfOpenLocked(SessionProcessing)
