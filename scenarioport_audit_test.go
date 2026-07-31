@@ -3,6 +3,7 @@ package serf_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -155,20 +156,107 @@ func TestScenarioCardsNeverTargetJessesHubPort(t *testing.T) {
 	}
 }
 
-// TestScenarioPortAllowlistEntriesActuallyExist guards the allowlist itself:
+// scenarioLiteralHostPortPattern matches an address a card typed out with the
+// port already decided: `127.0.0.1:9280`, `http://127.0.0.1:9186/api/spawn`,
+// `localhost:9187`, `0.0.0.0:9180`. Port `0` is the whole point of the
+// convention and is deliberately matched-then-allowed below rather than
+// excluded here, so the allowance is visible next to the rule.
+//
+// A port written as a variable (`127.0.0.1:$PORT`) or a placeholder
+// (`127.0.0.1:<random-unused-port>`) has no digits and never matches: those
+// are cards deriving the port from the hub that bound it, which is exactly
+// what this audit is pushing every card towards.
+var scenarioLiteralHostPortPattern = regexp.MustCompile(`(?:127\.0\.0\.1|0\.0\.0\.0|localhost):([0-9]+)`)
+
+// scenarioLiteralHostPortAllowedMentions is the allowlist for the rule below.
+// Unlike scenarioPortAllowedMentions — which is a large list of prose warning
+// agents away from 9180 — this one exists to stay empty or near it: a card
+// with a documented ruling behind its literal port, and nothing else. Cite the
+// ruling in the comment; a bare entry is a rubber stamp.
+var scenarioLiteralHostPortAllowedMentions = map[string][]string{
+	// Kata keyb ruled that this card keeps the REAL $HOME: its subject is a
+	// goal turn under an already-signed-in OpenAI OAuth session, and that
+	// state only exists under the real user state home. A hub on the real
+	// $HOME contends for Jesse's own `~/.serf/hub.lock`, so the card has to
+	// name the address his hub actually listens on in order to warn about it.
+	// This is the sentence that does the warning; the card's own launch four
+	// lines further down still binds 127.0.0.1:0 like every other card.
+	"test/scenarios/web-goal-set-and-complete.md": {
+		"The default `0.0.0.0:9180` may host an unrelated",
+	},
+}
+
+// TestScenarioCardsNeverNameALiteralHostPort closes the gap
+// TestScenarioCardsNeverTargetJessesHubPort left open: it checks one literal,
+// 9180, so a card could pick any other number and pass. Cards did — 9280,
+// 9186, 9187, 9331 — and the ones that shared a number shared it on purpose
+// ("reuse that hub if it's still running on 127.0.0.1:9280"), which turned a
+// hand-picked port into a rendezvous protocol and a collision domain: two
+// agents running the same card set at once fight over one listener.
+//
+// The convention that replaced it (kata 68fm, docs/agentic-testing.md's Setup
+// checklist) is that nobody picks a port at all — the hub binds
+// 127.0.0.1:0, logs what the kernel gave it, and every consumer reads that
+// back. A sibling card that wants the same hub takes the run directory
+// (`$SERF_E2E_RUN`) and re-derives the port from `$run/hub.log`. So a literal
+// port in a card is, by construction, either a stale pre-68fm recipe or a
+// private rendezvous convention — both of which this test rejects.
+func TestScenarioCardsNeverNameALiteralHostPort(t *testing.T) {
+	files := scenarioCardFiles(t)
+	var findings []string
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		allowed := scenarioLiteralHostPortAllowedMentions[path]
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, m := range scenarioLiteralHostPortPattern.FindAllStringSubmatch(line, -1) {
+				if m[1] == "0" {
+					continue // the sanctioned kernel-assigned form
+				}
+				if lineIsAllowed(line, allowed) {
+					continue
+				}
+				findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+				break
+			}
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("scenario cards must never name a host:port with the port already "+
+			"decided — bind `127.0.0.1:0` and read the port back from the hub's own "+
+			"`listening on` line instead (docs/agentic-testing.md \"Setup checklist\"), "+
+			"and hand it to a sibling card through `$SERF_E2E_RUN`/`$run/hub.log` "+
+			"rather than by agreeing on a number. A hand-picked port is a collision "+
+			"domain: two agents running these cards at once contend for one listener. "+
+			"If a line genuinely needs to name a port because a documented ruling "+
+			"forces it, add it to scenarioLiteralHostPortAllowedMentions and cite the "+
+			"ruling:\n%s",
+			strings.Join(findings, "\n"))
+	}
+}
+
+// TestScenarioPortAllowlistEntriesActuallyExist guards both port allowlists:
 // every configured (file, substring) pair must still be findable in the
 // named file, so a rewritten warning silently drops its exemption instead of
 // the exemption rotting into a stale, unchecked entry.
 func TestScenarioPortAllowlistEntriesActuallyExist(t *testing.T) {
-	for path, substrs := range scenarioPortAllowedMentions {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("allowlisted file %s does not exist: %v", path, err)
-		}
-		content := string(raw)
-		for _, sub := range substrs {
-			if !strings.Contains(content, sub) {
-				t.Errorf("%s: allowlisted substring no longer present, remove or fix the entry: %q", path, sub)
+	for _, allowlist := range []map[string][]string{
+		scenarioPortAllowedMentions,
+		scenarioLiteralHostPortAllowedMentions,
+	} {
+		for path, substrs := range allowlist {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("allowlisted file %s does not exist: %v", path, err)
+			}
+			content := string(raw)
+			for _, sub := range substrs {
+				if !strings.Contains(content, sub) {
+					t.Errorf("%s: allowlisted substring no longer present, remove or fix the entry: %q", path, sub)
+				}
 			}
 		}
 	}

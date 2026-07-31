@@ -261,13 +261,99 @@ func TestScenarioCardsNeverHardcodeALiteralHomePath(t *testing.T) {
 	}
 }
 
-// TestScenarioHomeApprovedFilesStillExist guards the allowlist itself, same
-// spirit as TestScenarioPortAllowlistEntriesActuallyExist: an entry for a
+// scenarioHubLaunchPattern is the mechanical definition of "this card launches
+// a hub": a serf-hub binary token — however it is pathed or quoted
+// (`"$run/serf-hub"`, `./serf-hub`, `/tmp/serf-hub-ask`) — followed by the
+// address flag every launch in this repo passes. It deliberately keys on the
+// invocation and not on prose: "start an isolated hub" is a sentence, and a
+// card can write it while typing a launch that isolates nothing.
+var scenarioHubLaunchPattern = regexp.MustCompile(`serf-hub[a-zA-Z0-9._-]*"?\s+-{1,2}addr\b`)
+
+// scenarioTypedHomeAssignment matches a card assigning $HOME for real:
+// `export HOME="$run/home"`, `HOME=$(mktemp -d …)`, an inline `HOME="$TH" …`
+// command prefix, `env -i HOME="$FAKE_HOME" …`. The leading boundary keeps
+// `XDG_STATE_HOME=` out — that relocates session history only, and leaves the
+// hub flock, auth-token and credentials on the real `~/.serf`.
+var scenarioTypedHomeAssignment = regexp.MustCompile(`(?:^|\s)(?:export\s+)?HOME=`)
+
+// scenarioHubLaunchApprovedFiles lists cards that type out a hub launch and
+// deliberately do NOT isolate $HOME. Each entry needs a ruling, cited — not a
+// reason invented at audit time.
+var scenarioHubLaunchApprovedFiles = map[string]string{
+	"test/scenarios/web-goal-set-and-complete.md": "kata keyb's OAuth-footgun " +
+		"ruling: the goal turn needs an already-signed-in OpenAI OAuth session, " +
+		"which exists only under the real user state home, so this hub runs on " +
+		"the real $HOME by design. The ruling's two mitigations are both in the " +
+		"card: it pre-checks the ~/.serf/hub.lock flock before starting, and " +
+		"relocates session history via XDG_STATE_HOME.",
+	"test/scenarios/tui-goal-set-and-complete.md": "the TUI half of the same " +
+		"kata-keyb ruling — its Pre-state says it \"inherits " +
+		"web-goal-set-and-complete.md's arrangement, including its documented " +
+		"OAuth-footgun exception and the flock pre-check that goes with it\", so " +
+		"it launches its hub on the real $HOME for the same reason.",
+}
+
+// TestScenarioCardsThatLaunchAHubIsolateHome closes the second blind spot in
+// this file's audits. TestScenarioCardsNeverReferenceRealHomeWithoutIsolation
+// only fires on a card that NAMES a state path — so "launches a hub" and
+// "isolates $HOME" were never connected by any test, and a card could type out
+// a full `serf-hub -addr …` launch, never write the word `~/.serf`, and share
+// Jesse's flock, auth-token, credentials and providers for the whole run.
+//
+// The bar here is deliberately stricter than the one that audit uses: a card
+// that types the launch command must also type the `HOME=` it launches under.
+// Pointing at the Setup checklist is a fine way to isolate when you are not
+// spelling out the command, but it cannot vouch for a command the card wrote
+// itself — web-goal-set-and-complete.md says "Setup checklist" in the same
+// paragraph where it explains that it deliberately runs on the real $HOME.
+func TestScenarioCardsThatLaunchAHubIsolateHome(t *testing.T) {
+	files := scenarioCardFiles(t)
+	var findings []string
+	for _, path := range files {
+		if _, ok := scenarioHubLaunchApprovedFiles[path]; ok {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		content := string(raw)
+		if !scenarioHubLaunchPattern.MatchString(content) {
+			continue
+		}
+		if scenarioTypedHomeAssignment.MatchString(content) {
+			continue
+		}
+		findings = append(findings, path)
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("a scenario card that types out a `serf-hub -addr …` launch must "+
+			"also type out the throwaway `$HOME` it launches under — the hub flock "+
+			"(`~/.serf/hub.lock`), the auth token, credentials.toml and "+
+			"providers.toml are keyed off $HOME directly and are not relocatable "+
+			"any other way (docs/testing.md, \"A Disposable Hub Needs Its Own "+
+			"HOME\"), so a launch with no `HOME=` in the card shares all four with "+
+			"Jesse's live hub. Add `export HOME=\"$run/home\"; mkdir -p \"$HOME\"; "+
+			"unset XDG_STATE_HOME` per docs/agentic-testing.md's Setup checklist, "+
+			"or — if a ruling says this card needs the real $HOME — add it to "+
+			"scenarioHubLaunchApprovedFiles citing that ruling:\n%s",
+			strings.Join(findings, "\n"))
+	}
+}
+
+// TestScenarioHomeApprovedFilesStillExist guards both allowlists in this file,
+// same spirit as TestScenarioPortAllowlistEntriesActuallyExist: an entry for a
 // deleted or renamed card is dead weight that stops meaning anything.
 func TestScenarioHomeApprovedFilesStillExist(t *testing.T) {
 	for path := range scenarioHomeApprovedFiles {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("scenarioHomeApprovedFiles entry %s: %v", path, err)
+		}
+	}
+	for path := range scenarioHubLaunchApprovedFiles {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("scenarioHubLaunchApprovedFiles entry %s: %v", path, err)
 		}
 	}
 }
