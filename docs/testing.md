@@ -237,6 +237,14 @@ paths_test.go:411:6: func checkSanitizeDirPrefix_PreservesLoneTrailingDot is unu
 running both. Run the linter after adding a check, and state which table each
 new check is registered in when handing work off.
 
+**A shell selftest that redirects `TMPDIR`.** macOS `mktemp -t` resolves
+against the per-user temp path (`confstr(_CS_DARWIN_USER_TEMP_DIR)`) and
+ignores `TMPDIR`, so a selftest that sets `TMPDIR=$scratch` to observe a
+script's temp handling observes nothing: the script writes to the real temp
+dir, six assertions in run-module-lint-selftest.sh were unfalsifiable, and
+every run littered the machine (found during kata cqne). Fake the `mktemp`
+binary on `PATH` instead of faking the environment.
+
 **A stylesheet assertion that matches its own comment.** A test that greps CSS
 text (`expect(css).toContain("flex: none")`) will match the declaration quoted
 in a doc comment above the rule. One of these passed with its implementation
