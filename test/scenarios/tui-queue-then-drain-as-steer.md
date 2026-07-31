@@ -31,44 +31,48 @@ The wiring lives in:
 - `./serf-tui` and `./serf-hub` built in repo root.
 - Anthropic OAuth or API key configured so
   `anthropic/claude-haiku-4-5-20251001` can be invoked.
-- No leftover tmux session named `serf-drain-test`.
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 
 ## Steps
 
 1. **Hermetic workdir + tmux + spawn**:
    ```
    WORKDIR=$(mktemp -d -t serf-drain-XXXX)
+   TMUX_SESSION="serf-drain-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
-   tmux new-session -d -s serf-drain-test -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux send-keys -t serf-drain-test "n"
+   tmux send-keys -t "$TMUX_SESSION" "n"
    sleep 0.5
-   tmux send-keys -t serf-drain-test BTab
-   tmux send-keys -t serf-drain-test C-u
-   tmux send-keys -t serf-drain-test -l "$WORKDIR"
-   tmux send-keys -t serf-drain-test Tab
+   tmux send-keys -t "$TMUX_SESSION" BTab
+   tmux send-keys -t "$TMUX_SESSION" C-u
+   tmux send-keys -t "$TMUX_SESSION" -l "$WORKDIR"
+   tmux send-keys -t "$TMUX_SESSION" Tab
    ```
 
 2. **Send a slow first prompt**:
    ```
-   tmux send-keys -t serf-drain-test -l "Read README.md and write a 5-paragraph essay about its main themes. Use formal prose. Take your time."
-   tmux send-keys -t serf-drain-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "Read README.md and write a 5-paragraph essay about its main themes. Use formal prose. Take your time."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 3
-   tmux capture-pane -t serf-drain-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm `state: active`, composer label `queue`, footer
    `enter: queue  ctrl+s: send as steer …`.
 
 3. **Type two follow-up messages and queue both with Enter**:
    ```
-   tmux send-keys -t serf-drain-test -l "Also list the file sizes."
-   tmux send-keys -t serf-drain-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "Also list the file sizes."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.3
-   tmux send-keys -t serf-drain-test -l "And summarise each section in one sentence."
-   tmux send-keys -t serf-drain-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "And summarise each section in one sentence."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
-   tmux capture-pane -t serf-drain-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The composer should be empty. Above it, `queued (2)` followed
    by two lines:
@@ -80,11 +84,11 @@ The wiring lives in:
 4. **Type a third line — but DO NOT press Enter — then press
    Ctrl+S to force-steer**:
    ```
-   tmux send-keys -t serf-drain-test -l "Change of plans: write a haiku instead. Forget everything else."
+   tmux send-keys -t "$TMUX_SESSION" -l "Change of plans: write a haiku instead. Forget everything else."
    sleep 0.2
-   tmux send-keys -t serf-drain-test C-s
+   tmux send-keys -t "$TMUX_SESSION" C-s
    sleep 1
-   tmux capture-pane -t serf-drain-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The `queued (...)` preview block disappears, the composer
    clears, and a `Force-steer sent.` system line appears in the
@@ -96,7 +100,7 @@ The wiring lives in:
 5. **Wait for the running turn to honour the steer**:
    ```
    sleep 10
-   tmux capture-pane -t serf-drain-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The composer flips back to `message` (`enter: send`). The
    assistant's final output is short — a haiku, not a five-
@@ -104,7 +108,7 @@ The wiring lives in:
 
 6. **Cross-check the transcript on disk**:
    ```
-   SID=$(tmux capture-pane -t serf-drain-test -p | \
+   SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
    TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    grep -c '"kind":"STEERING"' "$TS"
@@ -127,9 +131,9 @@ The wiring lives in:
 
 7. **Exit and clean up**:
    ```
-   tmux send-keys -t serf-drain-test C-o
-   tmux send-keys -t serf-drain-test "q"
-   tmux kill-session -t serf-drain-test 2>/dev/null
+   tmux send-keys -t "$TMUX_SESSION" C-o
+   tmux send-keys -t "$TMUX_SESSION" "q"
+   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
    rm -rf "$WORKDIR"
    ```
 
@@ -163,7 +167,7 @@ The wiring lives in:
 
 ## Cleanup
 
-- `tmux kill-session -t serf-drain-test 2>/dev/null`.
+- `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null`.
 - `rm -rf "$WORKDIR"`.
 
 ## Sharp edges

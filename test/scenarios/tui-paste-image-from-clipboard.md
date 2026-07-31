@@ -38,7 +38,10 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
   On a headless Linux host without an X server, start `Xvfb`
   first and export `DISPLAY` into the TUI's environment.
-- No leftover tmux session named `serf-e2e-clip`.
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 
 ## Steps
 
@@ -46,7 +49,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    needs to live on disk only long enough to load into the clipboard
    — the TUI re-saves the bytes into its own temp file on paste:
    ```bash
-   FIXDIR=$(mktemp -d -t serf-e2e-clip-XXXX)
+   FIXDIR=$(mktemp -d -t serf-e2e-clip-fixture-XXXX)
    convert -size 64x64 xc:red "$FIXDIR/red.png"
    # Linux / X11 — for Wayland use: wl-copy --type image/png < red.png
    # For macOS use: osascript -e 'set the clipboard to (read POSIX file "/path/red.png" as «class PNGf»)'
@@ -61,6 +64,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    spends most of its time on the image turn:
    ```bash
    WORKDIR=$(mktemp -d -t serf-tui-clip-work-XXXX)
+   TMUX_SESSION="serf-clip-$(basename "$WORKDIR")"
    TOKEN=$(cat "$HOME/.serf/auth-token")
    HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
@@ -80,7 +84,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 3. **Launch serf-tui in tmux** with the display server visible to its
    subprocess (else `xclip` will return `ErrClipboardUnavailable`):
    ```bash
-   tmux new-session -d -s serf-e2e-clip -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "DISPLAY=:99 ./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
@@ -90,13 +94,13 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 4. **Navigate into the spawned session** via the command palette
    (filtering on the SID suffix is enough to make the row unique):
    ```bash
-   tmux send-keys -t serf-e2e-clip "/"
+   tmux send-keys -t "$TMUX_SESSION" "/"
    sleep 0.3
-   tmux send-keys -t serf-e2e-clip -l "$SID"
+   tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    sleep 0.4
-   tmux send-keys -t serf-e2e-clip Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
-   tmux capture-pane -t serf-e2e-clip -p | head -20
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -20
    ```
    The captured pane should show
    `serf / session / <SID>` in the title bar and a
@@ -104,9 +108,9 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
 5. **Press Ctrl+V** to paste the clipboard image:
    ```bash
-   tmux send-keys -t serf-e2e-clip C-v
+   tmux send-keys -t "$TMUX_SESSION" C-v
    sleep 0.5
-   tmux capture-pane -t serf-e2e-clip -p | head -30
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -30
    ```
    The footer should now include an `attachments` row with a chip
    like `📎 serf-clipboard-3431062677.png [×]`. The composer textarea
@@ -115,11 +119,11 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
 6. **Type a prompt and submit**:
    ```bash
-   tmux send-keys -t serf-e2e-clip -l "describe this image in one sentence"
+   tmux send-keys -t "$TMUX_SESSION" -l "describe this image in one sentence"
    sleep 0.3
-   tmux send-keys -t serf-e2e-clip Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 8    # haiku-4-5 typically replies within a few seconds
-   tmux capture-pane -t serf-e2e-clip -p | head -35
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -35
    ```
 
 7. **Cross-check the transcript on disk**:
@@ -175,7 +179,7 @@ TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/s/$SID/shutdown" >/dev/null
-tmux kill-session -t serf-e2e-clip 2>/dev/null
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$FIXDIR" "$WORKDIR"
 # Optional, for hermeticity:
 # find $HOME/.local/state/serf/projects -name "$SID*" -delete

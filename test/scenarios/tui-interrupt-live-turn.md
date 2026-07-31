@@ -29,8 +29,10 @@ palette as soon as the turn starts.
 - OpenAI OAuth signed in (`./serf openai status` shows
   `source=oauth`). The slow-turn prompt needs the model to actually
   call `exec_command`; `openai/gpt-5.4-mini` does so reliably.
-- No leftover `tmux` session named `serf-interrupt-test` (the
-  scenario kills it first).
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 
 ## Steps
 
@@ -40,7 +42,7 @@ Shared setup:
 TOKEN=$(cat "$HOME/.serf/auth-token")
 HUB=http://127.0.0.1:$PORT
 tmpdir=$(mktemp -d -t serf-e2e-9sck-XXXXX)
-tmux kill-session -t serf-interrupt-test 2>/dev/null
+TMUX_SESSION="serf-interrupt-$(basename "$tmpdir")"
 ```
 
 1. **Spawn a fresh session** via the REST API (cleanest path: gives
@@ -63,10 +65,10 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 
 2. **Launch serf-tui in tmux**:
    ```bash
-   tmux new-session -d -s serf-interrupt-test -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux capture-pane -t serf-interrupt-test -p | head -5
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -5
    ```
    Header line should read `serf live ... $HUB · N live` — the
    isolated hub address from step 1, never Jesse's real `9180` — and
@@ -77,11 +79,11 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    text contains your `$SID`. (Exact key count depends on dashboard
    contents.) Then `Enter`:
    ```bash
-   tmux send-keys -t serf-interrupt-test Down Down Down
+   tmux send-keys -t "$TMUX_SESSION" Down Down Down
    sleep 0.3
-   tmux send-keys -t serf-interrupt-test Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
-   tmux capture-pane -t serf-interrupt-test -p | head -10
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -10
    ```
    The header should now read
    `serf / session / reply with the word 'ready' ...` and the status
@@ -91,9 +93,9 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    otherwise the model will fabricate the loop output and finish
    instantly (sharp edge from `workspace-title-bar-actions.md`):
    ```bash
-   tmux send-keys -t serf-interrupt-test -l 'You MUST call the exec_command tool with command="bash -c '\''for i in $(seq 1 30); do echo step $i; sleep 2; done'\''". Do not fabricate output; actually run the tool. Wait for it to complete before composing your communicate response.'
+   tmux send-keys -t "$TMUX_SESSION" -l 'You MUST call the exec_command tool with command="bash -c '\''for i in $(seq 1 30); do echo step $i; sleep 2; done'\''". Do not fabricate output; actually run the tool. Wait for it to complete before composing your communicate response.'
    sleep 0.2
-   tmux send-keys -t serf-interrupt-test Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 2
    ```
 
@@ -118,9 +120,9 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 
 6. **Open the session command palette**:
    ```bash
-   tmux send-keys -t serf-interrupt-test C-p
+   tmux send-keys -t "$TMUX_SESSION" C-p
    sleep 0.3
-   tmux capture-pane -t serf-interrupt-test -p | head -25
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -25
    ```
    The palette overlay shows the command list. The crucial line:
    ```
@@ -135,9 +137,9 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 
 7. **Filter to interrupt and fire**:
    ```bash
-   tmux send-keys -t serf-interrupt-test -l 'interrupt'
+   tmux send-keys -t "$TMUX_SESSION" -l 'interrupt'
    sleep 0.2
-   tmux send-keys -t serf-interrupt-test Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 1.0
    ```
 
@@ -151,7 +153,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    print('live=', d.get('live'))
    print('active_turn_id=', d.get('active_turn_id'))
    "
-   tmux capture-pane -t serf-interrupt-test -p | head -25
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -25
    ```
    REST expects:
    ```
@@ -200,9 +202,9 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
     session is immediately usable after an interrupt). Type a quick
     prompt and confirm it runs to completion:
     ```bash
-    tmux send-keys -t serf-interrupt-test -l 'reply with only the single word OK'
+    tmux send-keys -t "$TMUX_SESSION" -l 'reply with only the single word OK'
     sleep 0.2
-    tmux send-keys -t serf-interrupt-test Enter
+    tmux send-keys -t "$TMUX_SESSION" Enter
     for i in $(seq 1 30); do
       state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
                | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
@@ -224,7 +226,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 
 11. **Confirm the TUI did not crash**:
     ```bash
-    tmux ls | grep serf-interrupt-test
+    tmux ls | grep "$TMUX_SESSION"
     ps -ef | grep -E 'serf-tui.*--hub-addr' | grep -v grep
     ```
     Both should still report the process alive.
@@ -235,28 +237,28 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
     interrupt the turn via the palette. The queued line should
     survive the interrupt and run as the next user turn.
     ```bash
-    tmux send-keys -t serf-interrupt-test -l 'You MUST call exec_command with command="bash -c '\''for i in $(seq 1 15); do echo loop $i; sleep 2; done'\''". Do not fabricate output.'
-    tmux send-keys -t serf-interrupt-test Enter
+    tmux send-keys -t "$TMUX_SESSION" -l 'You MUST call exec_command with command="bash -c '\''for i in $(seq 1 15); do echo loop $i; sleep 2; done'\''". Do not fabricate output.'
+    tmux send-keys -t "$TMUX_SESSION" Enter
     sleep 3
-    tmux capture-pane -t serf-interrupt-test -p | head -25
+    tmux capture-pane -t "$TMUX_SESSION" -p | head -25
     ```
     Composer label should now read `queue` with footer `enter:
     queue  ctrl+s: send as steer …`. Queue the follow-up:
     ```bash
-    tmux send-keys -t serf-interrupt-test -l 'after that loop, reply with the single word DONE'
-    tmux send-keys -t serf-interrupt-test Enter
+    tmux send-keys -t "$TMUX_SESSION" -l 'after that loop, reply with the single word DONE'
+    tmux send-keys -t "$TMUX_SESSION" Enter
     sleep 0.5
-    tmux capture-pane -t serf-interrupt-test -p | head -30
+    tmux capture-pane -t "$TMUX_SESSION" -p | head -30
     ```
     `queued (1)` block above the composer. Now interrupt:
     ```bash
-    tmux send-keys -t serf-interrupt-test C-p
+    tmux send-keys -t "$TMUX_SESSION" C-p
     sleep 0.3
-    tmux send-keys -t serf-interrupt-test -l 'interrupt'
+    tmux send-keys -t "$TMUX_SESSION" -l 'interrupt'
     sleep 0.2
-    tmux send-keys -t serf-interrupt-test Enter
+    tmux send-keys -t "$TMUX_SESSION" Enter
     sleep 1.5
-    tmux capture-pane -t serf-interrupt-test -p | head -30
+    tmux capture-pane -t "$TMUX_SESSION" -p | head -30
     ```
     After the interrupt, the session goes idle and the daemon's
     queue (already populated by step 12's Enter) immediately
@@ -291,11 +293,11 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 13. **Exit cleanly**. From the session view, `Ctrl+O` to return to
     the dashboard, then `q`:
     ```bash
-    tmux send-keys -t serf-interrupt-test C-o
+    tmux send-keys -t "$TMUX_SESSION" C-o
     sleep 0.3
-    tmux send-keys -t serf-interrupt-test q
+    tmux send-keys -t "$TMUX_SESSION" q
     sleep 0.5
-    tmux ls | grep serf-interrupt-test || echo 'tmux session ended'
+    tmux ls | grep "$TMUX_SESSION" || echo 'tmux session ended'
     ```
 
 ## Expected
@@ -362,7 +364,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 ## Cleanup
 
 ```bash
-tmux kill-session -t serf-interrupt-test 2>/dev/null
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$tmpdir"
 # meta + transcript files under $HOME/.local/state/serf/projects linger
 # (harmless). Optional:

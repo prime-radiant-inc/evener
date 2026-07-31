@@ -24,45 +24,48 @@ round trip end-to-end against a real model.
   ./cmd/serf-hub`).
 - Anthropic OAuth or API key configured so the default
   `anthropic/claude-haiku-4-5-20251001` model can be invoked.
-- No leftover tmux session named `serf-queue-test`
-  (`tmux kill-session -t serf-queue-test 2>/dev/null`).
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 
 ## Steps
 
-Use `tmux send-keys -t serf-queue-test KEY ...` to drive input
-and `tmux capture-pane -t serf-queue-test -p` to read the
+Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input
+and `tmux capture-pane -t "$TMUX_SESSION" -p` to read the
 visible pane.
 
 1. **Prepare a hermetic workdir**:
    ```
    WORKDIR=$(mktemp -d -t serf-queue-XXXX)
+   TMUX_SESSION="serf-queue-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
    ```
 
 2. **Launch in tmux**:
    ```
-   tmux new-session -d -s serf-queue-test -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux capture-pane -t serf-queue-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
 
 3. **Open the spawn form and retarget the workdir**:
    ```
-   tmux send-keys -t serf-queue-test "n"
+   tmux send-keys -t "$TMUX_SESSION" "n"
    sleep 0.5
-   tmux send-keys -t serf-queue-test BTab
-   tmux send-keys -t serf-queue-test C-u
-   tmux send-keys -t serf-queue-test -l "$WORKDIR"
-   tmux send-keys -t serf-queue-test Tab
+   tmux send-keys -t "$TMUX_SESSION" BTab
+   tmux send-keys -t "$TMUX_SESSION" C-u
+   tmux send-keys -t "$TMUX_SESSION" -l "$WORKDIR"
+   tmux send-keys -t "$TMUX_SESSION" Tab
    ```
 
 4. **Send a slow first prompt**:
    ```
-   tmux send-keys -t serf-queue-test -l "Read README.md and write a 4-paragraph essay about its main themes. Use formal prose."
-   tmux send-keys -t serf-queue-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "Read README.md and write a 4-paragraph essay about its main themes. Use formal prose."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 2
-   tmux capture-pane -t serf-queue-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm `state: active`, the second status row reads
    `queue: ready  busy: turn_1`, and the composer label is now
@@ -73,16 +76,16 @@ visible pane.
 5. **Wait for the model to actually start producing tokens**:
    ```
    sleep 3
-   tmux capture-pane -t serf-queue-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm an assistant message or tool-call row has appeared.
 
 6. **Type a follow-up and press Enter to queue it**:
    ```
-   tmux send-keys -t serf-queue-test -l "After the essay, also list the file sizes of every file in the working directory."
-   tmux send-keys -t serf-queue-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "After the essay, also list the file sizes of every file in the working directory."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
-   tmux capture-pane -t serf-queue-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The composer clears. Above the composer, a `queued (1)`
    section appears with the first line of the queued message
@@ -94,7 +97,7 @@ visible pane.
 
 7. **Confirm the daemon's queue is non-empty via REST**:
    ```
-   SID=$(tmux capture-pane -t serf-queue-test -p | \
+   SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
    curl -s -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
      "$HUB/api/sessions/local:$SID" | \
@@ -108,7 +111,7 @@ visible pane.
    to run automatically**:
    ```
    sleep 12
-   tmux capture-pane -t serf-queue-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The queue preview disappears (`queued (...)` row is gone)
    the moment the original turn completes — the TUI pops the
@@ -136,9 +139,9 @@ visible pane.
 
 10. **Exit and clean up**:
     ```
-    tmux send-keys -t serf-queue-test C-o
-    tmux send-keys -t serf-queue-test "q"
-    tmux kill-session -t serf-queue-test 2>/dev/null
+    tmux send-keys -t "$TMUX_SESSION" C-o
+    tmux send-keys -t "$TMUX_SESSION" "q"
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     rm -rf "$WORKDIR"
     ```
 
@@ -173,7 +176,7 @@ visible pane.
 
 ## Cleanup
 
-- `tmux kill-session -t serf-queue-test 2>/dev/null`.
+- `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null`.
 - `rm -rf "$WORKDIR"`.
 - The spawned session ID is left on the hub. Optional cleanup
   via `~/go/bin/serf` or manual delete.
