@@ -1,143 +1,196 @@
-# sidebar-archived-testruns-reachability: Archived + Test runs sections round-trip (unarchive, delete)
+# sidebar-archived-testruns-reachability: Archived and Test-runs buckets round-trip (archive, unarchive, delete)
 
-**What this covers**: the two collapsed-by-default sidebar sections added on
-top of the rebuilt sidebar — `Archived (N)` (`pushArchivedSection`, commit
-`3df2a7694`) and `Test runs (N)` (`pushTestRunsSection`, commit `f3d2ca870`) —
-against their server-side classification in
-`cmd/serf-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`)
-and `web_api_tree.go`'s `/api/tree` projection (`archived_projects[]`/
-`test_runs[]`; TestRuns takes precedence over Archived). Covers the full
-archive→unarchive round-trip via the project row menu, and the
-`SERF_SESSION_ORIGIN=test` (Task 15) classification path through to the
-Test-runs section's Delete… action and on-disk removal.
+**What this covers**: the server-side project classification in
+`cmd/serf-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
+`:126-134,939-940`) and `/api/tree`'s projection of it into
+`archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
+Archived (`navigationProjectBuckets`, `cmd/serf-hub/web_api_tree.go:355-368`;
+the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
+the `SERF_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
+read once at fresh-session create in `agent/session_init.go:209`), and whole-
+project delete through to on-disk removal.
+
+**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
+map there is the single place these hooks are maintained. This card used to
+drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
+`window.SerfSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
+All of that died with the vanilla frontend (`660376f78`); the rail is React
+(`cmd/serf-hub/frontend/src/shell/rail/`) and none of those handles exist.
+
+**Two section shapes, and only one of them is a disclosure** — this is the
+biggest change from the card's old text:
+
+- **Test runs** is a plain `RailSection` (`Rail.tsx:100-108,595-601`): an
+  `<h3>` reading exactly `Test runs`, with **no count and no disclosure
+  button**, rendered whenever `test_runs[]` is non-empty and omitted entirely
+  when it is not (`:101`). Its *project rows* are collapsed, not the section.
+- **Archived** is the one real disclosure (`ArchivedSection`,
+  `Rail.tsx:121-130,602-612`): a `<button aria-expanded>` reading
+  `Archived sessions (N)` (`:125`), collapsed by default, holding whole
+  archived projects *plus* the archived-tier sessions diverted out of still-
+  active projects (`railNodes.ts:306-321,332-335`). There is no `Archived (N)`
+  header and no `section:test-runs` key.
 
 ## Pre-state
 
-- Hub running a fresh build, browser authenticated against it (dedicated
-  Chrome profile if other Serf instances/worktree builds are running
-  concurrently — see Sharp edges).
-- Two scratch working directories, neither with prior archive/favorite
-  decisions.
-- A model the hub can spawn against live (`openai/gpt-5.4-mini` verified
-  live 2026-07-05). Falls back to file-seeded real metas (on-disk
-  `.meta.json` + a real hub, no live model) if credentials are unavailable —
-  the sidebar/menu paths under test only care that the project shows up in
-  `/api/tree`, not how its session got there.
+- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
+  — the Setup checklist in `docs/agentic-testing.md`. Never a real hub.
+- The frontend must be built (`make build-web`) *before* the hub for step 5+,
+  or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
+- Two scratch working directories `$A` and `$B` that must both still exist for
+  the whole run — `identifier.ResolveProject` symlink-resolves them and every
+  archive/delete POST re-derives the project id from the path.
+- A model the hub can spawn against. Nothing here needs a *good* answer, only
+  a session that reaches the past index, so the cheapest model wins.
 
 ## Steps
 
-1. Spawn + let finish an ordinary session in project dir `$A` (plain
-   `POST /api/spawn`, no `launch_overrides`), then
-   `POST /api/sessions/<id>/shutdown`. `GET /api/tree`: confirm `$A`'s
-   project key is in `projects[]`.
-2. Spawn + let finish a session in a second project dir `$B` with
-   `launch_overrides.env.SERF_SESSION_ORIGIN` set to `"test"`, then shut it
-   down too. `GET /api/tree`: confirm `$B`'s project key is in
-   `test_runs[]` — **not** `projects[]` or `archived_projects[]`.
-3. Open `/` in the browser. Confirm `$B`'s project renders **only** as a
-   collapsed `Test runs (1)` section header
-   (`[data-row-id="section:test-runs"]`, `aria-expanded="false"`) — no
-   project header or session row for `$B` anywhere in the DOM. Confirm `$A`'s
-   project header renders normally at the top level, not wrapped in any
-   section.
-4. On `$A`'s project header, open the row menu (⋯) and click **Archive**.
-5. After the mutation lands (poll `/api/tree`, or force a client refresh via
-   `window.SerfSidebar.refresh()`): confirm `$A` moved to
-   `archived_projects[]` and is gone from `projects[]`. In the DOM, confirm
-   an `Archived (1)` section header now exists, collapsed by default
-   (`aria-expanded="false"`), with `$A`'s header/rows absent from the DOM.
-6. Click the `Archived (1)` header to expand it. Confirm `$A`'s project
-   header renders (reusing the normal project-header component) and its ⋯
-   menu now offers **Unarchive** (not Archive).
-7. Click **Unarchive**. After the mutation lands, confirm via `/api/tree`
-   that `$A` is back in `projects[]` and gone from `archived_projects[]`. In
-   the DOM, confirm the `Archived` section header **disappears entirely**
-   (there is no "(0)" state — the header only renders when its bucket is
-   non-empty) and `$A`'s header renders back at the top level, unwrapped.
-8. Expand the `Test runs (1)` section from step 3. Confirm `$B`'s project
-   header renders; open its ⋯ menu and confirm it offers **Delete…** (and,
-   per the section's contract, plain `Archive` rather than `Unarchive` — `$B`
-   was never placed in the archived bucket).
-9. Override `window.confirm` to auto-accept (`confirmDeleteProject` calls the
-   real dialog), then click **Delete…**.
-10. After the mutation lands, confirm via `/api/tree` that `$B`'s project is
-    gone from every bucket (`projects[]`, `archived_projects[]`,
-    `test_runs[]`). On disk, confirm the session's `.meta.json` and
-    `.transcript.jsonl` no longer exist
-    (`find <state-dir>/serf/projects -iname "<id>*"` returns nothing). In the
-    DOM, confirm the `Test runs` section header disappears entirely (bucket
-    now empty).
+Steps 1-4 and 9-10 are **browser-free** (curl + the filesystem). Steps 5-8 need
+a browser, and only assert what the rail renders.
+
+1. Spawn a session in `$A` (plain `POST /api/spawn`, no `launch_overrides`),
+   let it finish, then `POST /api/sessions/local:$SID_A/shutdown`.
+   `GET /api/tree`: `$A`'s project key is in `projects[]`.
+2. Spawn a session in `$B` with
+   `launch_overrides:{env:{SERF_SESSION_ORIGIN:"test"}}`, let it finish, then
+   `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/tree`: `$B`'s key is
+   in `test_runs[]` and in neither `projects[]` nor `archived_projects[]`.
+3. **Archive `$A`.** `POST /api/archive` with
+   `{"kind":"project","id":"<A key>","archived":true,"working_dir":"<A working_dir from /api/tree>"}`.
+   Re-`GET /api/tree`.
+4. **Unarchive `$A`.** Same POST with `"archived":false`. Re-`GET /api/tree`.
+5. **Browser, baseline.** Navigate to `/auth?token=$TOKEN&next=/`. Read the
+   section shapes:
+   ```javascript
+   ({
+     port: location.port,
+     headings: Array.from(document.querySelectorAll("h3"), (h) => h.textContent),
+     archivedDisclosure: Array.from(document.querySelectorAll('button[aria-expanded]'))
+       .map((b) => [b.textContent, b.getAttribute("aria-expanded")])
+       .filter(([t]) => /Archived sessions/.test(t)),
+   })
+   ```
+6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
+   the archive handler broadcasts `serf/tree/changed` unconditionally
+   (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go:84-98`) and
+   the store refetches on a 250ms debounce
+   (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
+   then click the `Archived sessions (…)` button and confirm `$A`'s project row
+   appears inside it.
+7. Open `$A`'s row menu — the `⋯` trigger is
+   `button[aria-haspopup="menu"]` whose accessible text contains
+   `Actions for <project name>` (`RailRow.tsx:299-327,611`) — and read its
+   items (`li[role="menuitem"]`, portalled to `document.body`,
+   `widgets/menu/index.tsx:337-366`). Click **Unarchive project**.
+8. Find `$B`'s project row under the `Test runs` heading and read its menu the
+   same way. Do **not** click Delete project… here; drive the destructive step
+   over REST in step 9 so the assertion is on the server and the disk, not on
+   a dialog. (If you do want the UI path, see Sharp edges: it is a real
+   in-app `Dialog`, never `window.confirm`.)
+9. **Delete `$B`.** `POST /api/project/delete` with
+   `{"key":"<B key>","working_dir":"<B working_dir from /api/tree>"}`.
+10. `GET /api/tree` and check the disk under the isolated state root.
 
 ## Expected
 
-- Step 1/2: `$A` in `projects[]`; `$B` in `test_runs[]` only.
-- Step 3: `Test runs (1)` header collapsed, `$B` fully absent below it; `$A`
-  renders normally, unwrapped.
-- Step 5: `$A` in `archived_projects[]`, gone from `projects[]`;
-  `Archived (1)` header present and collapsed, `$A` absent from the DOM.
-- Step 6: `$A`'s header renders on expand; menu offers Unarchive.
-- Step 7: `$A` back in `projects[]`, gone from `archived_projects[]`; the
-  `Archived` header is gone from the DOM (not merely showing "(0)").
-- Step 8: `$B`'s header renders on expand; menu offers Delete… (and Archive,
-  not Unarchive).
-- Step 10: `$B` absent from all three `/api/tree` buckets; its session files
-  gone on disk; the `Test runs` header gone from the DOM.
-- Falsification: any project appearing in the wrong bucket (especially a
-  test-origin project leaking into `projects[]`/`archived_projects[]`, or an
-  archived project staying in `projects[]`); a section header rendering with
-  a stale or zero count instead of disappearing entirely when its bucket
-  empties; a collapsed section's project header or session rows present in
-  the DOM before the section is expanded; a menu offering the wrong verb
-  (Archive where Unarchive is expected, or vice versa); `Delete…` failing to
-  remove the session's on-disk files; the confirm dialog never firing (would
-  mean `confirmDeleteProject`'s gate was bypassed or removed).
+- **Step 1/2 (exact, browser-free)**: `$A` in `projects[]` only; `$B` in
+  `test_runs[]` only. Falsify: a test-origin project leaking into `projects[]`
+  or `archived_projects[]` — the precedence at `web_api_tree.go:359-362` is
+  what routes it, and a mixed project (one unmarked session) is correctly
+  *not* a test run (`fuzzScenarioAllTestSessionsClassifyAsTestRun`,
+  `internal/hubcore/tree_test.go:1730-1752`).
+- **Step 3 (exact)**: `200 {"ok":true}`; `$A` moves to `archived_projects[]`
+  and is gone from `projects[]`. Its entry is a **stub**: `"sessions": null`
+  with `session_count` carrying the real row count
+  (`web_api_tree.go:167-176`). Falsify: `$A` still in `projects[]`, or the
+  archived entry ships its sessions inline.
+- **Step 4 (exact)**: `$A` back in `projects[]`, gone from
+  `archived_projects[]`.
+- **Step 5**: `h3` headings include both `Projects` and `Test runs` (no count,
+  no parenthetical on either) and there is no `Archived sessions` button yet —
+  the disclosure renders only when it has something to hold (`Rail.tsx:602`).
+  `$A`'s project row sits under `Projects` and `$B`'s under `Test runs`, each
+  collapsed, so neither project's *session* row is in the DOM
+  (`default_expanded` is `rollup_live>0||rollup_attn>0`, `tree.go:946`, false
+  for an ended session). Falsify: a `Test runs (1)` header, or a collapsible
+  Test-runs section — that is the pre-rewrite shape and would mean this card is
+  describing a UI that no longer exists.
+- **Step 6**: the `Archived sessions (1)` button now exists with
+  `aria-expanded="false"`, and `$A` is absent from the DOM until it is
+  clicked. After the click, `$A`'s project row renders. Falsify: the count is
+  wrong, or `$A`'s row is in the DOM while the disclosure is collapsed.
+- **Step 7**: `$A`'s menu offers exactly `New session`,
+  `Add to pinned`/`Remove from pinned`, **`Unarchive project`**, and
+  `Delete project…` (`projectMenuItems`, `RailRow.tsx:415-439` — the archive
+  item's label flips on `project.is_archived`, `:430`). After clicking
+  Unarchive project, the `Archived sessions` disclosure disappears entirely —
+  there is no `(0)` state. Falsify: the menu says `Archive project` for a row
+  living inside the Archived disclosure (the wire's `is_archived` didn't reach
+  the row), or a zero-count header lingers.
+- **Step 8**: `$B`'s menu offers `Archive project` (not Unarchive — `$B` was
+  never archived, only classified as a test run) and `Delete project…`.
+- **Step 9 (exact)**: `200 {"deleted":["<SID_B>"],"skipped":[]}`
+  (`web_api_project_delete.go:193`). Falsify: `deleted` empty on a genuine
+  delete, or a 409 (means the session never actually shut down — see Sharp
+  edges).
+- **Step 10 (exact)**: `$B`'s key absent from all three of `projects[]`,
+  `archived_projects[]`, `test_runs[]`; and
+  `find "$HOME/.local/state/serf/projects" -name "$SID_B*"` returns nothing.
+  In the browser, the `Test runs` heading is gone (its bucket is empty and
+  `RailSection` returns null at `Rail.tsx:101`). Falsify: files surviving a
+  `200`, or a heading rendering for an empty bucket.
 
 ## Cleanup
 
-- Both sessions are already shut down by Steps 1/2; `$B`'s project is
-  removed by the Delete… step itself.
-- Remove `$A`'s scratch working directory (delete only scrubs Serf's session
-  bookkeeping, never the working directory itself) and any scratch
-  HOME/state-dir trees.
-- Kill the test hub process.
+- Both sessions are shut down in steps 1-2; `$B`'s bookkeeping is removed by
+  step 9. Delete never touches the working directory itself.
+- Unarchive or ignore `$A` — the whole state root goes away with the run dir.
+- Kill the hub by the PID you captured and `rm -rf` the run directory
+  (Cleanup recipe in `docs/agentic-testing.md`).
 
 ## Sharp edges
 
-- **Two independent disclosure levels.** A section's own expand state
-  (`section:archived`/`section:test-runs` in `model.expanded`) is separate
-  from each project's own expand state (`p.key`). Expanding a section reveals
-  only the project header(s) inside it; a project's session rows stay
-  collapsed unless the project is *also* expanded — which happens
-  automatically only when it has a live/needs-you session
-  (`rollup_live>0 || rollup_attn>0`). An ended session's project inside a
-  freshly-expanded section legitimately shows a header with zero visible
-  rows underneath — that's not a bug, and the row-menu / Archive-Unarchive /
-  Delete… actions all work at the header level regardless of whether the
-  rows are expanded.
-- **`SERF_SESSION_ORIGIN` must travel through `launch_overrides.env`, not
-  the hub's ambient environment.** `agent/session_init.go`'s `NewSession`
-  reads the var once, at fresh-session-creation time, from the *daemon's
-  own* process environment — which the hub controls per-spawn via
-  `launch_overrides.env` (`cmd/serf-hub/internal/launchconfig/env.go`'s
-  `ToEnv`, applied last so it wins over the daemon's inherited parent env).
-  Setting the var in the hub's own environment before starting it would not
-  achieve the same thing (and would leak `origin=test` onto every session
-  the hub spawns if it somehow did).
-- **A section renders no chrome at all when its bucket is empty** —
-  `pushSection` returns early on `!list.length`; there is no `Archived (0)`
-  state to look for, the header node is simply absent from the DOM.
-- **`window.confirm` override required before clicking Delete…** —
-  `confirmDeleteProject` calls the real `window.confirm(...)`; without
-  stubbing it first, a scripted click hangs waiting on a dialog no one
-  answers (same footgun documented in
-  `sidebar-project-delete-full-cycle.md`).
-- **Precedence between the two buckets is server-side only** (round-2 B6:
-  TestRuns wins over Archived when a project would qualify for both) and is
-  already covered deterministically by
-  `cmd/serf-hub/jstest/test-sidebar-testruns.js`; this card doesn't
-  re-derive that overlap case live, only the two buckets' independent
-  round-trips.
-- If other concurrent Serf/browser-automation work is running on the
-  machine, use a dedicated Chrome profile and a non-default hub port — the
-  auth cookie is not port-scoped (same footgun documented in
-  `sidebar-expand-survives-live-resync.md`).
+- **Confirmation is a real in-app dialog, not `window.confirm`.** Deleting a
+  project from the UI opens `<Dialog title="Delete project?">` with body text
+  `Permanently delete every session in "<name>"? …` and footer buttons
+  `Cancel` / `Delete` (`Rail.tsx:655-676`); the widget renders
+  `role="dialog" aria-modal="true"` (`widgets/dialog/OverlayPanel.tsx:92-94`).
+  Stubbing `window.confirm` does nothing — there is no native dialog to
+  intercept, and a card that stubs it will look like it "handled" a
+  confirmation it never saw.
+- **Two independent disclosure levels, and they are separate keys.** The
+  Archived section's own state is stored under the id `section:archived`
+  (`Rail.tsx:75`) in the same override map every row uses; a project row's is
+  `projectnode:<key>` (`railNodes.ts:209-211`). Expanding the section reveals
+  project rows only — a project's session rows stay collapsed until that
+  project is expanded too. An ended session's project inside a freshly
+  expanded section legitimately shows a header with nothing under it.
+- **An archived project's sessions are not in the payload.** They ship as
+  stubs and lazy-load from `/api/tree/project?key=<key>` on the project row's
+  first expand (`Rail.tsx:241-253`, handler at `web_api_tree.go:285-322`).
+  Until that resolves the row has a single placeholder child
+  (`railNodes.ts:365-367`) rendering `Loading…` with `role="status"`
+  (`RailRow.tsx:663-672`), so "expanded but empty" for a beat is normal.
+- **`SERF_SESSION_ORIGIN` must travel through `launch_overrides.env`, not the
+  hub's own environment.** `agent/session_init.go:209` reads it from the
+  *daemon's* process env at fresh-create time, which the hub controls
+  per-spawn: `launchconfig.ToEnv` applies per-launch env last so it wins over
+  the inherited parent env (`cmd/serf-hub/internal/launchconfig/env.go:61-71`).
+  Setting it in the hub's own environment would stamp `origin=test` onto every
+  session the hub ever spawns.
+- **"Live" for the delete refusal means a registered daemon, not a running
+  turn.** A session sitting in `awaiting` still 409s
+  (`web_api_project_delete.go:147-159`). Shut it down first and confirm the
+  shutdown landed, or step 9 fails for a reason that has nothing to do with
+  classification.
+- **The TestRuns-over-Archived overlap case is server-side only** and this
+  card does not re-derive it live. The old text pointed at
+  `cmd/serf-hub/jstest/test-sidebar-testruns.js`; that directory no longer
+  exists. The precedence itself is the `switch` at `web_api_tree.go:359-362`,
+  and the classification feeding it is pinned by
+  `internal/hubcore/tree_test.go:1730-1752`.
+- Claim your own Chrome profile before the first browser call — see "Claim
+  your own Chrome instance first" in the runbook. The auth cookie is not
+  port-scoped, so two hubs sharing one profile clobber each other's session
+  and produce a spurious unauthorized page that has nothing to do with the
+  rail.
