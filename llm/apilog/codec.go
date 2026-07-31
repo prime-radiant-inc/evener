@@ -18,6 +18,8 @@ type Decoder struct {
 	line         int
 	offset       int64
 	done         bool
+	recordLine   int
+	recordOffset int64
 }
 
 func NewDecoder(r io.Reader, maxLineBytes int) *Decoder {
@@ -33,6 +35,8 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	}
 	lineNumber := d.line + 1
 	lineOffset := d.offset
+	d.recordLine = lineNumber
+	d.recordOffset = lineOffset
 	line, complete, tooLong, err := d.readLine()
 	if err != nil {
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
@@ -54,6 +58,15 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	}
 	return record, nil
 }
+
+// RecordOffset returns the byte offset of the record most recently returned
+// or failed by Next: the start of a successfully decoded record, or the
+// start of the record Next failed on (a rejected complete record, or a
+// partial final fragment). It is meaningless before the first call to Next.
+func (d *Decoder) RecordOffset() int64 { return d.recordOffset }
+
+// RecordLine returns the 1-based record number matching RecordOffset.
+func (d *Decoder) RecordLine() int { return d.recordLine }
 
 func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 	if d.maxLineBytes <= 0 {
