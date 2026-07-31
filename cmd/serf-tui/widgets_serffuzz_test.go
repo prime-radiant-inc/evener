@@ -18,7 +18,7 @@ import (
 // leaf widgets and question-overlay state machine. It deliberately stays
 // below terminal, filesystem, registry, provider, and transport boundaries.
 func FuzzWidgetPrograms(f *testing.F) {
-	programs := []func(){exerciseComposerWidgets, exerciseDetailsAndNotices, exerciseQuestionOverlay, exerciseStatusBar}
+	programs := []func(){exerciseComposerWidgets, exerciseDetailsAndNotices, exerciseQuestionOverlay, exerciseStatusFormatting}
 	for i := range programs {
 		f.Add(i)
 	}
@@ -205,15 +205,17 @@ func exerciseQuestionOverlay() {
 	_, _ = m.updateQuestionOverlayKey(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
-func exerciseStatusBar() {
-	for _, info := range []statusBarInfo{
-		{Connected: true, HubAddr: "hub", Provider: "provider", Queued: 2, CtxUsed: 80, CtxLimit: 100, Cost: 1.25, Version: "v1", Width: 100},
-		{CtxUsed: 99, CtxLimit: 100, Version: "long-version", Width: 4},
-		{HubAddr: strings.Repeat("h", 100), Width: 10},
+func exerciseStatusFormatting() {
+	for _, detail := range []hubSessionDetail{
+		{ContextUsed: 46000, ContextWindow: 200000, ContextPressure: 0.23},
+		{ContextUsed: 195000, ContextWindow: 200000, ContextPressure: 0.98},
+		{ContextUsed: 46000, ContextPressure: 0.23},
+		{ContextPressure: 0.23},
+		{},
 	} {
-		_ = renderStatusBar(info)
+		_ = formatContextFragment(detail)
 	}
-	_ = formatTokenCount(1000)
+	_ = formatTokens(500)
 	_ = formatTokens(1500)
 	_ = formatTokens(15000)
 }
