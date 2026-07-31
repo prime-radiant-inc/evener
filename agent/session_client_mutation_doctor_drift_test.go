@@ -49,7 +49,7 @@ func TestClientMutationSnapshotStaysReadableByTheDoctor(t *testing.T) {
 	}
 }
 
-var doctorDriftRawMessageType = reflect.TypeOf(json.RawMessage(nil))
+var doctorDriftRawMessageType = reflect.TypeFor[json.RawMessage]()
 
 // fillEveryField sets every field reachable from v to a non-zero value, so that
 // omitempty cannot drop it from the marshaled snapshot. An unhandled kind fails
