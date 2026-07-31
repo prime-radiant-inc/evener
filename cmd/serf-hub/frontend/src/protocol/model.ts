@@ -121,6 +121,23 @@ export interface TurnModel {
   error?: unknown;
 }
 
+// SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
+// before the session's first real turn - appwire.SystemPreludeTurnID on the
+// wire. apptranscript.PreludeTurn's system-prompt scaffold and appprojector's
+// bundled SESSION_START-time announcements (plugin loads, prompt-loaded
+// notices) both use it, so a transcript whose only turn is this one has never
+// had a real turn: the session is dormant (kata bz2z). It is also the one turn
+// id that fixes its own POSITION - reducer.ts and the hub's snapshot reduction
+// (server/appwire_turns.go) both place it at the front of the transcript
+// however late its first frame arrives. Real turns always use "turn_N"
+// (N >= 1), so this can never collide with one.
+//
+// It lives here, in the protocol layer's model home, because both the reducer
+// that places the turn and the panes that classify it need the same literal;
+// model.ts is the one module both already import, and it is free of side
+// effects, so reaching for the id never drags in a renderer registration.
+export const SYSTEM_PRELUDE_TURN_ID = "turn_system";
+
 // A model call that failed with a retryable error and is waiting to be tried
 // again. Attempt counts retries (the first retry is 1); maxAttempts is the whole
 // budget including the initial try, so "attempt 9 of 11" renders without the

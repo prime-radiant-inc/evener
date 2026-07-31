@@ -1,8 +1,7 @@
-import type { ThreadModel, TurnModel } from "../../protocol/model";
+import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "../../protocol/model";
 import { Skeleton } from "../../widgets";
 import { useAwaitingFirstFrameSend, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import styles from "./session.module.css";
-import { SYSTEM_PRELUDE_TURN_ID } from "./transcript/transcriptVisibility";
 
 const THREAD_TERMINAL_STATUSES = new Set(["closed", "systemError"]);
 const TURN_TERMINAL_STATUSES = new Set(["cancelled", "canceled", "completed", "error", "failed", "interrupted"]);
