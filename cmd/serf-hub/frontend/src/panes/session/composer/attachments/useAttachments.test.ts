@@ -298,6 +298,33 @@ test("a decode failure strips the marker from the editor text, drops the item, a
   expect(onRejected).toHaveBeenCalledTimes(1);
 });
 
+// kata kt4j: removing a pending attachment must not toast its later decode
+// failure - the user already discarded it, so a decode that finishes
+// afterward (the browser has no way to cancel an in-flight Image/canvas
+// decode) must be silently swallowed instead of reported.
+test("removing a pending attachment before its decode fails suppresses the later rejection entirely", async () => {
+  const editor = makeFakeEditor("", 0);
+  installDecodeErrorStub();
+  const { result } = renderHook(() => useAttachments(editor));
+  const onRejected = vi.fn();
+
+  act(() => {
+    result.current.ingestFiles([makeFile("bad.png")], onRejected);
+  });
+  expect(editor.getText()).toBe("[image 1]");
+
+  act(() => {
+    result.current.removeItem(1);
+  });
+  expect(editor.getText()).toBe("");
+  expect(result.current.items).toHaveLength(0);
+
+  await flush(); // let the decode's rejection actually settle
+
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(editor.getText()).toBe(""); // the late rejection must not re-touch already-clean text
+});
+
 test("removeItem strips the marker text and removes exactly that item", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));

@@ -112,6 +112,20 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
   const nextMarkerRef = useRef(0);
+  // kata kt4j: markers removed via removeItem while their decode was still
+  // in flight. The browser's Image/canvas pipeline has no cancellation hook,
+  // so a reencodeToPng call started before removal keeps running and still
+  // settles (success or failure) afterward - ingestFiles' own .then/.catch
+  // below check this set before touching the editor or calling onRejected,
+  // so a decode failure for something the user already discarded is
+  // silently swallowed instead of toasted. Populated SYNCHRONOUSLY inside
+  // removeItem, not derived from `items` at settle time - a render-cycle-
+  // timed read is the wrong tool for an async continuation that can resume
+  // arbitrarily later (the same lesson TextEditor's read()/write() above
+  // learned the hard way, see this file's own header comment). Drained by
+  // whichever settle branch runs first, so it only ever holds markers
+  // currently removed-while-pending.
+  const removedWhilePendingRef = useRef<Set<number>>(new Set());
 
   const replaceWithSettled = useCallback((nextItems: PendingAttachment[]) => {
     nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
@@ -156,11 +170,17 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
         for (const { file, marker } of accepted) {
           reencodeToPng(file)
             .then(({ data, width, height }) => {
+              // Discarded before it settled (kata kt4j) - nothing left to update.
+              if (removedWhilePendingRef.current.delete(marker)) return;
               setItems((prev) =>
                 prev.map((item) => (item.marker === marker ? { ...item, data, width, height, pending: false } : item)),
               );
             })
             .catch(() => {
+              // Same discard check as above - the user already removed this
+              // attachment, so its eventual decode failure is nothing to
+              // strip from the editor or tell them about.
+              if (removedWhilePendingRef.current.delete(marker)) return;
               const current = editor.read();
               const stripped = stripMarker(current.text, current.cursor, marker);
               editor.write(stripped.value, stripped.cursor ?? current.cursor);
@@ -183,6 +203,12 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
 
   const removeItem = useCallback(
     (marker: number) => {
+      // Recorded unconditionally, whether or not this item is still pending
+      // (kata kt4j) - cheap and self-cleaning either way: a pending item's
+      // own decode drains this entry the instant it settles (see
+      // ingestFiles' .then/.catch above), and an already-settled item's
+      // removal adds an entry no in-flight decode will ever consult again.
+      removedWhilePendingRef.current.add(marker);
       const current = editor.read();
       const stripped = stripMarker(current.text, current.cursor, marker);
       editor.write(stripped.value, stripped.cursor ?? current.cursor);
