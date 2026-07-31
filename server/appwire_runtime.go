@@ -372,6 +372,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodSerfThreadNameSet, s.handleAppThreadNameSet)
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodSerfTasksList, s.handleAppTasksList)
+	appserver.HandleTyped(router, appwire.MethodSerfJobsList, s.handleAppJobsList)
+	appserver.HandleTyped(router, appwire.MethodSerfJobsOutput, s.handleAppJobsOutput)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
 	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
@@ -832,6 +834,33 @@ func (s *Server) handleAppTasksList(context.Context, appwire.TaskListParams) (ap
 		return appwire.TaskListResponse{}, nil
 	}
 	return appwire.TaskListResponse{Data: fn()}, nil
+}
+
+func (s *Server) handleAppJobsList(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	s.mu.RLock()
+	fn := s.jobsFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.JobsListResponse{}, nil
+	}
+	return appwire.JobsListResponse{Data: fn()}, nil
+}
+
+func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	s.mu.RLock()
+	fn := s.jobOutputFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.JobsOutputResponse{}, appwire.Unavailable("job output not available")
+	}
+	data, found, err := fn(params.JobID, params.MaxBytes)
+	if err != nil {
+		return appwire.JobsOutputResponse{}, err
+	}
+	if !found {
+		return appwire.JobsOutputResponse{}, appwire.InvalidParams("job not found: " + params.JobID)
+	}
+	return appwire.JobsOutputResponse{Data: data}, nil
 }
 
 func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {
