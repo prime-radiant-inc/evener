@@ -46,6 +46,10 @@ pull-index; its `runbooks/` are your audit definitions.
 - `watch_send_pending` lines **coalesce** latest-wins; count distinct settled
   deliveries (`serf-doctor watches`), not pending lines. `evicted` is a real
   fourth terminal alongside delivered/dropped.
+- A watch with **zero deliveries** is not evidence of broken delivery. Read the
+  `target job:` line `serf-doctor watches` prints on the same row: a target that
+  was already terminal, or that produced zero output bytes, could never match the
+  condition. `serf-doctor jobs <sel> --job <job_id>` is the full record.
 - A recorded delivery's provenance `WatchKeys` **always** contains its own watch
   key (the delivery-time stamp) — so `ContainsWatch` is vacuously true and is
   **not** a self-loop signal. The verdict is a same-`watch_id` **prior** hop in

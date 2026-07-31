@@ -30,6 +30,16 @@ type WatchView struct {
 	Active           bool   `json:"active"`
 	EndReason        string `json:"end_reason,omitempty"`
 
+	// TargetJob is the state of the watched JOB, joined from the same jobs.jsonl
+	// fold — the answer to "why didn't my watch fire". A target that was already
+	// terminal, or that produced no output, could never match its condition, and
+	// without this the row invites the opposite conclusion (broken delivery
+	// machinery). It is nil when the watch targets the session rather than a job;
+	// TargetJobMissing distinguishes that from a job target this log never
+	// recorded, which is reported rather than guessed at.
+	TargetJob        *JobView `json:"target_job,omitempty"`
+	TargetJobMissing bool     `json:"target_job_missing,omitempty"`
+
 	// Delivery accounting. PendingLines is the raw watch_send_pending event count
 	// — the number that overcounts deliveries when read by grep. DistinctDeliveries
 	// is the settled count after coalescing collapses; Coalesced is true when the
@@ -95,6 +105,7 @@ func Watches(stateBase, selector string, opts WatchOpts) (WatchReport, error) {
 func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) WatchReport {
 	registry := jobstore.FoldWatches(events)
 	pending := jobstore.FoldWatchSends(events).Pending
+	jobs := jobstore.Fold(events)
 
 	terminals := map[string]map[string]settledDelivery{} // watchID -> deliveryID -> settled
 	pendingLines := map[string]int{}
@@ -131,6 +142,7 @@ func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) Watc
 			continue
 		}
 		view := buildWatchView(wID, registry[wID], terminals[wID], pendingLines[wID], stillPending[wID])
+		attachTargetJob(&view, jobs)
 		if opts.SelfLoopsOnly && view.RunawayDrops == 0 {
 			continue
 		}
@@ -191,6 +203,23 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 	return v
 }
 
+// attachTargetJob joins a watch row with its target job's folded state. A watch
+// targets either a concrete job id or the session itself (the runtime's watch
+// source is "self"/"parent" — recorded as an alias — or a "job_" id), so a
+// target that names no job is simply not a job watch, while a job target absent
+// from this log is marked missing rather than silently rendered as nothing.
+func attachTargetJob(v *WatchView, jobs map[string]*jobstore.JobRecord) {
+	if v.Target == "" {
+		return
+	}
+	if rec := jobs[v.Target]; rec != nil {
+		job := jobViewFrom(rec)
+		v.TargetJob = &job
+		return
+	}
+	v.TargetJobMissing = strings.HasPrefix(v.Target, "job_")
+}
+
 func terminalKind(k jobstore.EventKind) string {
 	switch k {
 	case jobstore.EventWatchSendDelivered:
@@ -245,6 +274,14 @@ func RenderWatches(r WatchReport) string {
 		fmt.Fprintf(&b, "  (%s)\n", status)
 		if w.Target != "" || w.SendTo != "" || w.Condition != "" {
 			fmt.Fprintf(&b, "  target=%s  send_to=%s  condition=%s\n", dash(w.Target), dash(w.SendTo), dash(w.Condition))
+		}
+		switch {
+		case w.TargetJob != nil:
+			fmt.Fprintf(&b, "  target job: status=%s  reason=%s  exit=%s  output_bytes=%d  ended=%s\n",
+				dash(w.TargetJob.Status), dash(w.TargetJob.Reason), optionalIntString(w.TargetJob.ExitCode),
+				w.TargetJob.OutputBytes, jobTimePtr(w.TargetJob.EndedAt))
+		case w.TargetJobMissing:
+			b.WriteString("  target job: not recorded in this session's jobs.jsonl\n")
 		}
 		if w.OwnerSessionID != "" || w.VisibleSessionID != "" {
 			fmt.Fprintf(&b, "  owner=%s  visible=%s\n", dash(w.OwnerSessionID), dash(w.VisibleSessionID))

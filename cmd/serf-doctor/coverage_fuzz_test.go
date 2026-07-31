@@ -24,6 +24,7 @@ func FuzzDoctorCoverage(f *testing.F) {
 		t.Run("jobs-json", TestRun_JobsJSON)
 		t.Run("jobs-filter", TestRun_JobsJobFilterAfterSelector)
 		t.Run("jobs-selector", TestRun_JobsNoSelector)
+		t.Run("watches-target-job", TestRun_WatchesShowsTargetJobState)
 		t.Run("flags", TestRun_FlagsAfterSelector)
 		t.Run("unknown", TestRun_UnknownSubcommand)
 		t.Run("help", TestRun_Help)

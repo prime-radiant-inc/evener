@@ -29,7 +29,7 @@ or a bare `<id>` (searched across buckets). Common flags: `--state-dir <path>`
 | `transcript <sel>` | Render a session's logical turns; answer "how many real `X` calls?" structurally (calls vs. textual mentions). | `--count <tool>`, `--format outline\|markdown`, `--range last:N\|start:N\|A-B` |
 | `apilog <sel>` | Canonical provider-attempt diagnostics: identity, grouping, finality, settlement state, tokens/latency, empty responses, errors, cache spikes, and whole-session token spend. Reads `sessions/<sid>.api.jsonl` through the shared API-log codec. `--validate` instead runs a whole-history structural-integrity scan: strictly decode every record from offset zero through clean EOF and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size — not run at logger open). | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate` |
 | `jobs <sel>` | Every job the session ran, folded from `jobs.jsonl`: status, reason, exit code, output bytes, start/end times, and the delegate/transcript/parent links to pivot on. | `--job <id>` |
-| `watches <sel>` | Watch/delivery inspector: distinct deliveries (collapsing coalescing), provenance, lifecycle, and the self-loop verdict. | `--watch <id>`, `--self-loops` |
+| `watches <sel>` | Watch/delivery inspector: distinct deliveries (collapsing coalescing), provenance, lifecycle, the self-loop verdict, and the **target job's state** joined from the same `jobs.jsonl` (a target that died with no output could never match its condition). | `--watch <id>`, `--self-loops` |
 | `tree <sel>` | Parent ↔ delegate/observer session tree across buckets. | `--depth N`, `--observers` |
 
 ## Examples

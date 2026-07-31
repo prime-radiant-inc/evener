@@ -163,9 +163,15 @@ deliveries (terminal kind + `DiagnosticReason` + provenance) are read by a **raw
 scan** of the `watch_send_delivered/dropped/evicted` events. The doctor tool does
 this for you.
 
+A watch targets either a concrete `job_<id>` or the session itself, so a watch
+row is only half the story: the other half is the **target job's** folded state.
+A watch that ended unfired on a job that was already `stopped` with zero output
+bytes never had a matchable condition — nothing was wrong with delivery.
+
 **Read it via:** `serf-doctor watches <selector>` (distinct deliveries vs pending
 lines, per-delivery terminal + reason + provenance, self-influence/breaker
-telemetry).
+telemetry, and the joined `target job:` state — `target_job` / `target_job_missing`
+under `--json`).
 
 ### Delegates and grants → the session tree
 

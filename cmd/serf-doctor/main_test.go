@@ -614,6 +614,10 @@ func fixtureWithJobsData(t *testing.T) (base, sid string) {
 		`{"kind":"job_finished","seq":2,"job_id":"` + commandCompletedJobID + `","status":"completed","exit_code":0,"ended_at":"2026-07-31T18:01:00Z","output_bytes":4096}`,
 		`{"kind":"job_started","seq":3,"job_id":"` + commandTimeoutJobID + `","type":"shell","command":"npm run dev","started_at":"2026-07-31T18:00:00Z"}`,
 		`{"kind":"job_finished","seq":4,"job_id":"` + commandTimeoutJobID + `","status":"stopped","reason":"run_timeout","exit_code":-1,"ended_at":"2026-07-31T18:02:00Z","output_bytes":0}`,
+		// A watch on the stopped job, ended unfired: the row whose target state
+		// is the answer to "why didn't my watch fire".
+		`{"kind":"watch_registered","seq":5,"job_id":"","watch_id":"w1","watch":{"generation":"g1","owner_session_id":"` + sid + `","visible_session_id":"` + sid + `","target":"` + commandTimeoutJobID + `","send_to":"caller","condition":"output_match:ready","config_hash":"h"}}`,
+		`{"kind":"watch_cleared","seq":6,"job_id":"","watch_id":"w1","watch":{"generation":"g1","end_reason":"auto_removed_terminal"}}`,
 	}, "\n") + "\n"
 	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
 	return base, sid
@@ -701,6 +705,26 @@ func TestRun_JobsNoSelector(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"jobs", "--state-dir", base}, &out, &errb); code != 1 {
 		t.Errorf("no selector should exit 1, got %d", code)
+	}
+}
+
+// The watch row must carry its target job's state all the way out to stdout:
+// ended unfired, zero deliveries, target already stopped with no output.
+func TestRun_WatchesShowsTargetJobState(t *testing.T) {
+	base, sid := fixtureWithJobsData(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"watches", "--state-dir", base, sid}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"(ended: auto_removed_terminal)",
+		"target job: status=stopped  reason=run_timeout  exit=-1  output_bytes=0",
+		"deliveries: 0 distinct",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("watches output missing %q:\n%s", want, got)
+		}
 	}
 }
 
