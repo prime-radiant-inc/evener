@@ -11,6 +11,7 @@ require (
 	github.com/spf13/afero v1.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.3.0
+	primeradiant.com/serf v0.0.0
 	primeradiant.com/serf/auth v0.0.0
 	primeradiant.com/serf/fuzz v0.0.0
 	primeradiant.com/serf/identifier v0.0.0
