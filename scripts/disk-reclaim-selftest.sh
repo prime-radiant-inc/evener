@@ -257,7 +257,7 @@ fi
 
 # --- scenario 10: --check fails loud below the floor, is silent above it ---
 # SERF_SKIP_GOCACHE_CHECK=1: this scenario is about the disk-floor logic only;
-# dedicated scenarios 11/12 below cover the GOCACHE block with GOCACHE pinned.
+# dedicated scenarios 11-14 below cover the GOCACHE block with GOCACHE pinned.
 if SERF_SKIP_GOCACHE_CHECK=1 SERF_DISK_MIN_FREE_GB=999999999 run_disk_reclaim --check >"$work/check-fail.out" 2>&1; then
 	bad "--check with an impossible floor (999999999G) exited 0"
 else
@@ -314,7 +314,105 @@ else
 	bad "--check with a reachable (same-volume) GOCACHE exited non-zero"
 fi
 
-# --- scenarios 13-15 use their own repo, laid out the way the real one is ---
+# A wall-clock bound around a whole run of the script. The scenario below exists
+# to prove --check cannot hang; without a bound of its own, the regression it
+# catches would HANG this suite instead of failing it. Returns 124 on timeout,
+# the way timeout(1) does — timeout(1) is not on a stock macOS.
+bounded() { # seconds command...
+	local limit="$1" pid polls
+	shift
+	"$@" &
+	pid=$!
+	polls=$((limit * 10))
+	while [ "$polls" -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.1
+		polls=$((polls - 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -KILL "$pid" 2>/dev/null
+		return 124
+	fi
+	wait "$pid"
+}
+
+# --- scenario 13: --check fails in seconds when the GOCACHE volume STALLS ---
+# A stalled volume is not an unreachable one. `mkdir -p` does not fail against
+# it, it blocks — and so does every go command that touches the cache: four go
+# processes were found sleeping 12-23 HOURS on one stall, on a volume that
+# answered `ls` instantly by the time anyone looked (kata r07s). No filesystem
+# can be made to stall on demand, so the probe command is the seam;
+# SERF_GOCACHE_PROBE_CMD stands in for the `mkdir -p $GOCACHE` that would block.
+# Everything the scenario asserts on — the bound, the kill, the message, the
+# exit code — is the real thing.
+stall_probe="sleep 987654" # a duration nothing else on this machine runs
+stall_start=$SECONDS
+(cd "$repo" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
+	GOCACHE="$work/stalled-gocache" SERF_DISK_MIN_FREE_GB=0 \
+	bash "$script" --check) >"$work/gocache-stall.out" 2>&1
+stall_status=$?
+stall_elapsed=$((SECONDS - stall_start))
+if [ "$stall_status" -eq 124 ]; then
+	bad "--check HUNG on a stalled GOCACHE probe (killed at 30s): the probe is unbounded"
+elif [ "$stall_status" -eq 0 ]; then
+	bad "--check with a stalled GOCACHE probe exited 0: $(cat "$work/gocache-stall.out")"
+elif grep -qi "stall" "$work/gocache-stall.out" && grep -qF "$work/stalled-gocache" "$work/gocache-stall.out"; then
+	ok "--check fails when the GOCACHE probe stalls, naming the stall and the path"
+else
+	bad "--check failed on a stalled probe without naming the stall: $(cat "$work/gocache-stall.out")"
+fi
+# The diagnosis is the whole point of the check, so it has to arrive alone:
+# bash staples a "Killed: 9" job notice onto stderr for a signal-killed
+# background job unless the script drops it from the job table.
+if grep -q "Killed" "$work/gocache-stall.out"; then
+	bad "the stall diagnosis carries bash's job-kill notice: $(cat "$work/gocache-stall.out")"
+else
+	ok "the stall diagnosis arrives without bash's job-kill notice"
+fi
+if [ "$stall_elapsed" -le 10 ]; then
+	ok "the stalled check gave up in ${stall_elapsed}s (the bound it was given was 1s)"
+else
+	bad "the stalled check took ${stall_elapsed}s against a 1s bound"
+fi
+# The probe must not outlive the check that gave up on it: left running it holds
+# the blocked I/O open with nobody watching. SIGKILL is not instant, so poll.
+orphan_polls=20
+while [ "$orphan_polls" -gt 0 ] && pgrep -f "$stall_probe" >/dev/null 2>&1; do
+	sleep 0.1
+	orphan_polls=$((orphan_polls - 1))
+done
+if pgrep -f "$stall_probe" >/dev/null 2>&1; then
+	bad "the stalled probe outlived --check (orphan still holding the volume)"
+	pkill -f "$stall_probe" >/dev/null 2>&1
+else
+	ok "the stalled probe is killed, not left behind"
+fi
+
+# --- scenario 14: a probe that answers inside the bound is not a stall ---
+# Without this half, "always report a stall" would satisfy scenario 13. The
+# elapsed check is the other half of that: it fails if --check returns without
+# ever waiting for the probe. Three seconds, not one: $SECONDS counts boundary
+# crossings, so a check that waits for nothing at all still reads as 1s often
+# enough to make a one-second probe a false green.
+slow_start=$SECONDS
+if (cd "$repo" && bounded 30 env SERF_GOCACHE_PROBE_CMD="sleep 3" SERF_GOCACHE_PROBE_TIMEOUT=8 \
+	GOCACHE="$work/slow-gocache" SERF_DISK_MIN_FREE_GB=0 \
+	bash "$script" --check) >"$work/gocache-slow.out" 2>&1; then
+	if grep -qi "stall" "$work/gocache-slow.out"; then
+		bad "--check called a probe that answered in 3s of an 8s bound a stall: $(cat "$work/gocache-slow.out")"
+	else
+		ok "a GOCACHE probe that answers inside the bound is not reported as a stall"
+	fi
+else
+	bad "--check failed on a probe that answered in 3s of an 8s bound: $(cat "$work/gocache-slow.out")"
+fi
+slow_elapsed=$((SECONDS - slow_start))
+if [ "$slow_elapsed" -ge 3 ]; then
+	ok "--check waits for the probe's own answer (${slow_elapsed}s for a 3s probe)"
+else
+	bad "--check returned in ${slow_elapsed}s without waiting for a 3s probe"
+fi
+
+# --- scenarios 15-17 use their own repo, laid out the way the real one is ---
 # The fixture above puts its worktrees in "$repo/wt", but the script sizes
 # "$main_root/.claude/worktrees" — so nothing above this line has ever
 # exercised the sizing code at all. These scenarios need a known population in
@@ -361,7 +459,7 @@ echo payload >"$wt2/unregistered-dir/some-file"
 
 out="$(run_in_repo2 --into main)"
 
-# --- scenario 13: the report sizes each worktree class separately ---
+# --- scenario 15: the report sizes each worktree class separately ---
 # The single `du -sh` this replaced read as "what --worktrees could free". On
 # the real machine that number was 8.3G and the true answer was zero: every
 # merged worktree held an agent's .superpowers report. A number that overstates
@@ -414,7 +512,7 @@ else
 	ok "the footer offers no cache lever when there is no cache it can help with"
 fi
 
-# --- scenario 14: the report says whether emptying the cache can move THIS
+# --- scenario 16: the report says whether emptying the cache can move THIS
 # floor, and only pays for a du when it can ---
 # `du` of the real machine's 111G build cache is 32.6s per run, on a volume
 # where emptying it provably cannot move this checkout's floor. The off-volume
@@ -449,7 +547,7 @@ else
 	bad "the cache lever was suppressed in the footer even though it can help: $cache_out"
 fi
 
-# --- scenario 15: the floor message offers only levers it can substantiate ---
+# --- scenario 17: the floor message offers only levers it can substantiate ---
 # The message fires on every test run below the floor and is the whole remedy
 # the next person gets. Measured on the real machine at 3G free: it named
 # --worktrees, worth exactly 0 bytes, while 10.0G of /tmp scratch and 1.6G of
@@ -490,7 +588,7 @@ else
 	bad "the cache lever was suppressed even though it can move this floor: $cache_floor_out"
 fi
 
-# --- scenario 16: --help prints the whole header, not a stale line range ---
+# --- scenario 18: --help prints the whole header, not a stale line range ---
 # It printed lines 2-64 of a header that had grown to 77, so --help stopped
 # mid-sentence and dropped the Safety paragraph entirely. Nothing failed; the
 # documentation just quietly went missing.

@@ -54,9 +54,11 @@
 #   scripts/disk-reclaim.sh --into <ref>    # "merged" means merged into <ref>
 #                                           # (default: the current HEAD)
 #   scripts/disk-reclaim.sh --check         # exit 1 with a specific message if
-#                                           # free space is below the floor;
-#                                           # silent, exit 0, otherwise. Fast:
-#                                           # a bare df, nothing else. This is
+#                                           # free space is below the floor, or
+#                                           # if the GOCACHE volume is gone or
+#                                           # stalled; silent, exit 0, otherwise.
+#                                           # Fast: a bare df and a bounded probe
+#                                           # of GOCACHE. This is
 #                                           # what scripts/run-module-tests.sh
 #                                           # calls before every test run (kata
 #                                           # 98x9): a silent-exhaustion failure
@@ -65,7 +67,9 @@
 #                                           # something already on the path
 #                                           # everyone runs catches it first.
 #                                           # Floor defaults to 5 (GiB); override
-#                                           # with SERF_DISK_MIN_FREE_GB.
+#                                           # with SERF_DISK_MIN_FREE_GB. The
+#                                           # probe gives up after 10s; override
+#                                           # with SERF_GOCACHE_PROBE_TIMEOUT.
 #
 # Safety: four things must ALL hold before a worktree is removed. Its branch
 # must have commits of its own (read from the branch's reflog - see the
@@ -140,20 +144,83 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	# itself does (mkdir -p; a no-op if the path already exists) so the
 	# diagnosis lands here instead.
 	#
+	# That probe is BOUNDED, because the volume's other failure mode is worse
+	# than being gone: when it STALLS, mkdir does not fail, it blocks — and so
+	# does every go command that touches the cache, invisibly, for as long as
+	# the stall lasts. Four go processes were found sleeping 12-23 HOURS on one
+	# such stall, on a volume that answered `ls` instantly by the time anyone
+	# looked (kata r07s). An unbounded probe would inherit that hang and hand
+	# it to every test run on the machine, which is the opposite of the job.
+	#
 	# SERF_SKIP_GOCACHE_CHECK=1 skips this whole block. Used only by
 	# disk-reclaim-selftest.sh's floor-only scenario, to keep that scenario's
 	# "silent above the floor" assertion independent of whatever GOCACHE
 	# happens to be set to on the machine running the test; dedicated
 	# scenarios cover this block itself with GOCACHE pinned explicitly.
 	if [ "${SERF_SKIP_GOCACHE_CHECK:-0}" != 1 ]; then
+		# Safe on a stalled volume: go resolves GOCACHE from the environment
+		# and the go env file (cache.DefaultDir) and does not touch the
+		# directory until something needs to read or write the cache.
 		gocache=$(go env GOCACHE 2>/dev/null)
 		if [ -n "$gocache" ]; then
-			mkdir_err=$({ mkdir -p "$gocache"; } 2>&1)
-			mkdir_status=$?
-			if [ "$mkdir_status" -ne 0 ]; then
+			# Long enough for a sleeping external disk to spin up and answer,
+			# and three orders of magnitude below what a real stall costs.
+			probe_timeout=${SERF_GOCACHE_PROBE_TIMEOUT:-10}
+			probe_out=$(mktemp "${TMPDIR:-/tmp}/disk-reclaim-gocache-probe.XXXXXX")
+			trap 'rm -f "$probe_out"' EXIT
+			# Backgrounded as a plain command so $! is the probe process
+			# itself and not a wrapper shell: the kill below has to reach
+			# whatever is actually blocked on the volume.
+			#
+			# SERF_GOCACHE_PROBE_CMD replaces the probe. No filesystem can be
+			# made to stall on demand, so this is the seam
+			# disk-reclaim-selftest.sh uses to pin the stall outcome; nothing
+			# else sets it.
+			if [ -n "${SERF_GOCACHE_PROBE_CMD:-}" ]; then
+				# shellcheck disable=SC2086 # the seam is a command line, not one word
+				$SERF_GOCACHE_PROBE_CMD >"$probe_out" 2>&1 &
+			else
+				mkdir -p "$gocache" >"$probe_out" 2>&1 &
+			fi
+			probe_pid=$!
+			# Wait for the probe's own answer, 20 polls a second: an awake
+			# volume answers inside the first one, and that is what this costs
+			# on every test invocation across the fleet.
+			probe_polls=$((probe_timeout * 20))
+			while [ "$probe_polls" -gt 0 ] && kill -0 "$probe_pid" 2>/dev/null; do
+				sleep 0.05
+				probe_polls=$((probe_polls - 1))
+			done
+			if kill -0 "$probe_pid" 2>/dev/null; then
+				# Kill it rather than wait on it. A process blocked on a
+				# stalled volume can outlive the signal, and waiting here for
+				# it to die would be the very hang this bound exists to end;
+				# leaving it alive would keep the blocked I/O open with nobody
+				# watching.
+				kill -KILL "$probe_pid" 2>/dev/null
+				# bash announces a signal-killed background job on stderr the
+				# next time it forks, which would staple a "Killed: 9" line
+				# onto the diagnosis below. Dropping the job from its table
+				# says the same thing to nobody.
+				disown "$probe_pid" 2>/dev/null
+				cat >&2 <<-MSG
+					disk-reclaim: GOCACHE at "$gocache" did not answer in ${probe_timeout}s — the volume it lives on is STALLED (kata r07s).
+					A stalled build-cache volume fails nothing; it blocks. Every go command that
+					touches the cache waits on it without saying so — measured at 12 to 23 hours,
+					looking like anything except its cause.
+					Wake or remount the volume and re-run: this probe touched it, so a volume that
+					was only asleep may answer next time. To point GOCACHE at another path, run:
+					scripts/setup-gocache.sh <path>
+				MSG
+				exit 1
+			fi
+			wait "$probe_pid"
+			probe_status=$?
+			if [ "$probe_status" -ne 0 ]; then
+				probe_err=$(cat "$probe_out")
 				cat >&2 <<-MSG
 					disk-reclaim: GOCACHE is set to "$gocache" but it could not be created — kata 98x9.
-					  $mkdir_err
+					  $probe_err
 					This is what an unmounted build-cache volume looks like. If it lives on an
 					external volume, remount it and re-run. To point GOCACHE somewhere else,
 					run: scripts/setup-gocache.sh <path>
