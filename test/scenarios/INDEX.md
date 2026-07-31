@@ -36,6 +36,13 @@ the area they exercise.
   starts a dormant session: `input: []` on the wire, no turn, no
   error (kata `ytpa`; replaces the retired `spawn-empty-prompt-blocked`
   card, kata `xj9j`).
+- `spawn-keyboard-contract.md` — the pane's whole keyboard contract:
+  Enter in the model picker selects the highlighted row and stops there,
+  bare Enter in the prompt inserts a newline, and only ⌘/Ctrl+Enter
+  spawns — with the structural reason (no `<form>`, no `onSubmit`)
+  checked alongside, since it is what makes the absence assertions mean
+  anything (kata `rjc5`; replaces the retired `spawn-picker-enter-noop`
+  card, kata `v0hg`).
 - `spawn-failure-ux-post-ws5.md` — the three remaining spawn-failure
   classes (bogus model id, working dir that doesn't exist, harness
   binary the hub can't execute) come back from `POST /api/spawn` as
