@@ -18,8 +18,10 @@ real end-to-end check is wanted.
 - Repo built: `./serf` exists at repo root.
 - Network reachable to `auth.openai.com`.
 - A clean shell where the test can set env vars.
-- The user is NOT currently mid-login (no other `serf openai login`
-  process running — `pgrep -f 'serf openai login'` should be empty).
+- You are not already mid-login in this shell. `pgrep -f 'serf
+  openai login'` may well be non-empty — it counts every agent's
+  login on the box, and this card is isolated from all of them by
+  its own `XDG_STATE_HOME` — so read it, don't clear it.
 
 ## Part A — automatable portion
 
@@ -47,6 +49,7 @@ state.
    ./serf openai login --device \
      > "$tmpdir/login.stdout" 2> "$tmpdir/login.stderr" &
    PID=$!
+   echo "$PID" >"$tmpdir/login.pid"   # so a later shell can kill it by pid, not by pattern
    ```
 
 3. **Wait briefly** (3–5s is plenty; the device-code request is one
@@ -222,8 +225,13 @@ This deletes the test-only auth record. The user's real
   noise interleaved with later output.
 - The 15-minute poll cap means an abandoned poller eventually
   self-terminates, but during tight iteration you can stack up
-  background pollers. `pgrep -f 'serf openai login'` to check;
-  `pkill -f 'serf openai login'` to reap.
+  background pollers. `pgrep -f 'serf openai login'` to check — it
+  lists every agent's login, not just yours — and reap only the ones
+  you started, by the pid step 2 recorded (`$PID`, or
+  `$tmpdir/login.pid` from a later shell, the same convention the
+  setup checklist's `$run/hub.pid` exists for). Never `pkill -f
+  'serf openai login'`, which would also kill a concurrent agent's
+  login flow.
 - `curl -I` on the verification URL returns a 302 redirect, not a
   200. That's the current shape (May 2026). The redirect target is
   `https://auth.openai.com/api/accounts/deviceauth/authorize`. If
