@@ -2,6 +2,17 @@
 # run-module-lint.sh - lint all non-fuzz Go modules with bounded concurrency.
 set -uo pipefail
 
+# A run owes its reader exactly one summary line, so every failing exit routes
+# through here and none of them can end silently. The leading category is the
+# vocabulary a human or a log scraper reads the failure by: setup for a run that
+# never got as far as a module, not-checked for an unusable linter, findings for
+# real lint output, results-lost for scratch space that went away, interrupted
+# for a signal.
+fail_lint() {
+	printf 'FAIL lint (%s)\n' "$1"
+	exit "$2"
+}
+
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 LINT_PARALLEL=${LINT_PARALLEL:-4}
 case "$LINT_PARALLEL" in
@@ -55,8 +66,7 @@ interrupted() {
 scratch_vanished() {
 	printf 'lint: %s disappeared mid-run: %s\n' "$1" "$2" >&2
 	printf 'lint: nothing in this run removes it before cleanup, so something outside did; a TMPDIR reaper under disk pressure is the usual suspect on macOS\n' >&2
-	printf 'FAIL lint (%d modules, results lost: %s)\n' "$module_count" "$MODULES"
-	exit 1
+	fail_lint "results-lost: $module_count modules: $MODULES" 1
 }
 
 trap cleanup EXIT
@@ -75,8 +85,7 @@ if ! command -v golangci-lint >/dev/null 2>&1; then
 	( golangci-lint run ./... ) >"$logdir/setup.log" 2>&1
 	status=$?
 	cat "$logdir/setup.log"
-	printf 'FAIL lint (%d modules not checked: %s)\n' "$module_count" "$MODULES"
-	exit "$status"
+	fail_lint "not-checked: $module_count modules: $MODULES" "$status"
 fi
 
 run_wave() {
@@ -165,6 +174,4 @@ for ((i = 0; i < module_count; i++)); do
 done
 printf 'full logs: %s\n' "$logdir"
 keep_failed_logs=1
-printf 'FAIL lint (%d/%d modules: %s)\n' \
-	"${#failed_modules[@]}" "$module_count" "${failed_modules[*]}"
-exit 1
+fail_lint "findings: ${#failed_modules[@]}/$module_count modules: ${failed_modules[*]}" 1

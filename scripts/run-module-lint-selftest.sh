@@ -37,6 +37,13 @@ assert_count() {
 	assert_eq "$actual" "$3" "$4"
 }
 
+# The runner's contract to humans and log scrapers is one summary line per run,
+# whatever the run does, so every scenario that reaches the runner pins it.
+assert_one_summary() {
+	actual="$(grep -cE '^(PASS|FAIL) lint \(' "$1" || :)"
+	assert_eq "$actual" "1" "$2"
+}
+
 # macOS mktemp resolves -t against the per-user temp path and ignores TMPDIR, so
 # an unfaked mktemp puts every temporary directory outside the case: assertions
 # about those paths can then never fail, and the run litters the real TMPDIR.
@@ -136,6 +143,7 @@ case "$(sed -n '2p' "$out")" in
 	"PASS lint (3 modules, "*"s)") ok "all-success prints one final PASS line" ;;
 	*) bad "all-success PASS line has the wrong shape" ;;
 esac
+assert_one_summary "$out" "all-success summarises exactly once"
 assert_not_has "$out" "stdout:" "successful stdout chatter is absent"
 assert_not_has "$out" "stderr:" "successful stderr chatter is absent"
 assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" ". agent llm" "all requested modules ran"
@@ -179,7 +187,8 @@ if [ -n "$identifier_line" ] && [ -n "$llm_line" ] && [ "$identifier_line" -lt "
 else
 	bad "failure logs are out of MODULES order"
 fi
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (2/4 modules: identifier llm)" "one final summary names every failed module in order"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (findings: 2/4 modules: identifier llm)" "one final summary names every failed module in order"
+assert_one_summary "$out" "lint findings summarise exactly once"
 logdir="$(sed -n 's/^full logs: //p' "$out")"
 if [ -n "$logdir" ] && [ -d "$logdir" ]; then
 	assert_eq "$(find "$logdir" -type f -name '*.log' | wc -l | tr -d ' ')" "2" "only failed module logs are retained"
@@ -221,7 +230,8 @@ out="$case_dir/missing.out"
 rc=$?
 if [ "$rc" -ne 0 ]; then ok "missing golangci-lint exits nonzero"; else bad "missing golangci-lint exits zero"; fi
 assert_eq "$(grep -c 'command not found' "$out")" "1" "missing-command diagnostic appears once"
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (3 modules not checked: . agent llm)" "missing-command summary names every skipped module once"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (not-checked: 3 modules: . agent llm)" "missing-command summary names every skipped module once"
+assert_one_summary "$out" "a missing linter summarises exactly once"
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "missing-command setup logs are removed"
 
 # Temporary-log setup failure stops before any linter can launch.
@@ -460,7 +470,8 @@ if [ "$rc" -ne 0 ]; then ok "a vanished log directory exits nonzero"; else bad "
 assert_count "$out" "disappeared mid-run" "1" "a vanished log directory is reported exactly once"
 assert_not_has "$out" "No such file or directory" "no bare per-step Bash diagnostics reach the caller"
 assert_has "$out" "TMPDIR reaper" "the diagnosis names the likely cause class"
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (5 modules, results lost: one two three four five)" "the vanished-directory summary keeps the FAIL lint shape"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: 5 modules: one two three four five)" "the vanished-directory summary keeps the FAIL lint shape"
+assert_one_summary "$out" "a vanished log directory summarises exactly once"
 assert_eq "$(wc -l <"$out" | tr -d ' ')" "4" "a vanished log directory produces one diagnosis, not one per step"
 vanished_dir="$(sed -n 's/^lint: the temporary log directory disappeared mid-run: //p' "$out")"
 case "$vanished_dir" in
@@ -492,7 +503,7 @@ if run_lint "one two three four five" "$out" LINT_PARALLEL=4; then rc=0; else rc
 if [ "$rc" -ne 0 ]; then ok "a directory lost between waves exits nonzero"; else bad "a directory lost between waves exits zero"; fi
 assert_count "$out" "disappeared mid-run" "1" "a directory lost between waves is reported exactly once"
 assert_not_has "$out" "No such file or directory" "a directory lost between waves produces no bare Bash diagnostics"
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (5 modules, results lost: one two three four five)" "a directory lost between waves keeps the FAIL lint shape"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: 5 modules: one two three four five)" "a directory lost between waves keeps the FAIL lint shape"
 assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" "four one three two" "the run stops at the loss instead of starting the next wave"
 
 new_case
@@ -502,7 +513,7 @@ if run_lint "one" "$out" LINT_PARALLEL=1; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "a directory lost after the last wave exits nonzero"; else bad "a directory lost after the last wave exits zero"; fi
 assert_count "$out" "disappeared mid-run" "1" "a directory lost after the last wave is reported exactly once"
 assert_not_has "$out" "full logs:" "no retained-log pointer names a directory that is gone"
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (1 modules, results lost: one)" "a directory lost after the last wave keeps the FAIL lint shape"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: 1 modules: one)" "a directory lost after the last wave keeps the FAIL lint shape"
 
 # Losing only the start gate leaves the directory in place, so the failures it
 # causes look exactly like lint findings with empty logs unless the runner
@@ -524,7 +535,8 @@ if run_lint "one two" "$out" LINT_PARALLEL=2; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "a lost start gate exits nonzero"; else bad "a lost start gate exits zero"; fi
 assert_has "$out" "lint: the module start gate disappeared mid-run:" "a lost start gate is named as the thing that went away"
 assert_count "$out" "disappeared mid-run" "1" "a lost start gate is reported exactly once"
-assert_eq "$(tail -n 1 "$out")" "FAIL lint (2 modules, results lost: one two)" "a lost start gate keeps the FAIL lint shape"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: 2 modules: one two)" "a lost start gate keeps the FAIL lint shape"
+assert_one_summary "$out" "a lost start gate summarises exactly once"
 
 # Makefile integration: copy the real build entry point, fake only external
 # commands, and prove both quiet success and unchanged lint-family coverage.
