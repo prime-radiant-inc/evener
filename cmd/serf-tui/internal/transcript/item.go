@@ -97,6 +97,12 @@ func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, do
 }
 
 // TurnIndexFromID parses the numeric turn index out of a "turn_<n>" id.
+//
+// Only the transcript's own entry-index numbering produces that shape. Ids
+// minted by anything else — the synthetic prelude turn, a reserved
+// client-mutation turn (appwire.ClientMutationTurnID) — yield 0, which callers
+// read as "no persisted transcript position": hub_browse.go's fork draft
+// refuses on it rather than cutting a child session at an unrelated entry.
 func TurnIndexFromID(raw string) int {
 	raw = strings.TrimPrefix(strings.TrimSpace(raw), "turn_")
 	n, _ := strconv.Atoi(raw)

@@ -792,3 +792,119 @@ func TestPreparedAppIdentityKeepsLiveTurnIDsAboveSeededTranscriptIDs(t *testing.
 		t.Fatalf("live turn reused seeded transcript id %q; seeded = %v", newest.ID, turnIDs(seeded))
 	}
 }
+
+// TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn pins kata rk09,
+// the SECOND minter in the same collision class as eptj.
+//
+// A client-authored input reserves its turn id from the daemon's durable
+// mutation counter (agent's reserveClientMutationTurnID), and that counter is
+// not the projector's — SeedPersistedTurns never fenced it. One reply is one
+// mutation but several transcript entries, so the reservation always names a
+// LOW number, and after a restart reseeds this snapshot every low number is
+// already an unrelated early turn. ensureTurn then appends the reply's
+// userMessage to THAT turn, and since the reserved id becomes the projector's
+// active turn, the whole agent response follows it.
+func TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn(t *testing.T) {
+	srv, _ := seedTranscriptServerPath(t, 5)
+	seeded := srv.appAllTurns("th_1")
+	if len(seeded) != 10 {
+		t.Fatalf("seeded turns = %v, want the transcript's 10", turnIDs(seeded))
+	}
+	seededItems := map[string]int{}
+	for _, turn := range seeded {
+		seededItems[turn.ID] = len(turn.Items)
+	}
+
+	// The daemon restarted: the projector is fenced above the persisted entry
+	// count, exactly as PrepareAppIdentity and a restored SessionStart leave it.
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: len(seeded), Profile: "openai", Model: "gpt-5.5"},
+	})
+
+	// The reply answering a pending ask carries the id reserved from the
+	// mutation counter, which is far behind the entry count.
+	reserved := appwire.ClientMutationTurnID(3)
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data: events.UserInputData{
+			Text:             "the answer",
+			StableTurnID:     reserved,
+			ClientMutationID: "reply-1",
+			Turn:             len(seeded) + 1,
+		},
+	})
+
+	live := srv.appAllTurns("th_1")
+	if len(live) != len(seeded)+1 {
+		t.Fatalf("turns after the reply = %v, want one more than the seed %v — the reserved id %q named a turn that already existed, so the reply merged into it",
+			turnIDs(live), turnIDs(seeded), reserved)
+	}
+	newest := live[len(live)-1]
+	if newest.ID != reserved {
+		t.Fatalf("newest turn = %q, want the reserved %q", newest.ID, reserved)
+	}
+	for _, turn := range live {
+		want, wasSeeded := seededItems[turn.ID]
+		if !wasSeeded || len(turn.Items) == want {
+			continue
+		}
+		t.Fatalf("seeded turn %q now holds %d items, want its original %d — the reply landed in it",
+			turn.ID, len(turn.Items), want)
+	}
+}
+
+// TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique (kata rk09)
+// carries the same invariant across a restart.
+//
+// A reserved id is PERSISTED: apptranscript keeps a persisted entry's
+// StableTurnID in preference to its entry-index number, so the id a reply was
+// reserved under is the id it keeps forever. Sharing the entry-index namespace
+// therefore does not just merge the live turn — it seeds two turns under one
+// id, which is the turn-id-uniqueness invariant the browser reducer logs.
+func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-5.5"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	// Five exchanges: the last user input is transcript entry 9, but it is only
+	// the third client mutation, so its reservation is numbered 3.
+	reserved := appwire.ClientMutationTurnID(3)
+	for i := range 5 {
+		user := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("in-%d", i)))
+		if i == 4 {
+			user.ClientMutationID = "reply-1"
+			user.StableTurnID = reserved
+		}
+		if err := tw.Append(user); err != nil {
+			t.Fatalf("append user: %v", err)
+		}
+		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
+			t.Fatalf("append assistant: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+	seeded := srv.appAllTurns("th_1")
+
+	occurrences := map[string]int{}
+	for _, turn := range seeded {
+		occurrences[turn.ID]++
+	}
+	for id, n := range occurrences {
+		if n > 1 {
+			t.Fatalf("seeded turn id %q appears %d times in %v — the reserved id %q is also an entry-index id",
+				id, n, turnIDs(seeded), reserved)
+		}
+	}
+	if occurrences[reserved] != 1 {
+		t.Fatalf("seeded turns %v do not carry the persisted reserved id %q", turnIDs(seeded), reserved)
+	}
+}
