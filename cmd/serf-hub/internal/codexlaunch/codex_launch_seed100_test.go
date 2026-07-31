@@ -81,12 +81,14 @@ func useSeedRuntime(l *CodexLauncher, process *seedProcess, ticks int, timedOut 
 		}
 		return &seedTicker{ch: ch}
 	}
+	// An elapsed readiness budget is a deadline that passed, not a
+	// cancellation: the launch tells the two apart and labels them
+	// differently, so a double that canceled would exercise the wrong one.
 	l.withTimeout = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
-		waitCtx, cancel := context.WithCancel(ctx)
 		if timedOut {
-			cancel()
+			return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 		}
-		return waitCtx, cancel
+		return context.WithCancel(ctx)
 	}
 }
 

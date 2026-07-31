@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -274,9 +275,37 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 		case <-ticker.C():
 		case <-waitCtx.Done():
 			_ = process.Kill()
-			return nil, appwire.HubLaunchError("codex app-server timed out waiting for ready")
+			return nil, codexReadyWaitError(waitCtx)
 		}
 	}
+}
+
+// codexReadyWaitError says which way a ready-wait that never saw the
+// app-server come up was stopped. Its context is done for two unrelated
+// reasons — the launch's readiness budget elapsed, or the caller went away —
+// and only the first is a timeout. Calling the second one sends an operator
+// triaging it after a slow machine or a too-short launch timeout, when nothing
+// was slow and nobody is waiting for the app-server any more (kata f9hr).
+//
+// The wait runs under the caller's context on every hub path that reaches it:
+// EnsureSource is called from thread lifecycle handlers carrying a live
+// request context — r.Context() on the REST spawn, the websocket connection's
+// ctx (which the keepalive cancels) on the RPC one — so a client that drops
+// mid-launch lands here.
+//
+// ctx.Err() separates the two outright, the same way the daemon path's
+// launchCheckWaitError does: Canceled is the caller walking away,
+// DeadlineExceeded is time genuinely running out — the launch's own budget, or
+// a deadline the caller brought with it.
+//
+// Both stay an appwire.HubLaunchError, the discriminator clients read to
+// headline the failure as a session that would not start. The label changes;
+// the family of failure does not.
+func codexReadyWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return appwire.HubLaunchError("codex app-server launch canceled waiting for ready")
+	}
+	return appwire.HubLaunchError("codex app-server timed out waiting for ready")
 }
 
 func buildCodexLaunchArgs(binary string, configured []string, listen string) []string {
