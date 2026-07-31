@@ -54,9 +54,13 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 	for _, t := range turns {
 		switch t.Kind {
 		case schema.TurnUserInput:
-			b.WriteString("User: " + truncate(t.Message.Text(), 500) + "\n")
+			b.WriteString("User: ")
+			b.WriteString(truncate(t.Message.Text(), 500))
+			b.WriteString("\n")
 		case schema.TurnAssistant:
-			b.WriteString("Assistant: " + truncate(t.Message.Text(), 500) + "\n")
+			b.WriteString("Assistant: ")
+			b.WriteString(truncate(t.Message.Text(), 500))
+			b.WriteString("\n")
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
 					fmt.Fprintf(&b, "  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200))
@@ -74,7 +78,9 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: " + truncate(t.Message.Text(), 200) + "\n")
+			b.WriteString("System: ")
+			b.WriteString(truncate(t.Message.Text(), 200))
+			b.WriteString("\n")
 		}
 	}
 
