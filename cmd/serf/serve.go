@@ -47,6 +47,12 @@ import (
 	"primeradiant.com/serf/server"
 )
 
+// shutdownDrainWaitBudget bounds how long a returning serve waits for its
+// bridge drains before abandoning them. See the teardown defer in
+// runServeWithDeps for what expiry does and, more importantly, what it
+// deliberately does not do.
+const shutdownDrainWaitBudget = 30 * time.Second
+
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
@@ -68,33 +74,20 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
-	SetGoalStatusFunc(func() (string, int, bool))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
 	SetCancelQueuedFunc(func(int, string) (string, int, error))
-	SetQueueIDsFunc(func() []string)
-	SetQueueDepthFunc(func() int)
-	SetQueuePreviewFunc(func() []string)
-	SetQueueTextsFunc(func() []string)
-	SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation))
-	SetContextPressureFunc(func() float64)
-	SetContextMetricsFunc(func() server.ContextMetrics)
-	SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64))
-	SetFailedToolCallsFunc(func() (int, bool))
-	SetSessionMetaFunc(func() schema.SessionMeta)
-	SetPendingAskFunc(func() bool)
-	SetPendingEscalationFunc(func() bool)
-	SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested)
+	// SetThreadEnvelopeSource replaces sixteen read-time session callbacks with
+	// one seam the daemon samples at change time. See server/thread_envelope.go.
+	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
+	RefreshThreadEnvelope()
 	SetModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
-	SetReasoningInfoFunc(func() (effort string, levels []string, supportsReasoning bool))
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
-	SetDetailedStatusFunc(func() server.DetailedStatus)
 	SetTasksFunc(func() any)
-	SetTaskAggregateFunc(func() *appwire.TaskAggregate)
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -122,7 +115,28 @@ type serveDeps struct {
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
 	listen           func(context.Context, string, string) (net.Listener, error)
 	newServer        func(server.ServerConfig) serveServer
-	bridge           func(serveServer, *agent.Session, func(events.SessionEvent))
+	// bridge attaches the daemon's event consumer to a session. It MUST return
+	// once the attachment is in effect, draining on its own goroutine -- the
+	// caller does not spawn it. A blocking implementation would leave the
+	// session live with a feed that still drops.
+	//
+	// onDrained runs when that drain has FINISHED. Anything the observer writes
+	// to must outlive it: Session.Close() closes the event channel but does not
+	// wait for the buffered tail to be delivered, so "the session is closed" is
+	// not "the consumer is done". It is a parameter rather than a return so a
+	// caller cannot silently skip the wait.
+	bridge func(serveServer, *agent.Session, func(events.SessionEvent), func())
+	// drainWaitExpiry starts the shutdown budget for waiting on bridge drains
+	// and returns the channel that fires when it runs out. Injectable because a
+	// test must be able to drive expiry on demand: a test that passes because a
+	// real timer happened to fire proves the budget exists, not that it is
+	// honoured, and the whole point of the budget is which of the two arms runs.
+	drainWaitExpiry func() <-chan time.Time
+	// verboseOut is where --verbose writes its NDJSON. Nil means os.Stderr.
+	// Injectable so a test can wedge it: the reason the tee exists is that the
+	// real one can be a pipe nobody drains, and that is not reproducible against
+	// a real terminal.
+	verboseOut       io.Writer
 	subscriberCount  func(serveServer, string) int
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
@@ -162,9 +176,18 @@ func defaultServeDeps() serveDeps {
 			return lc.Listen(ctx, network, addr)
 		},
 		newServer: func(cfg server.ServerConfig) serveServer { return server.NewServer(cfg) },
-		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent)) {
-			server.BridgeWithObserver(s.(*server.Server), sess.Events(), observer)
+		// The daemon registers as the session's AUTHORITATIVE consumer rather
+		// than ranging over Events(): its projection is the sole authority for
+		// turn reads, so an event it misses is absent from every thread/read
+		// for the life of the identity. Registering is what makes the feed
+		// lossless -- there is no separate switch, and there must not be one.
+		bridge: func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
+			srv := s.(*server.Server)
+			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+				server.BridgeEvent(srv, ev, observer)
+			}, onDrained)
 		},
+		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppServer().SubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		register:           func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
@@ -495,17 +518,88 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentMu.Unlock()
 	}
 
+	// The observer runs ON the bridge goroutine, which is the daemon's
+	// authoritative consumer, so it must never block: see verboseEventTee.
 	var eventObserver func(events.SessionEvent)
+	var closeEventObserver func()
 	if *verbose {
-		enc := json.NewEncoder(os.Stderr)
-		enc.SetEscapeHTML(false)
-		var verboseMu sync.Mutex
-		eventObserver = func(ev events.SessionEvent) {
-			verboseMu.Lock()
-			defer verboseMu.Unlock()
-			_ = enc.Encode(ev)
+		verboseOut := deps.verboseOut
+		if verboseOut == nil {
+			verboseOut = os.Stderr
 		}
+		tee := newVerboseEventTee(verboseOut, verboseEventTeeBuffer)
+		eventObserver = tee.observe
+		closeEventObserver = tee.close
 	}
+
+	// Every bridge drain this serve starts, so teardown can wait for them.
+	// A session gets a new one on /clear, and each ends when its own session's
+	// event channel closes.
+	var drainsMu sync.Mutex
+	var bridgeDrains []<-chan struct{}
+	// teardownStarted says the snapshot below has already been taken, so no
+	// later drain can ever appear in it. bridgeSession refuses to start one
+	// past this point; see the refusal there for why that is the right answer.
+	var teardownStarted bool
+	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
+	// but does not wait for the buffered tail, so a drain is still calling the
+	// observer after the session is closed -- and observe on a closed tee panics
+	// on the drain's own goroutine, which kills the process and skips every
+	// defer registered above this one. Waiting and closing live in ONE defer so
+	// the order cannot be broken by inserting another defer between them.
+	//
+	// THE WAIT IS BUDGETED, AND EXPIRY SKIPS THE CLOSE. A drain wedged inside
+	// BridgeEvent -- on a lock, or on a subsystem that stopped answering --
+	// must not make the daemon ignore SIGTERM until something SIGKILLs it, so
+	// the wait gives up after shutdownDrainWaitBudget.
+	//
+	// Giving up means LEAVING THE TEE OPEN, not closing it anyway. Closing it
+	// under a live drain is the exact crash this defer exists to prevent, so an
+	// expiry that closed anyway would trade a hang for the bug rather than fix
+	// either. An abandoned tee costs a truncated NDJSON tail on a process that
+	// is exiting regardless, and the OS reclaims the goroutine and the buffer.
+	//
+	// The budget bounds the pathological case ONLY; it must never absorb real
+	// work, because a budget that can expire on a slow machine quietly converts
+	// a slowness bug into a truncated log. A healthy drain is the session's
+	// buffered tail -- at most its 256-deep channel, each event memory work plus
+	// at most one jobs.jsonl read -- which is milliseconds, and still under
+	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
+	// Thirty seconds is two orders of magnitude past that, so an expiry here
+	// ordinarily means a genuine wedge, and it stays inside systemd's 90s
+	// default stop timeout so the daemon still gets to exit by its own
+	// decision.
+	//
+	// One exception is neither a wedge nor real work, and still spends the
+	// full budget every time it occurs. bridgeSession's registration below is
+	// guarded only by teardownStarted, not by whether the session it bridges
+	// still has a closer: a /clear whose bridgeSession call lands after the
+	// shutdown goroutine's one getSession().Close() call has already closed
+	// the session being replaced, but before this snapshot sets
+	// teardownStarted, still registers the replacement's drain. Nothing
+	// closes that replacement afterward, so its drain cannot end at any
+	// budget. The race is pre-existing and accepted, not new behavior.
+	defer func() {
+		drainsMu.Lock()
+		pending := append([]<-chan struct{}(nil), bridgeDrains...)
+		// Closing the list and reading it are ONE critical section, so no
+		// bridgeSession can slip a drain in behind the snapshot.
+		teardownStarted = true
+		drainsMu.Unlock()
+		// One budget for the whole teardown, not one per drain: what must be
+		// bounded is how long SIGTERM goes unanswered.
+		expiry := deps.drainWaitExpiry()
+		for _, drained := range pending {
+			select {
+			case <-drained:
+			case <-expiry:
+				return
+			}
+		}
+		if closeEventObserver != nil {
+			closeEventObserver()
+		}
+	}()
 
 	var notifyCallback func()
 	var subscriberCallback func() int
@@ -560,7 +654,65 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// the current session's id across /clear.
 		subscriberCallback = func() int { return deps.subscriberCount(srv, s.ID()) }
 		s.SetSubscriberCountFunc(subscriberCallback)
-		go deps.bridge(srv, s, eventObserver)
+		// Called synchronously, NOT with `go`: the bridge registers as the
+		// session's authoritative consumer and then drains on its own
+		// goroutine, so returning here means the registration has taken effect.
+		// Spawning this would reopen the window in which the session is live
+		// and its feed is still best-effort.
+		//
+		// The call and the registration are ONE critical section. An entry in
+		// bridgeDrains means "a drain exists that will close this channel", and
+		// each ordering without the lock breaks that in an opposite direction:
+		//
+		//   - Appending BEFORE the call leaves a channel nothing will ever close
+		//     if deps.bridge does not reach the drain. That is not theoretical
+		//     noise -- bridgeSession also runs from SetClearFunc on a net/http
+		//     handler goroutine, and net/http RECOVERS handler panics, so the
+		//     daemon would survive the panic and then wait out its whole
+		//     shutdown budget on a phantom, abandoning the tee. A loud crash
+		//     becomes a silent truncation.
+		//   - Appending AFTER it but outside the lock leaves a window in which
+		//     the teardown's snapshot misses a drain that is already live and
+		//     closes the tee under it, which is the crash this whole wait exists
+		//     to prevent.
+		//
+		// Holding drainsMu across both makes neither state observable: the
+		// snapshot runs either before deps.bridge is called or after the append,
+		// never between. deps.bridge does not block by contract, and nothing
+		// reachable from it takes drainsMu, so the section stays short. The
+		// unlock is deferred rather than written out because it must also run
+		// when deps.bridge panics -- an explicit unlock would leave the mutex
+		// held and deadlock the shutdown that the phantom was going to stall.
+		drained := make(chan struct{})
+		drainsMu.Lock()
+		defer drainsMu.Unlock()
+		// Past the teardown's snapshot, a drain started here would be one the
+		// wait cannot see, and the tee would be closed under it -- the same
+		// crash the wait exists to prevent, reached from the other side. The
+		// lock that makes the registration atomic makes this mutually exclusive
+		// with the snapshot for free.
+		//
+		// Refusing leaves this session with no authoritative consumer, which
+		// anywhere else on this branch is the corruption being prevented. Here
+		// it costs nothing: the only caller that can reach this is /clear on a
+		// handler goroutine that outlived httpSrv.Close(), and by the time the
+		// snapshot has been taken the listener is closed, the rendezvous entry
+		// has been removed, and the input loop has exited. The replacement
+		// cannot take a turn and no client can read it, so there is no reader
+		// for its projection to be permanently wrong for. Bridging it instead
+		// would register a LOSSLESS consumer -- one whose feed blocks its
+		// emitter -- on a session nothing will ever close.
+		//
+		// Nothing closing it also means nothing calls its env's Cleanup()
+		// (agent/execenv/local.go), which is what disposes the session's owned
+		// scratch directory. Unlike the tee's buffered tail above -- which the
+		// OS reclaims once this process exits -- the replacement's scratch
+		// directory is disk state: it survives AFTER exit, not merely until it.
+		if teardownStarted {
+			return
+		}
+		deps.bridge(srv, s, eventObserver, func() { close(drained) })
+		bridgeDrains = append(bridgeDrains, drained)
 	}
 
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
@@ -585,7 +737,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return getSession().SetGoal(ctx, objective)
 	})
-	srv.SetGoalStatusFunc(func() (string, int, bool) { return getSession().GoalStatus() })
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)
@@ -621,29 +772,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			})
 		},
 	})
-	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
-	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
-	srv.SetQueueIDsFunc(func() []string { return getSession().QueueIDs() })
-	srv.SetQueueTextsFunc(func() []string { return getSession().QueueTexts() })
-	srv.SetClientMutationProjectionFunc(func() (appwire.QueueState, []appwire.PendingMutation) {
-		return getSession().ClientMutationProjection()
-	})
-	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
-	srv.SetContextMetricsFunc(func() server.ContextMetrics {
-		metrics := getSession().ContextMetrics()
-		return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
-	})
-	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
-		sess := getSession()
-		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
-	})
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return getSession().FailedToolCallsSnapshot() })
-	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
-	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })
-	srv.SetPendingEscalationFunc(func() bool { return getSession().HasPendingEscalations() })
-	srv.SetPendingEscalationsSnapshotFunc(func() []appwire.SandboxEscalationRequested {
-		return mapServePendingEscalations(getSession().PendingEscalations())
-	})
+	// One seam replaces sixteen read-time callbacks. The daemon samples session
+	// state through this at the moments it changes (server/thread_envelope.go's
+	// facetsByEvent) and never on a read.
+	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{session: getSession})
 	pendingEscalations := func() []appwire.SandboxEscalationRequested {
 		return mapServePendingEscalations(getSession().PendingEscalations())
 	}
@@ -662,31 +794,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
-	srv.SetReasoningInfoFunc(func() (string, []string, bool) {
-		sess := getSession()
-		p := sess.Profile()
-		return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
-	})
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
-	srv.SetDetailedStatusFunc(func() server.DetailedStatus {
-		return agentToServerDetailedStatus(getSession().DetailedStatus())
-	})
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
-	srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate {
-		tasks, err := getSession().TasksWithError()
-		if err != nil {
-			// A persisted-store failure is unavailable task state, not an
-			// authoritative empty list; keep the wire aggregate absent.
-			return nil
-		}
-		done := 0
-		for _, task := range tasks {
-			if task.Status == taskpkg.TaskDone {
-				done++
-			}
-		}
-		return &appwire.TaskAggregate{Total: len(tasks), Done: done}
-	})
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
 		currentMu.RLock()
@@ -736,6 +845,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// notification can be projected between the halves, so no client sees
 		// the old thread's authority answering for the new thread's id.
 		srv.ReplaceAppIdentity(prepared, func() { setSession(newSess, clearEnv) })
+		// The commit above zeroed the envelope with the identity it described.
+		// Re-seed from the replacement session here rather than inside the
+		// commit: sampling every facet reads jobs.jsonl and the task store, and
+		// the commit holds the projection gate. Nothing is lost by seeding
+		// after it -- the new session's own events are still queued in its
+		// channel, and its bridge has not started.
+		srv.RefreshThreadEnvelope()
 		oldSess.Close() // disposes oldEnv
 		bridgeSession(newSess)
 		return nil
@@ -746,6 +862,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		cancel()
 	})
 
+	// Seed the envelope from the live session before its bridge starts. Every
+	// envelope value changes at once when the session behind them changes, and
+	// no single event announces that; this is that moment for the first one.
+	srv.RefreshThreadEnvelope()
 	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
 	if deps.observeCallbacks != nil {
@@ -1088,4 +1208,82 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 	out.Agents = ds.Agents
 
 	return out
+}
+
+// liveThreadEnvelopeSource is the daemon's one window onto live session state
+// for the materialized thread envelope. The server samples it at the moments
+// those values change (server/thread_envelope.go's facetsByEvent), never on a
+// read: every method here can take the session's mutex, the task store's, or
+// read jobs.jsonl, and a read path that could reach them would hold the
+// projection gate across that work.
+//
+// It resolves the session per call rather than capturing one, so it follows
+// /clear onto the replacement session exactly as the sixteen closures it
+// replaced did.
+type liveThreadEnvelopeSource struct {
+	session func() *agent.Session
+}
+
+func (l liveThreadEnvelopeSource) ContextPressure() float64 {
+	return l.session().ContextPressure()
+}
+
+func (l liveThreadEnvelopeSource) ContextMetrics() server.ContextMetrics {
+	metrics := l.session().ContextMetrics()
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
+}
+
+func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
+	return agentToServerDetailedStatus(l.session().DetailedStatus())
+}
+
+func (l liveThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
+	return l.session().ClientMutationProjection()
+}
+
+// TaskAggregate reports nil on a persisted-store failure. That is unavailable
+// task state, not an authoritative empty list, and the wire distinguishes them.
+func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
+	tasks, err := l.session().TasksWithError()
+	if err != nil {
+		return nil
+	}
+	done := 0
+	for _, task := range tasks {
+		if task.Status == taskpkg.TaskDone {
+			done++
+		}
+	}
+	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+}
+
+func (l liveThreadEnvelopeSource) GoalStatus() (string, int, bool) {
+	return l.session().GoalStatus()
+}
+
+func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+	sess := l.session()
+	return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
+}
+
+func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
+	return l.session().FailedToolCallsSnapshot()
+}
+
+func (l liveThreadEnvelopeSource) AskPending() bool {
+	return l.session().HasPendingAsk()
+}
+
+func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
+	return mapServePendingEscalations(l.session().PendingEscalations())
+}
+
+func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
+	sess := l.session()
+	p := sess.Profile()
+	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+}
+
+func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
+	return l.session().Meta()
 }

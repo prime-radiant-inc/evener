@@ -53,9 +53,9 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 		State:     "idle",
 		Model:     "gpt-4o",
 	})
-	srv.SetContextPressureFunc(func() float64 { return 0.42 })
-	srv.SetContextMetricsFunc(func() ContextMetrics {
-		return ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.contextPressure = 0.42 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.contextMetrics = ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -86,8 +86,10 @@ func TestStatusEndpoint_WorkMetrics(t *testing.T) {
 		SessionID: "test-789",
 		State:     "active",
 	})
-	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
-		return 9000, &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 0, TotalTokens: 3}, 42
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.workMillis = 9000
+		e.usage = &appwire.SerfUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 0, TotalTokens: 3}
+		e.turnStartedAt = 42
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -535,8 +537,8 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 		Profile:   "openai",
 	})
 
-	srv.SetDetailedStatusFunc(func() DetailedStatus {
-		return DetailedStatus{
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{
 			Tools: []ToolInfo{
 				{Name: "shell", Source: "core"},
 				{Name: "linear__search", Source: "mcp:streamlinear"},
@@ -908,7 +910,7 @@ func TestDrainAsSteerEndpoint_NoContent(t *testing.T) {
 	srv.SetProcessing(true)
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
-	srv.SetQueueDepthFunc(func() int { return 2 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 
 	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
@@ -935,7 +937,7 @@ func TestDrainAsSteerEndpoint_WithInputBypassesEmptyQueue(t *testing.T) {
 		gotImages = append([]ImageAttachment(nil), images...)
 		return nil
 	})
-	srv.SetQueueDepthFunc(func() int { return 0 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 
 	body := strings.NewReader(`{"text":"composer payload","images":[{"media_type":"image/png","data":"cG5n","name":"shot.png"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", body)
@@ -957,7 +959,7 @@ func TestDrainAsSteerEndpoint_RejectsEmpty(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetProcessing(true)
 	srv.SetDrainAsSteerFunc(func() error { return nil })
-	srv.SetQueueDepthFunc(func() int { return 0 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 
 	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
@@ -1210,7 +1212,7 @@ func TestQueueEndpoint_FuncError(t *testing.T) {
 func TestDrainAsSteerEndpoint_NoFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetProcessing(true)
-	srv.SetQueueDepthFunc(func() int { return 2 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 
 	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
 	rec := httptest.NewRecorder()
@@ -1239,7 +1241,7 @@ func TestDrainAsSteerEndpoint_InvalidJSON(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetDrainAsSteerFunc(func() error { return nil })
 	srv.SetDrainAsSteerWithInputFunc(func(string, []ImageAttachment) error { return nil })
-	srv.SetQueueDepthFunc(func() int { return 0 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 
 	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", strings.NewReader(`{bad`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1443,7 +1445,7 @@ func TestHandleStatus_PendingAskOverlaysLiveFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
 	pending := true
-	srv.SetPendingAskFunc(func() bool { return pending })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = pending })
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
@@ -1457,6 +1459,7 @@ func TestHandleStatus_PendingAskOverlaysLiveFunc(t *testing.T) {
 	}
 
 	pending = false
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = pending })
 	rec = httptest.NewRecorder()
 	srv.handleStatus(rec, req)
 	// PendingAsk has omitempty (false -> absent from JSON), so a fresh

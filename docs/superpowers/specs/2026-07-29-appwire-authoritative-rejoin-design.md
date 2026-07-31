@@ -261,55 +261,64 @@ snapshot field it announces.
 
 `CaptureSubscription` remains the response-cut primitive. Its snapshot
 callback never parses the transcript: the turn window is cloned from the
-installed in-memory snapshot. That does not make the callback I/O-free. It
-runs entirely inside the projection gate, and several of the sixteen
-session-state callbacks it invokes can still block behind a lock another
-component holds across disk I/O.
+installed in-memory snapshot. It no longer reads live session state either.
 
-The callback does still read live session state through the daemon's injected
-callbacks, and that is required rather than incidental. Every envelope field
-that a notification also announces -- queue, status, active turn, escalations,
-the failure count -- must be sampled on the cut's side of the projection gate.
-Session state is written before the event that announces it (invariant 14), so
-a sample taken inside the gate can only lead its notifications, never lag
-them. A sample taken before the gate can lag: an event emitted after the
-sample but committed before the cut is dropped on release as pre-cut, and the
-field it announced never arrives. That is the gap invariant 6 exists to close,
-so the envelope is not sampled early.
+The envelope around the turns is materialized. `server.Server` holds one
+`threadEnvelope` (`server/thread_envelope.go`) carrying every value a thread
+snapshot reports about the live session other than its identity and its turns.
+`appThread()` and `/status` copy it. The sixteen injected read-time callbacks
+they used to pull are deleted, so neither surface reaches a session. The Server
+still holds session-reaching callbacks for other work (`tasksFn`,
+`listModelsFunc`, the mutation and lifecycle hooks); none of them is on the
+`thread/read` cut.
 
-What the callback must therefore never do is block on a lock some other
-component holds across I/O. One blocking reader on this path is fixed:
-`clientMutationStore.snapshot` used to queue behind the mutation store's own
-fsync; it now publishes its committed generation under a narrow mutex,
-`stateMu`, that the store's serializer takes only to publish and never holds
-across a write.
+Every envelope field that a notification also announces -- queue, status, active
+turn, escalations, the failure count -- is still produced on the cut's side of
+the projection gate, which is what invariant 6 requires. It is now produced by
+copying rather than by calling into the session, so the requirement costs
+nothing. A snapshot taken before the gate would still be wrong for the same
+reason it always was: an event emitted after the sample but committed before the
+cut is dropped on release as pre-cut, and the field it announced never arrives.
+`TestEnvelopeCommittedBeforeTheCutIsInTheResponse` fails if the snapshot is
+hoisted above `CaptureSubscription`.
 
-Four paths still block, and none of them can be fixed the same way, because
-each guards a real durable write or a real filesystem read that has to happen
-somewhere:
+The envelope is maintained by sampling, at the moments its values change. The
+bridge maps each session event to the facets that event can have moved
+(`facetsByEvent`) and re-samples only those, BEFORE `RecordAppEvent` projects the
+event. That is the same ordering `applySessionEventStatus` relies on: session
+state is written before the event announcing it (invariant 14), so an envelope
+refreshed there can only lead its own notification, never lag it. Events that
+move nothing -- token deltas, tool-output deltas, reasoning deltas -- are absent
+from the table and sample nothing, which is what keeps the drain fast.
 
-- `failedToolCallsFn` calls `transcript.Writer.FailedToolCalls()`, which takes
-  `Writer.mu`. `Writer.append()` holds that same mutex across the seek, the
-  line write, and `w.file.Sync()` on every durable transcript append. This is
-  the hottest of the four: it fires on ordinary turns, not just client
-  mutations.
-- `detailedStatusFn` calls `jobManager.list`, which calls
-  `jobstore.Store.Load()`. `Load` synchronously rereads `jobs.jsonl` and holds
-  `Store.mu` across its own `Append` and `syncLocked`/`f.Sync()`.
-- `taskAggregateFn` calls `TasksWithError()`, which calls `TaskStore.View()`.
-  `View` takes `TaskStore.mu`, the same mutex `save()` (MkdirAll, WriteFile,
-  Rename) holds when called from `Append`, `PopulateFromTemplates`, and
-  `updateLocked`, plus a first-call `Load()` inside a `sync.Once`.
-- Eleven of the sixteen session-state callbacks take the session's own mutex
-  (`agent.Session.mu`). `SetModel`, reachable from the wire via
-  `thread/modelSet`, holds that mutex across rendering the system prompt: an
-  `os.Stat` and `os.ReadFile` per section, plus a `git rev-parse` fork on a
-  cold memo.
+All four blocking paths are therefore gone from under the projection gate:
 
-The fix that removes all four at once, rather than narrowing each lock in
-turn, is a cached thread envelope that the session pushes into on write, so
-the read under the gate becomes a pointer load instead of a call into
-session, job, or task state. That is future work: it has not been built.
+- `FailedToolCalls()` (transcript `Writer.mu`, held across `file.Sync()`) is
+  sampled on tool-call and turn boundaries in the bridge.
+- `DetailedStatus()` (`jobstore.Store.Load`, a synchronous `jobs.jsonl` read) is
+  sampled on job and plugin events.
+- `TasksWithError()` (`TaskStore.mu`, held across `save()`) is sampled on task
+  events, whose payload already carries the aggregate.
+- The eleven callbacks that took `agent.Session.mu` are sampled likewise.
+  `SetModel` can still hold that mutex across rendering the system prompt; it no
+  longer blocks a reader, only the bridge goroutine.
+
+Two consequences are deliberate and worth stating rather than discovering.
+
+The sampling is a PULL relocated from read time to change time, not a value
+carried on the event. Five facets (queue, tasks, meta, escalations, and
+reasoning's level/support half) do have events carrying their values today and
+can be converted to true carriers one at a time, without touching the read path.
+The remaining ones would need roughly seventy new emit sites across eight
+packages, where a forgotten site yields a wire field that is permanently stale
+and still reads as plausible; concentrating the contract in one table was judged
+the better trade.
+
+A running job's `OutputBytes` has no change event at all. `jobManager` stamps it
+live from the output buffer (`agent/jobs.go`), so it advances on every output
+append. It therefore lags by up to one job event. Nothing about the response cut
+depends on it: no notification announces diagnostics, and no consumer treats the
+figure as terminal.
 
 ## Frontend owned hydration
 
@@ -385,12 +394,86 @@ wire fields or timers.
 - hot handoff between simultaneously active old and new daemon sessions
 - silently dropped frame detection while one WebSocket stays ready
 
-The last limitation is conscious. The browser trusts ordered WebSocket
-delivery plus explicit `serf/thread/resync`. Current production paths either
-deliver, disconnect a slow subscriber, or issue resync; review found no path
-that silently omits a frame while keeping the socket ready and omitting
-resync. Adding public epochs without a proven producer gap would expand the
-protocol without fixing the observed one-shot hydration failure.
+The last limitation was conscious, and its stated justification no longer
+holds. The browser trusts ordered WebSocket delivery plus explicit
+`serf/thread/resync`. Downstream of the projection that is still true: a
+subscriber that cannot keep up is disconnected rather than skipped
+(`Connection.enqueue` in `internal/appserver/server.go` refuses on a full
+send queue and the connection is unregistered), so no frame is silently
+omitted while a socket stays ready.
+
+The gap is UPSTREAM of the projection, and it is now proven. `sendEvent`
+(`agent/session_events.go`) delivers on a 256-deep channel with a
+non-blocking send and drops on overflow. That drop was harmless when the
+transcript was the authority and every read re-derived turn state from
+disk. It is not harmless now: this design made the in-memory snapshot the
+sole authority, and the materialized thread envelope extended that to the
+whole envelope, so a dropped event is permanently absent from every
+`thread/read` for the life of the identity. No daemon code produces
+`serf/thread/resync`, so nothing repairs it and a page reload does not.
+
+That was the proven producer gap the paragraph above said did not exist, and
+for the daemon it is now CLOSED. Delivery discipline became a property of the
+consumer rather than of the channel: `Session.ConsumeEventsLossless` marks the
+session and starts the drain in one call, and is the only writer of that mark,
+so an attached authoritative consumer waits instead of dropping and "lossless
+with nobody reading" cannot be expressed. `cmd/serf/serve.go`'s bridge is the
+single caller.
+
+The drop remains for everything else, and correctly: the same channel is a
+deliberately unread sink for every subagent and delegate session, whose events
+reach the parent through synchronous callbacks instead. Blocking those would
+wedge each child on its 257th event, so best-effort is the only behaviour that
+is not a deadlock there.
+
+What remains, precisely:
+
+- **Events emitted before the daemon attaches are still best-effort.** A
+  session emits `SESSION_START` and its construction diagnostics from inside
+  `NewSession`, so nothing can be attached yet. They are buffered rather than
+  lost, and a regression test asserts construction stays well inside the
+  buffer, but the margin is a measured fact rather than a guarantee.
+- **`serf run` and the dev tools are unchanged**, deliberately: nothing there
+  keeps authoritative state.
+- **A wedged consumer now stalls the session instead of corrupting it.** The
+  emitter blocks holding `eventsMu.RLock`, which also blocks `Session.Close`,
+  so the failure mode is a visible hang rather than a silently wrong
+  `thread/read`. That is the intended trade; the consumer's per-event work is
+  bounded to keep it unreachable.
+- **Shutdown abandons a wedged drain rather than waiting it out.** Teardown
+  waits `shutdownDrainWaitBudget` for its bridge drains and then returns
+  *without* closing the verbose tee: closing it under a live drain is the exact
+  crash the wait exists to prevent, so expiry skips the close instead of
+  trading a hang for the bug. The cost is a truncated NDJSON tail on a process
+  that is exiting anyway. The budget bounds the pathological case only — it is
+  two orders of magnitude past a healthy drain, which is just the session's
+  buffered tail — so an expiry always means a genuine wedge and never absorbs
+  real work.
+- **Two overlapping refreshes of one facet can lose the newer sample.**
+  `refreshFacets` samples with no lock held — that is the point, it is the I/O
+  this work moved off the read path — and commits under `s.mu`. It runs
+  concurrently from the bridge goroutine and from all eight mutation handlers,
+  so sample(A) → sample(B) → commit(B) → commit(A) leaves A's older value
+  installed. Bounded, not permanent for most facets: the next event that
+  touches the facet corrects it, and `TURN_ENDED` re-samples every one
+  regardless. `facetGoal` is the exception — `goal/set` emits no event at all
+  (`server/thread_envelope.go`'s own comment on the table), so a lost update to
+  it has no "next event" to depend on and heals only on the next `TURN_ENDED`.
+  A live subscriber is unaffected, because the notification stream carries the
+  truth. The exposure is a cold `thread/read` landing inside the window and
+  reading a stale queue depth or goal. Closing it needs a per-facet sequence
+  number, which is not worth it here.
+- **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
+  Losslessness turns "emit under a lock" from a dropped event into a deadlock,
+  for every lock reachable from the bridge. Three call sites were found and
+  fixed, all of them the same callee reached from three different locked
+  callers; there is no compiler or vet check for the next one. The cheapest
+  real enforcement is one owner-tracked mutex — wrap `Session.mu` and assert at
+  `sendEvent`'s blocking branch — not an audit of every lock.
+
+`serf/thread/resync` still has no producer. It is not needed for the daemon's
+own feed any more, but it remains the only repair path if a future consumer is
+added that can legitimately miss frames.
 
 ## Verification
 

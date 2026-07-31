@@ -187,8 +187,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: sess.AcceptClientMutationPromoteQueuedAsSteer,
 	})
-	srv.SetQueuePreviewFunc(sess.QueuePreview)
-	srv.SetQueueIDsFunc(sess.QueueIDs)
+	publishSessionQueueEnvelope(srv, sess)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

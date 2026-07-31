@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -107,19 +108,8 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	live := server.NewServer(server.ServerConfig{})
 	live.SetAppIdentity("local", sess.ID())
 	live.SetStatus(server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
-	live.SetTaskAggregateFunc(func() *appwire.TaskAggregate {
-		tasks, err := sess.TasksWithError()
-		if err != nil {
-			return nil
-		}
-		done := 0
-		for _, item := range tasks {
-			if item.Status == task.TaskDone {
-				done++
-			}
-		}
-		return &appwire.TaskAggregate{Total: len(tasks), Done: done}
-	})
+	live.SetThreadEnvelopeSource(sessionTaskEnvelopeSource{sess: sess})
+	live.RefreshThreadEnvelope()
 	conn := live.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	response := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:" + sess.ID()}))
@@ -142,4 +132,47 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	if coldRead.Serf.Tasks != nil {
 		t.Fatalf("cold malformed task aggregate=%+v, want unknown", coldRead.Serf.Tasks)
 	}
+}
+
+// sessionTaskEnvelopeSource mirrors cmd/serf/serve.go's live envelope source for
+// the one facet this test asserts on. Everything else reports the zero value a
+// daemon with nothing to say reports.
+type sessionTaskEnvelopeSource struct{ sess *agent.Session }
+
+func (s sessionTaskEnvelopeSource) ContextPressure() float64 { return 0 }
+func (s sessionTaskEnvelopeSource) ContextMetrics() server.ContextMetrics {
+	return server.ContextMetrics{}
+}
+func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
+	return server.DetailedStatus{}
+}
+func (s sessionTaskEnvelopeSource) AskPending() bool                        { return false }
+func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
+func (s sessionTaskEnvelopeSource) GoalStatus() (string, int, bool)         { return "", 0, false }
+func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
+func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
+func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.SerfUsage, int64) {
+	return 0, nil, 0
+}
+func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
+	return nil
+}
+func (s sessionTaskEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
+	return appwire.QueueState{}, nil
+}
+
+// TaskAggregate is the shape wired by cmd/serf/serve.go: a load failure is
+// unavailable task state (nil), never an authoritative empty list.
+func (s sessionTaskEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
+	tasks, err := s.sess.TasksWithError()
+	if err != nil {
+		return nil
+	}
+	done := 0
+	for _, item := range tasks {
+		if item.Status == task.TaskDone {
+			done++
+		}
+	}
+	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
 }

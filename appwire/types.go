@@ -273,8 +273,9 @@ type SerfThread struct {
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
-	// working-state/token metrics (WS2), read on demand from the session via
-	// a pull callback rather than pushed on every event. Usage is a pointer
+	// working-state/token metrics (WS2), served from the daemon's materialized
+	// thread envelope, which is refreshed at the turn boundaries that move
+	// them. Usage is a pointer
 	// (unlike the other two scalars) because SerfUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
 	// signals "no token data" rather than rendering ↑0 ↓0.

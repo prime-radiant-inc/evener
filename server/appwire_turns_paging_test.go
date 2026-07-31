@@ -578,13 +578,15 @@ func TestAppTurnSnapshotReducesInProducerOrderUnderConcurrentEvents(t *testing.T
 	insideCommit := make(chan struct{})
 	release := make(chan struct{})
 	var stamped sync.Once
-	srv.SetFailedToolCallsFunc(func() (int, bool) {
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failuresMeasured = true })
+	srv.mu.Lock()
+	srv.insideAppProjectionCommit = func() {
 		stamped.Do(func() {
 			close(insideCommit)
 			<-release
 		})
-		return 0, true
-	})
+	}
+	srv.mu.Unlock()
 
 	firstDone := make(chan struct{})
 	go func() {

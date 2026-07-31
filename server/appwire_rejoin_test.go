@@ -39,13 +39,15 @@ func TestAtomicProjectionCommitPreservesProducerOrderAcrossSequenceAllocation(t 
 	projected := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	srv.SetFailedToolCallsFunc(func() (int, bool) {
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failuresMeasured = true })
+	srv.mu.Lock()
+	srv.insideAppProjectionCommit = func() {
 		once.Do(func() {
 			close(projected)
 			<-release
 		})
-		return 0, true
-	})
+	}
+	srv.mu.Unlock()
 
 	completed := make(chan struct{})
 	go func() {
@@ -108,11 +110,7 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
-	srv.SetQueueDepthFunc(sess.QueueDepth)
-	srv.SetQueuePreviewFunc(sess.QueuePreview)
-	srv.SetQueueIDsFunc(sess.QueueIDs)
-	srv.SetQueueTextsFunc(sess.QueueTexts)
-	srv.SetClientMutationProjectionFunc(sess.ClientMutationProjection)
+	publishSessionQueueEnvelope(srv, sess)
 
 	response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
 	if err != nil {
@@ -195,7 +193,7 @@ func TestAtomicRejoinExcludesTranscriptIncorporatedMutationsFromPending(t *testi
 
 			srv := NewServer(ServerConfig{})
 			installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
-			srv.SetClientMutationProjectionFunc(sess.ClientMutationProjection)
+			publishSessionQueueEnvelope(srv, sess)
 			response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
 			if err != nil {
 				cancel()

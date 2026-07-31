@@ -90,7 +90,8 @@ func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allo
 	if sess.depth == 0 {
 		t.Fatalf("expected depth > 0 subagent session, got depth 0")
 	}
-	return sess.renderSystemPrompt(sess.env)
+	prompt, _ := sess.renderSystemPrompt(sess.env)
+	return prompt
 }
 
 // TestSubagentPromptStatesAllowance pins spec §5: the subagent template has

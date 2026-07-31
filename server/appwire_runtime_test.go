@@ -143,7 +143,7 @@ func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
 func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "awaiting"})
-	srv.SetPendingAskFunc(func() bool { return true })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 	thread := srv.appThread()
 	if !thread.Serf.AskPending {
 		t.Fatal("expected appThread().Serf.AskPending=true")
@@ -157,8 +157,10 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "idle"})
-	srv.SetReasoningInfoFunc(func() (string, []string, bool) {
-		return "high", []string{"low", "medium", "high"}, true
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.reasoningEffort = "high"
+		e.reasoningLevels = []string{"low", "medium", "high"}
+		e.supportsReason = true
 	})
 
 	thread := srv.appThread()
@@ -180,8 +182,8 @@ func TestAppThread_UsesGeneratedSessionNameFromMeta(t *testing.T) {
 		State:      "idle",
 		WorkingDir: "/tmp/project",
 	})
-	srv.SetSessionMetaFunc(func() schema.SessionMeta {
-		return schema.SessionMeta{
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.meta = schema.SessionMeta{
 			ID:             "01TITLE",
 			Name:           "Fix appwire titles",
 			NameSource:     "prompt",

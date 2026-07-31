@@ -51,6 +51,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	s.env = next
 	s.envInfo = ei
 	s.rebuildToolDefsCache()
-	s.refreshSystemPromptCache(next)
+	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
 }

@@ -9,7 +9,7 @@ import "testing"
 func TestAppThreadCarriesTheLiveFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return 6, true })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 6; e.failuresMeasured = true })
 
 	thread := srv.appThread()
 	if thread.Serf.FailedToolCalls == nil {
@@ -26,7 +26,7 @@ func TestAppThreadCarriesAMeasuredZero(t *testing.T) {
 	// rather than as absent, so the two cases stay distinguishable downstream.
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return 0, true })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = true })
 
 	thread := srv.appThread()
 	if thread.Serf.FailedToolCalls == nil {
@@ -43,7 +43,7 @@ func TestAppThreadOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	// authority while under-reporting, which is worse than saying nothing.
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
-	srv.SetFailedToolCallsFunc(func() (int, bool) { return 0, false })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	thread := srv.appThread()
 	if thread.Serf.FailedToolCalls != nil {

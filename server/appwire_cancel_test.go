@@ -207,9 +207,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: sess.AcceptClientMutationCancelQueued,
 	})
-	srv.SetQueuePreviewFunc(sess.QueuePreview)
-	srv.SetQueueIDsFunc(sess.QueueIDs)
-	srv.SetQueueTextsFunc(sess.QueueTexts)
+	publishSessionQueueEnvelope(srv, sess)
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

@@ -978,12 +978,12 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		Profile:    "openai",
 		WorkingDir: "/tmp/project",
 	})
-	srv.SetContextPressureFunc(func() float64 { return 0.42 })
-	srv.SetContextMetricsFunc(func() ContextMetrics {
-		return ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.contextPressure = 0.42 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.contextMetrics = ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
 	})
-	srv.SetDetailedStatusFunc(func() DetailedStatus {
-		return DetailedStatus{
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{
 			Tools: []ToolInfo{{Name: "shell", Source: "core"}},
 			MCP:   []MCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
 			Skills: []SkillInfo{
@@ -1047,8 +1047,10 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
-		return 4200, &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}, 1234567890
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.workMillis = 4200
+		e.usage = &appwire.SerfUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
+		e.turnStartedAt = 1234567890
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1080,7 +1082,7 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 		srv := NewServer(ServerConfig{})
 		srv.SetAppIdentity("local", "th_1")
 		if aggregate != nil {
-			srv.SetTaskAggregateFunc(func() *appwire.TaskAggregate { return aggregate })
+			setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.tasks = aggregate })
 		}
 
 		conn := srv.AppServer().NewConnection("test")
@@ -1117,8 +1119,10 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		srv := NewServer(ServerConfig{})
 		srv.SetAppIdentity("local", "th_1")
 		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model})
-		srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
-			return 4200, &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}, 0
+		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+			e.workMillis = 4200
+			e.usage = &appwire.SerfUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+			e.turnStartedAt = 0
 		})
 		conn := srv.AppServer().NewConnection("test")
 		conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1584,7 +1588,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetDrainAsSteerFunc(func() error { return nil })
-	srv.SetQueueDepthFunc(func() int { return 0 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1608,7 +1612,7 @@ func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
 	srv.appReservedTurnID = "turn_reserved"
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
-	srv.SetQueueDepthFunc(func() int { return 1 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 1 })
 	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1636,7 +1640,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
-	srv.SetQueueDepthFunc(func() int { return 2 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 2 })
 	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1668,7 +1672,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 		gotImages = append([]ImageAttachment(nil), images...)
 		return nil
 	})
-	srv.SetQueueDepthFunc(func() int { return 0 })
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")

@@ -14,7 +14,91 @@ import (
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
+//
+// Delivery on it is BEST-EFFORT: a full buffer drops. That is correct for an
+// observer -- a CLI printing NDJSON, a dev tool -- and correct for the many
+// sessions that never read it at all. A consumer whose state would be
+// permanently wrong if it missed an event must use ConsumeEventsLossless
+// instead.
 func (s *Session) Events() <-chan events.SessionEvent { return s.events }
+
+// ConsumeEventsLossless makes consume the session's authoritative consumer:
+// every event is delivered to it, in order, until the session closes.
+//
+// It exists because the daemon's in-memory projection is the sole authority for
+// turn reads. An event the daemon never sees is absent from every thread/read
+// for the life of the identity, and nothing re-derives it -- a page reload does
+// not help, only a daemon restart. Best-effort delivery to that consumer is
+// silent, permanent corruption.
+//
+// It RETURNS ONCE THE REGISTRATION IS IN EFFECT and drains on its own
+// goroutine, so no event emitted after the call can be dropped. Returning
+// before the mark took hold would leave a startup window in which the feed is
+// still lossy -- narrow, since a session emits far fewer than a bufferful
+// before its consumer attaches, but narrow-by-luck is what this design exists
+// to replace. Callers must NOT wrap it in `go`; that puts the window back.
+//
+// The registration and the drain loop are ONE call for the same reason.
+// Losslessness is a promise about the consumer, not a setting on the session: a
+// session marked lossless with nobody reading wedges its emitters forever the
+// moment its buffer fills. Making the mark inseparable from the loop means that
+// state is unreachable rather than merely discouraged -- which matters because
+// the sessions with no reader are the common case (every subagent and
+// delegate), and because no test in this repo drives a session hard enough to
+// notice.
+//
+// One consumer per session. A second would silently split the stream between
+// them, so it panics rather than corrupting both.
+//
+// onDrained runs once the drain has finished, AFTER the last event has been
+// handed to consume. Anything whose lifetime is shorter than the session's -- a
+// log sink, a tee, a file handle the consumer writes to -- must tear down from
+// there. Session.Close() closes the event channel but does NOT wait for the tail
+// to be delivered, so "the session is closed" is not "the consumer is done".
+//
+// It is a CALLBACK rather than a returned channel on purpose. A channel can be
+// discarded: Go permits ignoring a non-error return, errcheck does not cover it,
+// and no linter here flags it, so `ConsumeEventsLossless(consume)` compiled
+// cleanly and put the shutdown crash straight back. A parameter cannot be
+// omitted, so no call site can be SILENT about the wait.
+//
+// That closes omission, not misuse, and the distinction is load-bearing rather
+// than pedantic: passing `func() {}` here and tearing the sink down elsewhere
+// compiles, and reproduces the original crash with a byte-identical stack.
+// cmd/serf/serve.go is deliberately that shape -- one --verbose tee outlives N
+// drains across /clear, so the session cannot own the sink's lifetime and the
+// wait has to live at the caller that joins them. So unlike
+// authoritativeConsumer above, the unsafe state here is still spellable; what
+// the parameter buys is that choosing it is a visible decision at the call site
+// instead of an absent return nobody reads.
+//
+// onDrained must not be nil. A caller with nothing to tear down passes an empty
+// function, which is a visible decision; nil would be the discardable return in
+// another costume.
+func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDrained func()) {
+	if onDrained == nil {
+		panic("agent: ConsumeEventsLossless requires an onDrained callback; pass func() {} if nothing needs tearing down")
+	}
+	s.eventsMu.Lock()
+	if s.eventsClosed {
+		s.eventsMu.Unlock()
+		onDrained()
+		return
+	}
+	if s.authoritativeConsumer {
+		s.eventsMu.Unlock()
+		panic("agent: session already has an authoritative event consumer")
+	}
+	s.authoritativeConsumer = true
+	s.eventsMu.Unlock()
+
+	go func() {
+		defer onDrained()
+		for ev := range s.events {
+			consume(ev)
+		}
+	}()
+}
 
 // emitSessionStartEnvelope emits EventSessionStart and then flushes every
 // buffer of construction-time diagnostics that accumulated before it. THE
@@ -225,7 +309,33 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 		select {
 		case s.events <- ev:
 		default:
-			// Drop events if the consumer is too slow; v1 is best-effort.
+			// The buffer is full, and what to do about it depends entirely on
+			// whether anything is reading.
+			//
+			// With an authoritative consumer attached, a drop is permanent
+			// corruption: the daemon's in-memory projection is the sole
+			// authority for turn reads, so an event that never arrives is
+			// absent from every thread/read for the life of the identity and
+			// nothing re-derives it. Wait instead. The wait is bounded by the
+			// consumer's own work, which is memory plus at most one jobs.jsonl
+			// read per turn.
+			//
+			// With nothing reading, waiting is not backpressure, it is a
+			// permanent wedge. That is the normal case, not an edge: every
+			// subagent and delegate has an unread channel by design, because a
+			// child reaches its parent through synchronous callbacks instead.
+			// For them the drop is the only behaviour that is not a deadlock.
+			//
+			// SCOPE OF THE WAIT, because it is wider than it looks: this blocks
+			// holding eventsMu.RLock, and Close() needs eventsMu.Lock to close
+			// the channel. So a consumer that stops draining does not merely
+			// stall emission — the session can no longer be TORN DOWN either,
+			// and Close()'s sendersWG.Wait() never returns. That is the trade
+			// against silent projection corruption, and it is why the consumer's
+			// per-event work is bounded on purpose (server.BridgeEvent).
+			if s.authoritativeConsumer {
+				s.events <- ev
+			}
 		}
 	}
 	s.eventsMu.RUnlock()
