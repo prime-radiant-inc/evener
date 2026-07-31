@@ -486,11 +486,12 @@ func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.
 		Data: events.AssistantTextDeltaData{Delta: "qualified"},
 	})
 
-	// Two: the delta opens its own agent-message item before carrying the text.
-	// Both records are the commit's, so both must name the authoritative thread.
+	// Three: the delta opens its own turn and its own agent-message item before
+	// carrying the text. Every record is the commit's, so every one of them must
+	// name the authoritative thread.
 	records := srv.AppNotificationsAfter(0, "authoritative")
-	if len(records) != 2 {
-		t.Fatalf("authoritative notifications = %d, want 2", len(records))
+	if len(records) != 3 {
+		t.Fatalf("authoritative notifications = %d, want 3", len(records))
 	}
 	for _, record := range records {
 		if record.ThreadID != "authoritative" {

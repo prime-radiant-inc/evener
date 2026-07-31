@@ -304,7 +304,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return out
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
-		p.ensureTurn()
+		out := p.ensureTurn(event.Timestamp)
 		// The agent message is materialized lazily -- with the first delta, or
 		// at ASSISTANT_TEXT_END when the round's whole text arrives there. Every
 		// round that answers with tool calls alone emits this same lifecycle
@@ -313,12 +313,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.assistantItem = ""
 		p.assistantText = ""
 		p.reasoningItem = ""
-		return nil
+		return out
 	case events.EventAssistantTextDelta:
-		created := p.ensureAssistantItem()
+		created, out := p.ensureAssistantItem(event.Timestamp)
 		data := eventData[events.AssistantTextDeltaData](event.Data)
 		p.assistantText += data.Delta
-		var out []AppNotification
 		if created {
 			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID,
@@ -341,8 +340,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}))
 	case events.EventReasoningSummaryDelta:
 		data := eventData[events.ReasoningSummaryDeltaData](event.Data)
-		created := p.ensureReasoningItem()
-		var out []AppNotification
+		created, out := p.ensureReasoningItem(event.Timestamp)
 		if created {
 			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID,
@@ -367,7 +365,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return out
 	case events.EventAssistantTextEnd:
 		p.skillCandidate = skillActivationCandidate{}
-		p.ensureTurn()
+		out := p.ensureTurn(event.Timestamp)
 		data := eventData[events.AssistantTextEndData](event.Data)
 		p.activeTurnUsage = p.activeTurnUsage.Add(data.Usage)
 		if data.Model != "" {
@@ -382,9 +380,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// above, is the whole effect it has on the envelope.
 		if p.assistantItem == "" && strings.TrimSpace(text) == "" {
 			p.assistantText = ""
-			return nil
+			return out
 		}
-		p.ensureAssistantItem()
+		// The turn is already open above, so this can only materialize the
+		// item; it has no turn/started of its own left to announce.
+		p.ensureAssistantItem(event.Timestamp)
 		item := appwire.ThreadItem{
 			Type:   "agentMessage",
 			ID:     p.assistantItem,
@@ -396,12 +396,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.recordAssistantMessage(turnID, text)
 		p.assistantItem = ""
 		p.assistantText = ""
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   turnID,
 			Item:     item,
-		})}
+		}))
 	case events.EventAssistantTextReset:
 		// A retry after partial output: discard the in-progress assistant item
 		// so the retry's stream replaces it rather than appending. No-op when
@@ -443,9 +443,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if text == "" {
 			return nil
 		}
-		p.ensureTurn()
+		out := p.ensureTurn(event.Timestamp)
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {
-			return nil
+			return out
 		}
 		item := appwire.ThreadItem{
 			Type:   "agentMessage",
@@ -455,21 +455,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status: appwire.TurnStatusCompleted,
 		}
 		p.recordAssistantMessage(p.activeTurnID, text)
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			Item:     item,
-		})}
+		}))
 	case events.EventToolCallStart:
-		p.ensureTurn()
+		out := p.ensureTurn(event.Timestamp)
 		data := eventData[events.ToolCallStartData](event.Data)
 		if data.ToolName != "use_skill" {
 			p.skillCandidate = skillActivationCandidate{}
 		}
 		if data.ToolName == "communicate" {
 			p.suppressedTools[data.CallID] = struct{}{}
-			return nil
+			return out
 		}
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
@@ -502,12 +502,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				valid:  skill != "",
 			}
 		}
-		return []AppNotification{p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			Item:     startedItem,
-		})}
+		}))
 	case events.EventToolCallOutputDelta:
 		data := eventData[events.ToolCallOutputDeltaData](event.Data)
 		if _, ok := p.suppressedTools[data.CallID]; ok {
@@ -688,7 +688,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// TurnError carries the full diagnostic (message/source/title/hint/cause);
 		// emitting a separate NotifyWarning too would make the same error render
 		// twice in clients that show both the warning channel and turn errors.
-		p.ensureTurn()
+		out := p.ensureTurn(event.Timestamp)
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
 		p.assistantItem = ""
@@ -712,14 +712,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// all four completion sites.
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
-		return []AppNotification{
+		return append(out,
 			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
 				"turn":     turn,
 			}),
-		}
+		)
 	case events.EventSteeringInjected:
 		p.clearSkillCandidate()
 		data := eventData[events.SteeringInjectedData](event.Data)
@@ -1595,35 +1595,53 @@ func (p *AppEventProjector) ActiveTurnID() string {
 	return p.reservedTurnID
 }
 
-func (p *AppEventProjector) ensureTurn() {
-	if p.activeTurnID == "" {
-		p.startTurn()
+// ensureTurn makes sure a turn is open for the round, returning the
+// turn/started announcement for a turn it had to open (nil when one was
+// already open, so the caller can concatenate unconditionally).
+//
+// A turn opened here was never asked for by a user input or a goal
+// continuation -- it is the round's first event finding nothing open, at
+// TEXT_START, TOOL_CALL_START or a bare error. It still announces itself the
+// way those two explicit openers do: a client keys "this turn is running" on
+// turn/started, and a turn that first appears with its own first item (or, for
+// a text-opening round after lazy agent-message materialization, only with its
+// first delta) is a turn that client never saw open (kata e5r2).
+func (p *AppEventProjector) ensureTurn(startedAt time.Time) []AppNotification {
+	if p.activeTurnID != "" {
+		return nil
 	}
+	turnID := p.startTurn()
+	return []AppNotification{p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+		ThreadID: p.threadID,
+		Ref:      p.ref,
+		Turn:     startedTurn(turnID, startedAt),
+	})}
 }
 
 // ensureAssistantItem makes sure an agent-message item exists for the active
 // turn, returning true when it had to create one (so the caller emits a single
 // item/started ahead of the first delta -- consumers key a delta by an item id
-// they have already seen).
-func (p *AppEventProjector) ensureAssistantItem() bool {
-	p.ensureTurn()
+// they have already seen) alongside whatever ensureTurn had to announce first.
+func (p *AppEventProjector) ensureAssistantItem(startedAt time.Time) (bool, []AppNotification) {
+	out := p.ensureTurn(startedAt)
 	if p.assistantItem == "" {
 		p.assistantItem = p.nextItemID("assistant")
-		return true
+		return true, out
 	}
-	return false
+	return false, out
 }
 
 // ensureReasoningItem makes sure an in-progress reasoning item exists for the
 // active turn, returning true when it had to create one (so the caller emits a
-// single item/started before the first delta).
-func (p *AppEventProjector) ensureReasoningItem() bool {
-	p.ensureTurn()
+// single item/started before the first delta) alongside whatever ensureTurn had
+// to announce first.
+func (p *AppEventProjector) ensureReasoningItem(startedAt time.Time) (bool, []AppNotification) {
+	out := p.ensureTurn(startedAt)
 	if p.reasoningItem == "" {
 		p.reasoningItem = p.nextItemID("reasoning")
-		return true
+		return true, out
 	}
-	return false
+	return false, out
 }
 
 func (p *AppEventProjector) nextItemID(prefix string) string {
