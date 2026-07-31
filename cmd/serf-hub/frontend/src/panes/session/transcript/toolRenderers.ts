@@ -75,6 +75,23 @@ export interface ToolRendererDescriptor {
   // updates the moment the answer arrives without item itself needing a new
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
+  // summaryLink, if present, is a URL that appears verbatim inside this
+  // row's own summary() text and should render as a real, clickable link
+  // rather than plain text - kata xw3t, the collapsed-row counterpart to
+  // tcp9's expanded-body link (web_fetch's "Fetched <url> · N bytes"
+  // collapsed-row summary was the one surface tcp9 deliberately left inert;
+  // see that field's own kata for why). A parallel field rather than
+  // widening summary()'s own return type to ReactNode: summary is ALSO
+  // consumed as a plain string by summarySuffix's own concatenation above
+  // and by ToolCallCluster's "N steps · ..." template, and ToolRow's
+  // collapsed-state truncation (middleSplit) operates on summary as raw
+  // characters, not markup - widening the whole contract would touch every
+  // one of those for a link only one descriptor has today. Undefined (every
+  // descriptor but web_fetch) renders the row exactly as before. When the
+  // returned URL is not literally found inside summary(item)'s own text,
+  // ToolRow renders the plain text unchanged - never a link pointing
+  // somewhere the visible words don't say.
+  summaryLink?(item: ItemModel): string | undefined;
 }
 
 // A tool call is failed when the wire carries an error/status failure or when

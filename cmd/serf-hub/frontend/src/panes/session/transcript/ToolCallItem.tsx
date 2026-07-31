@@ -135,6 +135,11 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   );
   const summary = descriptor.summary(item) + (summarySuffix ?? "");
   const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
+  // kata xw3t: the URL, if any, embedded in this row's own summary text -
+  // web_fetch's only descriptor with one today. Read directly off the item
+  // (not the thread model): unlike summarySuffix, nothing about which URL a
+  // call's own summary names can change after the call settles.
+  const summaryLink = descriptor.summaryLink?.(item);
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
@@ -212,6 +217,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
           summary={isDelegate ? "" : summary}
+          summaryLink={summaryLink}
           purpose={purpose}
           icon={descriptor.icon}
           monoSummary={descriptor.monoSummary}
@@ -241,6 +247,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     >
       <ToolRow
         summary={isDelegate ? "" : summary}
+        summaryLink={summaryLink}
         purpose={purpose}
         icon={descriptor.icon}
         monoSummary={descriptor.monoSummary}
