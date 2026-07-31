@@ -235,9 +235,14 @@ type Server struct {
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
 	processing                   bool
-	inputCh                      chan InputMessage
-	hubToken                     string
-	sameOrigin                   httpguard.SameOriginPolicy
+	// clearing is held for the duration of one POST /clear, which is the only
+	// caller of clearFunc. It gates a clear against another clear the way
+	// processing gates one against a turn: see handleClear for why a second
+	// concurrent clear is refused rather than queued.
+	clearing   bool
+	inputCh    chan InputMessage
+	hubToken   string
+	sameOrigin httpguard.SameOriginPolicy
 }
 
 // SetRetrySafeTurnFunctions installs the authoritative retry-safe mutation
