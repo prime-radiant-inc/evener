@@ -576,7 +576,13 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if strings.TrimSpace(inst.APIKey) != "" {
 				return nil
 			}
-			if hasFile, _ := store.InstanceLayers(inst.Name, string(inst.Type)); hasFile {
+			// The tag, not the declared type: InstanceLayers keys the lookup on
+			// the behavior tag the way ResolveKey does, so an openai instance
+			// routed through chat-completions is asked about as the
+			// openai-compatible provider it resolves as. Only the env-var
+			// candidate list reads that key today and this caller discards it,
+			// which is exactly why the wrong one stayed invisible.
+			if hasFile, _ := store.InstanceLayers(inst.Name, tag); hasFile {
 				return nil
 			}
 			for _, value := range inst.CredentialHeaders {

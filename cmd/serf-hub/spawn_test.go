@@ -1335,6 +1335,70 @@ func TestValidateProviderCredentials_ConfigInstanceStoredAPIKey(t *testing.T) {
 	}
 }
 
+// TestValidateProviderCredentials_ConfigInstanceStoredKeyWhereTagDiffersFromType
+// puts the preflight's stored-file check on the one instance shape where the
+// behavior tag and the declared type disagree: an openai instance routed through
+// chat-completions resolves as "openai-compatible". The other stored-key case
+// above is kimi-anthropic, whose tag and type are equal, so nothing covered this
+// shape.
+//
+// The two rows are the whole contract of the file layer. credentials.toml is
+// keyed by instance name, so a key stored under "local" is this instance's
+// credential and a key stored under "openai" is not one -- the declared type is
+// not a credential source for an instance that resolves as something else, which
+// is what the launch path believes and what the preflight must believe with it.
+//
+// What this cannot do is distinguish the two arguments on its own: Store's
+// hasFile is derived from the name alone, so the second argument feeds nothing
+// but the env-var candidate list the caller discards. That is precisely why the
+// wrong key was invisible, and why the day the file layer starts reading it this
+// is the test that fails instead of a user's launch. Kata p22p.
+func TestValidateProviderCredentials_ConfigInstanceStoredKeyWhereTagDiffersFromType(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		storedAs string
+		wantErr  bool
+	}{
+		{name: "key stored under the instance name", storedAs: "local"},
+		{name: "key stored under the declared type", storedAs: "openai", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			oaitest.IsolateOpenAIAuth(t)
+			clearProviderKeysFromEnvironment(t)
+			store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			if err := store.Set(tt.storedAs, "sk-stored-key"); err != nil {
+				t.Fatalf("Set(%q): %v", tt.storedAs, err)
+			}
+			cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
+				Default: "local",
+				Instances: []providercfg.InstanceConfig{
+					{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
+				},
+			})
+			// The launch env carries an empty state home and nothing else, so no
+			// OAuth record, no base URL and no key reach the preflight from the
+			// environment: the stored key is the only thing the verdict can be
+			// about.
+			env := []string{"XDG_STATE_HOME=" + t.TempDir()}
+			err = validateProviderCredentials("local", store, env, cfgPath)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("the launch preflight accepted instance \"local\" for a key stored under %q: it resolves as %q, and credentials.toml is keyed by instance name, so nothing it launches with is filed under its declared type",
+						tt.storedAs, providercfg.BehaviorTag("openai", string(providercfg.StyleChatCompletions)))
+				}
+				assertHubLaunchError(t, err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateProviderCredentials(local) with a key stored under %q: %v", tt.storedAs, err)
+			}
+		})
+	}
+}
+
 func TestValidateProviderCredentials_ConfiguredCredentialHeaders(t *testing.T) {
 	tests := []struct {
 		name              string
