@@ -58,6 +58,15 @@ func AuthModes(provider string) []string {
 	return append([]string(nil), p.AuthModes...)
 }
 
+// RequiresNoCredential reports whether provider authenticates nothing: its only
+// auth mode is "none", so there is no key, token, or header to resolve for it.
+// An unknown provider reports false — nothing is known about what it needs, so
+// callers keep whatever credential requirement they would otherwise apply.
+func RequiresNoCredential(provider string) bool {
+	modes := AuthModes(provider)
+	return len(modes) == 1 && modes[0] == "none"
+}
+
 var providers = []ProviderEnv{
 	{
 		Name:            "openai",

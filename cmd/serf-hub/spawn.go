@@ -545,6 +545,13 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if inst.Name != strings.ToLower(strings.TrimSpace(provider)) {
 				continue
 			}
+			tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+			// A provider that authenticates nothing (ollama) has no credential
+			// to look for, so there is nothing to gate on. The auth mode is a
+			// property of the instance's type, not of the name it was given.
+			if envvars.RequiresNoCredential(tag) {
+				return nil
+			}
 			// Inline api_key on the instance is always sufficient.
 			if strings.TrimSpace(inst.APIKey) != "" {
 				return nil
@@ -565,7 +572,6 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 				}
 			}
 			// Fall through to env-var check using the instance's behavior tag.
-			tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
 			if tag == "openai-compatible" {
 				// A base_url set in providers.toml is sufficient: the openaicompat
 				// adapter reads it from config and does not require

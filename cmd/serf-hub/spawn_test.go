@@ -1123,6 +1123,119 @@ func TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails
 	assertHubLaunchError(t, err)
 }
 
+// TestValidateProviderCredentials_ConfigInstanceAuthModeNone verifies that an
+// instance whose provider type declares auth mode "none" (ollama) passes the
+// credential preflight with no credential anywhere, while a type that does
+// authenticate is still refused even when the instance is named "ollama".
+// The auth mode belongs to the instance's TYPE, not to the name a user picked
+// for it, so a renamed ollama instance passes and a misnamed one does not.
+func TestValidateProviderCredentials_ConfigInstanceAuthModeNone(t *testing.T) {
+	tests := []struct {
+		name     string
+		instance providercfg.InstanceConfig
+		provider string
+		wantErr  bool
+	}{
+		{
+			name:     "ollama instance as the hub materializes it",
+			instance: providercfg.InstanceConfig{Name: "ollama", Type: "ollama"},
+			provider: "ollama",
+		},
+		{
+			name:     "renamed ollama instance",
+			instance: providercfg.InstanceConfig{Name: "local-llm", Type: "ollama"},
+			provider: "local-llm",
+		},
+		{
+			name:     "authenticating type named ollama",
+			instance: providercfg.InstanceConfig{Name: "ollama", Type: "anthropic"},
+			provider: "ollama",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// InstanceLayers reads the ambient process env, so clear both keys
+			// rather than relying on the developer machine having neither.
+			t.Setenv("OLLAMA_API_KEY", "")
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
+				Instances: []providercfg.InstanceConfig{tt.instance},
+			})
+			// Empty (non-nil) launch env: no credential reachable from either
+			// the launch env or the config.
+			err = validateProviderCredentials(tt.provider, store, []string{}, cfgPath)
+			if tt.wantErr {
+				assertHubLaunchError(t, err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateProviderCredentials(%q): %v", tt.provider, err)
+			}
+		})
+	}
+}
+
+// TestHubSpawnerResumeAcceptsMaterializedOllamaConfig resumes against the
+// providers.toml a hub materializes for itself when none exists: with no
+// provider credentials in the environment, the only instance is ollama, which
+// carries no credential at all. Resume must reach the daemon.
+func TestHubSpawnerResumeAcceptsMaterializedOllamaConfig(t *testing.T) {
+	t.Setenv("OLLAMA_API_KEY", "")
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"serf-appwire-v2"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  mkdir -p "$SERF_RUN_DIR"
+  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	writeFakeSerf(t, bin, script)
+
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	// The shape MaterializeProvidersConfig writes when no provider credential is
+	// present: the ollama adapter registers unconditionally, so it is the only
+	// seeded instance and it has no api_key.
+	cfgPath := writeProvidersConfig(t, dir, providercfg.Config{
+		Instances: []providercfg.InstanceConfig{{Name: "ollama", Type: "ollama"}},
+	})
+
+	spawner := HubSpawner{
+		Cfg:                 DefaultConfig(),
+		SerfBinary:          bin,
+		RunDir:              runDir,
+		HubToken:            "generated-token",
+		Creds:               store,
+		ProvidersConfigPath: cfgPath,
+	}
+	if _, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		Provider:   "ollama",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/llama3"}},
+		WorkingDir: dir,
+	}); err != nil {
+		t.Fatalf("Resume with the hub's materialized ollama config: %v", err)
+	}
+}
+
 // TestValidateProviderCredentials_NoConfigPathUnchanged verifies that the
 // no-config path (nil cfg) keeps existing behavior unchanged.
 func TestValidateProviderCredentials_NoConfigPathUnchanged(t *testing.T) {
