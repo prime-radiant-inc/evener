@@ -103,8 +103,15 @@ var scenarioHomeOwnIsolationMarker = regexp.MustCompile(
 // leaving $HOME alone. This counts only for `~/.local/state/serf` mentions —
 // the `~/.serf` root does NOT move with XDG_STATE_HOME or SERF_STATE_DIR, so a
 // card naming that one still needs a real $HOME isolation marker.
+//
+// It has to match an assignment (`export XDG_STATE_HOME="$run/state"`, an
+// inline `XDG_STATE_HOME="$TH/…"` prefix, `env:{SERF_STATE_DIR:$state}`) or
+// the flag, never a bare mention of the name: cli-help.md quotes
+// `SERF_STATE_DIR` as one line of `serf-tui --help` output, which established
+// nothing, and the first version of this pattern handed that card a free pass
+// on the whole state root.
 var scenarioStateRootIsolationMarker = regexp.MustCompile(
-	`(?i)export XDG_STATE_HOME=|XDG_STATE_HOME=\$\(mktemp|SERF_STATE_DIR|--state-dir`,
+	`(?:XDG_STATE_HOME|SERF_STATE_DIR)\s*[:=]|--state-dir[ =]`,
 )
 
 // scenarioHomeAnchor matches every way a card can name Jesse's real home
