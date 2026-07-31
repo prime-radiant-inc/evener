@@ -20,6 +20,19 @@ type StatusProber struct {
 
 // statusInfo is a partial mirror of server.StatusInfo containing the fields
 // the hub needs for session and in-process child lifecycle projection.
+//
+// It is declared independently rather than importing server.StatusInfo on
+// purpose: the hub is a long-running singleton (one flock-guarded process,
+// see docs/conventions/agent-fleets.md) that outlives any single daemon and
+// routinely probes daemons built from a different commit than its own --
+// this codebase decodes an old daemon's absent /status fields as their zero
+// value everywhere for exactly that reason (grep "old daemon"). Pinning the
+// hub's decode to server.StatusInfo's current shape would tie it to a
+// struct under frequent, daemon-internal-only change instead of the small,
+// stable subset the hub actually reads.
+// TestStatusProberAgreesWithServerStatusInfoAcrossTheWire (in
+// prober_wire_test.go) proves the two declarations still agree on the
+// fields listed here, without merging them.
 type statusInfo struct {
 	SessionID         string `json:"session_id"`
 	State             string `json:"state"`
