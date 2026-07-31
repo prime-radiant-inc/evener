@@ -54,9 +54,9 @@ cleanup() {
 }
 
 interrupted() {
-	local status="$1"
+	local status="$1" signal="$2"
 	stop_children
-	exit "$status"
+	fail_lint "interrupted: $signal" "$status"
 }
 
 # Nothing in this run deletes anything under $logdir before cleanup, so an
@@ -70,9 +70,9 @@ scratch_vanished() {
 }
 
 trap cleanup EXIT
-trap 'interrupted 129' HUP
-trap 'interrupted 130' INT
-trap 'interrupted 143' TERM
+trap 'interrupted 129 SIGHUP' HUP
+trap 'interrupted 130 SIGINT' INT
+trap 'interrupted 143 SIGTERM' TERM
 
 if ! logdir="$(mktemp -d -t serf-module-lint.XXXXXX)"; then
 	printf 'lint: unable to create temporary log directory\n' >&2
@@ -130,7 +130,7 @@ run_wave() {
 		if ! { printf '%s\n' "$status" >"$logdir/${indexes[$j]}.status"; } 2>/dev/null; then
 			[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 			printf 'lint: unable to record the result for module %s\n' "${modules[${indexes[$j]}]}" >&2
-			exit 1
+			fail_lint "results-lost: unable to record the result for module ${modules[${indexes[$j]}]}" 1
 		fi
 	done
 	active_pids=()
@@ -152,7 +152,7 @@ for ((i = 0; i < module_count; i++)); do
 	if ! status="$(cat "$logdir/$i.status" 2>/dev/null)"; then
 		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 		printf 'lint: unable to read the result for module %s\n' "${modules[$i]}" >&2
-		exit 1
+		fail_lint "results-lost: unable to read the result for module ${modules[$i]}" 1
 	fi
 	if [ "$status" -ne 0 ]; then
 		failed_modules+=("${modules[$i]}")

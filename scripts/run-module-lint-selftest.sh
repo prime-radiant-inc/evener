@@ -450,6 +450,8 @@ if [ -f "$state/runner-timeout" ]; then bad "interrupted runner exceeded its bou
 if [ "$rc" -ne 0 ]; then ok "interrupted runner exits nonzero"; else bad "interrupted runner exits zero"; fi
 if [ -f "$state/stopped" ]; then ok "interrupted child handled termination"; else bad "interrupted child was not terminated"; fi
 if [ "$child_pid" != missing ] && ! kill -0 "$child_pid" 2>/dev/null; then ok "interrupted child was waited"; else bad "interrupted child remains alive"; fi
+assert_eq "$(tail -n 1 "$case_dir/interrupt.out")" "FAIL lint (interrupted: SIGTERM)" "an interrupted run names the signal that stopped it"
+assert_one_summary "$case_dir/interrupt.out" "an interrupted run summarises exactly once"
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "interruption removes temporary logs"
 
 # Gate lifetime: each child opens the wave's start gate through an inherited
@@ -578,6 +580,49 @@ assert_has "$out" "lint: the module start gate disappeared mid-run:" "a lost sta
 assert_count "$out" "disappeared mid-run" "1" "a lost start gate is reported exactly once"
 assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: 2 modules: one two)" "a lost start gate keeps the FAIL lint shape"
 assert_one_summary "$out" "a lost start gate summarises exactly once"
+
+# A verdict the runner cannot write down is lost results too, not a finding: the
+# check ran and its answer is gone. The log directory survives here, so this is
+# the narrower loss the vanished-scratch path deliberately does not claim.
+new_case
+cat >"$bin/golangci-lint" <<'FAKE_STATUS_BLOCKER'
+#!/usr/bin/env bash
+set -u
+module="$(basename "$PWD")"
+printf '%s\n' "$module" >>"$FAKE_STATE/calls"
+for d in "$TMPDIR"/serf-module-lint.*; do
+	[ -d "$d" ] && mkdir -p "$d/0.status"
+done
+exit 0
+FAKE_STATUS_BLOCKER
+chmod +x "$bin/golangci-lint"
+out="$case_dir/status-unwritable.out"
+if run_lint "one" "$out" LINT_PARALLEL=1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "an unrecordable result exits nonzero"; else bad "an unrecordable result exits zero"; fi
+assert_has "$out" "lint: unable to record the result for module one" "an unrecordable result names the module"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: unable to record the result for module one)" "an unrecordable result summarises the run"
+assert_one_summary "$out" "an unrecordable result summarises exactly once"
+
+# The recorded verdicts can also go missing on their own, between the last wave
+# and the replay that reads them back, with the directory still in place.
+new_case
+cat >"$bin/rm" <<'FAKE_STATUS_EATER'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+	case "$arg" in
+		*/wave.start) /bin/rm -f "${arg%/wave.start}"/*.status ;;
+	esac
+done
+exec /bin/rm "$@"
+FAKE_STATUS_EATER
+chmod +x "$bin/rm"
+out="$case_dir/status-unreadable.out"
+if run_lint "one" "$out" LINT_PARALLEL=1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "an unreadable result exits nonzero"; else bad "an unreadable result exits zero"; fi
+assert_has "$out" "lint: unable to read the result for module one" "an unreadable result names the module"
+assert_eq "$(tail -n 1 "$out")" "FAIL lint (results-lost: unable to read the result for module one)" "an unreadable result summarises the run"
+assert_one_summary "$out" "an unreadable result summarises exactly once"
 
 # Makefile integration: copy the real build entry point, fake only external
 # commands, and prove both quiet success and unchanged lint-family coverage.
