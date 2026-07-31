@@ -25,7 +25,11 @@ func AcquireLock(path string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("flock: %w (another serf-hub may already be running)", err)
+		// Name the path (kata av1j): a raw errno carries none, and the losing
+		// operator's remedy — find the holder, or isolate a test hub under its
+		// own HOME so lock, run dir, state, and auth token all move together —
+		// starts from knowing which lock file this was.
+		return nil, fmt.Errorf("flock %s: %w (another serf-hub may already be running; a disposable hub needs its own HOME)", path, err)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

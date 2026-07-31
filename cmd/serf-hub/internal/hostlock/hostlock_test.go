@@ -107,3 +107,26 @@ func checkAcquireLock_OpenFileError(t *testing.T) {
 		t.Fatalf("expected open lock error, got: %v", err)
 	}
 }
+
+// kata av1j: the collision error must name the lock path it lost. The
+// remedy for a colliding harness is HOME isolation (the lock derives from
+// UserHomeDir along with the run dir, state, and auth token, so faking HOME
+// moves all four coherently) — but an operator can only reach that remedy
+// if the error tells them WHICH lock file collided. A bare errno does not.
+func TestAcquireLockCollisionErrorNamesPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.lock")
+	rel, err := AcquireLock(path)
+	if err != nil {
+		t.Fatalf("first AcquireLock: %v", err)
+	}
+	defer rel()
+
+	_, err = AcquireLock(path)
+	if err == nil {
+		t.Fatal("second AcquireLock succeeded, want collision")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("collision error %q does not name the lock path %q", err, path)
+	}
+}
