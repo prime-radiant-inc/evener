@@ -23,7 +23,6 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import {
   Button,
-  Chip,
   ConfirmDialog,
   chordLabel,
   Dropzone,
@@ -41,6 +40,7 @@ import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
@@ -84,7 +84,7 @@ const CLASS = {
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
-  chips: requireClass(styles.chips, "spawn.module.css", "chips"),
+  attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   actionBand: requireClass(styles.actionBand, "spawn.module.css", "actionBand"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
@@ -567,12 +567,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </Dropzone>
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
+        {/* The same AttachmentTile the session composer draws (kata kbg7):
+            staging an image is one act, so it looks like one thing whichever
+            surface starts it. The tile is also the whole pending signal - it
+            deliberately says nothing in words, since a pending attachment
+            resolves in a few frames and this UI cannot report progress it
+            does not have (widgets/skeleton's honest-liveness rule). */}
         {attachments.items.length > 0 && (
-          <div className={CLASS.chips}>
+          <div className={CLASS.attachments}>
             {attachments.items.map((item) => (
-              <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
-                {`${item.name}${item.pending ? " (processing…)" : ""}`}
-              </Chip>
+              <AttachmentTile key={item.marker} item={item} onRemove={() => attachments.removeItem(item.marker)} />
             ))}
           </div>
         )}

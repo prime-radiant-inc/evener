@@ -987,6 +987,158 @@ test("re-enables the Spawn button after a successful start (post-success state h
   expect(button.disabled).toBe(false);
 });
 
+// --- staged attachments are tiles, not text chips (kata kbg7) --------------
+//
+// Spawn stages images through the composer's own useAttachments pipeline, and
+// renders them the composer's way too: the shared AttachmentTile, one element
+// shape from paste to send (kata 39xe). It used to diverge at render - a text
+// Chip with " (processing…)" appended - so one act read as two different
+// things depending on which surface started it, and Spawn was the only place
+// in the app that narrated a pending attachment in words while the composer's
+// own pending tile stays deliberately static (widgets/skeleton's
+// honest-liveness rule). Jesse's call, 2026-07-31: unify on the tile.
+
+// Mirrors Composer.test.tsx's installStalledDecodeStub - the decode never
+// settles either way, which is what pins a test to the pending state. The
+// marker text lands synchronously with the paste, so waiting on it under a
+// settling decode can return either side of the transition.
+function installStalledDecodeStub(): void {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback
+  class NeverLoadsImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    src = ""; // a plain field: assigning it never schedules onload/onerror
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = NeverLoadsImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+}
+
+// Mirrors Composer.test.tsx's installGatedDecodeStub - settles on demand
+// rather than on a microtask (installCanvasStubs) or never
+// (installStalledDecodeStub). release() resolves only once the whole encode
+// chain has actually delivered its bytes, so the pending -> settled
+// transition can be awaited as a real completion instead of polled for.
+function installGatedDecodeStub(): { release: () => Promise<void> } {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  let markDelivered!: () => void;
+  const delivered = new Promise<void>((resolve) => {
+    markDelivered = resolve;
+  });
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
+    const blob = new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" });
+    const readBytes = blob.arrayBuffer.bind(blob);
+    blob.arrayBuffer = async () => {
+      const buffer = await readBytes();
+      markDelivered();
+      return buffer;
+    };
+    callback(blob);
+  };
+  const waiting: (() => void)[] = [];
+  class GatedImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    width = 4;
+    height = 4;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      waiting.push(() => this.onload?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = GatedImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+  return {
+    release: () => {
+      for (const fire of waiting.splice(0)) fire();
+      return delivered;
+    },
+  };
+}
+
+test("a settled attachment renders as a thumbnail tile, not a text chip (kata kbg7)", async () => {
+  installCanvasStubs();
+  renderSpawn(readyClient());
+  await settled();
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  pastePngInto(prompt, "shot.png");
+  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+
+  // The whole thumbnail is the control that opens the lightbox, named for the
+  // file it shows - the composer's tile exactly.
+  const openButton = await screen.findByRole("button", { name: "View shot.png" });
+  expect((openButton.querySelector("img") as HTMLImageElement).src).toMatch(/^data:image\/png;base64,/);
+  // The filename is the tile's accessible name now, not chip text on the page.
+  expect(screen.queryByText("shot.png")).toBeNull();
+});
+
+test("a pending attachment is the same tile, and says nothing about its progress (kata kbg7)", async () => {
+  installStalledDecodeStub();
+  renderSpawn(readyClient());
+  await settled();
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  pastePngInto(prompt, "shot.png");
+  await waitFor(() => expect(prompt.value).toBe("[image 1]"));
+
+  // An empty slot the thumbnail will fill, named so a screen reader hears
+  // which attachment is holding things up, with its remove button already
+  // present - the same tile the settled case draws.
+  expect(screen.getByRole("img", { name: "shot.png (still processing)" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+  // The tile IS the pending signal. No visible words claiming a progress this
+  // UI cannot actually report.
+  expect(screen.queryByText(/processing/i)).toBeNull();
+});
+
+// Kata 39xe's invariant, at the Spawn seam. Pending and settled are the SAME
+// element tree at the same list position, so React updates the remove button
+// instead of unmounting it, and a user holding tab-focus on it when the decode
+// lands keeps that focus. Spawn never had 39xe's defect - its chip was one
+// element type in both states - but it renders the tile now, so the invariant
+// has to hold HERE too or the unification would have imported the bug it was
+// fixing. This asserts the mechanism (the identical node is still focused),
+// not a side effect: an implementation that remounted an identically-labelled
+// button would satisfy "a focused remove button exists" while still dropping
+// the user's focus.
+test("focus on a staged attachment's remove button survives its decode settling (kata 39xe)", async () => {
+  const gate = installGatedDecodeStub();
+  renderSpawn(readyClient());
+  await settled();
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  act(() => {
+    pastePngInto(prompt, "shot.png");
+  });
+  const removeButton = screen.getByRole("button", { name: "Remove shot.png" });
+  removeButton.focus();
+  expect(document.activeElement).toBe(removeButton);
+
+  await act(async () => {
+    await gate.release();
+  });
+
+  // The transition really happened: the tile now offers the decoded image, so
+  // the assertions below are about the settled state, not a decode that
+  // quietly never landed.
+  expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy();
+  expect(removeButton.isConnected).toBe(true);
+  expect(document.activeElement).toBe(removeButton);
+});
+
 // kata 61v2: three fast clicks on Spawn spawned three separate live daemons
 // running the same prompt. `disabled={busy}` alone is not a re-entrancy guard
 // - `busy` is React state, and its read inside handleSpawn's closure only
