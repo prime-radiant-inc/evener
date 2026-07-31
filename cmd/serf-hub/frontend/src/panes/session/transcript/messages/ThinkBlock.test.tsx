@@ -8,8 +8,9 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import rawStreamingStyles from "../streamingtext.module.css";
 import { TurnBlock } from "../TurnBlock";
-import { ignoringTurn, itemRendererFor } from "../types";
+import { itemRendererFor } from "../types";
 import { ThinkBlock } from "./ThinkBlock";
+import rawThinkStyles from "./thinkblock.module.css";
 
 const STREAMING_LIVE = requireClass(rawStreamingStyles.live, "streamingtext.module.css", "live");
 
@@ -33,9 +34,19 @@ test('self-registers under the wire\'s reasoning item type ("reasoning")', () =>
   expect(itemRendererFor("reasoning")).toBe(ThinkBlock);
 });
 
-test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled think block", () => {
+test("is memoized: the comparator ignores turn identity but tracks the current-thought flip", () => {
   expect(ThinkBlock.$$typeof).toBe(Symbol.for("react.memo"));
-  expect((ThinkBlock as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
+  const compare = (ThinkBlock as unknown as { compare: (a: unknown, b: unknown) => boolean }).compare;
+  const think = item({ id: "cmp_think", status: "inProgress", reasoningSummaries: [["x"]] });
+  const later: ItemModel = { id: "cmp_later", turnId: "turn_1", type: "agentMessage", text: "", status: "inProgress" };
+  const base = { item: think, turn: { ...turn, items: [think] }, live: true };
+  // A fresh turn object with the thought still the tail: no re-render - the
+  // whole point of ignoring turn identity on unrelated deltas survives.
+  expect(compare(base, { ...base, turn: { ...turn, items: [think] } })).toBe(true);
+  // A later item lands: the current-thought flip MUST re-render, or the
+  // superseded thought would stay capped-live forever (the wire never
+  // completes a reasoning item mid-turn).
+  expect(compare(base, { ...base, turn: { ...turn, items: [think, later] } })).toBe(false);
 });
 
 // --- live: open, StreamingText, "Thinking…" ---------------------------------
@@ -185,6 +196,60 @@ test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-p
   expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
 });
 
+// --- superseded live thoughts settle --------------------------------------
+// The wire never emits item/completed for a reasoning item (TurnBlock's
+// isItemLive comment defers the per-type nuance to this renderer): once
+// anything later starts in the turn, the thought is no longer the current
+// activity, and with the live view now CAPPED, leaving it live would hide
+// the head of the thought for the rest of the turn. Tail position - not
+// wire status - is what "still thinking" means.
+
+test("an inProgress reasoning item that is no longer the turn's tail renders the settled disclosure, with no invented duration", () => {
+  const think = item({
+    id: "think_superseded",
+    status: "inProgress",
+    reasoningSummaries: [["done reasoning\n\nfinal line"]],
+  });
+  const later: ItemModel = {
+    id: "msg_after",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "answering",
+    status: "inProgress",
+  };
+  render(<ThinkBlock item={think} turn={{ ...turn, items: [think, later] }} live={true} />);
+  const summary = document.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought · final line");
+  expect(summary?.textContent).not.toMatch(/\d/);
+  expect(screen.queryByText("Thinking…")).toBeNull();
+});
+
+test("an inProgress reasoning item that IS the turn's tail stays live", () => {
+  const think = item({ id: "think_tail", status: "inProgress", reasoningSummaries: [["still going"]] });
+  render(<ThinkBlock item={think} turn={{ ...turn, items: [think] }} live={true} />);
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+  expect(document.querySelector("details")).toBeNull();
+});
+
+test("through TurnBlock: a later item landing in the turn collapses the live thought to its disclosure", () => {
+  const think = item({ id: "think_flow", status: "inProgress", reasoningSummaries: [["deep thought line"]] });
+  const { rerender } = render(<TurnBlock turn={{ ...turn, items: [think] }} />);
+  expect(screen.getByText("Thinking…")).toBeTruthy();
+
+  const later: ItemModel = {
+    id: "msg_next",
+    turnId: "turn_1",
+    type: "agentMessage",
+    text: "now answering",
+    status: "inProgress",
+  };
+  rerender(<TurnBlock turn={{ ...turn, items: [think, later] }} />);
+  expect(screen.queryByText("Thinking…")).toBeNull();
+  expect(document.querySelector('[data-testid="think-block"] summary')?.textContent).toBe(
+    "Thought · deep thought line",
+  );
+});
+
 // --- live: the draft treatment + the bounded stream (mockup #4) -------------
 // In-flight reasoning reads as a DRAFT - italic while streaming, settling to
 // roman - and the open stream stops claiming the whole viewport: the body caps
@@ -217,7 +282,69 @@ test("the live stream pins to its own tail as chunks land - the newest text is w
   Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
   Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
   rerender(<ThinkBlock item={item({ reasoningSummaries: [["one\n", "two\n"]] })} turn={turn} live={true} />);
-  expect(scroller.scrollTop).toBe(300);
+  // A real browser clamps scrollTop to scrollHeight - clientHeight (200);
+  // jsdom stores the raw 300. Assert the pin reached the tail without
+  // encoding either engine's artifact.
+  expect(scroller.scrollTop).toBeGreaterThanOrEqual(scroller.scrollHeight - scroller.clientHeight);
+});
+
+test("the live wrapper and scroller carry their stylesheet classes - the cap, fade and italic actually bind to the DOM", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["bound"]] })} turn={turn} live={true} />);
+  const body = screen.getByTestId("think-block-live-body");
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  expect(body.classList.contains(requireClass(rawThinkStyles.liveBody, "thinkblock.module.css", "liveBody"))).toBe(
+    true,
+  );
+  expect(
+    scroller.classList.contains(requireClass(rawThinkStyles.liveScroll, "thinkblock.module.css", "liveScroll")),
+  ).toBe(true);
+});
+
+test("a one-pixel metric disagreement is not a cut: the clip flag tolerates rounding under fractional zoom", () => {
+  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["snug"]] })} turn={turn} live={true} />);
+  const body = screen.getByTestId("think-block-live-body");
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  Object.defineProperty(scroller, "scrollHeight", { get: () => 101, configurable: true });
+  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["snug", "!"]] })} turn={turn} live={true} />);
+  expect(body.dataset.clipped).toBe("false");
+});
+
+test("a geometry change BETWEEN deltas re-measures: the observer wired to the scroller re-pins and refreshes the clip flag", () => {
+  // jsdom ships no ResizeObserver (see virtuallist.test.tsx's own note), so
+  // this installs a minimal recording fake: the assertions are about the
+  // component's wiring - which element it observes, and that firing the
+  // callback re-measures with NO React re-render - not about the fake.
+  const observed: Element[] = [];
+  let fire: (() => void) | undefined;
+  class RecordingObserver {
+    private readonly cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+      fire = () => this.cb();
+    }
+    observe(el: Element): void {
+      observed.push(el);
+    }
+    disconnect(): void {}
+  }
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = RecordingObserver;
+  try {
+    render(<ThinkBlock item={item({ reasoningSummaries: [["rewrap me"]] })} turn={turn} live={true} />);
+    const body = screen.getByTestId("think-block-live-body");
+    const scroller = screen.getByTestId("think-block-live-scroll");
+    expect(observed).toContain(scroller);
+    expect(body.dataset.clipped).toBe("false");
+
+    // The pane narrows: same item, no delta, text rewraps past the cap.
+    Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+    fire?.();
+    expect(body.dataset.clipped).toBe("true");
+    expect(scroller.scrollTop).toBeGreaterThanOrEqual(200);
+  } finally {
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  }
 });
 
 test("the fade only marks an actual cut: data-clipped tracks whether the stream overflows its cap", () => {
@@ -233,10 +360,13 @@ test("the fade only marks an actual cut: data-clipped tracks whether the stream 
   expect(body.dataset.clipped).toBe("true");
 });
 
-test("the fade lives on the non-scrolling wrapper, gated on the clipped state (declaration-level)", () => {
+test("the fade lives on the non-scrolling wrapper, gated on the clipped state, and washes the PANE surface (declaration-level)", () => {
   const css = thinkCss();
+  // surface-1, not surface-0: the transcript renders inside PaneScaffold's
+  // .pane (background: var(--surface-1)) - the mockup's surface-0 gradient
+  // was only right on the /dev page, which sits on the app root.
   expect(css).toMatch(
-    /\.liveBody\[data-clipped="true"\]::before\s*\{[^}]*linear-gradient\(to bottom,\s*var\(--surface-0\),\s*transparent\)/,
+    /\.liveBody\[data-clipped="true"\]::before\s*\{[^}]*linear-gradient\(to bottom,\s*var\(--surface-1\),\s*transparent\)/,
   );
   // Never ungated: a short thought must not wash out its own first line.
   expect(css).not.toMatch(/\.liveBody::before/);

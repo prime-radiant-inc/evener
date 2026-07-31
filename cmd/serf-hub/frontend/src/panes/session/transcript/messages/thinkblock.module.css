@@ -84,15 +84,18 @@
 /* The cut marker: a soft wash of the backdrop over the stream's top edge,
  * only while there IS a cut (LiveThinkBlock sets data-clipped from real
  * geometry) - ungated it would wash out the first line of a thought still
- * shorter than its cap. --surface-0 matches the transcript flow's one
- * backdrop (shell/AppShell.module.css); think blocks render nowhere else -
- * the subagent module's surface-1 card never mounts item renderers. */
+ * shorter than its cap. --surface-1 because that is the surface actually
+ * under the transcript: both transcript hosts wrap it in PaneScaffold,
+ * whose .pane paints var(--surface-1) (widgets/panescaffold), and nothing
+ * beneath the think block repaints. The mockup's identical gradient used
+ * surface-0 and was right THERE - /dev/thoughts renders on the app root -
+ * which is exactly the transplant trap an in-pane copy must not repeat. */
 .liveBody[data-clipped="true"]::before {
   content: "";
   position: absolute;
   inset: 0 0 auto;
   height: var(--space-5);
-  background: linear-gradient(to bottom, var(--surface-0), transparent);
+  background: linear-gradient(to bottom, var(--surface-1), transparent);
   pointer-events: none;
 }
 
@@ -129,25 +132,18 @@
  * for Ns" text left a wide strip of empty box to the right - and a focus
  * ring drawn around that whole empty strip read as a blank text input,
  * not a collapsed disclosure. inline-flex shrinks the box to its own
- * content (max-width/ellipsis still guard the rare long-duration case,
- * though today's labels are all short), so hover/focus decoration only
- * ever wraps the words actually on screen - safe here specifically because
- * thoughtLabel's collapsed output is a bounded "Thought · preview" (the
- * preview is clamped at 120 chars, see THOUGHT_PREVIEW_MAX_LENGTH), never
- * the UNbounded fallback label systemnoticeitem.module.css's
- * .scaffoldSummary can carry (see that file's comment for the overflow
- * this exact combination caused there, and why THAT one has to give space
- * back via flex-shrink instead). Making this one shrinkable too was tried
- * and reverted: with genuinely short body text the shrink math still takes
- * a slice of .summary's own tiny width, ellipsis-clipping "Thought" itself
- * for no reason, since nothing here was ever at risk of overflowing. */
+ * content, so hover/focus decoration only ever wraps the words actually on
+ * screen. Since the chevron landed, every child is a flex item - icon,
+ * .summaryText, chevron - so the width guard for the rare too-long label
+ * lives on .summaryText (its own overflow/ellipsis below); max-width and
+ * overflow here just bound the box and clip hard if everything else
+ * fails. nowrap is load-bearing: .summaryText inherits it. */
 .summary {
   display: inline-flex;
   align-items: baseline;
   max-width: 100%;
   cursor: pointer;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: var(--radius-control);
   font-family: var(--font-sans);

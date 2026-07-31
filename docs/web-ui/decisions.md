@@ -226,9 +226,17 @@ candidates, Jesse's pick): the collapsed label grammar is dot-joined
 wording) and trails a rotate-on-open chevron (ToolRow's data-open idiom); the
 live stream renders as italic draft text — settling to roman — with the
 eyebrow at body size (quiet through ink, never size), capped at six body
-lines, pinned to its own tail, a surface-0 fade marking the cut only while
-one exists. The always-open live law, the no-caret law, the closed-only
-preview, and session-keyed disclosure state all stand.
+lines, pinned to its own tail (a ResizeObserver re-pins on delta-less
+reflows), a surface-**1** fade marking the cut only while one exists (the
+pane backdrop — the mockup's surface-0 was right only on the /dev page).
+Because the cap made the wire's missing reasoning `item/completed`
+load-bearing, the renderer now settles a thought the moment anything later
+starts in its turn (tail position stands in for the completion the wire
+withholds; no duration is invented before the turn's own settle stamps one) —
+restoring kgp2's "collapses once the assistant starts answering" behavior
+that the always-open-while-inProgress reading had quietly repealed. The
+no-caret law, the closed-only preview, and session-keyed disclosure state
+all stand.
 
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
