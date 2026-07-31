@@ -199,7 +199,7 @@ func runHubControlProgram(t *testing.T) {
 	m.moveBrowsePage(1)
 	m.moveBrowseSelection(1)
 	m.session.messages = []transcript.ChatMessage{
-		{Kind: transcript.MsgUser, Text: "user", TurnIndex: 1},
+		{Kind: transcript.MsgUser, Text: "user", TurnIndex: 1, TranscriptEntryIndex: 1},
 		{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "x", Done: true}},
 		{Kind: transcript.MsgReasoning, Text: "thought", Done: true},
 		{Kind: transcript.MsgSystem, Text: "system"},
@@ -230,9 +230,9 @@ func runHubControlProgram(t *testing.T) {
 	m.browseSelected = 3
 	m.startForkDraft()
 	m.browseSelected = 0
-	m.session.messages[0].TurnIndex = 0
+	m.session.messages[0].TranscriptEntryIndex = 0
 	m.startForkDraft()
-	m.session.messages[0].TurnIndex = 1
+	m.session.messages[0].TranscriptEntryIndex = 1
 	m.startForkDraft()
 	m.detail.Capabilities.Fork = true
 	m.detail.Ref = "bad"

@@ -21,10 +21,12 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 	m.height = 12
 	m.session.width = 100
 	m.session.height = 12
+	// A user row carries the transcript entry it occupies as well as its turn
+	// index; the fork draft diverges at the entry index.
 	m.session.messages = []transcript.ChatMessage{
-		{Kind: transcript.MsgUser, Text: "first question", TurnIndex: 1},
+		{Kind: transcript.MsgUser, Text: "first question", TurnIndex: 1, TranscriptEntryIndex: 1},
 		{Kind: transcript.MsgAssistant, Text: "first answer"},
-		{Kind: transcript.MsgUser, Text: "second question", TurnIndex: 2},
+		{Kind: transcript.MsgUser, Text: "second question", TurnIndex: 2, TranscriptEntryIndex: 3},
 		{Kind: transcript.MsgAssistant, Text: "second answer"},
 	}
 	m.session.refreshViewport()

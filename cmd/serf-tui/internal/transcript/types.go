@@ -56,13 +56,27 @@ type ToolCallInfo struct {
 const ToolCollapseThreshold = 5
 
 type ChatMessage struct {
-	Kind       MessageKind
-	Text       string
-	TurnID     string
-	TurnIndex  int
-	ItemID     string
-	ToolCallID string
-	Tool       *ToolCallInfo
+	Kind   MessageKind
+	Text   string
+	TurnID string
+	// TurnIndex is the number parsed out of TurnID (TurnIndexFromID), used to
+	// scope streaming updates to the turn that owns them. It is NOT a
+	// transcript position: only a transcript replayed from disk numbers turn_N
+	// off the entry index, so use TranscriptEntryIndex to name an entry.
+	TurnIndex int
+	// TranscriptEntryIndex is the row's 1-based position in the session's
+	// transcript ENTRY list (appwire.ThreadItem.TranscriptEntryIndex), counting
+	// every entry rather than only the ones that opened a turn. It is the sole
+	// field that names a thread/fork divergence position — the hub reads
+	// ThreadForkParams.SourceTurnID as exactly this index and hands it to
+	// agent.ForkSessionAtUserTurn, which forks only at a USER_INPUT entry. The
+	// reducer therefore stamps it on user rows; zero means "no persisted
+	// transcript position" (an un-reconciled composer echo, a wire item that
+	// carried none) and hub_browse.go's fork draft refuses rather than guess.
+	TranscriptEntryIndex int
+	ItemID               string
+	ToolCallID           string
+	Tool                 *ToolCallInfo
 
 	// PendingID is non-zero when this message is an optimistic placeholder
 	// created in response to a user click before the authoritative event

@@ -215,16 +215,18 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 				r.messages[idx].Text = text
 				r.messages[idx].TurnID = item.TurnID
 				r.messages[idx].TurnIndex = turnIndex
+				r.messages[idx].TranscriptEntryIndex = item.TranscriptEntryIndex
 				return
 			}
 			if idx, ok := r.pendingUserEchoIndex(text); ok {
 				r.messages[idx].Text = text
 				r.messages[idx].TurnID = item.TurnID
 				r.messages[idx].TurnIndex = turnIndex
+				r.messages[idx].TranscriptEntryIndex = item.TranscriptEntryIndex
 				r.messages[idx].ItemID = item.ID
 				return
 			}
-			r.messages = append(r.messages, ChatMessage{Kind: MsgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
+			r.messages = append(r.messages, ChatMessage{Kind: MsgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, TranscriptEntryIndex: item.TranscriptEntryIndex, ItemID: item.ID})
 		}
 	case "reasoning":
 		if idx, ok := r.activeReasoningIndex(item.ID); ok {

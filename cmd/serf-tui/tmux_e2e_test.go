@@ -1522,9 +1522,12 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "userMessage", ID: "user-1", TurnID: "turn_1", Text: "initial question"},
-				{Type: "commandExecution", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
-				{Type: "agentMessage", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
+				// A real hub stamps every item with the transcript entry it
+				// occupies; the browse-mode fork sends the user item's index as
+				// its divergence position.
+				{Type: "userMessage", ID: "user-1", TurnID: "turn_1", TranscriptEntryIndex: 1, Text: "initial question"},
+				{Type: "commandExecution", ID: "tool-1", TurnID: "turn_1", TranscriptEntryIndex: 1, ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
+				{Type: "agentMessage", ID: "agent-1", TurnID: "turn_1", TranscriptEntryIndex: 1, Text: "initial answer", Status: "completed"},
 			},
 		}, {
 			ID:     "turn_active",

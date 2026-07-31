@@ -200,6 +200,16 @@ func (m *hubModel) toggleAllBrowseDetails() {
 	m.session.refreshViewport()
 }
 
+// startForkDraft arms a fork diverging at the selected user message.
+//
+// The divergence position is the message's TRANSCRIPT ENTRY INDEX, never its
+// turn index: thread/fork reads sourceTurnId as a 1-based index into the
+// parent's entry list and forks there, and only a transcript replayed from
+// disk numbers turn_N off that same index. A live turn is numbered off its
+// minter's own counter, so past the first turn or two its id names a different
+// entry than the message it carries. A message with no entry index names no
+// position at all, and guessing an entry is the one outcome that must never
+// happen — so the draft refuses instead.
 func (m *hubModel) startForkDraft() {
 	_, msg, ok := m.selectedBrowseMessage()
 	if !ok {
@@ -210,8 +220,8 @@ func (m *hubModel) startForkDraft() {
 		m.addSessionSystem("Select a user turn to fork.")
 		return
 	}
-	if msg.TurnIndex <= 0 {
-		m.addSessionSystem("fork requires persisted transcript turn identity.")
+	if msg.TranscriptEntryIndex <= 0 {
+		m.addSessionSystem("fork requires a persisted transcript position.")
 		return
 	}
 	if !m.detail.Capabilities.Fork {
@@ -225,13 +235,13 @@ func (m *hubModel) startForkDraft() {
 	}
 	m.forkDraft = &hubForkDraft{
 		Ref:          ref,
-		Turn:         msg.TurnIndex,
+		Turn:         msg.TranscriptEntryIndex,
 		OriginalText: msg.Text,
 		Label:        "original before fork",
 	}
 	m.exitSessionBrowse()
 	m.session.setInputValue(msg.Text)
-	m.addSessionSystem(fmt.Sprintf("Fork draft for turn %d. Edit the input, press enter to fork, or esc to cancel.", msg.TurnIndex))
+	m.addSessionSystem(fmt.Sprintf("Fork draft for turn %d. Edit the input, press enter to fork, or esc to cancel.", msg.TranscriptEntryIndex))
 }
 
 func (m *hubModel) addSessionSystem(text string) {
