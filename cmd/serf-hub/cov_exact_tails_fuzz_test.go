@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
