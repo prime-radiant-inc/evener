@@ -294,3 +294,119 @@ func TestHubJobsOutputPastUnknownJob(t *testing.T) {
 		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}
 }
+
+// TestHubJobsOutputWithoutPastIndexKeepsTheLiveError proves the first of
+// hubJobsOutput's three past-gate misses: a hub configured without a past
+// index has nothing to fall back to, so the dead-session error that triggered
+// the fallback is what the caller gets — not an empty tail.
+func TestHubJobsOutputWithoutPastIndexKeepsTheLiveError(t *testing.T) {
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := newExitedLocalRegistry()
+
+	_, err = hubJobsOutput(context.Background(), hubcore.WebConfig{}, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if !isDeadSessionError(err) {
+		t.Fatalf("err = %v, want entryForRef's thread-not-found SessionUnavailable error, not an empty tail", err)
+	}
+}
+
+// TestHubJobsOutputNonLocalRefKeepsTheLiveError proves the past gate's
+// local-ref requirement: jobs.jsonl under a project state dir is LOCAL
+// session state, so a non-local ref must never be answered from it. The past
+// index deliberately holds a session whose id is the codex ref's thread id
+// and whose persisted job id is the one requested — dropping the local-source
+// check would serve another source's caller this local session's output.
+func TestHubJobsOutputNonLocalRefKeepsTheLiveError(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "local past job", command: "make local", output: "0123456789"},
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(&jobsListSource{id: "codex", outErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
+
+	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "codex:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if !isDeadSessionError(err) {
+		t.Fatalf("err = %v, want the codex source's own dead-session error; local past state is not this ref's to serve", err)
+	}
+}
+
+// TestHubJobsOutputRefNotInPastIndexKeepsTheLiveError proves the last past-gate
+// miss, mirroring TestHubJobsListDeadSessionNotInPastIndex for the output
+// path: a ref the past index has never heard of surfaces the ORIGINAL
+// SessionUnavailable thread-not-found error rather than an empty tail.
+func TestHubJobsOutputRefNotInPastIndexKeepsTheLiveError(t *testing.T) {
+	root := t.TempDir()
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Past: idx}
+	sessionID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := newExitedLocalRegistry()
+
+	_, err = hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if !isDeadSessionError(err) {
+		t.Fatalf("err = %v, want entryForRef's thread-not-found SessionUnavailable error, not an empty tail", err)
+	}
+}
+
+// corruptPersistedJobsLog overwrites a seeded session's jobs.jsonl with a
+// torn record line (newline-terminated, so jobstore's trailing-partial-line
+// recovery leaves it alone and the reader must actually fail on it). This is
+// a corrupt durable log, not a missing or empty one.
+func corruptPersistedJobsLog(t *testing.T, stateDir, sessionID string) {
+	t.Helper()
+	path := filepath.Join(stateDir, "sessions", sessionID, "jobs.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"job_started","seq":1,"job_id":"job_`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess proves a corrupt
+// jobs.jsonl surfaces as a real error rather than being laundered into an
+// empty success or into the dead-session error that triggered the fallback.
+// Either laundering would pass every other test in this file while hiding
+// real data loss.
+func TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_a", description: "run the build", command: "make build"},
+	})
+	corruptPersistedJobsLog(t, stateDir, sessionID)
+	sources := newExitedLocalRegistry()
+
+	_, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
+	if err == nil {
+		t.Fatal("hubJobsList returned nil error for a corrupt jobs.jsonl, want a real error, not empty success")
+	}
+	if isDeadSessionError(err) {
+		t.Fatalf("err = %v, want the jobs.jsonl read error; the dead-session error would report a readable session as simply gone", err)
+	}
+}
+
+// TestHubJobsOutputCorruptJobsLogReturnsErrorNotUnknownJob proves the same for
+// the output path, and that the read failure is not downgraded to the
+// unknown-job InvalidParams: a corrupt log is the hub's problem to report,
+// not the caller's to be blamed for.
+func TestHubJobsOutputCorruptJobsLogReturnsErrorNotUnknownJob(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
+	})
+	corruptPersistedJobsLog(t, stateDir, sessionID)
+	sources := newExitedLocalRegistry()
+
+	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if err == nil {
+		t.Fatal("hubJobsOutput returned nil error for a corrupt jobs.jsonl, want a real error, not an empty tail")
+	}
+	var wire appwire.WireError
+	if errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams {
+		t.Fatalf("err = %v, want the jobs.jsonl read error; InvalidParams blames the caller for the hub's unreadable log", err)
+	}
+	if isDeadSessionError(err) {
+		t.Fatalf("err = %v, want the jobs.jsonl read error; the dead-session error would report a readable session as simply gone", err)
+	}
+}
