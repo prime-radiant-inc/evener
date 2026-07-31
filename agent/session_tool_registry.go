@@ -106,8 +106,9 @@ type toolDeps struct {
 	stateDir  string
 	sessionID string
 
-	// jobManager resolves job:<job_id> transcript refs for read_transcript.
-	jobManager *jobManager
+	// jobRead resolves a job:<job_id> transcript ref for read_transcript and
+	// returns a bounded snapshot of that job's retained output.
+	jobRead func(jobID string, readBytes int) (jobReadOutputSnapshot, error)
 
 	// currentMeta returns the live SessionMeta of the current session, used as
 	// the render metadata when a transcript read resolves to the current session
@@ -249,7 +250,7 @@ func newToolDeps(s *Session) *toolDeps {
 		webSearchEnabled:      s.profile.BehaviorTag() == "google",
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
-		jobManager:            s.jobManager,
+		jobRead:               sessionJobRead(s),
 		currentMeta:           s.Meta,
 	}
 }

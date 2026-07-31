@@ -373,7 +373,7 @@ func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptA
 
 func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error) {
 	_ = rangeArg
-	if deps == nil || deps.jobManager == nil {
+	if deps == nil || deps.jobRead == nil {
 		return nil, errors.New("job transcript unavailable: job manager is not available")
 	}
 	if format == "" {
@@ -386,11 +386,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 	if jobID == "" {
 		return nil, errors.New("invalid_request: job transcript_ref must be job:<job_id>")
 	}
-	rec, err := findJobRecord(deps.jobManager, jobID)
-	if err != nil {
-		return nil, err
-	}
-	content, total, dropped, truncated, err := deps.jobManager.readJobWindow(jobID, maxJobOutputRetentionBytes, false)
+	snap, err := deps.jobRead(jobID, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -398,12 +394,12 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 		TranscriptRef: ref,
 		Format:        formatMarkdown,
 		ContentType:   "text/markdown",
-		Content:       renderShellJobTranscript(rec, content, total, dropped),
+		Content:       renderShellJobTranscript(snap.Record, snap.Content, snap.TotalBytes, snap.DroppedBytes),
 		Meta: readMarkdownMeta{
 			TurnsTotal:    1,
 			Range:         "shell-log",
 			TurnsRendered: 1,
-			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
+			Truncated:     snap.Truncated || snap.DroppedBytes > 0 || snap.TotalBytes > int64(len([]byte(snap.Content))),
 		},
 	}
 	return boundReadMarkdownEnvelopeWithHint(envelope, jobTranscriptTruncationNotice)
