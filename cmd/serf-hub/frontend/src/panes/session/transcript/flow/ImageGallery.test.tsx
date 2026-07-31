@@ -305,3 +305,44 @@ test("stepping the lightbox to a new image updates its caption", () => {
 
   expect(screen.getByTestId("image-gallery-lightbox-caption").textContent).toBe("hero-b.png");
 });
+
+// A descriptor can name bytes the hub cannot serve yet: a still-streaming
+// session addresses a tool result's image by sha as soon as the call ends,
+// while the transcript entry holding those bytes is only written when the
+// round finishes. Until then the fetch 404s, and a broken-image glyph is a
+// worse answer than no thumbnail.
+test("an image the browser cannot load drops out of the strip instead of showing broken", () => {
+  render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }, { src: "/s/ref/images/bbb" }]} />);
+  const failing = screen.getAllByTestId("image-gallery-thumb")[0]!.querySelector("img")!;
+
+  fireEvent.error(failing);
+
+  const remaining = screen.getAllByTestId("image-gallery-thumb");
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.querySelector("img")!.getAttribute("src")).toBe("/s/ref/images/bbb");
+});
+
+test("a strip whose only image fails to load renders nothing at all", () => {
+  const { container } = render(<ImageGallery images={[{ src: "/s/ref/images/aaa" }]} />);
+
+  fireEvent.error(screen.getByTestId("image-gallery-thumb").querySelector("img")!);
+
+  expect(screen.queryAllByTestId("image-gallery-thumb")).toHaveLength(0);
+  expect(container.firstChild).toBeNull();
+});
+
+test("only the failing src is dropped when two descriptors share a strip", () => {
+  render(
+    <ImageGallery
+      images={[
+        { src: "/s/ref/images/aaa", name: "one" },
+        { src: "/s/ref/images/bbb", name: "two" },
+      ]}
+    />,
+  );
+
+  fireEvent.error(screen.getAllByTestId("image-gallery-thumb")[1]!.querySelector("img")!);
+
+  const captions = screen.getAllByTestId("image-gallery-caption").map((node) => node.textContent);
+  expect(captions).toEqual(["one"]);
+});

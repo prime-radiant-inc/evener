@@ -57,9 +57,21 @@ function captionFor(image: ItemImage): string | undefined {
   return image.name ?? image.path ?? image.source;
 }
 
-export function ImageGallery({ images }: ImageGalleryProps) {
+export function ImageGallery({ images: supplied }: ImageGalleryProps) {
   // null = closed; a number is the open lightbox's current index.
   const [openIndex, setOpenIndex] = useState<number | null>(null);
+  // A src the browser refused to load. A descriptor can legitimately name
+  // bytes this hub cannot serve yet - a still-streaming session's tool result
+  // is addressed by sha the moment the call ends, and the transcript entry
+  // holding those bytes is only written when the round finishes - and a
+  // broken-image glyph is a worse answer than no thumbnail. Dropping the
+  // image on error degrades to exactly what the reader saw before the
+  // descriptor existed; a reload picks it up once the bytes land.
+  const [unloadable, setUnloadable] = useState<ReadonlySet<string>>(() => new Set());
+  const markUnloadable = useCallback((src: string) => {
+    setUnloadable((current) => (current.has(src) ? current : new Set(current).add(src)));
+  }, []);
+  const images = supplied?.filter((image) => !unloadable.has(image.src));
   // Computed before the `images` early return below, and hooks ordered
   // ahead of it too (Rules of Hooks: every hook here must run on every
   // render, regardless of whether this instance ends up rendering nothing).
@@ -118,7 +130,12 @@ export function ImageGallery({ images }: ImageGalleryProps) {
             className={CLASS.thumb}
             onClick={() => setOpenIndex(i)}
           >
-            <img className={CLASS.thumbImg} src={image.src} alt={altFor(i, total)} />
+            <img
+              className={CLASS.thumbImg}
+              src={image.src}
+              alt={altFor(i, total)}
+              onError={() => markUnloadable(image.src)}
+            />
             {caption !== undefined && (
               <span className={CLASS.caption} data-testid="image-gallery-caption">
                 {caption}
