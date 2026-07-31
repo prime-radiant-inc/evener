@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm"
@@ -52,6 +53,23 @@ func (f *credentialProbeFakeClient) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+// clearProviderKeysFromEnvironment unsets every API key the envvars registry
+// knows about, for the duration of the test. serf/auth/test asks
+// credentials.Store.ResolveKey whether an instance has a credential, and that
+// reads the environment — so a test asserting an instance is unconfigured means
+// nothing unless it states that the environment holds no key for it
+// (docs/testing.md: no ambient developer machine state). Walking the registry
+// rather than a literal list keeps a provider row added later covered here with
+// no edit.
+func clearProviderKeysFromEnvironment(t *testing.T) {
+	t.Helper()
+	for _, p := range envvars.Providers() {
+		for _, v := range p.APIKeyVars {
+			t.Setenv(v.Name, "")
+		}
+	}
 }
 
 func newCredentialProbeController(t *testing.T, client credentialProbeClient, cfg providercfg.Config) *hubAuthController {
@@ -105,6 +123,7 @@ func TestAuthTestCredentialsClassifiesProviderOutcomesWithoutSecrets(t *testing.
 }
 
 func TestAuthTestCredentialsReportsMissingCredentialsBeforeProbe(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
 	client := &credentialProbeFakeClient{}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "anthropic-work", Type: "anthropic"}}}
 	c := newCredentialProbeController(t, client, cfg)
@@ -122,6 +141,7 @@ func TestAuthTestCredentialsReportsMissingCredentialsBeforeProbe(t *testing.T) {
 }
 
 func TestAuthTestCredentialsReportsMissingWhenClientConstructionSkipsInstance(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "anthropic-work", Type: "anthropic"}}}
 	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
 	if err != nil {
@@ -160,6 +180,7 @@ func TestAuthTestCredentialsReportsLoaderFailureAsConfigurationFailure(t *testin
 }
 
 func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
 	client := &credentialProbeFakeClient{}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
 		Name:    "anthropic-work",
@@ -181,6 +202,7 @@ func TestAuthTestCredentialsIgnoresOrdinaryHeadersForMissingCredentialDetection(
 }
 
 func TestAuthTestCredentialsTreatsUnresolvedAPIKeyReferenceAsMissing(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
 	t.Setenv("SERF_ZR5R_MISSING_API_KEY", "")
 	client := &credentialProbeFakeClient{}
 	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
@@ -281,6 +303,9 @@ func TestAuthTestCredentialsUsesConfiguredBaseURLAndHeadersAtFakeHTTPBoundary(t 
 }
 
 func TestAuthTestCredentialsAcceptsStoredOAuthForNamedOpenAIInstance(t *testing.T) {
+	// Without this the stored record proves nothing: after gpbz an ambient
+	// OPENAI_API_KEY resolves through the store and reaches success on its own.
+	clearProviderKeysFromEnvironment(t)
 	stateDir := t.TempDir()
 	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
 	if err != nil {
