@@ -182,10 +182,6 @@
   color: var(--ink-mid);
 }
 
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
-}
-
 /* Same ink-wash idiom as ToolCallItem's own summary.row:hover - a tint of
  * the ink reads as "clickable" against whatever surface it sits on. */
 .summary:hover {
@@ -232,6 +228,13 @@
   .chevron > svg {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
   }
+}
+
+/* Down here, not beside .chevron: this selector outranks the transition
+ * selector above, and biome's noDescendingSpecificity wants the lower-
+ * specificity rule first in source order. */
+.chevron[data-open="true"] > svg {
+  transform: rotate(90deg);
 }
 
 @keyframes thinkblock-body-in {

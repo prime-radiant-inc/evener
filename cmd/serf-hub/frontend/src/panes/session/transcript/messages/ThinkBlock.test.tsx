@@ -298,7 +298,11 @@ test("the open disclosure keeps the dot-joined duration label - never the old 'f
 
 test("the settled summary trails with a chevron that tracks the open state", () => {
   render(
-    <ThinkBlock item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })} turn={turn} live={false} />,
+    <ThinkBlock
+      item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })}
+      turn={turn}
+      live={false}
+    />,
   );
   const summary = document.querySelector("summary");
   const chevron = screen.getByTestId("think-block-chevron");
