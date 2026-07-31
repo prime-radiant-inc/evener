@@ -462,6 +462,155 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	assertProjectDeleteDecisionPresent(t, dbPath, "project", project.ID, true)
 }
 
+// TestProjectDeleteRemovesCrashedSessionAndStaleRendezvous is kata 8at6's
+// core regression: a retained crash marker (LiveEntry.Crashed=true, written
+// when Roster.Refresh confirms the daemon's PID is gone but its rendezvous
+// file survived - see hubcore.Roster.Refresh) is historical error state, not
+// a live daemon. Project deletion must still be able to acquire ownership and
+// clean the session, including the stale rendezvous record the dead daemon
+// left behind.
+func TestProjectDeleteRemovesCrashedSessionAndStaleRendezvous(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	favorite := hubcore.NewFavoriteStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
+
+	runDir := filepath.Join(root, "run")
+	staleEntry := rendezvous.Entry{
+		PID:       4242,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  webTestSessionID,
+		SessionID: webTestSessionID,
+	}
+	writeRendezvous(t, runDir, staleEntry)
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     staleEntry,
+		SessionID: webTestSessionID,
+		Status:    "errored",
+		Crashed:   true,
+	})
+	web := NewWebServer(hubcore.WebConfig{
+		Past: past, Archive: archive, Favorite: favorite, Roster: roster, RunDir: runDir,
+	})
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want a retained crash marker to unblock deletion", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Deleted) != 1 || resp.Deleted[0] != webTestSessionID || len(resp.Skipped) != 0 {
+		t.Fatalf("crashed session must be deleted outright: %+v", resp)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed", suffix)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); !os.IsNotExist(err) {
+		t.Fatal("per-session dir should be removed")
+	}
+	assertArchiveDecisionAbsent(t, archive, "session", webTestSessionID)
+	assertProjectDeleteDecisionAbsent(t, dbPath, "session", webTestSessionID)
+	if _, ok := past.Find(webTestSessionID); ok {
+		t.Fatal("past index row should be removed")
+	}
+	entries, err := rendezvous.List(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.SessionID == webTestSessionID || e.ThreadID == webTestSessionID {
+			t.Fatalf("stale rendezvous record for %s should be removed, found %+v", webTestSessionID, e)
+		}
+	}
+}
+
+// TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails covers the
+// other half of kata 8at6's predicate: a live PID whose /status probe merely
+// timed out must NOT be mistaken for a crash. hubcore.Roster.Refresh carries
+// the previous (non-crashed) entry forward whenever a probe fails but the
+// PID is still alive (see its "keep-alive fallback" comment), so this drives
+// a real Roster through that exact path with a fake Prober rather than
+// asserting against a hand-built LiveEntry - the thing under test is that
+// the crash-vs-live distinction survives the roster's own transient-failure
+// handling, not just that projectSessionLive reads a Crashed field.
+func TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(root, "run")
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		ThreadID:  webTestSessionID,
+		SessionID: webTestSessionID,
+	})
+	prober := &fakeProber{sessionID: webTestSessionID, status: "active"}
+	roster := hubcore.NewRoster(runDir, prober)
+	roster.Refresh()
+	if entry, ok := roster.Find(webTestSessionID); !ok || entry.Crashed {
+		t.Fatalf("precondition: session must be live and not crashed after the first refresh, ok=%v crashed=%v", ok, entry.Crashed)
+	}
+
+	prober.shouldFail = true
+	roster.Refresh() // the probe now fails, but the PID (this test process) is still alive
+	if entry, ok := roster.Find(webTestSessionID); !ok || entry.Crashed {
+		t.Fatalf("precondition: a transient probe failure on a live PID must not mark Crashed, ok=%v crashed=%v", ok, entry.Crashed)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s, want refusal for a live session whose probe merely timed out", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
+		t.Fatal("nothing should be removed when refused")
+	}
+}
+
 func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
