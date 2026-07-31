@@ -208,3 +208,65 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const css = readFileSync(join(here, "dialog.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+// --- size (kata b4xf: ImageGallery's lightbox needs to fill almost the
+// whole window, unlike every other Dialog caller, which wants the compact
+// default) -------------------------------------------------------------
+
+test('size is omittable: an unset size renders the same panel class as size="default"', () => {
+  const { rerender } = render(
+    <Dialog open onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const omittedClass = screen.getByRole("dialog").className;
+
+  rerender(
+    <Dialog open size="default" onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const explicitDefaultClass = screen.getByRole("dialog").className;
+
+  expect(omittedClass).not.toBe("");
+  expect(omittedClass).toBe(explicitDefaultClass);
+});
+
+test('size="default" and size="large" render distinct, non-empty panel classes', () => {
+  const { rerender } = render(
+    <Dialog open size="default" onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const defaultClass = screen.getByRole("dialog").className;
+
+  rerender(
+    <Dialog open size="large" onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const largeClass = screen.getByRole("dialog").className;
+
+  expect(defaultClass).not.toBe("");
+  expect(largeClass).not.toBe("");
+  expect(defaultClass).not.toBe(largeClass);
+});
+
+test("the large size variant's CSS fills most of the viewport instead of the compact default's fixed cap", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
+  const rule = /\.dialogVariantLarge\s*{([^}]*)}/.exec(css);
+  expect(rule).toBeTruthy();
+  const body = rule![1]!;
+  expect(body).toMatch(/max-width:\s*calc\(100vw/);
+  expect(body).toMatch(/max-height:\s*calc\(100vh/);
+  expect(body).not.toContain("560px");
+});
+
+test("the large size variant also honors prefers-reduced-motion", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
+  const reducedMotionBlock = /@media \(prefers-reduced-motion: reduce\)\s*{([\s\S]*?)}\s*}/.exec(css);
+  expect(reducedMotionBlock).toBeTruthy();
+  expect(reducedMotionBlock![1]).toContain("dialogVariantLarge");
+});
