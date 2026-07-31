@@ -203,13 +203,24 @@ let pendingProjectPageResponses: Record<string, Promise<Response>>;
 let treeRefreshResponses: Response[];
 let pendingTreeRefresh: Promise<Response> | null;
 
+// Both delete endpoints report BARE thread ids in `deleted` and in
+// `skipped[].id`: web_api_project_delete.go carries target.ThreadID into both
+// (cleanupProjectDeletion, cleanupProjectDeletionTargetAndDecisions,
+// appendProjectDeleteLiveSkip), and web_api_session_delete.go strips the
+// route's "local:" prefix (canonicalRouteID) before echoing the id back. So
+// every delete fixture in this file - here and in the per-test overrides -
+// uses that form. Nothing on THIS side would catch a drift back to the
+// "local:<id>" ref form a pane carries, since closePanesForDeletedSessions
+// and stores/tree.ts's sessionIDMatches both accept either; the enforcement
+// lives in the Go tests (TestSessionDeleteRemovesOnlyTarget,
+// TestProjectDeleteRetainsSkippedDecisionsAndRemovesOnlyDeletedDecisions).
 function defaultPostResponses(): Record<string, { status: number; body: unknown }> {
   return {
     "/api/favorite": { status: 200, body: { ok: true } },
     "/api/archive": { status: 200, body: { ok: true } },
-    "/api/project/delete": { status: 200, body: { deleted: ["local:old1"], skipped: [] } },
+    "/api/project/delete": { status: 200, body: { deleted: ["old1"], skipped: [] } },
     rename: { status: 204, body: undefined },
-    delete: { status: 200, body: { deleted: ["local:s1"], skipped: [] } },
+    delete: { status: 200, body: { deleted: ["s1"], skipped: [] } },
   };
 }
 
@@ -1273,7 +1284,7 @@ describe("delete project flow", () => {
     await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
 
     treeRefreshResponses = [jsonResponse({ error: "refresh failed" }, 500)];
-    postResponses["/api/project/delete"] = { status: 200, body: { deleted: ["local:old1"], skipped: [] } };
+    postResponses["/api/project/delete"] = { status: 200, body: { deleted: ["old1"], skipped: [] } };
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     await vi.waitFor(() => expect(screen.queryByText("old-project")).toBeNull());
@@ -1300,7 +1311,7 @@ describe("delete project flow", () => {
     treeRefreshResponses = [jsonResponse({ error: "refresh failed" }, 500)];
     postResponses["/api/project/delete"] = {
       status: 200,
-      body: { deleted: ["local:old2"], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+      body: { deleted: ["old2"], skipped: [{ id: "old1", reason: "resumed live" }] },
     };
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
@@ -1325,7 +1336,7 @@ describe("delete project flow", () => {
     });
     postResponses["/api/project/delete"] = {
       status: 200,
-      body: { deleted: [], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+      body: { deleted: [], skipped: [{ id: "old1", reason: "resumed live" }] },
     };
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
@@ -1395,7 +1406,7 @@ describe("delete project flow", () => {
   test("a delete that partially skips sessions still refetches but also shows a warning toast", async () => {
     postResponses["/api/project/delete"] = {
       status: 200,
-      body: { deleted: [], skipped: [{ id: "local:old1", reason: "resumed live" }] },
+      body: { deleted: [], skipped: [{ id: "old1", reason: "resumed live" }] },
     };
     renderRail();
     await screen.findByText("Live session");
