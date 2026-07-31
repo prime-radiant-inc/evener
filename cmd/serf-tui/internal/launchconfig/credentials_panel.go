@@ -406,6 +406,19 @@ func (p CredentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 	}
 }
 
+// credentialBadge renders one instance's credential badge. An absent credential
+// the hub never wanted - CredentialRequired is false for an auth-none provider
+// or a gateway that inherits no type-level key - is nothing missing, so it gets
+// the neutral "optional" badge instead of the ended-tone ABSENT one that marks
+// a provider whose key is genuinely gone. TextDim is the tone the other
+// no-credential-needed source, "none", already carries.
+func (p CredentialsPanel) credentialBadge(inst appwire.InstanceEntry) string {
+	if inst.ActiveSource == "absent" && !inst.CredentialRequired {
+		return tuiprim.StatusBadge(tuitheme.ActiveTheme().TextDim, "optional")
+	}
+	return tuiprim.StatusBadge(p.sourceBadgeColor(inst.ActiveSource), inst.ActiveSource)
+}
+
 // Done reports whether the panel has been dismissed.
 func (p CredentialsPanel) Done() bool { return p.done }
 
@@ -437,7 +450,7 @@ func (p CredentialsPanel) View() string {
 				star = "★"
 			}
 			name := lipgloss.NewStyle().Foreground(th.Text).Render(inst.Name)
-			badge := tuiprim.StatusBadge(p.sourceBadgeColor(inst.ActiveSource), inst.ActiveSource)
+			badge := p.credentialBadge(*inst)
 			// Optional apiStyle/baseURL hint
 			hint := ""
 			if inst.APIStyle != "" || inst.BaseURL != "" {

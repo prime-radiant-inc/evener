@@ -180,6 +180,43 @@ describe("layered credential display", () => {
   });
 });
 
+// The heading dot is the glyph half of what the unconfigured label says in
+// words, so the two have to agree about the same instance. StatusDot's only
+// observable difference between "idle" and "ended" is its accessible name
+// (both states share the neutral token family - src/widgets/statusdot), so
+// that name is what these assert on.
+describe("the heading dot agrees with the credential label", () => {
+  test("a keyless gateway - no key, none needed - is not announced as ended", () => {
+    const handlers = noopHandlers();
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "llama",
+          type: "openai",
+          baseUrl: "http://127.0.0.1:8080/v1",
+          activeSource: "absent",
+          credentialRequired: false,
+        })}
+        {...handlers}
+      />,
+    );
+    expect(screen.getByText("No key set · optional")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+  });
+
+  test("a provider whose required key is missing keeps the ended dot", () => {
+    const handlers = noopHandlers();
+    render(
+      <InstanceRow
+        instance={instance({ name: "a", type: "anthropic", activeSource: "absent", credentialRequired: true })}
+        {...handlers}
+      />,
+    );
+    expect(screen.getByText("Not configured")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+  });
+});
+
 describe("action callbacks fire", () => {
   test("clicking each action calls its handler", async () => {
     const handlers = noopHandlers();
