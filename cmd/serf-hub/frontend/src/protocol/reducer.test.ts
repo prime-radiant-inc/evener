@@ -1233,9 +1233,10 @@ test("serf/steering/injected images populate display-ready ItemImages via the sa
   // Steering images use the same appwire.InputItem shape as userMessage
   // images (internal/appprojector/appwire_projection.go's
   // projectUserInputImages: Type "image", MediaType, Data, Name — no
-  // Url/Path), so imagesToItemImages' url ?? path ?? name fallback resolves
-  // src to name here, exactly as it would for any other image-bearing item —
-  // and name itself still rides alongside src, not just consumed by it.
+  // Url/Path), so imagesToItemImages resolves the inline bytes to a data:
+  // URI src here, exactly as it would for any other image-bearing item
+  // (kata w53n; the old name fallback made a relative URL the browser
+  // 404s on) — and name still rides alongside src, not just consumed by it.
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -1261,7 +1262,7 @@ test("serf/steering/injected images populate display-ready ItemImages via the sa
   );
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(item.images).toEqual([{ src: "screenshot.png", name: "screenshot.png" }]);
+  expect(item.images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "screenshot.png" }]);
 });
 
 // kata byq2: the reducer used to resolve each image down to one bare string
@@ -1272,6 +1273,46 @@ test("serf/steering/injected images populate display-ready ItemImages via the sa
 // field wins the src fallback than the ones being asserted on — proving
 // they're preserved in their own right, not just visible because they
 // happened to become src.
+
+test("item/completed resolves a data-carrying user image to a data: URI src (kata w53n)", () => {
+  // A composer-attached image reaches the wire as inline bytes — Type
+  // "image", MediaType, Data, Name, no Url/Path (appwire_projection.go's
+  // projectUserInputImages). Falling through to name produced a relative
+  // src the browser 404s on, so ImageGallery's onError dropped the
+  // thumbnail and the transcript showed no image at all.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "[image 1]what is this?",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "tiny.png" }],
+        },
+      },
+    },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "tiny.png" }]);
+});
 
 test("item/completed preserves an input image's name alongside a src resolved from a different field", () => {
   let model = testHydrate();

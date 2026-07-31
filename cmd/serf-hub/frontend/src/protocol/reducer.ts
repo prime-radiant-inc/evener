@@ -43,7 +43,23 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // that fallback (kata byq2).
 function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | undefined {
   if (!images || images.length === 0) return undefined;
-  return images.map((img) => ({ src: img.url ?? img.path ?? img.name ?? "", name: img.name, path: img.path }));
+  // A composer-attached image reaches the wire as inline bytes (mediaType +
+  // data, no url/path — appwire_projection.go's projectUserInputImages), so
+  // when no server route is named, the bytes themselves are the src. Falling
+  // through to the bare name gave the browser a relative URL that 404s, and
+  // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
+  return images.map((img) => ({
+    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
+    name: img.name,
+    path: img.path,
+  }));
+}
+
+function inlineImageSrc(img: InputItem): string | undefined {
+  if (img.data === undefined || img.data === "" || img.mediaType === undefined || img.mediaType === "") {
+    return undefined;
+  }
+  return `data:${img.mediaType};base64,${img.data}`;
 }
 
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
