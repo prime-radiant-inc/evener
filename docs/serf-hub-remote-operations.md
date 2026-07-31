@@ -307,6 +307,117 @@ Hub-launched Codex app-server processes are stopped when Hub shuts down.
 Hub-spawned Serf daemons are independent `serf serve` processes; they continue
 until the session is shut down or the process exits.
 
+### Restarting an ad hoc Hub
+
+If Hub is running under a supervisor you configured, restart it that way and
+skip this section. This is for a Hub that is only running — started ad hoc
+(see [Ad hoc macOS background launch](#ad-hoc-macos-background-launch)) or
+inherited from someone else's session — with no launch command written down
+anywhere.
+
+First rule out a forgotten `launchctl` job (a `launchctl submit` job, unlike a
+bare backgrounded process, is still discoverable even with no plist on disk):
+
+```bash
+launchctl list | grep serf-hub
+```
+
+A hit gives you the full recipe directly, no further archaeology needed:
+
+```bash
+launchctl print "gui/$(id -u)/<label>"
+```
+
+Its `program`, `arguments`, `stdout path`, and `stderr path` fields are the
+exact launch command and log destination. Stop it with `launchctl remove
+<label>` and resubmit with the same values, edited as needed.
+
+If that comes up empty, it's a bare process. Recover it in four steps:
+
+**1. Find the pid.**
+
+```bash
+pgrep -x serf-hub
+```
+
+Hub takes an exclusive `flock` on `~/.serf/hub.lock` at startup — always under
+`$HOME`, regardless of a configured `hub_state_root` (see [Hub
+Config](#hub-config)) — so exactly one match is the healthy case; more than
+one is itself a finding worth stopping to investigate rather than restarting
+past. If nothing turns up but something is answering on the expected port,
+cross-check by port instead (substitute the port if `--addr` didn't use the
+default):
+
+```bash
+lsof -ti :9180 -sTCP:LISTEN
+```
+
+**2. Recover the exact flags.**
+
+```bash
+ps -p <pid> -ww -o pid,ppid,etime,command
+```
+
+The repeated `-ww` forces an untruncated command line regardless of terminal
+width. This recovers `-config`, `-addr`, and `-serf` — the three flags Hub
+parses (see [Required Binaries](#required-binaries)) — exactly as they were
+passed.
+
+It does **not** recover environment variables the process was started with (a
+`SERF_PROVIDERS_CONFIG` or `XDG_STATE_HOME` override, say). Don't reach for a
+Linux-style `ps eww`/`ps -E` to fill that gap: verified on macOS 26.5.1
+(Darwin 25.5.0) that neither flag surfaces another process's environment on
+this platform, even a same-user one. Check the recovered `hub.toml`'s
+`[serf_launch.env]` table instead (see [Hub Config](#hub-config)); an
+override that is in neither place is not recoverable by inspection.
+
+**3. Find where its log is going.**
+
+```bash
+lsof -p <pid> -a -d 1,2
+```
+
+If fd 1 (stdout) and fd 2 (stderr) both resolve to the same regular file,
+that's the log to preserve in step 4. If they resolve to a tty instead
+(nothing was redirected at launch), there is no persisted log to preserve.
+
+**4. Stop it, rebuild if needed, and relaunch preserving the log.**
+
+Plain `kill <pid>` (SIGTERM) triggers Hub's graceful shutdown — draining
+active connections and any Codex-launcher companion, for up to 5 seconds —
+before it releases the lock; with nothing actively streaming, the lock is in
+practice free again within milliseconds. `kill -9 <pid>` skips the drain and
+frees the lock the instant the process is torn down. Either way, a relaunch
+that lands in the gap fails with:
+
+```
+[hub] flock /path/to/.serf/hub.lock: resource temporarily unavailable (another serf-hub may already be running; a disposable hub needs its own HOME)
+```
+
+That's the death overlap, not corruption or a stuck lock; wait a moment and
+retry.
+
+If you're also deploying new code, rebuild now (`make build` or `make
+build-hub`). Rebuilding replaces the binary **file**; a Hub already running
+keeps executing the copy it already has open regardless, with nothing
+indicating the drift. `/api/health`'s `version` field only changes once a
+fresh process is actually running it — compare it against `git rev-parse
+--short HEAD` in the checkout you built from (plus a `-dirty` suffix if the
+tree had uncommitted changes at build time) to tell whether a given restart
+picked up the rebuild.
+
+Relaunch with the flags from step 2, appending (`>>`, not `>`) to the log
+from step 3:
+
+```bash
+nohup /path/to/serf-hub -addr 0.0.0.0:9180 -serf /path/to/serf \
+  >>/path/to/serf-hub.log 2>&1 &
+```
+
+Confirm: `pgrep -x serf-hub` shows a new pid, `/api/health`'s `started_at` is
+after the restart (and its `version` matches if you rebuilt), and the log
+file is still growing.
+
 ## Kata Tracker
 
 Kata is not part of Hub runtime configuration. This repo currently has no

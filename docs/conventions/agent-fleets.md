@@ -141,6 +141,22 @@ successfully after losing four measurements to tab theft). The
 `location.port` assertion above remains correct and is the only thing
 that has been catching wrong-hub measurements.
 
+**A click that reports success proves the dispatch, not the effect.**
+Coordinate-based MCP clicks can be silently swallowed: the tool reports
+"Clicked," no error, but the handler never runs and nothing crosses the
+wire. Measured live (kata xkp2): 2 of 4 coordinate clicks on the same
+enabled button were swallowed this way in one session, while
+`element.click()` and the other 2 coordinate clicks on the identical
+button worked normally. The kata that measured this was itself the
+artifact — an agent's first-hand "clicked Spawn, nothing happened" was
+filed as a product bug and cost a full investigation cycle (a correct,
+thorough trace ruling out every code path that could produce silence)
+before a live retest, with the wire captured, exposed the tool instead
+of the product. Assert the click's *effect* — a captured wire call, a
+DOM/state change, a toast — never the tool's report of the click.
+Treat effect-absence as "retry the click," not as evidence about the
+product.
+
 **State whether you actually verified in a browser.** An agent that
 cannot reliably hold a tab still reports its change as done, and
 browser-verified work looks identical to unverified work in the ledger
