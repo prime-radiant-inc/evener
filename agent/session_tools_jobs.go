@@ -689,6 +689,24 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	return tool.StateResult{Output: formatJobReadOutput(&result, header, maxChars), State: result}, nil
 }
 
+// jobStatusDeniedError keeps job_status denied for a watch-granted job while
+// naming the read the observer IS allowed. Status stays denied because
+// jobTranscriptRef projects a DELEGATE job's session transcript_ref, and
+// session refs are not access-controlled — answering here would silently turn a
+// one-job output grant into full read access to the child's conversation (spec
+// §5.1). A job with no grant keeps its original error unchanged, so the
+// improved text never becomes an oracle for "this job exists".
+func (s *Session) jobStatusDeniedError(jobID string, err error) error {
+	lookup := s.cfg.spawn.parentGrantedJobRead
+	if lookup == nil {
+		return err
+	}
+	if _, granted := lookup(s.id, jobID); !granted {
+		return err
+	}
+	return fmt.Errorf("job %q belongs to another session; read its output with read_transcript(transcript_ref=%q)", jobID, "job:"+jobID)
+}
+
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
@@ -699,7 +717,7 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	jm, rec, err := s.nestedOrLocalJobManager(jobID)
 	if err != nil {
-		return "", err
+		return "", s.jobStatusDeniedError(jobID, err)
 	}
 	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
 		rec = live

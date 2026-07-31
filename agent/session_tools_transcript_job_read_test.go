@@ -176,6 +176,44 @@ func TestReadTranscriptRendersDelegateJobAsDelegate(t *testing.T) {
 	}
 }
 
+// TestJobStatusOnGrantedJobPointsAtReadTranscript is Jesse's ruling 2: a
+// watch-granted job stays denied on job_status, because status projects a
+// delegate job's SESSION transcript_ref and session refs are not
+// access-controlled — a grant-aware job_status would silently turn a one-job
+// output grant into full read access to the child's conversation (spec
+// non-goal 4). The frame already carries status, reason, exit_code, and
+// output_bytes, so the only thing the denial owes the observer is the name of
+// the read it IS allowed.
+func TestJobStatusOnGrantedJobPointsAtReadTranscript(t *testing.T) {
+	t.Parallel()
+	fx := newGrantReadFixture(t)
+
+	_, err := jobStatusTool(fx.observer, map[string]any{"job_id": fx.watched}, 20000)
+	if err == nil {
+		t.Fatal("job_status on a granted job succeeded, want it to stay denied")
+	}
+	if !strings.Contains(err.Error(), `read_transcript(transcript_ref="job:`+fx.watched+`")`) {
+		t.Fatalf("denial = %q, want it to name the sanctioned read", err.Error())
+	}
+	// The denial must disclose nothing about the delegate's own conversation.
+	for _, leak := range []string{"local:", "proj:", "transcript_ref\":"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("denial = %q, leaks %q", err.Error(), leak)
+		}
+	}
+
+	// A session holding no grant keeps the original not-found byte for byte, so
+	// the improved text is never an oracle for "this job exists".
+	strangerJM := newWalkJobManager(t, "child_job_other")
+	t.Cleanup(func() { _ = strangerJM.store.Close() })
+	stranger := &Session{id: "child_job_other", jobManager: strangerJM, subagents: newSubagentManager(nil, 0)}
+	stranger.cfg.spawn.parentGrantedJobRead = fx.parent.lookupGrantedJobRead
+	_, strangerErr := jobStatusTool(stranger, map[string]any{"job_id": fx.watched}, 20000)
+	if strangerErr == nil || strangerErr.Error() != errJobNotFound(fx.watched).Error() {
+		t.Fatalf("stranger job_status = %v, want %q", strangerErr, errJobNotFound(fx.watched).Error())
+	}
+}
+
 // seedTerminalDelegateJob writes one completed delegate job — report bytes on
 // disk, structured result in the durable record — straight into a store,
 // without a provider or a live child runtime.
