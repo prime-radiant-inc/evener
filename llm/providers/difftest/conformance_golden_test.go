@@ -67,9 +67,13 @@ func (f sseFixture) raw() []byte {
 	var b strings.Builder
 	for _, fr := range f.frames {
 		if fr.event != "" {
-			b.WriteString("event: " + fr.event + "\n")
+			b.WriteString("event: ")
+			b.WriteString(fr.event)
+			b.WriteString("\n")
 		}
-		b.WriteString("data: " + fr.data + "\n\n")
+		b.WriteString("data: ")
+		b.WriteString(fr.data)
+		b.WriteString("\n\n")
 	}
 	return []byte(b.String())
 }
