@@ -35,7 +35,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
 - `superpowers-chrome:browsing` available, with your own Chrome profile claimed
   via `set_profile` before the first `use_browser` call (kata `8ecz`).
 - The CSP must include `blob:` in `img-src`
-  (`cmd/serf-hub/internal/httpsec/httpsec.go:38`) — the re-encode pipeline
+  (`cmd/serf-hub/internal/httpsec/httpsec.go:40`) — the re-encode pipeline
   loads a `URL.createObjectURL(blob)` reference into an `Image`
   (`encodePng.ts:45,71`), and without it every drop fails decode. See Sharp
   edges.
@@ -162,7 +162,7 @@ daemon running, poisoning the next run's `idle` poll.
   fires, the promise rejects, `ingestFiles` strips the marker back out and
   toasts `Couldn't attach <name> (image decode failed)`
   (`useAttachments.ts:179-189`) for a perfectly valid PNG. The directive lives
-  at `cmd/serf-hub/internal/httpsec/httpsec.go:38`.
+  at `cmd/serf-hub/internal/httpsec/httpsec.go:40`.
 - **The spawn pane and the session composer stage attachments differently.**
   Spawn renders a `Chip` per item (`Spawn.tsx:570-577`); the session composer
   renders an `AttachmentTile` with a thumbnail

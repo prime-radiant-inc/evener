@@ -471,6 +471,14 @@ gate — `/s/` serves the SPA shell for any id (`web_workspace.go:38-39`) —
 so the 404 you see is client-side, and `curl`ing `/s/<bare-id>` still
 returns 200 with the shell. Assert the rendered text, not the status code.
 
+**Decode `location.pathname` before comparing it.** `paneToURL` builds
+the path with `encodeURIComponent(ref)` (`shell/routing.ts:93-96`), which
+escapes the colon, so a path the app *pushed* reads
+`/s/local%3A<SID>` — while a path you navigated to yourself keeps the
+literal colon you typed. Both are the same route; only one of them
+matches a naive `=== "/s/local:<SID>"`. Compare
+`decodeURIComponent(location.pathname)`.
+
 ### The selector map
 
 Every hook below was read out of the current tree. Prefer these over

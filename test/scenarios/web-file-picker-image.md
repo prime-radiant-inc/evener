@@ -1,237 +1,298 @@
-# web-file-picker-image: attach an image via the spawn form's file picker
+# web-file-picker-image: attach an image through the file picker, on both doors
 
 **What this covers**: kata `2frx` (live e2e for image attachments) over
-the kata `65mm` web composer-attachments wiring on `/new`. The hidden
-`<input type=file data-file-picker>` accepts an image, the JS handler
-canvas-re-encodes to PNG, the chip renders below the textarea, and on
-submit the appwire `thread/start` (or the REST `/api/spawn` fallback)
-carries the bytes through to the agent as a `ContentImage` part on the
-first `USER_INPUT` message.
+the kata `65mm` composer-attachments wiring. A hidden
+`input[type="file"][accept="image/*"][multiple]` accepts an image, the
+handler re-encodes it to PNG through an offscreen canvas, the staged
+attachment renders, and on submit the appwire `thread/start` /
+`turn/start` carries the bytes through to the agent as a `ContentImage`
+part on the `USER_INPUT` message.
 
-Companion scenarios: `web-drag-drop-image.md`, `web-paste-image-from-clipboard.md`,
-`tui-paste-image-from-clipboard.md`, `tui-paste-image-path.md`.
+There are **two** file-picker doors and they share one implementation
+(`useAttachments`, `panes/session/composer/attachments/useAttachments.ts`):
+
+| Door | Trigger | Hidden input | Staged as |
+|---|---|---|---|
+| Spawn pane (`/new`) | `[data-testid="spawn-attach"]` (`panes/spawn/Spawn.tsx:543-551`) | `Spawn.tsx:568` | a `Chip` labelled with the filename (`Spawn.tsx:570-578`) |
+| Session composer | `[data-testid="composer-attach"]` (`panes/session/composer/Composer.tsx:807`) | `Composer.tsx:886` | an `AttachmentTile` thumbnail + `W×H` overlay (`AttachmentTile.tsx:52-96`) |
+
+Both legs are worth running: the spawn door is the one this card was
+written for, and the composer door is where the dimension readout
+actually lives.
+
+Companion scenarios: `web-drag-drop-image.md`,
+`web-paste-image-from-clipboard.md`, `tui-paste-image-from-clipboard.md`,
+`tui-paste-image-path.md`.
+
+**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+selector map is where these hooks are maintained. Everything this card
+used to name is gone with the vanilla frontend (`660376f78`):
+`form[data-spawn-form]`, `[data-attach-trigger]`, `[data-file-picker]`,
+`[data-composer-attachments]`, `[data-attachment]`,
+`input[name="model"]`, `textarea[name="prompt"]`, `.spawn-btn`,
+`window.SerfAppwire`. The spawn pane has no `<form>` element at all and
+no hidden `name=model` input — the model is set through the shared ARIA
+combobox, as a real gesture.
 
 ## Pre-state
 
-- `serf-hub` running on an isolated `$HOME` and free port
+- `serf-hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
   `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
-- Either `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5`
-  reachable through configured credentials. Both are known to accept
-  image inputs (verified live 2026-05-18).
-- `superpowers-chrome:browsing` skill (use_browser MCP) available.
+- A frontend built with `make build-web` **before** the hub binary. A
+  checkout that never ran it ships a one-line `frontend/dist/PLACEHOLDER`
+  and serves no app (rebuild matrix item 3 in the runbook).
+- A vision-capable model reachable through configured credentials
+  (`anthropic/claude-haiku-4-5-20251001` and `openai/gpt-5.5` both
+  accepted image inputs when this was recorded, 2026-05-18).
+- `superpowers-chrome:browsing` (`use_browser` MCP) available. Claim your
+  own Chrome profile with `set_profile <worktree-or-branch-name>` as the
+  first `use_browser` call of the run (kata `8ecz`).
 - `convert` (ImageMagick) or any tool that can produce a tiny PNG.
-- CSP fix from kata `1pgw` is in effect — `img-src` must include
-  `blob:`. Otherwise the chip renders as "Not an image: <name>"
-  (see Sharp edges).
 
 ## Steps
 
-1. **Build the fixture PNG.** A 64×64 solid-red PNG is sufficient — it
-   travels in any path and any model can describe it succinctly so the
+1. **Build the fixture PNG.** A 64×64 solid-red PNG is enough — it
+   travels in any path and any model can describe it succinctly, so the
    assistant response is easy to falsify:
    ```bash
    FIXDIR=$(mktemp -d -t serf-e2e-img-XXXX)
    convert -size 64x64 xc:red "$FIXDIR/red.png"
-   ls -la "$FIXDIR/red.png"   # ~166 bytes
    file "$FIXDIR/red.png"     # PNG image data, 64 x 64
    ```
 
-2. **Open the spawn form** in the browser via `use_browser`. The
-   `/auth?token=…&next=/new` redirect sets the cookie so subsequent
-   navigations don't 401:
+### Leg A — the spawn door
+
+2. **Open the spawn pane.** `/auth` sets the cookie then redirects, so
+   later navigations don't 401:
    ```
    action: navigate
    payload: $HUB/auth?token=<TOKEN>&next=/new
    ```
-   Confirm the form is mounted:
+   Confirm it mounted:
    ```
    action: eval
    payload: ({
-     form:      !!document.querySelector("form[data-spawn-form]"),
-     trigger:   !!document.querySelector("[data-attach-trigger]"),
-     picker:    !!document.querySelector("[data-file-picker]"),
-     attachCt:  !!document.querySelector("[data-composer-attachments]"),
+     port:    location.port,
+     card:    !!document.querySelector('[data-testid="spawn-prompt-card"]'),
+     attach:  !!document.querySelector('[data-testid="spawn-attach"]'),
+     picker:  !!document.querySelector('input[type="file"][accept="image/*"]'),
+     submit:  !!document.querySelector('[data-testid="spawn-submit"]'),
    })
-   // expect every field true
+   // expect every field true (and the port to be YOUR hub's)
    ```
 
-3. **Upload the fixture through the hidden file input.** `use_browser`
-   exposes a `file_upload` action that sets `.files` on a selector and
-   dispatches a `change` event — exactly what the composer-attachments
-   helper listens for (`attachComposerFilePickerHandlers`, kata 65mm):
+3. **Upload the fixture through the hidden input.** Target the input
+   itself, never the paperclip — clicking `spawn-attach` calls
+   `fileInputRef.current?.click()` (`Spawn.tsx:550`), which opens a
+   native OS dialog nothing can drive:
    ```
    action: file_upload
-   selector: [data-file-picker]
+   selector: input[type="file"][accept="image/*"]
    payload: {"files": ["/tmp/serf-e2e-img-…/red.png"]}
    ```
-   The async PNG re-encode runs through a canvas — give it a moment:
+   The PNG re-encode is asynchronous (canvas round-trip) — give it a
+   moment, then read the staged state:
    ```
    action: eval
-   payload: new Promise(r => setTimeout(r, 200)).then(() => ({
-     chipCount: document.querySelectorAll("[data-composer-attachments] [data-attachment]").length,
-     chipLabel: (document.querySelector("[data-composer-attachments] [data-attachment]")
-                  ?.textContent || "").trim(),
+   payload: new Promise(r => setTimeout(r, 300)).then(() => ({
+     removeButtons: [...document.querySelectorAll('button[aria-label^="Remove "]')]
+                      .map(b => b.getAttribute("aria-label")),
+     chipText: [...document.querySelectorAll('span')]
+                 .map(s => s.textContent.trim())
+                 .filter(t => t === "red.png" || t === "red.png (processing…)"),
+     promptText: document.querySelector('[aria-label="Prompt"]')?.value,
    }))
-   // chipCount: 1
-   // chipLabel: contains "📎" and "(64×64)"
    ```
 
-4. **Set the model and prompt, then submit.** The site uses chip-style
-   model selection; the hidden `name=model` input is the authoritative
-   field. Set it directly to bypass the picker UI:
-   ```
-   action: eval
-   payload: (() => {
-     const form = document.querySelector("form[data-spawn-form]");
-     form.querySelector('input[name="model"]').value = "anthropic/claude-haiku-4-5-20251001";
-     form.querySelector('[data-chip-value-model]').textContent = "claude-haiku-4-5-20251001";
-     form.querySelector('textarea[name="prompt"]').value = "describe this image in one sentence";
-     return "ready";
-   })()
-   ```
-   Click the spawn button. The submit handler builds `attachments`
-   from `form.__composerPasteState.items` and ships them through
-   `SerfAppwire.startThread` (or the REST fallback when appwire is
-   absent — both routes are exercised by the same UI gesture):
+4. **Set the model and prompt, then submit.** The model control is the
+   shared combobox: click its trigger (the `<button>` whose accessible
+   name ends `— change model`, `widgets/modelCatalog/index.tsx:380-398`),
+   type the exact qualified id into the panel's
+   `input[role="combobox"][aria-label="Model"]`, and press Enter —
+   typing sets the active row to the first match, and Enter picks it
+   (`index.tsx:231-236,204-218`). Then type the prompt into
+   `[aria-label="Prompt"]` (append after the `[image 1]` marker; don't
+   overwrite it — see Sharp edges) and click:
    ```
    action: click
-   selector: .spawn-btn
+   selector: [data-testid="spawn-submit"]
    ```
 
-5. **Pull the new session id from the post-spawn URL** the browser
-   landed on:
+5. **Capture the new session ref** from the URL the browser landed on:
    ```
    action: eval
-   payload: location.pathname  // "/s/<SID>"
+   payload: decodeURIComponent(location.pathname)   // "/s/local:<SID>"
    ```
-   Capture `SID` for the polling step. (Use the bash tool — the
-   browser tab is no longer needed for verification.)
+   `paneToURL` percent-escapes the ref (`shell/routing.ts:93-96`), so
+   the raw `location.pathname` reads `/s/local%3A<SID>`; decode before
+   parsing. Take `SID` to the shell for the rest.
 
-6. **Poll the session to idle and read the transcript**:
+### Leg B — the composer door (same machinery, richer staging UI)
+
+6. Staying on `/s/local:<SID>`, repeat the upload against the composer's
+   own hidden input, then read the tile:
+   ```
+   action: file_upload
+   selector: input[type="file"][accept="image/*"]
+   payload: {"files": ["/tmp/serf-e2e-img-…/red.png"]}
+   ```
+   ```
+   action: eval
+   payload: new Promise(r => setTimeout(r, 300)).then(() => ({
+     view:       document.querySelector('button[aria-label^="View "]')?.getAttribute("aria-label"),
+     remove:     document.querySelector('button[aria-label^="Remove "]')?.getAttribute("aria-label"),
+     thumbSrc:   (document.querySelector('button[aria-label^="View "] img')?.src || "").slice(0, 30),
+     dimensions: [...document.querySelectorAll('div')]
+                   .map(d => d.textContent.trim()).filter(t => /^\d+×\d+$/.test(t)),
+     message:    document.querySelector('[aria-label="Message"]')?.value,
+   }))
+   ```
+   Then type a describe-the-image prompt and click
+   `[data-testid="composer-submit"]`.
+
+### Verification (browser-free)
+
+7. Poll to idle and read the transcript:
    ```bash
-   TOKEN=$(cat "$HOME/.serf/auth-token")
    for i in $(seq 1 60); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" \
-       "$HUB/api/sessions/local:$SID" \
-       | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
+       "$HUB/api/sessions/local:$SID" | jq -r '.state // ""')
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
-   python3 - <<EOF
-   import json
-   for i, line in enumerate(open("$TFILE")):
-       j = json.loads(line)
-       turn = j.get("turn", {})
-       kind = turn.get("kind", "")
-       for c in turn.get("message", {}).get("content", []):
-           if c.get("kind") == "image":
-               print(f"[{i}] IMAGE part on {kind}: media={c['image'].get('media_type')} bytes={len(c['image'].get('data', ''))}")
-           elif c.get("kind") == "text" and kind in ("USER_INPUT",):
-               print(f"[{i}] {kind} text: {c.get('text','')[:120]!r}")
-           elif c.get("kind") == "tool_call" and c.get("tool_call", {}).get("name") == "communicate":
-               print(f"[{i}] communicate: {c['tool_call']['arguments'].get('message','')[:200]!r}")
-   EOF
+   go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state_dir" \
+     --format outline --range last:30
+   TFILE=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
+   jq -c 'select(.turn.kind=="USER_INPUT")
+          | {kind: .turn.kind,
+             parts: [.turn.message.content[]
+                     | {kind, media: .image.media_type, bytes: (.image.data|length),
+                        text: (.text // "" | .[0:60])}]}' "$TFILE"
    ```
+   Field shapes: `schema.Turn` (`agent/schema/turn.go:123-126`),
+   `llm.ContentPart` with `kind` selecting the payload
+   (`llm/types.go:122-135`), `llm.ImageData.media_type`/`data`
+   (`llm/types.go:137-143`), `TurnUserInput = "USER_INPUT"`
+   (`agent/schema/turn.go:16`), `ContentImage = "image"`
+   (`llm/types.go:35`). This is a byte-level structural read, which is
+   what raw JSONL is for; use the `serf-doctor` outline above for
+   comprehension.
 
 ## Expected
 
-- **Step 3 (chip render)**: `[data-composer-attachments]` contains
-  exactly one `[data-attachment]` chip. Its label includes the
-  `📎` glyph and the dimensions `(64×64)`. Falsification: chip count is
-  0 (the helper isn't wired — kata 65mm regression) or the dimensions
-  show `(0×0)` (the canvas re-encode dropped the image data).
-- **Step 4 (submit)**: the browser navigates from `/new` to
-  `/s/<SID>`; `location.pathname` matches `^/s/[0-9A-Z]{26}$`. The hub
-  returns 200 from `/api/spawn`. Falsification: stays on `/new`, or
-  the spawn-form `[data-spawn-error]` shows a banner — most commonly
-  `text or images required` (means the items list was empty) or `413
-  Request Entity Too Large` (a per-image > 12 MB or total > 40 MB cap
-  was hit; not possible with a 64×64 PNG).
-- **Step 6 (transcript)**: there is at least one `USER_INPUT` row in
-  the transcript whose `message.content` array contains both a
-  `kind=text` part `"describe this image in one sentence"` and a
-  `kind=image` part with `image.media_type=image/png` and a non-empty
-  `image.data` blob. A later `ASSISTANT` row contains a `communicate`
-  tool call whose `arguments.message` references the image content
-  (the words `red`, `square`, or a synonymous colour/shape description
-  — both gpt-5.5 and claude-haiku-4-5 produced "red square" /
-  "bright red square" during recording). Falsification: no `image`
-  part on `USER_INPUT` (the items list never reached the daemon),
-  or the assistant text talks about a different colour / shape /
-  refuses (`I cannot see images`), or the model erroneously calls
-  `read_file` for a path called "image" — that's a known quirk of
-  claude-haiku-4-5 (see Sharp edges) and is not a failure as long as
-  a later turn carries the right describe-the-image message.
+- **Step 3 (spawn staging)**: exactly one `Remove red.png` button
+  (`Chip`'s remove label, `widgets/chip/index.tsx:38-40,49`), the chip
+  text settles from `red.png (processing…)` to `red.png`
+  (`Spawn.tsx:574`), and `promptText` contains the marker `[image 1]`
+  spliced in at the cursor (`markerText`,
+  `attachments/textareaMarkers.ts:19-21`). Falsify: no remove button
+  (the picker isn't wired — the kata 65mm regression), or the chip is
+  still `(processing…)` after a couple of seconds (the canvas re-encode
+  never settled — check the CSP, first Sharp edge).
+- **Step 4/5 (submit)**: the pane navigates away from `/new`;
+  `decodeURIComponent(location.pathname)` matches `^/s/local:.{22}$`
+  (`SID` is a 22-character UUIDv7 base62 payload). Falsify: it stays on
+  `/new` with an error toast in
+  `section[aria-live="polite"][aria-label="Notifications"]` — most
+  usefully `Image attachment is still processing.` (`Spawn.tsx:434`,
+  the `hasPending` submit gate) or a `Spawn failed: …` line.
+- **Step 6 (composer staging)**: `view` is `View red.png`, `remove` is
+  `Remove red.png`, `thumbSrc` starts `data:image/png;base64,`
+  (`AttachmentTile.tsx:59`), and `dimensions` contains `64×64`
+  (`AttachmentTile.tsx:80-84`). Falsify: dimensions absent while the
+  thumbnail is present (the decode produced no width/height), or a
+  `role="img"` placeholder labelled `red.png (still processing)` that
+  never resolves (`AttachmentTile.tsx:67`).
+- **Step 7 (the actual contract)**: at least one `USER_INPUT` turn whose
+  `message.content` holds both a `kind=text` part carrying the prompt
+  and a `kind=image` part with `media_type: "image/png"` and a
+  non-empty `data` blob — one per leg, so two after both. A later
+  assistant turn describes the image (the words `red`, `square`, or a
+  synonymous colour/shape; both gpt-5.5 and claude-haiku-4-5 produced
+  "red square" / "bright red square" during recording). Falsify: no
+  image part on `USER_INPUT` (the staged items never reached the
+  daemon), or the assistant describes a different colour/shape or
+  refuses (`I cannot see images`).
 
 ## Cleanup
 
 ```bash
-TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
-  "$HUB/s/$SID/shutdown" >/dev/null
+  "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 rm -rf "$FIXDIR"
-# Optional, for hermeticity across runs:
-# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
+
+Kill the hub by the PID you captured and remove your `$run` dir. Note
+the namespace: `/api/sessions/local:$SID/shutdown`. The old
+`$HUB/s/$SID/shutdown` form-POST shim was deleted with the vanilla
+frontend and now 404s silently, leaving the daemon running — see "The
+REST surface, and what is no longer on it" in the runbook.
 
 ## Sharp edges
 
-- **CSP `blob:` requirement** (kata `1pgw`). The composer-attachments
-  helper (`cmd/serf-hub/assets/composer-attachments.js:reencodeToPng`)
-  calls `URL.createObjectURL(blob)` and loads the result into an
-  `Image` element to derive width/height before re-encoding to PNG.
-  With `img-src 'self' data:` (no `blob:`) the `Image.onerror` fires,
-  the helper rejects every image as decode-failed, and the banner
-  reads `Not an image: <name>`. Kata `1pgw` adds `blob:` to
-  `cmd/serf-hub/security.go:CSPMiddleware`. The jstest harness stubs
-  `window.Image` so the failure is invisible to unit tests; only
-  live browser verification catches it.
-- **`file_upload` (CDP) vs synthetic DataTransfer.** The
-  `use_browser` `file_upload` action uses Chrome DevTools Protocol
-  `Input.setFileInputFiles` which Chromium honours for headless
-  driving. An eval-only `element.files = dt.files` works in
-  Chromium too — both paths exercise the same change-event handler
-  the helper wires in. Real Firefox is stricter and rejects the
-  direct assignment; if Firefox coverage is needed, CDP is the
-  only portable path.
-- **The PNG re-encode is async.** `attachComposerFilePickerHandlers`
-  awaits a canvas `toBlob` round-trip, then pushes to
-  `pendingState.items`. A `setTimeout(0)` after the upload click is
-  usually enough; the recording used 200 ms.
-- **The `name=model` hidden input is what the form actually sends.**
-  Setting only the visible chip text (`data-chip-value-model`)
-  without updating the input leaves an empty `model` field — the
-  spawn would 400 with `model required`.
-- **Both submit branches carry the bytes.** When `window.SerfAppwire`
-  is present (the normal case) the request goes through
-  `SerfAppwire.startThread` which base64-encodes the ArrayBuffer at
-  the wire boundary (`appwire.js:encodeAttachmentData`). When it's
-  not, the REST fallback in `spawn.js:611` base64-encodes via
-  `spawnEncodeAttachmentData` and POSTs to `/api/spawn` with an
-  `items: []` field of the same shape. Both paths land at
-  `appwire.InputItem.Data` server-side.
-- **claude-haiku-4-5-20251001 sometimes tries `read_file` on the
-  string "image" before describing it.** This is an artefact of the
-  Anthropic tool-use loop seeing the image in the message and the
-  model preferring to "look at the file" rather than trust the
-  inline content. The `read_file` call fails (no file named
-  "image"), then the model falls back to describing the inline
-  image. The describe message still appears in the same turn via
-  `communicate`. gpt-5.5 skips this hop.
-- **OpenAI ChatGPT-OAuth tokens may reject image inputs depending on
-  the OAuth scope.** If `gpt-5.5` returns `unsupported content type`
-  or refuses to describe the image, fall back to
-  `anthropic/claude-haiku-4-5-20251001`. Both worked during the
-  scenario recording (2026-05-18).
-- **Per-image size cap is 12 MB; per-request cap is 40 MB.** A 64×64
-  PNG is ~200 bytes; nowhere near. If a scenario gets refactored to
-  a larger fixture, mind the limits in `web.go:sendMax*Bytes` and
-  the matching `/api/spawn` handler.
-- **The `data-composer-attachments` container is shared between the
-  workspace composer and the spawn form** — both wire it via
-  `composer-attachments.js`. If the chip is rendering on the wrong
-  pane after a navigate, ensure the page is actually `/new` (not a
-  back-button restore of a stale session view).
+- **CSP `blob:` requirement** (kata `1pgw`). `reencodeToPng`
+  (`panes/session/composer/attachments/encodePng.ts`) calls
+  `URL.createObjectURL(blob)` and loads the result into an `Image`
+  element to derive width/height before re-encoding to PNG. Without
+  `blob:` in `img-src`, `Image.onerror` fires and every attachment is
+  rejected. The directive lives at
+  `cmd/serf-hub/internal/httpsec/httpsec.go:40` (`img-src 'self' data:
+  blob: https:`) — relocated from the deleted `security.go`, and its own
+  comment records the kata. **The user-visible symptom changed with the
+  rewrite**: the failure is no longer an inline "Not an image: <name>"
+  banner (that string is stale prose in the Go comment) but a toast
+  reading `Couldn't attach red.png (image decode failed)` —
+  `useAttachments`' decode `.catch` composes `<name> (image decode
+  failed)` and the caller prefixes `Couldn't attach `
+  (`useAttachments.ts` ingestFiles' catch + rejection join). Grep the
+  toast region, not for the old banner.
+- **`file_upload` targets the input, not the trigger.** `use_browser`'s
+  `file_upload` drives CDP `Input.setFileInputFiles`, which sets `.files`
+  on the node and dispatches `change` — exactly what
+  `handleFilePicker`/`handleFilePickerChange` listen for. Clicking the
+  paperclip instead opens a native dialog no driver can fill. There is
+  exactly one `input[type="file"][accept="image/*"]` per page, so the
+  bare attribute selector is unambiguous on both `/new` and a session
+  page.
+- **Don't overwrite the textarea; append to it.** `ingestFiles` splices
+  an `[image N]` marker into the composer text synchronously at the
+  cursor, before any async work, and the store treats that text as
+  authoritative (`useAttachments.ts` ingestFiles). Blowing the textarea
+  away with a wholesale value-set strips the marker. Also note the
+  textarea is React-controlled: assigning `el.value` directly is
+  silently reverted by React's controlled-input restoration the moment
+  the file input's own `change` event fires — the hook's `TextEditor`
+  seam exists specifically because of that, and it is why the driver
+  should type rather than assign.
+- **Limits are 8 images and 8 MiB per file, enforced on both sides.**
+  Client: `rejectionReason`
+  (`panes/session/composer/attachments/limits.ts`, `MAX_ATTACHMENTS = 8`,
+  `MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024`), which also rejects any
+  non-image outright and surfaces `Couldn't attach <name> …`. Server:
+  `validateAppWireInputItems`
+  (`cmd/serf-hub/appwire_validation.go:10-28`) against
+  `hubcore.SendMaxImageItems = 8` / `SendMaxImageBytes = 8 MiB` /
+  `SendMaxRequestBytes = 96 MiB`
+  (`cmd/serf-hub/internal/hubcore/types.go:12-14`). The old card's
+  "12 MB per image / 40 MB per request" and its `web.go:sendMax*Bytes`
+  citation were both wrong; there is no such symbol. Note the status
+  codes differ by route: the browser goes over appwire, where an
+  oversize payload comes back as a wire `InvalidParams` (`-32602`)
+  toast (`app_threadlifecycle.go:37-39`), while `POST /api/spawn` returns
+  a plain-text **413** (`web_spawn.go:74-77`). A 64×64 PNG is nowhere
+  near either.
+- **Staging looks different on the two doors, deliberately.** The spawn
+  pane renders a text `Chip` (filename only, no dimensions); the
+  composer renders an `AttachmentTile` (thumbnail, `W×H` overlay,
+  lightbox on click). A dimensions assertion belongs on leg B only.
+- **claude-haiku-4-5-20251001 sometimes tries `read_file` on the string
+  "image" before describing it** — an artefact of the tool-use loop
+  preferring to "look at the file" over trusting inline content. The
+  call fails (no such file), then the model describes the inline image
+  in the same turn. gpt-5.5 skips this hop. Not a failure as long as a
+  later message carries the right description.
+- **OpenAI ChatGPT-OAuth tokens may reject image inputs depending on the
+  OAuth scope.** If `gpt-5.5` returns `unsupported content type` or
+  refuses, fall back to `anthropic/claude-haiku-4-5-20251001`.

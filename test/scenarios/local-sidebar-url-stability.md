@@ -38,8 +38,8 @@ is no `.sb-row` class and no `data-ref` attribute.
      el.getAttribute("data-session-ref"),
    )
    ```
-2. Click that row's title and watch `location.pathname` and the pane that
-   opens.
+2. Click that row's title and watch `decodeURIComponent(location.pathname)`
+   and the pane that opens.
 3. Click the *same* row again and count how many session panes are open.
 4. Deep-link check: navigate directly to `/s/<bare-session-id>` — the form
    this card used to require.
@@ -49,12 +49,15 @@ is no `.sb-row` class and no `data-ref` attribute.
 - **Step 1**: every local row's `data-session-ref` is `local:<session-id>`,
   colon-qualified. Falsify: a bare id in the attribute (the rail would be
   minting refs the router cannot resolve).
-- **Step 2**: `location.pathname` is exactly `/s/local:<session-id>` — the one
-  form `paneToURL` emits for a session pane
-  (`shell/routing.ts:96-99`, `/s/${encodeURIComponent(ref)}`) — and the pane
-  that opens is that same session. Falsify: the path is a bare
-  `/s/<session-id>`, or it is some other qualified form, or the opened
-  workspace is a different session than the row named.
+- **Step 2**: `decodeURIComponent(location.pathname)` is exactly
+  `/s/local:<session-id>` — the one form `paneToURL` emits for a session pane
+  (`shell/routing.ts:93-96`) — and the pane that opens is that same session.
+  **Decode first**: `paneToURL` runs the ref through `encodeURIComponent`,
+  which escapes the colon, so the raw pathname the rail pushes reads
+  `/s/local%3A<session-id>`. Comparing the raw value against a literal colon
+  fails on correct code. Falsify: the path is a bare `/s/<session-id>`, or it
+  is some other qualified form, or the opened workspace is a different
+  session than the row named.
 - **Step 3**: still exactly one pane for that session. Falsify: a second pane
   for the same session opens beside the first — the precise regression
   `8cea30ca6` closed, which is what "URL stability" is protecting.
