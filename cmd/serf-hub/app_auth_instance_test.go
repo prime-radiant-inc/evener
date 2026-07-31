@@ -204,7 +204,7 @@ type = "openai"
 	ctrl := newTestAuthController(t, dir, stateDir, providersToml)
 
 	// No credentials yet: openai-type reports "signed-out" when no OAuth/file/env.
-	got := ctrl.instanceStatus("work", "openai")
+	got := ctrl.instanceStatus("work", "openai", "openai")
 	if got.ActiveSource != authopenai.AuthSourceSignedOut {
 		t.Errorf("ActiveSource = %q, want signed-out (no creds)", got.ActiveSource)
 	}
@@ -213,7 +213,7 @@ type = "openai"
 	if err := ctrl.creds.Set("work", "sk-w"); err != nil {
 		t.Fatalf("Set(work): %v", err)
 	}
-	got = ctrl.instanceStatus("work", "openai")
+	got = ctrl.instanceStatus("work", "openai", "openai")
 	if got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
 		t.Errorf("ActiveSource = %q HasStoredFile = %v, want file/true", got.ActiveSource, got.HasStoredFile)
 	}
@@ -234,7 +234,7 @@ type = "anthropic"
 		t.Fatalf("Set: %v", err)
 	}
 
-	got := ctrl.instanceStatus("work-ant", "anthropic")
+	got := ctrl.instanceStatus("work-ant", "anthropic", "anthropic")
 	if got.ActiveSource != string(credentials.SourceFile) {
 		t.Errorf("ActiveSource = %q, want file", got.ActiveSource)
 	}

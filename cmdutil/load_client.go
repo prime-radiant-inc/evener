@@ -88,18 +88,14 @@ func LoadProviderConfigAt(path string, opts ...llm.EnvOption) (providercfg.Confi
 			// supplementary and store injection still applies.
 			continue
 		}
-		typ := string(inst.Type)
-		if providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)) == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
-			// A custom chat-completions gateway is NOT the type's own
-			// endpoint: falling back to the type-level env key
-			// (OPENAI_API_KEY) would send that secret to an arbitrary
-			// base_url — the injection-side twin of the live-probe guard.
-			// File entries and name-scoped env keys still resolve; an
-			// instance WITHOUT base_url targets api.openai.com, where the
-			// type key is exactly right.
-			typ = ""
-		}
-		if key, _ := store.ResolveKey(inst.Name, typ); key != "" {
+		// The credential tag, not the declared type: the key that authenticates
+		// this instance belongs to the endpoint its adapter will contact, and
+		// providercfg.CredentialTag is the one derivation the hub's preflight
+		// and credentials pane ask the same question of. A custom
+		// chat-completions gateway resolves no type-level key at all (that
+		// secret belongs to another host); an instance without base_url targets
+		// api.openai.com, where the openai row's key is exactly right.
+		if key, _ := store.ResolveKey(inst.Name, providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL)); key != "" {
 			inst.APIKey = key
 		}
 	}

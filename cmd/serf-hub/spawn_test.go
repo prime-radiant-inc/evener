@@ -1290,6 +1290,43 @@ func TestValidateProviderCredentials_ConfigInstanceOAuthMissing(t *testing.T) {
 	}
 }
 
+// TestValidateProviderCredentials_ConfigInstanceOAuthNotForChatCompletions
+// verifies that a stored OAuth record does not open the preflight for an
+// instance whose adapter cannot send one. An openai-type instance routed
+// through chat-completions is served by the openaicompat adapter, which
+// authenticates with a bearer API key and imports nothing from auth/openai —
+// so a record at auth/<name>.json is a credential the launch can never use, and
+// letting it past the gate only moves the failure to a 401. Kata j529.
+func TestValidateProviderCredentials_ConfigInstanceOAuthNotForChatCompletions(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	xdgStateHome := t.TempDir()
+	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
+	if err := authopenai.SaveAuth(stateDir, "local", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-access-token",
+		RefreshToken: "oauth-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "local@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
+		Default: "local",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
+		},
+	})
+	err := validateProviderCredentials("local", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfgPath)
+	assertHubLaunchError(t, err)
+}
+
 // TestValidateProviderCredentials_ConfigInstanceInlineAPIKey verifies that
 // validateProviderCredentials accepts an instance with an inline api_key.
 // WriteFile never persists api_key (security), so this test writes the TOML

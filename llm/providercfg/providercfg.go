@@ -4,6 +4,8 @@
 // resolve agent profiles. It imports no other serf package.
 package providercfg
 
+import "strings"
+
 type Type string
 type APIStyle string
 
@@ -151,6 +153,36 @@ func BehaviorTag(typ, style string) string {
 		return "openai-compatible"
 	}
 	return typ
+}
+
+// CredentialTag names the registry row whose API key authenticates the endpoint
+// this instance will actually contact. Every behavior question — which adapter,
+// which dialect, whether OAuth exists — keys on BehaviorTag; this one does not,
+// because its answer is a property of the host the adapter sends to rather than
+// of the protocol it speaks there. It is the single derivation the credential
+// lookup, the launch preflight and the credentials pane all ask, so a client the
+// launch path would authenticate is never one the hub refuses.
+//
+// It differs from BehaviorTag only for "openai-compatible", the one tag that
+// labels a protocol rather than a provider — the only registry row with no
+// DefaultBaseURL and the only one marked RequiresBaseURL:
+//
+//   - With no base_url the adapter targets api.openai.com, so the openai row's
+//     key is exactly the one that signs its requests.
+//   - With a base_url the instance is an arbitrary gateway that no type-level
+//     key belongs to: OPENAI_COMPATIBLE_API_KEY authenticates the host
+//     OPENAI_COMPATIBLE_BASE_URL names, which this instance is not. The empty
+//     tag is how credentials.Store.ResolveKey is told an instance must not
+//     inherit a key it did not ask for; the name-scoped layer still resolves.
+func CredentialTag(typ, style, baseURL string) string {
+	tag := BehaviorTag(typ, style)
+	if tag != "openai-compatible" {
+		return tag
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		return "openai"
+	}
+	return ""
 }
 
 // NameToTag maps each instance's name to its behavior tag.

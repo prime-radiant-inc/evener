@@ -62,16 +62,21 @@ func TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves(t *testing
 			},
 		},
 		{
-			// The third site kata jd5s left keyed on the raw type. An openai
-			// instance routed through chat-completions resolves
-			// OPENAI_COMPATIBLE_API_KEY; with no base_url in the file it is
-			// still credential-required (the adapter takes the URL from the
-			// environment), so this reaches the helper where the openai-typed
-			// key would send it to the OAuth status path instead.
-			name: "openai-compatible key for an openai instance on chat-completions",
+			// The third site kata jd5s left keyed on the raw type. This row
+			// used to seed OPENAI_COMPATIBLE_API_KEY on the premise that an
+			// instance with no base_url "takes the URL from the environment";
+			// it does not. newOpenAIChatCompletionsInstance reads inst.BaseURL
+			// and a compile-time constant, so with no base_url the adapter
+			// targets api.openai.com and OPENAI_API_KEY is the key that signs
+			// its requests — OPENAI_COMPATIBLE_API_KEY authenticates whatever
+			// host OPENAI_COMPATIBLE_BASE_URL names, which this instance never
+			// contacts (kata z1gm). The row still reaches the helper where the
+			// openai-typed key would send it to the OAuth status path instead,
+			// which is what it was written to catch.
+			name: "openai key for an openai instance on chat-completions with no base_url",
 			inst: providercfg.InstanceConfig{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
 			seed: func(t *testing.T, _ *hubAuthController) {
-				t.Setenv(envvars.OpenAICompatibleAPIKey.Name, "sk-compat-probe")
+				t.Setenv(envvars.OpenAIAPIKey.Name, "sk-openai-probe")
 			},
 		},
 		{
@@ -91,7 +96,7 @@ func TestAuthTestCredentials_ProbesTheCredentialTheLaunchPathResolves(t *testing
 			})
 			tt.seed(t, c)
 
-			tag := providercfg.BehaviorTag(string(tt.inst.Type), string(tt.inst.APIStyle))
+			tag := providercfg.CredentialTag(string(tt.inst.Type), string(tt.inst.APIStyle), tt.inst.BaseURL)
 			key, src := c.creds.ResolveKey(tt.inst.Name, tag)
 			if key == "" {
 				t.Fatalf("ResolveKey(%q, %q) resolved nothing, so this case has no credential to be wrong about", tt.inst.Name, tag)
