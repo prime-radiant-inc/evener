@@ -744,10 +744,11 @@ func TestReloadMidStreamResumesTheSameStream(t *testing.T) {
 	// Only the LIVE turn is under test here; the seeded transcript contributes
 	// an older assistant turn of its own, which the whole-snapshot comparison
 	// below covers.
-	var wantText string
+	var wantParts []string
 	for _, deltas := range [][]string{beforeRead, atTheGate, afterRead} {
-		wantText += strings.Join(deltas, "")
+		wantParts = append(wantParts, deltas...)
 	}
+	wantText := strings.Join(wantParts, "")
 	reloadedTurns := reloaded.Snapshot()
 	liveTurn := reloadedTurns[len(reloadedTurns)-1]
 	gotText := ""
