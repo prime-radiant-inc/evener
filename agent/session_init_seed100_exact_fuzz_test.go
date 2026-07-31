@@ -59,7 +59,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			{"mcp-new-close", TestIntg_NewSession_LateErrorClosesMCPManager},
 			{"mcp-restore-close", TestIntg_RestoreSession_LateErrorClosesMCPManager},
 			{"pending-nil", TestW3Init_PendingSessionStart_NilReceiver},
-			{"pending-context", TestW3Init_PendingSessionStart_NilContext},
+			{"pending-no-hook", TestW3Init_PendingSessionStart_NoPendingHook},
 			{"pending-cancel", TestW3Init_PendingSessionStart_CtxCancelledInLoop},
 			{"pending-broadcast", TestW3Init_PendingSessionStart_AfterFuncBroadcast},
 			{"resume-hooks-deferred", TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput},

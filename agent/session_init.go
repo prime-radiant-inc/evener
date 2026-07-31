@@ -1302,9 +1302,6 @@ func (s *Session) pendingSessionStartForUserTurn(ctx context.Context) (hooks.Run
 	if s == nil {
 		return hooks.RunResult{}, "", false, false
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var stopAfterFunc func() bool

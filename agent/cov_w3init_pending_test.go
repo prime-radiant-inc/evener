@@ -17,14 +17,12 @@ func TestW3Init_PendingSessionStart_NilReceiver(t *testing.T) {
 	}
 }
 
-// TestW3Init_PendingSessionStart_NilContext covers the nil-context defaulting arm.
-// With no pending hook in flight the call returns immediately after adopting a
-// background context.
-func TestW3Init_PendingSessionStart_NilContext(t *testing.T) {
+// TestW3Init_PendingSessionStart_NoPendingHook covers the early return: with no
+// hook in flight the call reports neither a result nor a kind to run.
+func TestW3Init_PendingSessionStart_NoPendingHook(t *testing.T) {
 	t.Parallel()
 	s := newSession(t)
-	//nolint:staticcheck // deliberately passing a nil context to exercise the guard.
-	_, _, gotResult, gotKind := s.pendingSessionStartForUserTurn(nil)
+	_, _, gotResult, gotKind := s.pendingSessionStartForUserTurn(context.Background())
 	if gotResult || gotKind {
 		t.Fatalf("no-pending call returned result=%v kind=%v, want both false", gotResult, gotKind)
 	}

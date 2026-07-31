@@ -147,7 +147,7 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"restore-init", TestW3Init_Restore_InitSessionStateError},
 		{"restore-strategy", TestW3Init_Restore_SelectStrategyError},
 		{"pending-nil-receiver", TestW3Init_PendingSessionStart_NilReceiver},
-		{"pending-nil-context", TestW3Init_PendingSessionStart_NilContext},
+		{"pending-no-hook", TestW3Init_PendingSessionStart_NoPendingHook},
 		{"pending-cancel", TestW3Init_PendingSessionStart_CtxCancelledInLoop},
 		{"pending-broadcast", TestW3Init_PendingSessionStart_AfterFuncBroadcast},
 		{"child-error", TestW3Init_PrepareSubagentRun_ChildSessionError},
