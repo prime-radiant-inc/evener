@@ -1410,6 +1410,8 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIReasoningEffort(w, r, routeID)
 	case "rename":
 		s.handleAPIRename(w, r, routeID)
+	case "delete":
+		s.handleAPISessionDelete(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
 		s.handleSessionAction(w, r, routeID, sub)
 	default:
