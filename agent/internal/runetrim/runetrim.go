@@ -14,7 +14,9 @@ import "unicode/utf8"
 
 // TrimTrailingPartial drops an incomplete UTF-8 sequence left dangling at the
 // END of a byte slice cut at an arbitrary offset, so slicing valid UTF-8 output
-// never yields an invalid tail fragment.
+// never yields an invalid tail fragment. The final sequence goes whenever it
+// does not decode as one whole rune — an orphaned prefix like 0xF0 0x9F, and
+// equally a byte that could never open a rune at all.
 func TrimTrailingPartial(b []byte) []byte {
 	i := len(b) - 1
 	for i >= 0 && !utf8.RuneStart(b[i]) {

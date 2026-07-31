@@ -16,6 +16,10 @@ func TestTrimTrailingPartial(t *testing.T) {
 		{name: "incomplete rune dropped", in: []byte{'a', 0xe2, 0x82}, want: []byte{'a'}},
 		{name: "whole multi-byte rune kept", in: []byte("a😀"), want: []byte("a😀")},
 		{name: "all continuation bytes kept", in: []byte{0x80, 0x81}, want: []byte{0x80, 0x81}},
+		// Unlike the leading trim, which keeps a byte that cannot open a rune
+		// because no cut of ours orphaned it, the trailing trim drops one: it can
+		// never become whole however many bytes were cut away after it.
+		{name: "invalid lead byte dropped", in: []byte{'a', 0xff}, want: []byte{'a'}},
 		{name: "empty", in: []byte{}, want: []byte{}},
 	}
 	for _, tc := range tests {
