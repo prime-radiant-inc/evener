@@ -174,6 +174,16 @@ func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref,
 	return fetchHubSessionRead(client, ref, expectedState, expectedRefreshToken, false, false)
 }
 
+// resyncHubSession re-reads the viewed thread after serf/thread/resync, so the
+// transcript comes from the daemon now behind the relay instead of the one that
+// died. The re-subscribe is ADDITIVE, unlike session entry's: this connection
+// also carries the subagent rail's child-transcript subscriptions, and nothing
+// on the resync path re-issues them, so replacing them would leave every
+// watched child's activity dead until the user re-entered the session.
+func resyncHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return fetchHubSessionRead(client, ref, "", 0, true, false)
+}
+
 func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int, subscribe bool, replaceSubscription bool) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})

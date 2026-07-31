@@ -111,6 +111,21 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
 			m.applySessionTranscriptReducer(reducer)
 		}
+	case appwire.NotifySerfThreadResync:
+		// The hub is saying the model this session holds belongs to a daemon
+		// that has been replaced. A relaunched daemon seeds its live "turn_%d"
+		// counter from the transcript, which can sit BELOW the dead
+		// generation's high-water mark — a between-turns announcement mints an
+		// id that never becomes a transcript entry, and a released turn
+		// reservation burns one too — so the replacement's first live turn can
+		// carry an id this transcript already has rows under. Re-read the
+		// thread rather than folding the new generation's frames into the old
+		// one's state (kata xx1p).
+		if m.client != nil {
+			if ref, ok := m.currentRef(); ok {
+				cmd = resyncHubSession(m.client, ref)
+			}
+		}
 	case appwire.NotifySerfThreadModelRetry:
 		var params appwire.ThreadModelRetryParams
 		if json.Unmarshal(notification.Params, &params) == nil {
