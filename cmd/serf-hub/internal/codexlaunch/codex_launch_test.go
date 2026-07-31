@@ -58,6 +58,11 @@ func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	if want := "[codex:live] codex: error: address already in use\n"; log.String() != want {
 		t.Fatalf("log = %q, want %q", log.String(), want)
 	}
+	// A launch whose config never went through the launcher's id
+	// normalization still labels its lines as the codex app-server's.
+	if got := codexLogPrefix("  "); got != "[codex]" {
+		t.Fatalf("unnamed launch prefix = %q", got)
+	}
 }
 
 // The launch wires both of the app-server's pipes to the hub log, since the

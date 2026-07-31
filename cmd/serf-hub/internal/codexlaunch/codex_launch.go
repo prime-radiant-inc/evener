@@ -349,7 +349,7 @@ func codexLaunchEnv(overrides map[string]string) []string {
 func codexLogPrefix(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		id = "codex"
+		return "[codex]"
 	}
 	return "[codex:" + id + "]"
 }
