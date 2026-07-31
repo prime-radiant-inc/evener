@@ -32,13 +32,14 @@ export interface SpawnResult {
   ref: string;
 }
 
-// buildInput mirrors threadsStore's own turn-input assembly (threads.ts:
-// 304-312; unexported there, mirrored locally per PIN-C): an optional leading
-// RAW text item (kept only when non-empty after trim, but sent UNTRIMMED -
-// floor §1.12), then one image item per attachment (image-only submits are
-// valid). Its caller applies the one transformation the wire text gets, the
-// "[image N]" marker translation - shared with the store's own submit path
-// rather than mirrored, since a mirror of THAT would silently drift.
+// buildInput mirrors threadsStore's own turn-input assembly (the buildInput
+// in stores/threads.ts; unexported there, so mirrored locally per PIN-C): an
+// optional leading RAW text item (kept only when non-empty after trim, but
+// sent UNTRIMMED - floor §1.12), then one image item per attachment
+// (image-only submits are valid). Its caller applies the one transformation
+// the wire text gets, the "[image N]" marker translation - shared with the
+// store's own submit path rather than mirrored, since a mirror of THAT would
+// silently drift.
 function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
