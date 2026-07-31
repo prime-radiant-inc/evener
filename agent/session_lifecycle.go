@@ -690,6 +690,34 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				s.terminateGoalOnError(processCtx, err)
 			}
 			s.finishProcessingAtBoundary(processCtx, SessionIdle)
+			// Every OTHER terminal boundary in this loop tells a live subscriber
+			// the corrected status: the cancellation branch above emits
+			// EventSessionEnd(Reason=interrupted), and the successful-settle tail
+			// below emits EventSessionEnd(Reason=input_complete). A genuine
+			// (non-cancelled) failure fell through both and emitted neither
+			// (kata hen0): turn/completed(Failed) told a live subscriber the turn
+			// failed, but nothing told it the thread is idle again, so its belief
+			// that a turn was still running leaked until it left and re-entered
+			// the session. This is the same emit-once dance as the cancellation
+			// branch, reusing its sessionEndEmitted gate: for a cancelled turn
+			// that falls through to this shared tail (nothing left to drain),
+			// the gate is already tripped and this is a no-op, so the two
+			// branches never both fire for the same completion.
+			s.mu.Lock()
+			closed := s.closingOrClosedLocked()
+			turns := s.modelResponses
+			emitEnd := !s.sessionEndEmitted && !closed
+			if emitEnd {
+				s.sessionEndEmitted = true
+			}
+			s.mu.Unlock()
+			if emitEnd {
+				s.emit(events.EventSessionEnd, events.SessionEndData{
+					Reason: "turn_failed",
+					State:  string(SessionIdle),
+					Turns:  turns,
+				})
+			}
 			return strings.Join(outputs, "\n"), err
 		}
 		// Drain the next action after a completed (non-error) turn. The pops and the
