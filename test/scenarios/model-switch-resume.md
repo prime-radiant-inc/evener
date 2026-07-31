@@ -10,7 +10,12 @@ live-notification convergence.
 
 ## Pre-state
 
-- Hub running with `--serf` set so it can spawn fresh daemons on resume.
+- An isolated hub built from the branch under test, running with `-serf` set
+  so it can spawn fresh daemons on resume — the scratch `$HOME` and
+  kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
+  never Jesse's real hub. The isolation is load-bearing twice over here:
+  this card kills a daemon it finds by globbing the run directory, and that
+  glob has to be able to name only its own daemons.
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Confirm no
   `SERF_MODEL` env override is set for the daemon (would otherwise mask a
   regression per N3's "must not override" contract).
@@ -23,9 +28,10 @@ live-notification convergence.
    or a direct RPC call) — confirm the call returns success and the marker
    turn appears in the transcript.
 3. Find and **kill** the daemon backing the session (same technique as
-   `reconnect-auto-resume.md`: `ls /home/jesse/.serf/run/*.json` for the pid,
-   or `ps aux | grep "serf serve.*<session_id>"`). Confirm the rendezvous
-   file is gone and the process is dead.
+   `reconnect-auto-resume.md`: `ls "$HOME"/.serf/run/*.json` for the pid —
+   the scratch `$HOME` from Pre-state, so the glob only ever names this
+   card's own daemons — or `ps aux | grep "serf serve.*<session_id>"`).
+   Confirm the rendezvous file is gone and the process is dead.
 4. Trigger resume: send a new turn to the session (via the hub UI or
    `turn/start`) — the hub's auto-resume path (`hubThreadResume`) should
    spawn a fresh daemon with `--resume <session_id>`.
@@ -54,7 +60,8 @@ live-notification convergence.
 ## Cleanup
 
 - Kill the new daemon PID if it's still running past the test window.
-- Shut down / clean up the session's working dir.
+- Kill the isolated hub, then `rm -rf` the run directory holding its
+  binaries, its scratch `$HOME`, and the session's working dir.
 
 ## Sharp edges
 

@@ -18,20 +18,23 @@ dashboard ↔ session transitions described in the action bars.
 - At least one live or recent session visible on the dashboard. If
   empty, spawn one first via `~/go/bin/serf spawn ...` or accept that
   the leaf-enter step is skipped.
-- No leftover tmux session named `serf-test` (the scenario kills it
-  first to be safe: `tmux kill-session -t serf-test 2>/dev/null`).
+- The tmux session name is derived from the driving shell's pid
+  (`TMUX_SESSION`, set in step 1), so a second agent running this card
+  at the same time cannot drive or kill this one's pane. Nothing to
+  clear out first — the name is new every run.
 
 ## Steps
 
-Use `tmux send-keys -t serf-test KEY ...` to drive input and
-`tmux capture-pane -t serf-test -p` to read the visible pane.
+Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
+`tmux capture-pane -t "$TMUX_SESSION" -p` to read the visible pane.
 
 1. **Launch in tmux**:
    ```
-   tmux new-session -d -s serf-test -x 200 -y 50 \
+   TMUX_SESSION="serf-nav-$$"
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux capture-pane -t serf-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm the first line shows `serf live` and the hub URL + `N live`
    counter. A row marked `> ▾ ●` or `> ▸ ●` indicates a project header;
@@ -48,8 +51,8 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 
 4. **Dashboard command palette**:
    ```
-   tmux send-keys -t serf-test "/"
-   tmux send-keys -t serf-test -l "tmp"
+   tmux send-keys -t "$TMUX_SESSION" "/"
+   tmux send-keys -t "$TMUX_SESSION" -l "tmp"
    ```
    Pane shows a bordered overlay titled `Command palette` with
    `Filter: tmp` and a filtered row list. Footer of the overlay reads
@@ -86,7 +89,7 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 10. **`q` exit from dashboard**: relaunch (step 1). Press `q`. The
     tmux session ends.
 
-11. **Cleanup**: `tmux kill-session -t serf-test 2>/dev/null`.
+11. **Cleanup**: `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null`.
 
 ## Expected
 
@@ -115,7 +118,7 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 
 ## Cleanup
 
-- `tmux kill-session -t serf-test 2>/dev/null` (idempotent).
+- `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null` (idempotent).
 
 ## Sharp edges
 

@@ -10,7 +10,12 @@ button uses the SAME path.
 
 ## Pre-state
 
-- Hub running with `--serf` set so it can spawn fresh daemons.
+- An isolated hub built from the branch under test, running with `-serf`
+  set so it can spawn fresh daemons — the scratch `$HOME` and
+  kernel-assigned port from `docs/agentic-testing.md`'s Setup checklist,
+  never Jesse's real hub. Step 2 globs the run directory for a pid and
+  step 3 kills it; under the real `$HOME` that glob names his live
+  daemons.
 - A session exists whose last completed turn ended in idle (i.e.
   not stuck-processing — the r6y9 case is different). Spawn one if
   needed: `curl ... /api/spawn` with a quick prompt.
@@ -23,12 +28,12 @@ button uses the SAME path.
    `session_id`. Wait for it to reach idle.
 2. Find the daemon PID:
    ```bash
-   ls /home/jesse/.serf/run/*.json | xargs -I{} cat {} | \
+   ls "$HOME"/.serf/run/*.json | xargs -I{} cat {} | \
      python3 -c "import sys, json; \
        [print(d.get('pid'), d.get('session_id')) for d in [json.loads(l) for l in sys.stdin if l.strip().startswith('{')]]"
    ```
    Or grep ps: `ps aux | grep "serf serve.*<session_id>"`.
-3. `kill <pid>`. Confirm `/home/jesse/.serf/run/<pid>.json` is gone
+3. `kill <pid>`. Confirm `$HOME/.serf/run/<pid>.json` is gone
    and the process is dead.
 4. Navigate to `/s/<session_id>` in the browser (or it should
    already be there).
@@ -48,7 +53,7 @@ button uses the SAME path.
 - On the host:
   - A NEW daemon process exists with `--resume <session_id>` in its
     args.
-  - A NEW rendezvous file at `/home/jesse/.serf/run/<new-pid>.json`.
+  - A NEW rendezvous file at `$HOME/.serf/run/<new-pid>.json`.
 - Falsification: a diagnostic appears with text like "stream ended"
   or "rendezvous timeout" — the resume chain failed. Or no new
   daemon spawned.

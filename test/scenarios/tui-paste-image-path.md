@@ -28,7 +28,10 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 - `./serf-tui` and `./serf-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials.
-- No leftover tmux session named `serf-e2e-imgpath`.
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 - **No display server or clipboard tool needed.** Unlike the
   clipboard-paste scenario, the path detection just reads from disk.
 
@@ -45,6 +48,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    `state=idle` to navigate to):
    ```bash
    WORKDIR=$(mktemp -d -t serf-tui-imgpath-XXXX)
+   TMUX_SESSION="serf-imgpath-$(basename "$WORKDIR")"
    TOKEN=$(cat "$HOME/.serf/auth-token")
    HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
@@ -63,20 +67,20 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 
 3. **Launch serf-tui in tmux**:
    ```bash
-   tmux new-session -d -s serf-e2e-imgpath -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 
 4. **Navigate into the spawned session** via the command palette:
    ```bash
-   tmux send-keys -t serf-e2e-imgpath "/"
+   tmux send-keys -t "$TMUX_SESSION" "/"
    sleep 0.3
-   tmux send-keys -t serf-e2e-imgpath -l "$SID"
+   tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    sleep 0.4
-   tmux send-keys -t serf-e2e-imgpath Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
-   tmux capture-pane -t serf-e2e-imgpath -p | head -25
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -25
    ```
 
 5. **Bracketed-paste the PNG path** via tmux paste-buffer. The `-p`
@@ -86,9 +90,9 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    (the `Paste:true` branch never fires):
    ```bash
    tmux set-buffer "/tmp/serf-e2e-test-image.png"
-   tmux paste-buffer -t serf-e2e-imgpath -p
+   tmux paste-buffer -t "$TMUX_SESSION" -p
    sleep 0.4
-   tmux capture-pane -t serf-e2e-imgpath -p | head -25
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -25
    ```
    The footer should now show:
    ```
@@ -100,11 +104,11 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 
 6. **Type a prompt and submit**:
    ```bash
-   tmux send-keys -t serf-e2e-imgpath -l "describe this image in one sentence"
+   tmux send-keys -t "$TMUX_SESSION" -l "describe this image in one sentence"
    sleep 0.3
-   tmux send-keys -t serf-e2e-imgpath Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 8
-   tmux capture-pane -t serf-e2e-imgpath -p | head -35
+   tmux capture-pane -t "$TMUX_SESSION" -p | head -35
    ```
 
 7. **Cross-check the transcript** — same Python loop as
@@ -143,7 +147,7 @@ TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
   "$HUB/s/$SID/shutdown" >/dev/null
-tmux kill-session -t serf-e2e-imgpath 2>/dev/null
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$WORKDIR"
 rm -f /tmp/serf-e2e-test-image.png
 # Optional, for hermeticity:

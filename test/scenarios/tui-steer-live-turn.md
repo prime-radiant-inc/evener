@@ -29,40 +29,44 @@ For the queue-only and queue+composer drain paths, see
 - `./serf-tui` and `./serf-hub` (or `./serf`) built in repo root.
 - Anthropic OAuth or API key configured so the default
   `anthropic/claude-haiku-4-5-20251001` model can be invoked.
-- No leftover tmux session named `serf-steer-test`.
+- The tmux session name is derived from this run's own scratch dir
+  (`TMUX_SESSION`, set beside the `mktemp` below), so a second agent
+  running this card at the same time cannot drive or kill this one's
+  pane. Nothing to clear out first — the name is new every run.
 
 ## Steps
 
 1. **Prepare a hermetic workdir with a README to read**:
    ```
    WORKDIR=$(mktemp -d -t serf-steer-XXXX)
+   TMUX_SESSION="serf-steer-$(basename "$WORKDIR")"
    cp README.md "$WORKDIR/README.md"
    ```
 
 2. **Launch in tmux**:
    ```
-   tmux new-session -d -s serf-steer-test -x 200 -y 50 \
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux capture-pane -t serf-steer-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
 
 3. **Open the spawn form and retarget**:
    ```
-   tmux send-keys -t serf-steer-test "n"
+   tmux send-keys -t "$TMUX_SESSION" "n"
    sleep 0.5
-   tmux send-keys -t serf-steer-test BTab
-   tmux send-keys -t serf-steer-test C-u
-   tmux send-keys -t serf-steer-test -l "$WORKDIR"
-   tmux send-keys -t serf-steer-test Tab
+   tmux send-keys -t "$TMUX_SESSION" BTab
+   tmux send-keys -t "$TMUX_SESSION" C-u
+   tmux send-keys -t "$TMUX_SESSION" -l "$WORKDIR"
+   tmux send-keys -t "$TMUX_SESSION" Tab
    ```
 
 4. **Type a multi-round prompt and submit**:
    ```
-   tmux send-keys -t serf-steer-test -l "Read the README.md file in the current directory. Then write a 5-paragraph essay about its main themes. Use formal prose."
-   tmux send-keys -t serf-steer-test Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "Read the README.md file in the current directory. Then write a 5-paragraph essay about its main themes. Use formal prose."
+   tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 1.5
-   tmux capture-pane -t serf-steer-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm view shows `serf / session / <session-id>`, the status row
    reads `state: active  model: claude-haiku-4-5-…`, the
@@ -77,16 +81,16 @@ For the queue-only and queue+composer drain paths, see
    so the steer is unambiguously mid-turn:
    ```
    sleep 3
-   tmux capture-pane -t serf-steer-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
 
 6. **Type the steer text — do NOT press Enter — then press
    Ctrl+S to force-steer**:
    ```
-   tmux send-keys -t serf-steer-test -l "Change of plans: write only a single haiku (3 lines, 5-7-5 syllables) instead of the essay. Disregard the essay instruction."
-   tmux send-keys -t serf-steer-test C-s
+   tmux send-keys -t "$TMUX_SESSION" -l "Change of plans: write only a single haiku (3 lines, 5-7-5 syllables) instead of the essay. Disregard the essay instruction."
+   tmux send-keys -t "$TMUX_SESSION" C-s
    sleep 1
-   tmux capture-pane -t serf-steer-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    A `Force-steer sent.` system line appears (per
    `cmd/serf-tui/hub_model.go:hubDrainAsSteerMsg` handler). The
@@ -98,7 +102,7 @@ For the queue-only and queue+composer drain paths, see
 7. **Wait for the turn to wrap and verify the model adjusted**:
    ```
    sleep 8
-   tmux capture-pane -t serf-steer-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    The closing assistant output is a single haiku, not a fifth
    essay paragraph. The composer label flips back from `queue`
@@ -106,7 +110,7 @@ For the queue-only and queue+composer drain paths, see
 
 8. **Cross-check the transcript on disk**:
    ```
-   SID=$(tmux capture-pane -t serf-steer-test -p | \
+   SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
    TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    grep -oE '"kind":"STEERING"' "$TS"
@@ -122,9 +126,9 @@ For the queue-only and queue+composer drain paths, see
 
 9. **Exit and clean up**:
    ```
-   tmux send-keys -t serf-steer-test "i"
-   tmux send-keys -t serf-steer-test C-c C-c
-   tmux kill-session -t serf-steer-test 2>/dev/null
+   tmux send-keys -t "$TMUX_SESSION" "i"
+   tmux send-keys -t "$TMUX_SESSION" C-c C-c
+   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
    rm -rf "$WORKDIR"
    ```
 
@@ -150,7 +154,7 @@ For the queue-only and queue+composer drain paths, see
 
 ## Cleanup
 
-- `tmux kill-session -t serf-steer-test 2>/dev/null`.
+- `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null`.
 - `rm -rf "$WORKDIR"`.
 
 ## Sharp edges
