@@ -3708,6 +3708,20 @@ test("a between-turns announcement turn appends after the real turn it follows",
   expect(itemAt(turnAt(model, 1), 0).exitCode).toBe(0);
 });
 
+// Accumulation is by ITEM ID, so a redelivered announcement frame — the
+// reconnect/hydration replay path hands the reducer frames it may already
+// have folded — updates its item in place instead of growing a second copy
+// of it (server/appwire_turns.go's upsertItem merges by id for the same
+// reason).
+test("a redelivered announcement frame updates its item in place instead of duplicating it", () => {
+  let model = testHydrate();
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1001);
+  model = applyNotification(model, announcementFrame(SYSTEM_PRELUDE_TURN_ID, PLUGIN_LOADED_ITEM), 1002);
+
+  expect(model.turns.map((t) => t.id)).toEqual([SYSTEM_PRELUDE_TURN_ID]);
+  expect(turnAt(model, 0).items.map((it) => it.id)).toEqual(["item_plugin_loaded_1"]);
+});
+
 // The same-id-replaces-both hazard the active path guards against (see the
 // "settles only the FIRST turn" test above) applies to the non-active path
 // too: a duplicate id must not let one announcement's settle overwrite an
