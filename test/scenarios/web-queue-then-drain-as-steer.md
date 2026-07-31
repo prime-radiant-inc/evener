@@ -1,27 +1,44 @@
 # web-queue-then-drain-as-steer: queued messages collapse into a single STEERING
 
-**What this covers**: kata `0bq1` (web). The "send as steer" button
-(repurposed `[data-steer-trigger]`) AND the ⇧↵ keybind both call
-`POST /s/<id>/drain-as-steer` (or appwire `turn/drainAsSteer`). The
-daemon pops every entry from its per-session input queue, joins
-them with blank lines, and injects the joined text as a single
-STEERING entry on the active turn. The renderer mirrors that by
-wiping `pendingQueue` and hiding the queue-preview chrome. Net
-effect: the user can rapidly enqueue several thoughts during a
-slow turn and then "ship them all at once" without waiting for the
-turn to finish naturally.
+**What this covers**: kata `0bq1` (web). During a slow turn a user can pile
+up several thoughts, then ship them all at once instead of waiting for the
+turn to end. The daemon pops every entry from the session's input queue,
+joins them with blank lines, and injects the joined text as **one** STEERING
+entry on the active turn — not one steer per entry, and not a set of fresh
+user turns.
 
-If the queue is empty when the button is pressed, the action falls
-back to the classic single-text steer (kata `a08v`) so no typed
-text is lost — see `web-steer-live-turn.md` for that path.
+Two controls reach it, and both must:
+
+- the composer's **Steer** button (and its Shift+Enter chord) whenever the
+  queue is non-empty or attachments are staged — `decideSteerRoute` routes
+  to `"drain"` *regardless of whether the composer has text*
+  (`panes/session/composer/submitRouting.ts:33-39`);
+- the queue strip's **Steer queue now** button
+  (`composer/queue/QueueStrip.tsx:279-284`).
+
+If the queue is empty and nothing is staged, the same button falls back to
+the classic single-text steer so typed text is never lost — see
+`web-steer-live-turn.md` for that path.
+
+The card previously POSTed `/s/<id>/queue` and `/s/<id>/drain-as-steer`.
+Neither route exists: they died with the vanilla frontend (`660376f78`), and
+there is no REST equivalent for queue or drain at all. The methods live on
+the AppWire socket as `turn/queue` and `turn/drainAsSteer`
+(`appwire/types.go:26-27`).
+
+**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" and "The
+REST surface, and what is no longer on it". The queue strip carries no
+`data-testid` — address it by its visible text, which is what
+`test/scenarios/README.md` asks for anyway.
 
 ## Pre-state
 
-Same as `web-queue-then-completes.md`. Long-running first turn via
-an AGENTS.md pacing nudge; an isolated hub (never `9180`, Jesse's
-  real one — see the Setup checklist in `docs/agentic-testing.md`);
-  OpenAI OAuth;
-browser authenticated against the hub.
+Same as `web-queue-then-completes.md`: a long-running turn via the AGENTS.md
+pacing nudge, an isolated hub (never `9180`, Jesse's
+  real one — see the Setup checklist in `docs/agentic-testing.md`), a
+provider credential good enough for one slow multi-tool turn, and a browser
+authenticated against the hub. The SPA must be built (`make build-web`)
+before the hub binary.
 
 ## Steps
 
@@ -31,184 +48,116 @@ TOKEN=$(cat "$HOME/.serf/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
-1. **Same pacing AGENTS.md** as in `web-queue-then-completes.md`
-   step 1. Drop it into `$tmpdir`.
+1. Drop the pacing `AGENTS.md`, spawn, and get a slow second turn in flight —
+   steps 1-2 of `web-steer-live-turn.md` verbatim. Wait until
+   `/api/sessions/local:$SID` reports `state=active` with a non-empty
+   `active_turn_id` and `capabilities.queue:true`.
+2. Open `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
+   `[data-testid="composer-steer"]`.
+3. **Queue three messages.** With a turn in flight, **Send** is the queue
+   button — one label, two timings (`submitRouting.ts:19-23`). Type and
+   submit each of these in turn via `[data-testid="composer-submit"]`:
+   - `also: explain the tradeoffs`
+   - `and: avoid framework-specific advice`
+   - `summary: prioritize readability`
 
-2. **Spawn** with `openai/gpt-5.4-mini` and start a slow turn:
-   ```bash
-   resp=$(curl -s -X POST -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long careful 5-paragraph essay about software engineering practices. Follow the pacing rules in AGENTS.md exactly — insert exec_command sleep calls between every paragraph.\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
-     $HUB/api/spawn)
-   SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
-   # wait until the session is active
-   for i in $(seq 1 30); do
-     d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
-     state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "active" ] && break
-     sleep 1
-   done
-   echo "SID=$SID state=$state"
-   ```
-
-3. **Authenticate and load the workspace** at
-   `/auth?token=<TOKEN>&next=/s/<SID>`.
-
-4. **Queue two messages** by pressing ⌘↵ twice:
+   After each submit, read the strip:
    ```javascript
-   const ta = document.querySelector("textarea.message-input");
-   async function queueOne(text) {
-     ta.focus();
-     ta.value = text;
-     ta.dispatchEvent(new Event("input", { bubbles: true }));
-     ta.dispatchEvent(new KeyboardEvent("keydown", {
-       key: "Enter", ctrlKey: true, bubbles: true, cancelable: true,
-     }));
-     await new Promise(r => setTimeout(r, 300));
-   }
-   await queueOne("also: explain how Go's table-driven tests reduce duplication");
-   await queueOne("and: avoid using mocks where a fake interface suffices");
-
-   const preview = document.querySelector("[data-queue-preview]");
-   const depth = preview.querySelector("[data-queue-depth]").textContent;
-   ({ depth, rows: preview.querySelectorAll(".queue-preview-item").length });
-   // { depth: "2", rows: 2 }
-   ```
-
-5. **Drain as steer via the button**. Type one more message into
-   the composer — the drain handler should enqueue it first (so it
-   joins the rest of the queue) then drain. This also confirms the
-   "force-steer-empty-queue note" from the design: typed text is
-   preserved even when the user clicks the steer button:
-   ```javascript
-   ta.focus();
-   ta.value = "summary: prioritize clarity over cleverness in tests";
-   ta.dispatchEvent(new Event("input", { bubbles: true }));
-   const steer = document.querySelector("[data-steer-trigger]");
-   steer.click();
-   await new Promise(r => setTimeout(r, 500));
-
-   const previewAfter = document.querySelector("[data-queue-preview]");
    ({
-     previewHidden: previewAfter.hidden,
-     depth: previewAfter.querySelector("[data-queue-depth]").textContent,
-     taValue: ta.value,
-     steerings: document.querySelectorAll(".steering").length,
-   });
-   // { previewHidden: true, depth: "0", taValue: "", steerings: >= 1 }
+     heading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
+     rows: document.querySelectorAll("h3 ~ ul li").length,
+     drainButton: !!Array.from(document.querySelectorAll("button"))
+       .find((b) => b.textContent.trim() === "Steer queue now"),
+   })
    ```
-
-6. **Wait for the turn to settle** and inspect the transcript.
-   The drain must produce ONE `STEERING` entry whose text contains
-   all three queued lines, NOT three separate entries:
+4. **Drain.** Type one more line into the composer — `finally: keep it short`
+   — and click `[data-testid="composer-steer"]`. Snapshot synchronously,
+   then after the ack:
+   ```javascript
+   (async () => {
+     const chips = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-chips"] li'), (li) => li.textContent);
+     const heading = () => document.querySelector("h3")?.textContent ?? null;
+     const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
+     document.querySelector('[data-testid="composer-steer"]').click();
+     const sync = { chips: chips(), heading: heading() };
+     await new Promise((r) => setTimeout(r, 3000));
+     return JSON.stringify({
+       port: location.port, sync,
+       after: { chips: chips(), heading: heading(), text: ta.value,
+                toast: document.querySelector('[aria-label="Notifications"]')?.textContent },
+     }, null, 2);
+   })()
+   ```
+5. Let the turn settle and read the durable record:
    ```bash
-   for i in $(seq 1 120); do
-     state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-              | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "idle" ] && break
-     sleep 2
-   done
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
-   python3 - <<EOF
-   import json
-   steerings = []
-   users = []
-   for line in open("$TFILE"):
-       j = json.loads(line)
-       t = j.get("turn", {})
-       if t.get("kind") == "STEERING":
-           for c in t.get("message", {}).get("content", []):
-               if c.get("kind") == "text":
-                   steerings.append(c.get("text", ""))
-       elif t.get("kind") == "USER":
-           for c in t.get("message", {}).get("content", []):
-               if c.get("kind") == "text":
-                   users.append(c.get("text", "")[:120])
-   print("USERS:", len(users))
-   for u in users:
-       print(" -", u)
-   print("STEERINGS:", len(steerings))
-   for s in steerings:
-       print(" -", s[:300].replace("\\n", " ⏎ "))
-   EOF
+   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
    ```
 
 ## Expected
 
-- **Step 4 (queue×2)**: each ⌘↵ POSTs to `/queue` and the
-  preview chrome shows two rows after the second submit, with
-  `data-queue-depth="2"`. Falsification: a second ⌘↵ replaces
-  the first row (would mean `pendingQueue` was clobbered instead
-  of appended), or the second post hits `/send` (would mean the
-  capability-queue branch didn't re-engage after the first queue).
-- **Step 5 (drain)**: clicking the steer button with text in the
-  textarea + a non-empty queue posts TWO HTTP requests in order:
-  first an extra `/queue` carrying the textarea content, then
-  `/drain-as-steer`. The preview is wiped (`previewHidden=true`,
-  depth=0), the textarea is cleared, and a `.steering` element
-  appears in the conversation pane. Falsification: only
-  `/drain-as-steer` is posted and the textarea content is lost
-  (the "don't lose typed text" sharp edge), or `/steer` is posted
-  with just the textarea text and the queue is left intact (would
-  mean the steer button's "queue empty" branch ran even though
-  queue was non-empty).
-- **Step 6 (transcript)**: exactly ONE additional `STEERING`
-  entry whose text contains all three lines joined by blank lines
-  (FIFO order: "also: explain…", "and: avoid…", "summary:
-  prioritize…"). NO new `USER` turn appears for the queued
-  messages — they did not become user turns because the drain
-  collapsed them. The original prompt's `USER` entry is still the
-  only one. The active turn's `assistant` reply that follows the
-  STEERING reflects the steered guidance (the model's next message
-  references the queued instructions). `turn_count` is unchanged
-  by the drain (steering does not count as a turn). Falsification:
-  multiple `STEERING` entries (would mean each queue entry was
-  drained as its own steer), or a new `USER` entry appears for
-  the queued text (would mean the daemon ran the queue as fresh
-  turns instead of draining), or the assistant reply does NOT
-  reference the queued guidance (the steer didn't reach the model
-  before turn completion).
+- **Step 3 (queueing)**: the heading counts up — `Queued messages (1)`,
+  `(2)`, `(3)` (`QueueStrip.tsx:278`) — with one row per message and a
+  `Steer queue now` button present the whole time (`:279-284`). Falsify: a
+  later submit replaces an earlier row instead of appending, the count stops
+  advancing, or the message starts a new turn instead of queueing (the
+  queue capability did not re-engage).
+- **Step 4 (drain)**: `sync.chips` holds one chip reading `Draining` plus the
+  composer text (`pending/PendingChips.tsx:38-42`) — **one** mutation, not
+  two. This is the part that changed shape: the composer's text and
+  attachments are appended to the queue and the whole queue drained **in a
+  single `turn/drainAsSteer`** carrying both `expectedTurnId` and
+  `expectedQueueRevision` (`stores/threads.ts:707-712`), rather than the old
+  extra `/queue` POST followed by a `/drain-as-steer` POST. Afterwards the
+  chip is gone, the queue strip is gone entirely (it renders only while there
+  is queued work — `QueueStrip.tsx:158-162`), the composer is cleared, and no
+  error toast appears. Falsify: the composer's text is dropped instead of
+  drained (the "don't lose typed text" contract), the strip still shows rows,
+  or a `Steering` chip appears instead of `Draining` (the empty-queue branch
+  ran with a non-empty queue).
+- **Step 5 (durable)**: exactly **one** new `STEERING` entry, whose text
+  contains all four lines in FIFO order joined by blank lines — the daemon
+  joins with `"\n\n"` (`agent/session_client_mutation_queue.go:478`). **No**
+  new `USER` turn for the queued messages: they were drained, not run. The
+  assistant's next message reflects the guidance, and `turn_count` is
+  unchanged (steering is not a turn). Falsify: several `STEERING` entries
+  (each entry drained separately), a `USER` turn per queued message (the
+  daemon ran the queue as fresh turns), or an assistant reply that ignores
+  the drained text (it landed after the turn had already finished).
 
 ## Cleanup
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{}' "$HUB/s/$SID/shutdown" >/dev/null
+  -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null
 rm -rf "$tmpdir"
 ```
 
 ## Sharp edges
 
-- **The button changes label but stays the same DOM node**. The
-  template's `[data-steer-trigger]` is the same element that used
-  to read just "steer" — it now reads "send as steer ⇧↵". Tests
-  that select by `data-steer-trigger` continue to work; tests
-  that selected by visible text ("steer") need updating.
-- **The button's semantics depend on the local queue mirror**, not
-  on the daemon's depth. If the user pastes a queued message into
-  the composer with the keyboard while the mirror is empty (e.g.
-  after a page reload), the steer button will take the
-  empty-queue branch and call `/steer` instead of `/drain`. This
-  is acceptable for the single-user phase (Phase 2a) — a future
-  pass that mirrors depth across clients would close this race.
-- **The drain endpoint is gated on the daemon's actual queue
-  depth, not the client mirror's**. If the daemon's queue is
-  empty (e.g. the active turn just popped a message) and the
-  client tries to drain, the daemon returns Conflict and the
-  composer surfaces an error banner. The client mirror is wiped
-  on success only; on failure it is left intact so the user can
-  retry or queue more.
-- **Joining is FIFO with blank-line separators**. The daemon
-  joins queued messages in insertion order with `\n\n` between
-  each, then wraps the whole thing in a single STEERING entry.
-  Order matters when the model is asked to "do A then B" via
-  queued messages — make sure the order you queue is the order
-  you want the model to see them. The transcript's STEERING
-  entry preserves that order verbatim.
-- **⇧↵ in the composer is the keybind equivalent of the button**.
-  The renderer's `bindKeyboard` intercepts Shift+Enter without
-  Meta/Ctrl/Alt and clicks the steer button programmatically.
-  The browser's default Shift+Enter behavior in a textarea is
-  "insert newline"; this is suppressed only when the steer button
-  is enabled (i.e. there is an active turn). If the session is
-  idle, Shift+Enter inserts a newline as usual.
+- **An empty composer still drains.** `decideSteerRoute` checks the queue and
+  attachments *before* the textarea: a non-empty queue routes to `drain` even
+  with nothing typed (`submitRouting.ts:33-39`). Do not treat an empty
+  composer as a reason to expect the classic steer.
+- **Two buttons, one action.** `Steer queue now` in the strip and `Steer` in
+  the composer both drain, and the strip's version pulls the composer's
+  current text in too (`QueueStrip.tsx:222-228` reads `getComposerText`).
+  Either is a valid step 4; do not assert that only one of them works.
+- **The drain is a CAS on two things.** `expectedTurnId` and
+  `expectedQueueRevision` are both preconditions
+  (`agent/session_client_mutation_queue.go:384-403`): a turn that ended gives
+  `Conflict("turn is not active")`, a queue that changed underneath gives
+  `Conflict("queue revision changed")`, and an empty queue with no composer
+  input gives `Conflict("queue is empty")`. A drain that fails this way is a
+  race, not a regression — retry from a fresh snapshot before filing.
+- **A partial drain is its own error code.** `appwire.ErrorQueuedDrainPartial`
+  reports that some entries drained and some did not; the TUI treats it as a
+  success-ish outcome (`cmd/serf-tui/hub_session_keys.go:529-538`). If you
+  see a partial, count what actually landed in the transcript rather than
+  reading the error as a flat failure.
+- **The strip disappears when the queue empties.** Its absence after a drain
+  is the expected state, not a rendering failure — `visible` is false with no
+  queued work and no recovery rows (`QueueStrip.tsx:160-162`).
+- Rows for mutations whose fate is unknown stay behind as
+  `Delivery uncertain — <text>` with a `Retry` button (`:349-360`). That is a
+  dropped socket, not a drain bug.

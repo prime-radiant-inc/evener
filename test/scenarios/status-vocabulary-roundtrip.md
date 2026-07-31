@@ -1,125 +1,182 @@
 # status-vocabulary-roundtrip: attainable status words and icons agree across sidebar and TUI
 
-**What this covers**: Track A §1 (unified status vocabulary & icons). The live steps compare
-the attainable your-move and question-waiting states across the web sidebar and TUI session
-header. A deterministic gate pins the complete `hubapi.StateWord` vocabulary, including
-`errored`, without pretending this setup can manufacture every owning runtime state.
+**What this covers**: Track A §1 (unified status vocabulary & icons) and §2
+(ask-tiering). The live steps compare the attainable your-move and
+question-waiting states across the web rail, the TUI dashboard row, and the
+TUI session header. A deterministic gate pins the complete `hubapi.StateWord`
+vocabulary, including `errored`, without pretending this setup can manufacture
+every owning runtime state.
+
+**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
+selector map there is the single place these hooks are maintained. This card
+used to query `[data-ref="local:<id>"]`, `.status-icon` and `data-ask`, all
+of which died with the vanilla frontend (`660376f78`). The rail row is now
+`[data-session-ref="local:<SID>"]` with the state word inside
+`[data-testid="rail-row-activity"]` — and **lowercased** by `humanizeState`
+(`shell/rail/RailRow.tsx:138-153`), deliberately diverging from
+`hubapi.StateWord`'s sentence case. Compare words case-insensitively.
 
 ## Pre-state
 
-- Hub running with a fresh `$HOME` (isolated `~/.serf`), real credentials, no prior sessions.
-- A TUI (`serf-tui`) pointed at the same hub, in a tmux session for scriptable interaction.
-  Use a tall window (`-y 300`+) — the session header line scrolls out of a short pane's
-  capture (see Sharp edges).
-- `superpowers-chrome:browsing` (or equivalent CDP browser) available for the web assertions.
+- Hub running with a fresh, isolated `$HOME` (its own `~/.serf`, kernel-
+  assigned port — see the Setup checklist in `docs/agentic-testing.md`), real
+  credentials, no prior sessions.
+- A TUI (`serf-tui`) pointed at the same hub, in a tmux session named from
+  your own `$run` dir. Use a tall window (`-y 300`+) — the session header
+  line scrolls out of a short pane's capture (see Sharp edges).
+- `superpowers-chrome:browsing` (or equivalent CDP browser) available for the
+  rail assertions, plus a real SPA bundle (`make build-web` — a checkout that
+  has never run it serves a one-line `dist/PLACEHOLDER` and no app).
 
 ## Steps
 
-1. Spawn a session and let it settle to a generic `awaiting` (your-move) state — a prompt with
-   no `ask_user` call, e.g. "Say hello and stop." Wait for `state=="awaiting"` via
+1. **[browser-free]** Spawn a session and let it settle to a generic
+   `awaiting` (your-move) state — a prompt with no `ask_user` call, e.g.
+   "Say hello and stop." Wait for `state=="awaiting"` via
    `GET /api/sessions/local:<id>`.
-2. In the browser, open the sidebar and inspect **every** row for this session (a live session
-   in the needs-you band is rendered twice — once under the NeedsYou cluster, once under its
-   project group — so a query that stops at the first match can hide a disagreement between
-   the two copies):
+
+2. **[browser-free] Every row for this session must agree — assert it on the
+   wire.** A live session is listed **twice** in the rail: once in the
+   auto-grouped Live tier and again under its own project (a standing
+   decision, kata `b8m6`, restated at `shell/rail/Rail.tsx:563-573`). The
+   failure mode worth catching is not the duplication but the two rows
+   disagreeing, and both rows are built server-side, so the exact assertion
+   belongs here rather than in the DOM:
+   ```bash
+   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
+     | jq --arg ref "local:$SID" '
+         [ .. | objects | select(.ref? == $ref)
+           | {row_id, ref, state, ask_pending: (.ask_pending // false)} ]'
+   ```
+   Fields are `hubapi.TreeNode` (`hubapi/types.go:99-125`): `row_id`, `ref`,
+   `state`, `ask_pending`.
+
+3. **[browser] The rail renders what the wire said.** Navigate to
+   `/auth?token=$TOKEN&next=/s/local:$SID` and read every rendered copy:
    ```javascript
    (() => {
-     const rows = [...document.querySelectorAll('[data-ref="local:<id>"]')];
-     return rows.map(r => ({
-       rowId: r.getAttribute('data-row-id'),
-       title: r.querySelector('.status-icon').getAttribute('title'),
-       hasSvg: !!r.querySelector('.status-icon svg'),
-       dataAsk: r.getAttribute('data-ask'),
-     }));
+     const rows = [...document.querySelectorAll('[data-session-ref="local:<SID>"]')];
+     return {
+       port: location.port,                       // page-identity check, always
+       count: rows.length,
+       activity: rows.map((r) =>
+         r.querySelector('[data-testid="rail-row-activity"]')?.textContent ?? null),
+     };
    })()
    ```
-3. In the TUI dashboard, filter to the same session (`/` + a suffix of its ID + Enter) and
-   press Enter again to open/attach it. Capture the pane and find the `SERF / SESSION` header
-   line, which carries the state badge.
-4. Force a genuine `ask_user` question, re-check both surfaces plus the sidebar's `data-ask`
-   attribute on every row copy, and check whether the TUI dashboard's per-row list (filtered by
-   project, *not* opened) shows any ask-specific marker on this session's row.
-5. Run the deterministic vocabulary gate for states that this live setup cannot transition into
-   on demand:
+
+4. **[TUI]** In the TUI dashboard, filter to the same session (`/` + a suffix
+   of its ID + Enter) and press Enter again to open/attach it. Capture the
+   pane and find the `SERF / SESSION` header line, which carries the state
+   badge.
+
+5. **Force a genuine `ask_user` question**, then repeat steps 2, 3 and 4, and
+   additionally check the TUI dashboard's per-row list (filtered by project,
+   *not* opened) for the ask marker.
+
+6. **[browser-free] Deterministic vocabulary gate** for states this live
+   setup cannot transition into on demand:
    ```bash
    go test ./hubapi -run '^TestStateWord$' -count=1
    ```
 
+7. **[browser-free] Regression guard on the two-row agreement** — the
+   property step 2 samples once, pinned for every tier builder:
+   ```bash
+   go test ./cmd/serf-hub/internal/hubcore -run '^FuzzHubcoreScenarios$' -count=1
+   ```
+
 ## Expected
 
-- Step 2: every row sharing the session's `data-ref` reports **the same** `title`/`dataAsk` —
-  for the your-move state, `title === "Your move"` and `dataAsk` is absent (`null`) on all
-  copies; `hasSvg === true` on all copies.
-- Step 3: the `SERF / SESSION` header's badge line reads `● YOUR MOVE`.
-- Step 4 (ask-pending): every sidebar row copy reads tooltip `"Question waiting"` and
-  `data-ask="true"`; TUI header badge reads `● QUESTION WAITING`.
-- Step 5: the deterministic mapping includes `StateWord("errored", false) == "Error"`. This
-  pins vocabulary only; it does not claim that this scenario produced a live `errored` state.
-- Falsification: if the sidebar tooltip word and the TUI header-badge word ever disagree for
-  the same underlying state (e.g. sidebar says "Working" while the TUI still says "ACTIVE"),
-  or if two DOM rows for the *same* session ever disagree with each other, the shared
+- **Step 2 (exact, browser-free)**: every object sharing the session's `ref`
+  reports the **same** `state` and the same `ask_pending`. For the your-move
+  state that is `state:"awaiting"`, `ask_pending:false` on all copies.
+  Falsification: two rows for one session disagree on either field — that is
+  the reader being unable to tell which listing is stale.
+- **Step 3 (rail)**: `count` is the number of tiers the session appears in
+  (2 for a live session in a project), and every entry in `activity`
+  contains the lowercase word `your move`. The gloss line also carries the
+  project and/or branch joined with ` · ` (`RailRow.tsx:231-251`), so match
+  a substring, never the whole string. Falsification: the two rendered rows
+  carry different state words, or a row's word contradicts step 2's wire
+  value.
+- **Step 4**: the `SERF / SESSION` header's badge line reads `● YOUR MOVE`.
+- **Step 5 (ask-pending)**: step 2's wire rows all flip to
+  `ask_pending:true`; every rail row's activity text contains
+  `question waiting`; the TUI header badge reads `● QUESTION WAITING`; and
+  the TUI dashboard row for this session carries the `◆` marker
+  (`cmd/serf-tui/hub_dashboard_view.go:325-328`). Falsification: any surface
+  still reads "your move" while another says "question waiting".
+- **Step 6**: the deterministic mapping includes
+  `StateWord("errored", false) == "Error"` (`hubapi/attention.go:58-79`).
+  This pins vocabulary only; it does not claim this scenario produced a live
+  `errored` state.
+- **Step 7**: `fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState` and
+  `fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk` pass
+  (`cmd/serf-hub/internal/hubcore/tree_live_agreement_test.go:47,96`,
+  registered at `scenarios_fuzz_test.go:32-33`).
+- **Falsification (whole card)**: if a rail row's word and the TUI
+  header-badge word ever disagree for the same underlying state (e.g. the
+  rail says "working" while the TUI still says "AWAITING"), or if two rows
+  for the *same* session ever disagree with each other, the shared
   `hubapi.StateWord` delegation is broken or one surface/row bypassed it.
+  Case is **not** a disagreement — see Surface above.
 
 ## Cleanup
 
-- Shut down the spawned session(s); kill the TUI tmux session; remove the isolated `$HOME`.
+- `POST $HUB/api/sessions/local:$SID/shutdown` for every session spawned;
+  kill the TUI tmux session by the name you derived from `$run`; kill the
+  hub by the PID you captured; remove the isolated `$HOME`.
 
 ## Sharp edges
 
-- **The TUI session header lives in the scrollable transcript body, not the fixed chrome**
-  (`hub_session_view.go`'s `sessionHeaderLines()`, rendered inside `renderSessionMainBody`) —
-  bubbletea's altscreen means `tmux capture-pane` only ever sees the *current* frame, not
-  scrollback, so on a short window (e.g. the 50-row size used by other `tui-*` cards) a
-  chatty first turn (a dozen-plus "Prompt loaded" notice lines) can push the header off the
-  top of the visible frame with no way to scroll back into tmux history. Use a tall window
-  (`-y 300`+) so the header is guaranteed to still be on-screen, rather than trying to scroll
-  the TUI's own viewport.
-- **The TUI's `StatusBadge` uppercases whatever word it's given** (`tuiprim.StatusBadge`); the
-  web never uppercases — this is expected surface-specific styling, not a vocabulary mismatch.
-- **The TUI dashboard's per-row list does NOT currently show a distinguishable ask-pending
-  marker, and its per-row word is the raw wire state, not `hubapi.StateWord`.** The TUI
-  dashboard never consumes `/api/tree` at all — it builds its tree from the appwire JSON-RPC
-  `thread.list` call (`fetchHubTree` in `cmd/serf-tui/hub_commands.go:149` calls
-  `client.ThreadList`, then `hubTreeFromThreads(resp.Data)` at line 153), and
-  `hubNodeFromThread` (`cmd/serf-tui/hub_types.go:181`) populates `hubTreeNode.AskPending`
-  straight from `thread.Serf.AskPending` — not from any `/api/tree` node. The direct-daemon
-  appwire path for a single-thread read is fully wired: `cmd/serf/serve.go:357` registers
-  `srv.SetPendingAskFunc(...)`, and `appThread()` (`server/appwire_runtime.go:440`) overlays
-  that live bit into `SerfThread.AskPending` — which is exactly why the TUI's session-header
-  badge (step 3) correctly shows "Question waiting"/"Your move". But this card's actual setup
-  attaches the TUI *through the hub*, not directly to a daemon, and the hub's
-  `LocalDaemonSource.ListThreads` (`cmd/serf-hub/internal/appsource/local_daemon.go:57`) does
-  not proxy the daemon's `appThread()` output for the dashboard-list call — it reconstructs
-  each thread from its roster entry via `threadFromEntry` (same file, line 531), which
-  assembles `Serf: appwire.SerfThread{Ref, Capabilities}` (lines 549-550) with no `AskPending`
-  set at all. `LocalDaemonEntry` (line 26) doesn't even carry a pending-ask bit yet, so a real
-  fix requires plumbing a pending-ask signal from the roster through `LocalDaemonEntry` and
-  `threadFromEntry` into `SerfThread.AskPending`, not editing `/api/tree` or
-  `hubTreeResponse`. Confirmed live: a session with a real pending `ask_user` question showed
-  `awaiting` with no `◆` on its dashboard row, while its project-rollup line correctly read
-  `1 live · Your move`/`Question waiting` via `displayWord`. This is a real, pre-existing gap
-  (Task 29's per-row marker is reachable only via the sidebar's/tree's needs-you copies, never
-  via the TUI dashboard's hub-proxied live/project listing) — filed as a finding, not fixed by
-  this card. The TUI's *session header badge* (step 3) is unaffected and correct even through
-  the hub, because the single-thread read path differs from the list path: the hub's
-  `LocalDaemonSource.ReadThread` (same file, line 68) proxies straight through to the daemon's
-  own `client.ThreadRead` call instead of reconstructing the thread locally, so it still returns
-  the daemon's fully-wired `appThread()` output with `AskPending` correctly set — only
-  `ListThreads` takes the local-reconstruction shortcut that drops it.
-- **The web sidebar renders a live needs-you-band session twice** — once under the NeedsYou
-  cluster (`row_id` prefixed `needsyou:`), once under its project group (`row_id` prefixed
-  `project:...`) — and only the NeedsYou copy carries `ask_pending`/the correct tooltip; the
-  project-group copy inherits the same gap described above (its `TreeNode` never gets
-  `AskPending` set) and renders `"Your move"` even while the same session is genuinely
-  ask-pending. `document.querySelector` (first-match) reliably hits the NeedsYou copy because
-  `sidebar.js`'s `flatten()` emits `needs_you` before `projects`, so a single-row assertion
-  will not *notice* this — step 2's all-rows query is written specifically to catch it. Found
-  live in this run; same root cause as the TUI gap above (`AskPending` only set on the
-  `needs_you` `TreeNode`s in `cmd/serf-hub/internal/hubcore/tree.go`).
-- **Historical result: forcing `errored` live could not be verified in the original pass.** A
-  bad model name was rejected at spawn time before a session existed, and recoverable provider
-  failures return the live session to `idle`. The obsolete procedure has therefore been removed
-  from the runnable steps. Do not substitute transcript-tail or API-log heuristics: the owning
-  runtime state is the source of truth. `hubapi.TestStateWord` pins the vocabulary mapping; a
-  future live `errored` scenario needs a deterministic owning-state transition and should be a
-  separate card.
+- **The AskPending propagation gap this card used to document is FIXED — step
+  5 is now a regression guard, not a repro.** The card previously reported
+  that only the NeedsYou copy of a rail row carried `ask_pending`, that the
+  project-group copy read "Your move" while the session was genuinely
+  ask-pending, and that the hub-proxied TUI dashboard dropped the bit
+  entirely. Neither holds against current source. `buildTree` resolves the
+  marker through one shared closure, `askPendingFor`
+  (`cmd/serf-hub/internal/hubcore/tree.go:622-627`), whose own comment
+  requires **every** TreeNode builder to use it; all three builders do
+  (`:792`, `:996`, `:1094`). On the TUI side, `LocalDaemonEntry` now carries
+  `PendingAsk` and `threadFromEntry` sets `SerfThread.AskPending` from it
+  (`cmd/serf-hub/internal/appsource/local_daemon.go:38-47,799`), so the
+  dashboard's per-row `◆` works through the hub, not just on a direct daemon
+  attach. `SetPendingAskFunc` no longer exists at all; the live bit comes
+  from a direct `sess.HasPendingAsk()` call (`cmd/serf/serve.go:967`). Step 7
+  pins the agreement property so it cannot silently regress again.
+- **There is no separate "needs you" section in the rail.** The auto-grouped
+  NeedsYou tier was deliberately removed (`Rail.tsx:563-573`, kata `vbh8`
+  §2.2) because it listed a session that was already under its own project.
+  A row's own Cadence dot carries attention now. `tree.needs_you` is still on
+  the wire and still feeds the rail-host badge — do not read its presence as
+  evidence of a rendered section.
+- **A quiet row has no activity line at all.** The gloss renders only for
+  SIGNAL_STATES — `working` / `needs-you` / `failed`
+  (`RailRow.tsx:166,487`) — plus depth-0 rows, which get a second line to
+  name their project (`:498`). An `idle` session nested under a project row
+  therefore has **no** `[data-testid="rail-row-activity"]` at all, and the
+  state word moves to the row label's `title` tooltip
+  (`rowTooltip`, `:447-463`). Step 3 works because `awaiting` maps to
+  `needs-you`; do not reuse its query for an idle session.
+- **The TUI session header lives in the scrollable transcript body, not the
+  fixed chrome** (`hub_session_view.go`'s session-header lines, rendered
+  inside the session main body) — bubbletea's altscreen means `tmux
+  capture-pane` only ever sees the *current* frame, not scrollback, so on a
+  short window (the 50-row size other `tui-*` cards use) a chatty first turn
+  can push the header off the top with no way to scroll back into tmux
+  history. Use a tall window (`-y 300`+).
+- **The TUI's `StatusBadge` uppercases whatever word it's given**
+  (`tuiprim.StatusBadge`), and the web rail lowercases
+  (`humanizeState`). Both are deliberate surface-specific styling, not a
+  vocabulary mismatch — the shared vocabulary is `hubapi.StateWord`, which
+  the TUI reaches through `displayWord` (`hub_dashboard_view.go:576-578`).
+- **Historical result: forcing `errored` live could not be verified in the
+  original pass.** A bad model name was rejected at spawn time before a
+  session existed, and recoverable provider failures return the live session
+  to `idle`. The obsolete procedure has therefore been removed from the
+  runnable steps. Do not substitute transcript-tail or API-log heuristics:
+  the owning runtime state is the source of truth. `hubapi.TestStateWord`
+  pins the vocabulary mapping; a future live `errored` scenario needs a
+  deterministic owning-state transition and should be a separate card.

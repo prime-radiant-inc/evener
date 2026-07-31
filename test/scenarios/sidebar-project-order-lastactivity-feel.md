@@ -1,160 +1,181 @@
-# sidebar-project-order-lastactivity-feel: does a just-touched project actually surface at the top?
+# sidebar-project-order-lastactivity-feel: a just-touched project surfaces at the top, and does so promptly
 
-**What this covers**: Investigate T1 from the 2026-07-05 consistency-sweep
-Track D plan. WS3 pinned active-project ordering to `LastActivity` (max
-`OrderUpdatedAt` across a project's top-level sessions), sorted desc —
-`cmd/serf-hub/internal/hubcore/tree.go` (`byLastActivityDesc`, ~line
-567-571; `LastActivity` computed ~line 494-499). Two unit tests already pin
-the comparator (`TestBuildTree_OrdersProjectsByLastActivity` and
-`TestBuildTree_OrdersProjectsByLastActivityNotCreatedAt`,
-`cmd/serf-hub/internal/hubcore/tree_test.go:682-732`). This card verifies
-the same claim against the **live, assembled system** (`/api/tree` served
-by a real running hub over real spawned sessions), which unit tests can't
-prove — they don't exercise the past-index cache/rebuild path that
-actually feeds `/api/tree`.
+**What this covers**: two things that live at different layers. (1) The
+project-ordering comparator: active projects are emitted newest-first by
+`LastActivity`, the max `UpdatedAt` across a project's sessions, not by when a
+session was created (`byLastActivityDesc`,
+`cmd/serf-hub/internal/hubcore/tree.go:970-974`; `LastActivity` computed at
+`:886-895`, field doc at `:135-138`). (2) The **propagation** of a completed
+turn into that comparator's input, which is what a person actually experiences
+as "did the project I just touched move to the top?".
+
+Layer (1) is already pinned deterministically by two scenarios —
+`fuzzScenarioBuildTree_OrdersProjectsByLastActivity` and
+`…OrdersProjectsByLastActivityNotCreatedAt`
+(`internal/hubcore/tree_test.go:958,984`, replayed by `FuzzHubcoreScenarios`,
+`internal/hubcore/scenarios_fuzz_test.go:53-54`). This card exists for layer
+(2), which unit tests cannot see: `/api/tree` builds from
+`cfg.Past.AllMetas()` (`cmd/serf-hub/web_api_tree.go:389`, memoized on the
+inputs version at `:261-280`), an in-memory index that has to *learn* a
+session's meta changed.
+
+**Surface**: see `docs/agentic-testing.md` — the REST surface table there is
+authoritative for the session verbs this card drives. The old text used
+`POST /s/$SID/send` and `POST /s/$SID/shutdown`; that shim was deleted at
+`660376f78` and now 404s silently
+(`cmd/serf-hub/web_workspace.go:19-22,37-46`). The namespace is
+`/api/sessions/local:$SID/…`.
+
+## The gap this card found, and its current status
+
+The 2026-07-06 run recorded a real, live-observed propagation gap: a follow-up
+turn on the oldest project's session landed on disk at 12:31:50Z, and
+`/api/tree` did not reflect the new order until 12:33:16Z — **~86s**. At the
+time nothing on the turn-completion path refreshed the past index; only a
+`time.NewTicker(cfg.PastIndexRebuild)` (default 60s,
+`cmd/serf-hub/config.go:62,134-136`; started at `cmd/serf-hub/main.go:400`)
+ever did. The card's own recommendation was "a lighter per-session incremental
+update triggered from the turn-completion path".
+
+**That fix has since landed, and this card is now its regression guard.** The
+chain is:
+
+1. `roster.SetOnStatusChange(refreshPastOnStatus(past))` (`main.go:279`, whose
+   comment names this exact symptom: "so the sidebar order (which is keyed off
+   UpdatedAt) doesn't lag behind a completed turn").
+2. `Roster.Refresh` diffs per-session status and fires the callback once per
+   changed id (`internal/hubcore/roster.go:344-354`), driven by an fsnotify
+   watch on the run dir plus a 5s ticker (`:433-471`).
+3. `refreshPastOnStatus` calls `past.RefreshOne(id)`
+   (`cmd/serf-hub/main_background.go:30-32`), which re-reads that one session's
+   `meta.json` and folds it in via `UpdateMeta`
+   (`internal/hubcore/past.go:371-397,327-350`) — no full rescan.
+4. `past.SetOnChange(func(){ bump(); notifyTreeChanged(web.appRPC) })`
+   (`main.go:372`) busts the `/api/tree` memo *and* pushes `serf/tree/changed`,
+   so an open rail refetches on its own 250ms debounce
+   (`frontend/src/stores/tree.ts:443-450,455-467`).
+
+So the expectation flipped: the order should now update in **seconds**, not on
+the next 60s tick. If the ~86s lag reproduces, one of those four links is
+broken — that is the failure this card now catches.
 
 ## Pre-state
 
-- Fresh binaries: `make build-hub && make build` at the worktree root
-  (`./serf-hub`, `./serf`).
-- A fully isolated fake `$HOME` (real `~/.serf` and
-  `~/.local/state/serf` untouched): `FAKE_HOME=$(mktemp -d)`, hub launched
-  with `env -i HOME="$FAKE_HOME" PATH="$PATH" ./serf-hub -addr
-  127.0.0.1:9280 -serf ./serf` (the `env -i` + explicit `PATH` avoids any
-  ambient `XDG_STATE_HOME`/`SERF_PROVIDERS_CONFIG` leaking through, since
-  the hub's own defaults key off `$HOME` alone but inherit the full
-  parent env otherwise).
-- Local `ollama` running with a pulled model (`ollama list` shows
-  `gemma4:e4b`) — a free, fully-local, credential-free provider, so real
-  turns can run without spending API credits. **Sharp edge**: the hub
-  auto-materializes a `providers.toml` with an `[instances.ollama] type =
-  "ollama"` entry on first launch; with that file present,
-  `validateProviderCredentials`'s config-aware branch
-  (`cmd/serf-hub/spawn.go:461-535`) incorrectly demands a credential for
-  ollama anyway (see Sharp edges below — a real bug, out of scope here).
-  Workaround used for this card: `mv
-  $FAKE_HOME/.serf/providers.toml{,.bak}` after hub startup, which routes
-  credential validation through the no-config path that correctly
-  special-cases `SourceNone` providers.
+- Fresh binaries and a hub on an isolated `$HOME` with a kernel-assigned port —
+  the Setup checklist in `docs/agentic-testing.md`. Never a real hub, never a
+  hardcoded port.
+- A model that can run real turns. A local `ollama` model is the cheapest
+  credential-free option and is what the recorded run used
+  (`ollama/gemma4:e4b`).
+- Leave the hub's auto-materialized `$HOME/.serf/providers.toml` in place. The
+  old text told you to move it aside because the config-aware branch of
+  `validateProviderCredentials` demanded a credential for ollama; **that is
+  fixed** — the branch now returns early for any instance type whose auth mode
+  is `none` (`cmd/serf-hub/spawn.go:566-572`, `envvars.RequiresNoCredential`,
+  `envvars/providers.go:65-68`; ollama is `AuthModes: ["none"]` at
+  `envvars/providers.go:155-161`). If an ollama spawn 503s with "provider
+  credentials missing", that regression is back and is worth its own kata.
 
 ## Steps
 
-1. Create 3 project dirs under a scratch base: `proj-old`, `proj-mid`,
+Every step here is **browser-free**: the assertion is the order of
+`/api/tree`'s `projects[]`, and the rail renders that order verbatim
+(`Rail.tsx:588-594` maps `tree.projects` straight through `projectNodes`,
+which preserves incoming order). Open the rail if you want to eyeball it; the
+verdict comes from the JSON.
+
+1. Create three project dirs under one scratch base: `proj-old`, `proj-mid`,
    `proj-new`.
-2. Spawn S1 in `proj-old` (`POST /api/spawn`,
-   `model:"ollama/gemma4:e4b"`, `working_dir` = proj-old). Poll
-   `/api/sessions/local:$SID` until `state` is `awaiting` (this harness's
-   idle-equivalent post-turn state).
-3. ~45s later, spawn S2 in `proj-mid`. Poll to `awaiting`.
-4. ~45s later, spawn S3 in `proj-new` — now `proj-new` is both the
-   most-recently-CREATED and most-recently-TOUCHED project. Poll to
-   `awaiting`.
-5. Capture `/api/tree` — baseline, before the final touch.
-6. Send a follow-up turn to **S1** (`proj-old`, the OLDEST-created
-   project) via `POST /s/$SID1/send`. Poll until it returns to
-   `awaiting` with an incremented `turn_count`.
-7. Capture `/api/tree` again, immediately, and repeatedly poll it every
-   ~5s for up to 90s. Also read S1's `meta.json` directly off disk
-   (ground truth, bypassing the hub) for its real `UpdatedAt`.
+2. Spawn S1 in `proj-old` (`POST /api/spawn`, `working_dir` = proj-old). Poll
+   `GET /api/sessions/local:$SID1` until its turn has finished — for this
+   harness that settles on `awaiting`, not `idle` (see Sharp edges).
+3. Wait ~45s, then spawn S2 in `proj-mid`; poll to settled.
+4. Wait ~45s, then spawn S3 in `proj-new`; poll to settled. `proj-new` is now
+   both the most-recently-created and most-recently-touched project.
+5. Capture `GET /api/tree` as the baseline, and record the wall-clock time.
+6. Send a follow-up turn to **S1** — the OLDEST-created project — via
+   `POST /api/sessions/local:$SID1/send` with body `{"text":"…"}`. Poll until
+   it settles again with an incremented turn count. Record the moment S1's
+   on-disk `meta.json` `UpdatedAt` changes (that is the ground truth the tree
+   is supposed to catch up to).
+7. Poll `GET /api/tree` every ~2s for up to 120s, recording the first capture
+   at which `proj-old` ranks first. Compare that timestamp against step 6's
+   disk write.
 
-## Expected / Observed
+## Expected
 
-- **Step 5 baseline** (`tree_before_touch.json`): project order
-  `proj-new` (`updated_at` 12:30:11Z) → `proj-mid` (12:30:05Z) →
-  `proj-old` (12:28:29Z) — strictly newest-updated_at-first, as
-  expected (proj-new was both created and touched last of the three
-  initial spawns).
-- **Step 6 disk ground truth**: S1's on-disk `meta.json` `UpdatedAt` =
-  `2026-07-06T12:31:50.324048Z` — newer than both proj-mid
-  (12:30:05Z) and proj-new (12:30:47Z). By the LastActivity rule,
-  `proj-old` should now rank #1.
-- **Step 7 immediate `/api/tree`** (captured ~9s after the touch, at
-  12:31:59Z): **STILL WRONG** — `proj-new` still ranks #1
-  (`updated_at` shown: 12:30:47Z), `proj-old` still ranks #3
-  (`updated_at` shown: **12:28:29Z**, i.e. the STALE pre-touch value,
-  not the real 12:31:50Z from disk). The rendered claim lagged the
-  ground truth.
-- **Step 7 polling**: `proj-old` did not reach #1 in `/api/tree` until
-  **12:33:16Z** — ~86s after the touch write landed on disk (touch
-  request sent 12:31:47Z, meta write completed 12:31:50Z, visible in
-  `/api/tree` at 12:33:16Z).
-- Falsification (as literally posed by the plan): "a project only
-  recently CREATED but not touched outranking a project JUST touched."
-  That specific case did **not** reproduce — no untouched-but-newer
-  project ever outranked a touched one once the tree finally
-  recomputed. The **comparator itself is correct**, confirmed by both
-  the pre-existing unit tests and this live run's eventual state.
+- **Step 5 baseline**: `projects[]` is ordered strictly newest-`updated_at`
+  first: `proj-new` → `proj-mid` → `proj-old`. Falsify: any other order — the
+  comparator itself is wrong, which would also break the two hubcore scenarios
+  cited above.
+- **Step 6 ground truth**: S1's on-disk `meta.json` `UpdatedAt` is newer than
+  either of the other two projects'. By the LastActivity rule `proj-old` must
+  now rank first.
+- **Step 7 (the regression guard)**: `proj-old` reaches rank 1 within a few
+  seconds of the disk write — bounded above by the roster's 5s status-poll
+  ticker plus the fetch, well inside the 60s past-index rebuild interval.
+  Assert **< 30s**, generously: the point is to distinguish "an incremental
+  refresh ran" from "we waited for a tick". Also confirm the `updated_at` the
+  tree reports for `proj-old` matches the value on disk, not a stale
+  pre-touch one — a correct rank with a stale timestamp means something else
+  reordered it.
+  - Falsify: `proj-old` only reaches rank 1 at ~60s or later, or its reported
+    `updated_at` stays at the pre-touch value while its rank changes. Either
+    means the `SetOnStatusChange` → `RefreshOne` → `UpdateMeta` → `bump` chain
+    is broken and `/api/tree` is back to waiting on the periodic rebuild.
+- **The original falsification still applies too**: "a project only recently
+  CREATED but not touched outranking a project JUST touched." It did not
+  reproduce in the 2026-07-06 run and must not now.
 
-## Verdict
+## Recorded run (2026-07-06, pre-fix — kept as the failure signature)
 
-**Ordering logic: correct, no change.** But live observation surfaced a
-**related, real gap the unit tests can't see**: `/api/tree`'s project
-order is driven by `cfg.Past.AllMetas()`
-(`cmd/serf-hub/web_api_tree.go:200`), an in-memory snapshot that only
-resyncs with on-disk `meta.json` changes via `past.Rebuild()`. That
-rebuild runs on a `time.NewTicker(cfg.PastIndexRebuild)` (default 60s,
-`cmd/serf-hub/config.go:59`) started once at hub boot
-(`cmd/serf-hub/main.go:263-274`) — nothing on the ordinary
-turn-completion path (`handleSend` / `processOneInput`) calls
-`Past.Rebuild()` or otherwise bumps `hubcore.InputsVersion` early.
-(Explicit `Past.Rebuild()` call sites are thread-fork, transcript
-compaction, project delete, and one `web_session.go:476` path — none of
-them "a live session finished an ordinary turn.") The result: **a
-user who sends a message to an existing live session's project does not
-see that project jump to the top of the sidebar until the next
-periodic past-index tick fires — up to ~60s later, worst case just under
-two ticks if the write lands right after a tick.** This is a genuine,
-live-observed UX gap distinct from the ordering comparator itself (which
-is provably correct) — it is a propagation-latency issue in the
-pipeline that feeds the comparator its input.
-
-**Not fixed here.** This isn't a small, precisely-scoped change to
-`tree.go`'s comparator (the thing this card's falsification target
-covers) — the fix would mean deciding whether/how to trigger a
-Past-index resync (or a lighter per-session incremental update) from the
-ordinary turn-completion path, which is an architectural tradeoff
-(resync-on-every-turn cost vs. staleness) deserving its own review, not
-a sweep-scoped patch. Recommend opening a follow-up kata: "sidebar
-project order lags up to ~60s after a live session's turn completes,
-because /api/tree reads from the periodically-rebuilt past index, not a
-live meta read."
+Baseline order `proj-new` (12:30:11Z) → `proj-mid` (12:30:05Z) → `proj-old`
+(12:28:29Z), correct. S1 touched: request 12:31:47Z, meta write 12:31:50Z. The
+`/api/tree` capture at 12:31:59Z still ranked `proj-new` first and still
+reported `proj-old`'s `updated_at` as **12:28:29Z** — the stale pre-touch
+value. `proj-old` did not reach rank 1 until 12:33:16Z, ~86s after the write.
+The comparator was correct throughout; only the pipeline feeding it lagged.
+Those numbers are the shape of the regression, not the current expectation.
 
 ## Cleanup
 
-- `POST /s/$SID/shutdown` for each spawned session (all 3 exited
-  cleanly).
-- Kill the hub process; `rm -r` the fake `$HOME` tmpdir.
-- Evidence retained in scratch (not committed): `tree_before_touch.json`,
-  `tree_after_touch.json`, `hub.log`, `timeline.txt` — see the
-  session's scratchpad if you need to re-inspect.
+- `POST /api/sessions/local:$SID/shutdown` for each spawned session.
+- Kill the hub by the PID you captured; `rm -rf` the run directory and the
+  scratch project dirs (Cleanup recipe in `docs/agentic-testing.md`).
 
 ## Sharp edges
 
-- **Unrelated bug found incidentally, NOT fixed (out of this card's
-  scope)**: `validateProviderCredentials`'s config-aware branch
-  (`cmd/serf-hub/spawn.go:461-509`, taken whenever a `providers.toml`
-  exists — which the hub auto-materializes on first launch) has no
-  "this instance type needs no credential" case. The no-config branch
-  correctly treats `credentials.Store.List()`'s `SourceNone` providers
-  (e.g. `ollama`) as needing nothing (`spawn.go:519-527`), but the
-  config-aware branch unconditionally requires an `api_key` / OAuth /
-  env credential and returns `HubLaunchError("provider credentials
-  missing for ollama: ...")` otherwise — a legible message, but
-  factually wrong, blocking a valid credential-free spawn. Reproduced
-  live: with the auto-materialized `providers.toml` in place, `ollama`
-  spawns always 503'd; removing the file let them through immediately.
-  Worth its own kata — did not touch it here since it's neither an
-  ordering bug nor an illegible-error bug, the two things this sweep's
-  Investigate track is scoped to.
-- `state` values seen in practice: `active` → `awaiting` (not `idle`)
-  after a normal turn completes for this profile/model. `awaiting`
-  carries `capabilities.send: false` transiently while the daemon is
-  between an internal loop step and the next steady state — poll for
-  `send: true` before POSTing a follow-up turn, or the hub replies `503
-  send is not available for this session`.
-- A small local model (`gemma4:e4b`, 4B-class quantized) given a
-  trivial "reply with one word" prompt still ran ~40+ real seconds and
-  cycled through `active`↔`awaiting` more than once before settling —
-  it isn't a fast rubber-stamp turn even for a one-word ask. Budget
-  real wall-clock time (tens of seconds per turn) when scripting this
-  scenario.
+- **This harness settles on `awaiting`, not `idle`, after a normal turn.**
+  `awaiting` also carries `capabilities.send: false` transiently while the
+  daemon is between an internal loop step and its next steady state — poll for
+  `capabilities.send: true` before POSTing the follow-up turn in step 6, or the
+  hub replies `503 send is not available for this session`.
+- **Wall-clock time is part of the measurement, so don't collapse the waits.**
+  The 45s gaps in steps 3-4 exist to make the three projects' `updated_at`
+  values unambiguously ordered; shrinking them can put two projects inside the
+  same second and make the tiebreak (a stable sort on the insertion order,
+  `tree.go:973`) decide the outcome instead of the comparator.
+- **A small local model is not a fast rubber stamp.** In the recorded run a
+  4B-class quantized model given a "reply with one word" prompt still ran ~40+
+  real seconds and cycled through `active`↔`awaiting` more than once before
+  settling. Budget tens of seconds per turn.
+- **`RefreshOne` keys off a *status transition*, not off the meta write, and
+  that leaves one narrower residual race.** The hub re-reads a session's
+  `meta.json` at the moment `Roster.Refresh` notices its status changed
+  (`internal/hubcore/roster.go:344-354`). The daemon writes its meta on its own
+  schedule — `maybeAutoSave` has many call sites, including a deferred flush on
+  every exit from a turn (`agent/session_lifecycle.go:908-919`) — so if the
+  write lands *after* the status flip the roster observed, that `RefreshOne`
+  reads the pre-touch meta
+  and nothing re-reads it until the next transition or the 60s rebuild. If step
+  7 misses its bound, check that ordering in the hub log and on disk before
+  concluding the whole chain is broken: a lost race on one transition is a much
+  narrower gap than the original "nothing on the turn-completion path refreshes
+  at all", and is worth its own kata rather than a rerun of this one.
+- **A meta file mutated out-of-band still waits for the periodic rebuild.**
+  There is no status change to key off, by design (`main.go:272-278`). Don't
+  mistake that for the regression this card guards.
+- **`RefreshOne` is a no-op for an id the index has never seen**
+  (`past.go:384-389`), so a brand-new session's very first appearance still
+  depends on a rebuild or on the live roster's own path. Step 6 deliberately
+  touches an *already-indexed* session for this reason.
