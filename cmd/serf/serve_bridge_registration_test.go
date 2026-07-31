@@ -149,8 +149,9 @@ func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
 
 	replacement := state.session(1)
 	t.Cleanup(func() {
-		// serve closed the session that was current when shutdown began, which
-		// was not this one. Nothing else will.
+		// Idempotent, and it must be redundant: the assertion below says serve
+		// already closed this. It stays so that a failing assertion leaves no
+		// live session behind for the rest of the package.
 		if replacement != nil {
 			replacement.Close()
 		}
@@ -158,6 +159,16 @@ func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
 	if replacement == nil {
 		t.Fatal("the /clear driven inside the teardown window built no replacement session, " +
 			"so it never reached bridgeSession and this test proves nothing")
+	}
+	// Declining to bridge is not declining to close. Shutdown's one closing pass
+	// had already run when this /clear installed its replacement, so /clear owns
+	// that session's teardown -- and only Session.Close() reaches the env, whose
+	// Cleanup() disposes the scratch directory the session owns. An unclosed
+	// replacement leaves that directory on disk AFTER the process exits.
+	if got := replacement.State(); got != agent.SessionClosed {
+		t.Fatalf("the replacement session built inside the teardown window is %q, want %q: "+
+			"refusing to bridge it does nothing for its execution environment, so its scratch "+
+			"directory outlives the daemon", got, agent.SessionClosed)
 	}
 
 	mu.Lock()

@@ -506,6 +506,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// alongside currentSess, so a cleared session's sandbox reflects what the running
 	// session actually enforces (on resume the persisted mode, not the launch flag).
 	currentEnv := env
+	// liveSessionClosed records that shutdown has already made its ONE closing
+	// pass over the live session, so no session installed after it is covered by
+	// that pass. It is monotonic and it is written inside the same currentMu
+	// hold that reads the session to close, which is what makes the pass and the
+	// swap one decision instead of two racing ones.
+	var liveSessionClosed bool
 	getSession := func() *agent.Session {
 		currentMu.RLock()
 		defer currentMu.RUnlock()
@@ -516,6 +522,27 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentSess = next
 		currentEnv = nextEnv
 		currentMu.Unlock()
+	}
+	// closeLiveSession is shutdown's single pass. Marking inside the SAME hold
+	// that reads the session is the whole point: a swap that lands after this
+	// critical section cannot observe the pass as still pending, so it knows it
+	// owns its replacement's teardown.
+	closeLiveSession := func() {
+		currentMu.Lock()
+		liveSessionClosed = true
+		live := currentSess
+		currentMu.Unlock()
+		live.Close()
+	}
+	// shutdownClosedTheLiveSession reports whether that pass has already run.
+	// Read it only AFTER the session in question is the current one, which is
+	// what makes a negative answer a promise rather than a guess: the pass reads
+	// currentSess under the same lock, so a pass still to come will find that
+	// session and close it.
+	shutdownClosedTheLiveSession := func() bool {
+		currentMu.RLock()
+		defer currentMu.RUnlock()
+		return liveSessionClosed
 	}
 
 	// The observer runs ON the bridge goroutine, which is the daemon's
@@ -566,19 +593,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// at most one jobs.jsonl read -- which is milliseconds, and still under
 	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
 	// Thirty seconds is two orders of magnitude past that, so an expiry here
-	// ordinarily means a genuine wedge, and it stays inside systemd's 90s
-	// default stop timeout so the daemon still gets to exit by its own
-	// decision.
+	// means a genuine wedge, and it stays inside systemd's 90s default stop
+	// timeout so the daemon still gets to exit by its own decision.
 	//
-	// One exception is neither a wedge nor real work, and still spends the
-	// full budget every time it occurs. bridgeSession's registration below is
-	// guarded only by teardownStarted, not by whether the session it bridges
-	// still has a closer: a /clear whose bridgeSession call lands after the
-	// shutdown goroutine's one getSession().Close() call has already closed
-	// the session being replaced, but before this snapshot sets
-	// teardownStarted, still registers the replacement's drain. Nothing
-	// closes that replacement afterward, so its drain cannot end at any
-	// budget. The race is pre-existing and accepted, not new behavior.
+	// "Genuine wedge" is a claim about every drain that can reach this wait, and
+	// it holds because every session this daemon makes current is closed by
+	// someone: shutdown's one pass (closeLiveSession) over whatever was live
+	// when it ran, or the /clear that installed a replacement past that pass and
+	// therefore closes its own. Without that second half, a /clear landing in
+	// the window between the pass and this snapshot registered a drain on a
+	// session nothing would ever close, which no budget can end -- the expiry
+	// fired every time, on work that was neither wedged nor real.
 	defer func() {
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
@@ -699,15 +724,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// snapshot has been taken the listener is closed, the rendezvous entry
 		// has been removed, and the input loop has exited. The replacement
 		// cannot take a turn and no client can read it, so there is no reader
-		// for its projection to be permanently wrong for. Bridging it instead
-		// would register a LOSSLESS consumer -- one whose feed blocks its
-		// emitter -- on a session nothing will ever close.
+		// for its projection to be permanently wrong for.
 		//
-		// Nothing closing it also means nothing calls its env's Cleanup()
-		// (agent/execenv/local.go), which is what disposes the session's owned
-		// scratch directory. Unlike the tee's buffered tail above -- which the
-		// OS reclaims once this process exits -- the replacement's scratch
-		// directory is disk state: it survives AFTER exit, not merely until it.
+		// It costs nothing on disk either, and that is a SEPARATE guarantee
+		// rather than a consequence of this refusal: a /clear reaching here
+		// installed its replacement past shutdown's closing pass, so it has
+		// already closed it, which is what runs the env's Cleanup()
+		// (agent/execenv/local.go) and disposes the session's owned scratch
+		// directory. Left unclosed that directory is disk state -- unlike the
+		// tee's buffered tail above, which the OS reclaims once this process
+		// exits, it survives AFTER exit. Do not read this refusal as the thing
+		// that prevents that: declining to bridge a session and closing one are
+		// different acts, and only the second reaches the env.
 		if teardownStarted {
 			return
 		}
@@ -853,6 +881,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
 		oldSess.Close() // disposes oldEnv
+		// Every session this daemon makes current gets closed by someone, and
+		// shutdown covers only the one that was live when its pass ran. A
+		// replacement installed after that pass has no other closer, so /clear
+		// closes its own. The check reads AFTER the swap above, so a negative
+		// answer means the pass is still to come and will find newSess itself.
+		//
+		// Leaving it open costs two things and neither is recoverable. Its event
+		// channel is never closed, so the drain bridgeSession registers below
+		// can never end -- the teardown then spends its whole budget waiting on
+		// it and abandons the verbose tee. And its env's Cleanup() never runs,
+		// so the scratch directory the session owns survives process exit.
+		// Closing here happens BEFORE the bridge on purpose:
+		// ConsumeEventsLossless reports an already-closed session drained
+		// immediately, so nothing is registered that has to be waited out.
+		if shutdownClosedTheLiveSession() {
+			newSess.Close() // disposes clearEnv
+		}
 		bridgeSession(newSess)
 		return nil
 	})
@@ -1003,7 +1048,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		<-ctx.Done()
 		_ = httpSrv.Close()
 		<-inputLoopDone
-		getSession().Close()
+		closeLiveSession()
 	}()
 
 	if err := deps.serveHTTP(httpSrv, listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
