@@ -165,6 +165,44 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
+func TestProject_JobStartedUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventJobStarted,
+		Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"},
+	})
+	// The job lifecycle case emits the full serf/job/started notification plus
+	// the lightweight serf/job/updated the webui jobs panel reducer consumes.
+	if len(out) != 2 || out[1].Method != appwire.NotifySerfJobUpdated {
+		t.Fatalf("want serf/job/updated after serf/job/started, got %+v", out)
+	}
+	params, ok := out[1].Params.(appwire.JobUpdatedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.JobUpdatedParams", out[1].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.JobID != "job_1" || params.Status != "running" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
+func TestProject_JobFinishedUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventJobFinished,
+		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed"},
+	})
+	if len(out) != 2 || out[1].Method != appwire.NotifySerfJobUpdated {
+		t.Fatalf("want serf/job/updated after serf/job/finished, got %+v", out)
+	}
+	params, ok := out[1].Params.(appwire.JobUpdatedParams)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.JobUpdatedParams", out[1].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.JobID != "job_1" || params.Status != "completed" {
+		t.Fatalf("params = %+v", params)
+	}
+}
+
 func TestProject_SandboxEscalationRequested(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
@@ -985,7 +1023,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_delegate",
 		},
 	})
-	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
+	if len(started) != 2 || started[0].Method != appwire.NotifySerfJobStarted {
 		t.Fatalf("started=%+v", started)
 	}
 	startedParams, ok := started[0].Params.(appwire.SerfJobParams)
@@ -1018,7 +1056,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			OriginItemID:     "item_delegate",
 		},
 	})
-	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 2 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished=%+v", finished)
 	}
 	finishedParams, ok := finished[0].Params.(appwire.SerfJobParams)
@@ -1055,7 +1093,7 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 			Resumable:        &resumable,
 		},
 	})
-	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+	if len(finished) != 2 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished = %+v", finished)
 	}
 	params, ok := finished[0].Params.(appwire.SerfJobParams)

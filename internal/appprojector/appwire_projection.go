@@ -858,7 +858,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		started := p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -875,11 +875,20 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginToolCallID: data.OriginToolCallID,
 				OriginItemID:     data.OriginItemID,
 			},
-		})}
+		})
+		// serf/job/updated: the lightweight lifecycle notification the webui jobs
+		// panel reducer consumes (paired with the full serf/job/started above).
+		updated := p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			JobID:    data.JobID,
+			Status:   data.Status,
+		})
+		return []AppNotification{started, updated}
 	case events.EventJobFinished:
 		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
+		finished := p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -902,7 +911,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginToolCallID: data.OriginToolCallID,
 				OriginItemID:     data.OriginItemID,
 			},
-		})}
+		})
+		// serf/job/updated: the lightweight lifecycle notification the webui jobs
+		// panel reducer consumes (paired with the full serf/job/finished above).
+		updated := p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			JobID:    data.JobID,
+			Status:   data.Status,
+		})
+		return []AppNotification{finished, updated}
 	case events.EventTurnEnded:
 		if p.activeTurnID == "" {
 			return nil // turn already completed (e.g. failed via EventError)
