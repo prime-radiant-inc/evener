@@ -330,7 +330,7 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError("daemon spawn timed out", err, stderr.String())
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("daemon spawn", err), err, stderr.String())
 	}
 	return entry, nil
 }
@@ -371,7 +371,7 @@ func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...Wait
 		}
 		select {
 		case <-ctx.Done():
-			return rendezvous.Entry{}, errors.New("timeout waiting for rendezvous")
+			return rendezvous.Entry{}, errRendezvousTimeout
 		case <-ticker.C:
 		}
 	}
@@ -412,7 +412,7 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError("resume timed out", err, stderr.String())
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", err), err, stderr.String())
 	}
 	return entry, nil
 }
@@ -440,6 +440,25 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 
 func (b *tailBuffer) String() string {
 	return string(b.buf)
+}
+
+// errRendezvousTimeout is the rendezvous wait running out of time, as opposed
+// to the child dying first. Those are the only two ways the wait fails, the
+// operator's next move differs for each, and a caller that wants to say which
+// one happened must not have to re-read the message to find out.
+var errRendezvousTimeout = errors.New("timeout waiting for rendezvous")
+
+// launchFailurePrefix labels a launch failure by what actually stopped it. A
+// daemon that fails validation and exits in milliseconds is not a timeout, and
+// calling it one sends an operator triaging the crash after a slow machine, a
+// hung provider, or a too-short SpawnTimeout — none of which are involved
+// (kata 42ck). Only the wait genuinely running out of time keeps the timeout
+// label.
+func launchFailurePrefix(action string, err error) string {
+	if errors.Is(err, errRendezvousTimeout) {
+		return action + " timed out"
+	}
+	return action + " failed"
 }
 
 func launchFailureError(prefix string, err error, stderr string) error {
@@ -812,7 +831,7 @@ func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited
 		}
 		select {
 		case <-ctx.Done():
-			return rendezvous.Entry{}, errors.New("timeout waiting for rendezvous")
+			return rendezvous.Entry{}, errRendezvousTimeout
 		case err := <-exited:
 			if err != nil {
 				return rendezvous.Entry{}, fmt.Errorf("process exited before rendezvous: %w", err)

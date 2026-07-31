@@ -6450,7 +6450,7 @@ func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) {
 	runDir := t.TempDir()
 	spawnErr := strings.Join([]string{
-		"daemon spawn timed out",
+		"daemon spawn failed",
 		"process exited before rendezvous",
 		"exit status 1",
 		`serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
@@ -7441,7 +7441,7 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 		blockerPID  = 104
 		blockerHTTP = "127.0.0.1:61535"
 		// Verbatim shape of the failure a real replacement daemon dies with.
-		spawnFailure = "resume timed out: process exited before rendezvous: exit status 1: " +
+		spawnFailure = "resume failed: process exited before rendezvous: exit status 1: " +
 			"serf serve: session sess_old is already running; send work to the live session or fork it: " +
 			"API log target is already running: /state/sessions/sess_old.api.jsonl"
 	)

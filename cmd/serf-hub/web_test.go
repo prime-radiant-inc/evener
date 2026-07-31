@@ -2123,7 +2123,7 @@ func TestWeb_SendResumeFailureNamesLiveIncompatibleDaemon(t *testing.T) {
 	)
 	sessionID := hubtest.SessionID(t)
 	// Verbatim shape of the failure a real replacement daemon dies with.
-	spawnFailure := "resume timed out: process exited before rendezvous: exit status 1: " +
+	spawnFailure := "resume failed: process exited before rendezvous: exit status 1: " +
 		"serf serve: session " + sessionID + " is already running; send work to the live session or fork it: " +
 		"API log target is already running: /state/sessions/" + sessionID + ".api.jsonl"
 

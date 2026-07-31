@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -418,6 +419,116 @@ exit 42
 	}
 	if !strings.Contains(err.Error(), "plugin initialization: resolving plugin dir") {
 		t.Fatalf("spawn error did not include daemon stderr: %v", err)
+	}
+}
+
+// waitForRendezvousOrExit already distinguishes a child that ran out of time
+// from one that died first, and the launch failure must report which: a daemon
+// that fails validation and exits in milliseconds is not a timeout, and saying
+// it is sends an operator triaging the crash after a slow machine, a hung
+// provider, or a too-short SpawnTimeout — none of which are involved. This is
+// the first line surfaced for every hub launch failure, spawn and resume
+// alike (kata 42ck).
+//
+// Both outcomes must stay inside diagnostic.HubFailureKeywords, the vocabulary
+// the hub and its web client each classify these messages against to offer
+// "Reconnect & retry" rather than a log to go read. The label is what changes;
+// which family of failure this is does not.
+func TestDaemonLaunchFailureNamesWhatActuallyHappened(t *testing.T) {
+	t.Parallel()
+	const exitsImmediately = `#!/bin/sh
+echo 'serf serve: session sess_old is already running; send work to the live session or fork it' >&2
+exit 1
+`
+	const neverRegisters = `#!/bin/sh
+sleep 30
+`
+	launches := []struct {
+		name string
+		// The action every one of its failures must open by naming, so an
+		// operator reading a bare message knows which launch it came from.
+		action string
+		call   func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error
+	}{
+		{
+			name:   "spawn",
+			action: "daemon spawn",
+			call: func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error {
+				_, err := SpawnDaemon(ctx, serfBinary, runDir, hubcore.SpawnRequest{}, timeout)
+				return err
+			},
+		},
+		{
+			name:   "resume",
+			action: "resume",
+			call: func(ctx context.Context, serfBinary, runDir string, timeout time.Duration) error {
+				_, err := ResumeDaemon(ctx, serfBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
+				return err
+			},
+		},
+	}
+	outcomes := []struct {
+		name        string
+		script      string
+		timeout     time.Duration
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			// The wait returns as soon as the child exits, so the generous
+			// timeout below is never reached — reaching it would itself be the
+			// bug this case is about.
+			name:    "child exits before rendezvous",
+			script:  exitsImmediately,
+			timeout: 10 * time.Second,
+			wantContain: []string{
+				"process exited before rendezvous",
+				"exit status 1",
+				// the child's own account of why, from its stderr
+				"is already running",
+			},
+			wantAbsent: []string{"timed out", "timeout"},
+		},
+		{
+			// A child that starts and never registers is the real timeout, and
+			// it must keep saying so.
+			name:        "child never registers",
+			script:      neverRegisters,
+			timeout:     20 * time.Millisecond,
+			wantContain: []string{"timed out", "timeout waiting for rendezvous"},
+		},
+	}
+
+	for _, launch := range launches {
+		for _, tc := range outcomes {
+			t.Run(launch.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				serfBinary := filepath.Join(dir, "fake-serf")
+				writeFakeSerf(t, serfBinary, tc.script)
+
+				err := launch.call(context.Background(), serfBinary, filepath.Join(dir, "run"), tc.timeout)
+				if err == nil {
+					t.Fatal("launch succeeded, want a failure")
+				}
+				if !strings.HasPrefix(err.Error(), launch.action+" ") {
+					t.Fatalf("failure does not open by naming %q:\n%v", launch.action, err)
+				}
+				for _, want := range tc.wantContain {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("failure is missing %q:\n%v", want, err)
+					}
+				}
+				for _, absent := range tc.wantAbsent {
+					if strings.Contains(err.Error(), absent) {
+						t.Fatalf("failure should not contain %q:\n%v", absent, err)
+					}
+				}
+				if got := diagnostic.Classify(err.Error()).Source; got != diagnostic.SourceHub {
+					t.Fatalf("diagnostic source=%q, want %q:\n%v", got, diagnostic.SourceHub, err)
+				}
+			})
+		}
 	}
 }
 
