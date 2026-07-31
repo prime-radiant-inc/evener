@@ -465,7 +465,9 @@ func formatShellResult(out shellToolResult) string {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
 	}
 	if len(foot) > 0 {
-		b.WriteString("[" + strings.Join(foot, " · ") + "]")
+		b.WriteString("[")
+		b.WriteString(strings.Join(foot, " · "))
+		b.WriteString("]")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

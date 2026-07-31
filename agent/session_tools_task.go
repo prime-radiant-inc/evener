@@ -252,7 +252,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				var msg strings.Builder
-				msg.WriteString("Updated " + formatTaskUpdates(updates) + ". ")
+				msg.WriteString("Updated ")
+				msg.WriteString(formatTaskUpdates(updates))
+				msg.WriteString(". ")
 				finalTasks := mutation.After
 
 				if completedAny {

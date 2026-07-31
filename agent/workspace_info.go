@@ -147,7 +147,8 @@ func formatTree(root string, entries []treeEntry, truncated bool, entryLimit int
 	}
 
 	var b strings.Builder
-	b.WriteString(root + "/\n")
+	b.WriteString(root)
+	b.WriteString("/\n")
 
 	var pendingFiles []string
 	pendingDepth := -1
@@ -157,7 +158,9 @@ func formatTree(root string, entries []treeEntry, truncated bool, entryLimit int
 			return
 		}
 		indent := strings.Repeat("  ", pendingDepth+1)
-		b.WriteString(indent + strings.Join(pendingFiles, ", ") + "\n")
+		b.WriteString(indent)
+		b.WriteString(strings.Join(pendingFiles, ", "))
+		b.WriteString("\n")
 		pendingFiles = nil
 	}
 
@@ -165,7 +168,9 @@ func formatTree(root string, entries []treeEntry, truncated bool, entryLimit int
 		if e.IsDir {
 			flushFiles()
 			indent := strings.Repeat("  ", e.Depth+1)
-			b.WriteString(indent + filepath.Base(e.RelPath) + "/\n")
+			b.WriteString(indent)
+			b.WriteString(filepath.Base(e.RelPath))
+			b.WriteString("/\n")
 		} else {
 			if e.Depth != pendingDepth {
 				flushFiles()

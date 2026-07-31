@@ -1617,7 +1617,9 @@ func formatDelegateSend(out delegateSendResult) string {
 	if out.WaitIgnoredReason != "" {
 		foot = append(foot, "wait ignored: "+out.WaitIgnoredReason)
 	}
-	b.WriteString("[" + strings.Join(foot, " · ") + "]")
+	b.WriteString("[")
+	b.WriteString(strings.Join(foot, " · "))
+	b.WriteString("]")
 	if len(out.Watches) > 0 {
 		b.WriteString("\nwatches:")
 		for _, w := range out.Watches {
