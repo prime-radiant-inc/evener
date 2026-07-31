@@ -586,7 +586,12 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	}
 	// Watch installation mints no read grant: grants are minted per delivery,
 	// from the delivered event payload, so a grant can only ever name a job
-	// that has already finished (spec §5.1).
+	// that has already finished (spec §5.1). The OBSERVER LINK is different:
+	// stamping the watched worker's meta only buys the hub its auto-open
+	// convenience, confers no read capability, and must exist from the moment
+	// the sidecar is installed — a worker can run a long time before its first
+	// matching event, and the hub should show its observer for all of it.
+	jm.stampObserverLinkAtInstall(cfg)
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
@@ -3193,6 +3198,32 @@ func (jm *jobManager) stampObservedBy(workerSessionID, observerSessionID string)
 	}
 	meta.ObservedBy = append(meta.ObservedBy, observerSessionID)
 	return schema.SaveSessionMeta(jm.stateDir, meta)
+}
+
+// stampObserverLinkAtInstall surfaces the observer link for a sidecar watch
+// (concrete job target, concrete delegate delivery) the moment the watch is
+// configured. This is the install-time HALF of what the deleted create-time
+// grant mint used to do: the grant is gone by ruling (terminal-only, minted
+// per delivery), but the hub's observed-by stamp carries no capability and
+// waiting for the first fire would leave a long-running worker unlinked.
+// Best-effort throughout: every failure only costs the hub auto-open.
+func (jm *jobManager) stampObserverLinkAtInstall(cfg *watchConfig) {
+	if cfg == nil || cfg.send == nil || isWatchSessionTarget(cfg.target) {
+		return
+	}
+	switch cfg.send.To {
+	case runtimeMessageAliasCaller, runtimeMessageAliasWatched:
+		return
+	}
+	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
+	if observerSessionID == "" {
+		resolved, ok, err := jm.watchReadGrantObserver(cfg.send.To)
+		if err != nil || !ok {
+			return
+		}
+		observerSessionID = resolved
+	}
+	jm.recordObserverLink(cfg.target, observerSessionID)
 }
 
 // recordObserverLink resolves the watched job to its worker session and stamps
