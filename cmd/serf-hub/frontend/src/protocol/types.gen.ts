@@ -261,6 +261,7 @@ export interface InstanceEntry {
   hasStoredOAuth: boolean;
   envVar?: string;
   storedEmail?: string;
+  credentialRequired: boolean;
 }
 
 export interface InstanceListResponse {

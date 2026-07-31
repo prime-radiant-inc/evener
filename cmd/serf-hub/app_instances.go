@@ -67,6 +67,11 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			HasStoredOAuth: status.HasStoredOAuth,
 			EnvVar:         status.EnvVar,
 			StoredEmail:    status.StoredEmail,
+			// The pane distinguishes a credential that is missing from one
+			// that was never needed, and that distinction is the same gate
+			// serf/auth/test asks — asked here so it is derived once, from the
+			// authored instance rather than from the sanitized wire copy.
+			CredentialRequired: credentialRequired(inst),
 		}
 		entries = append(entries, entry)
 	}

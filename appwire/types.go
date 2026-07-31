@@ -1717,6 +1717,12 @@ type InstanceEntry struct {
 	HasStoredOAuth bool     `json:"hasStoredOAuth"`
 	EnvVar         string   `json:"envVar,omitempty"`
 	StoredEmail    string   `json:"storedEmail,omitempty"`
+	// CredentialRequired is false when this instance has no credential to
+	// look for at all — an auth-none provider, or a gateway that inherits no
+	// type-level key — so an absent credential is not a missing one. It is
+	// never omitted: false is the meaningful value, and a client reading an
+	// absent field as false would call every instance optional.
+	CredentialRequired bool `json:"credentialRequired"`
 }
 
 // InstanceListResponse is the result of serf/instance/list.
