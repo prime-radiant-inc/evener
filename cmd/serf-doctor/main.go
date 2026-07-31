@@ -7,7 +7,7 @@
 //
 // Usage:
 //
-//	serf-doctor locate     <selector> [--all-buckets]
+//	serf-doctor locate     <selector>
 //	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
 //	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate]
 //	serf-doctor jobs       <selector> [--job <id>]

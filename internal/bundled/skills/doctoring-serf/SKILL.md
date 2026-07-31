@@ -52,7 +52,7 @@ Run them via the shell tool. First positional arg is a session selector:
 
 | Command | Answers | Key flags |
 |---|---|---|
-| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | `--all-buckets` |
+| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | — |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
 | `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate` |
 | `serf-doctor jobs <sel>` | **what jobs has this session run**, and **what state is job X in** — status, reason, exit code, output bytes, start/end times, delegate/transcript/parent links | `--job <id>` |

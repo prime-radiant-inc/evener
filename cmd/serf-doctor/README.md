@@ -29,7 +29,7 @@ or a bare `<id>` (searched across buckets). Common flags: `--state-dir <path>`
 
 | Tool | What it does | Key flags |
 |---|---|---|
-| `locate <sel>` | Resolve a selector to its on-disk transcript / canonical API log / meta / jobs / client-mutation paths and bucket. | `--all-buckets` |
+| `locate <sel>` | Resolve a selector to its on-disk transcript / canonical API log / meta / jobs / client-mutation paths and bucket. A bare `<id>` found in more than one bucket is reported as ambiguous, naming every bucket it appears in. | — |
 | `transcript <sel>` | Render a session's logical turns; answer "how many real `X` calls?" structurally (calls vs. textual mentions). | `--count <tool>`, `--format outline\|markdown`, `--range last:N\|start:N\|A-B` |
 | `apilog <sel>` | Canonical provider-attempt diagnostics: identity, grouping, finality, settlement state, tokens/latency, empty responses, errors, cache spikes, and whole-session token spend. Reads `sessions/<sid>.api.jsonl` through the shared API-log codec. `--validate` instead runs a whole-history structural-integrity scan: strictly decode every record from offset zero through clean EOF and report every corrupt/malformed/oversized/unsupported record with its offset (explicit diagnostics, proportional to file size — not run at logger open). | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate` |
 | `jobs <sel>` | Every job the session ran, folded from `jobs.jsonl`: status, reason, exit code, output bytes, start/end times, and the delegate/transcript/parent links to pivot on. | `--job <id>` |
