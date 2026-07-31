@@ -180,7 +180,11 @@ func stampOutputImageURLs(sessionID string, images []appwire.OutputImage) bool {
 	return stamped
 }
 
-// stampSessionImageURLs is stampOutputImageURLs over every item of every turn.
+// stampSessionImageURLs is stampOutputImageURLs over every item of every turn,
+// plus the replayed user-input images: projectReplayInputImage strips their
+// bytes and records the sha in metadata, and handleSessionImage serves exactly
+// that sha back, so the fetchable route belongs on the item itself (kata ck8z)
+// rather than being left for the client to reconstruct from metadata.
 func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
 	if sessionID == "" {
 		return
@@ -188,7 +192,23 @@ func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
 	for ti := range turns {
 		for ii := range turns[ti].Items {
 			stampOutputImageURLs(sessionID, turns[ti].Items[ii].OutputImages)
+			stampInputImageURLs(sessionID, turns[ti].Items[ii].Images)
 		}
+	}
+}
+
+// stampInputImageURLs gives each sha-bearing input image its sha route,
+// leaving already-routed images and sha-less inline images alone.
+func stampInputImageURLs(sessionID string, images []appwire.InputItem) {
+	for i := range images {
+		if images[i].URL != "" {
+			continue
+		}
+		sha := strings.TrimSpace(images[i].Metadata["sha"])
+		if sha == "" {
+			continue
+		}
+		images[i].URL = sessionImageURL(sessionID, sha)
 	}
 }
 

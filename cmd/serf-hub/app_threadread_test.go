@@ -762,6 +762,31 @@ func TestStampSessionImageURLsLeavesDescriptorsAloneWithoutASession(t *testing.T
 	}
 }
 
+// TestStampSessionImageURLsCoversReplayedInputImages pins kata ck8z: a
+// replayed user-attached image reaches the wire with only metadata sha/size
+// (projectReplayInputImage strips the bytes), and handleSessionImage serves
+// exactly that sha back — so the stamping pass must put the fetchable route
+// on the item, not leave the client to reconstruct it from metadata.
+func TestStampSessionImageURLsCoversReplayedInputImages(t *testing.T) {
+	sha := strings.Repeat("d", 64)
+	turns := []appwire.Turn{{Items: []appwire.ThreadItem{{Images: []appwire.InputItem{
+		{Type: "image", Metadata: map[string]string{"sha": sha, "size": "78"}},
+		{Type: "image", URL: "/doc/image?session=s&path=shot.png", Metadata: map[string]string{"sha": sha}},
+		{Type: "image", Name: "inline.png"},
+	}}}}}
+	stampSessionImageURLs("proj/one", turns)
+	got := turns[0].Items[0].Images
+	if got[0].URL != "/s/proj%2Fone/images/"+sha {
+		t.Errorf("sha-metadata image URL=%q, want the escaped sha route", got[0].URL)
+	}
+	if got[1].URL != "/doc/image?session=s&path=shot.png" {
+		t.Errorf("already-routed image URL=%q, want it left alone", got[1].URL)
+	}
+	if got[2].URL != "" {
+		t.Errorf("sha-less image URL=%q, want no route invented for it", got[2].URL)
+	}
+}
+
 // TestStampThreadImageURLsFallsBackToThreadID mirrors how the file-backed
 // enrichment resolves a thread's session: SessionID first, thread ID second.
 func TestStampThreadImageURLsFallsBackToThreadID(t *testing.T) {
