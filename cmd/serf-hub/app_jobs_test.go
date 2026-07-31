@@ -253,6 +253,67 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestHubJobsOutputLiveDaemon is the output path's counterpart to
+// TestHubJobsListLiveDaemon: a running daemon owns the job's live output
+// buffer, so a successful live JobOutput response is passed through untouched
+// and past is never consulted — even though a past index entry holds its own,
+// different, persisted output for the very same job id.
+func TestHubJobsOutputLiveDaemon(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
+	})
+	liveTail := agent.JobOutputTail{Tail: "live", TotalBytes: 44, RetainedStart: 40, Truncated: true}
+	sources := appsource.NewRegistry()
+	sources.Add(&jobsListSource{id: "local", outResp: appwire.JobsOutputResponse{Data: liveTail}})
+
+	resp, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if err != nil {
+		t.Fatalf("hubJobsOutput: %v", err)
+	}
+	tail, ok := resp.Data.(agent.JobOutputTail)
+	if !ok {
+		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
+	}
+	if tail != liveTail {
+		t.Fatalf("tail = %+v, want the live tail %+v (past must not be consulted)", tail, liveTail)
+	}
+}
+
+// TestHubJobsOutputLiveErrorPropagates is the output path's counterpart to
+// TestHubJobsListLiveErrorPropagates: a LIVE rendezvous entry whose endpoint
+// is unreachable. The dial failure maps to a SessionUnavailable-SHAPED error
+// ("local daemon unavailable: ...") that is NOT the dead-session condition;
+// hubJobsOutput must propagate it rather than silently serving the stale
+// past-index output tail.
+func TestHubJobsOutputLiveErrorPropagates(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc", // reserved port: dial fails ECONNREFUSED
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		}}}
+	}, nil))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := hubJobsOutput(ctx, cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if err == nil {
+		t.Fatal("hubJobsOutput returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
+		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
+	}
+	if isDeadSessionError(err) {
+		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
+	}
+}
+
 // TestHubJobsOutputDeadSessionFallsBackToPast proves the exited-session
 // fallback reads the persisted job's output tail through
 // agent.LoadSessionJobOutputTail: the last MaxBytes of the durable output
