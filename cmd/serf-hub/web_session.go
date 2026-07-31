@@ -94,7 +94,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 		entry, err := s.cfg.Spawner.Resume(r.Context(), resumeReq)
 		if err != nil {
-			return hubcore.LiveEntry{}, fmt.Errorf("resume: %w", err)
+			return hubcore.LiveEntry{}, fmt.Errorf("resume: %w", resumeFailureError(s.cfg, id, err))
 		}
 		le := webWaitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
 		if le.Address == "" {

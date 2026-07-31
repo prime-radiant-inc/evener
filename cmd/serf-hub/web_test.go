@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
@@ -2106,6 +2107,108 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		t.Fatalf("prompt=%q, want resume work", gotPrompt)
 	}
 
+}
+
+// A send to a session whose live daemon this hub cannot speak to resumes, and
+// that resume cannot win the session's exclusive API-log reservation while the
+// daemon it is replacing is still running. The REST path owes the operator the
+// same two facts the RPC path now hands over — which process is holding the
+// session, and the command that releases it — because the spawn failure that
+// comes back names only the locked file (kata x3hp; the RPC side is
+// TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails).
+func TestWeb_SendResumeFailureNamesLiveIncompatibleDaemon(t *testing.T) {
+	const (
+		blockerPID  = 104
+		blockerHTTP = "127.0.0.1:61535"
+	)
+	sessionID := hubtest.SessionID(t)
+	// Verbatim shape of the failure a real replacement daemon dies with.
+	spawnFailure := "resume timed out: process exited before rendezvous: exit status 1: " +
+		"serf serve: session " + sessionID + " is already running; send work to the live session or fork it: " +
+		"API log target is already running: /state/sessions/" + sessionID + ".api.jsonl"
+
+	tests := []struct {
+		name        string
+		rosterEntry *rendezvous.Entry
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "live incompatible daemon still owns the session",
+			rosterEntry: &rendezvous.Entry{
+				PID:       blockerPID,
+				Protocol:  "serf-appwire-v1",
+				Address:   blockerHTTP,
+				Endpoint:  "ws://" + blockerHTTP + "/rpc",
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			},
+			wantContain: []string{
+				// the holder
+				"pid 104",
+				// why the hub will not just talk to it
+				"serf-appwire-v1",
+				appwire.ProtocolVersion,
+				// the remedy the operator can actually run
+				"http://" + blockerHTTP + "/shutdown",
+				// the underlying cause, preserved
+				spawnFailure,
+			},
+		},
+		{
+			name:        "no live daemon to blame",
+			rosterEntry: nil,
+			wantContain: []string{spawnFailure},
+			// Nothing died holding the session, so the hub must not invent a
+			// holder or a pid.
+			wantAbsent: []string{"pid ", "/shutdown"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			if tc.rosterEntry != nil {
+				writeRendezvous(t, runDir, *tc.rosterEntry)
+			}
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+			roster.Refresh()
+			web := NewWebServer(hubcore.WebConfig{
+				HubAddr: "127.0.0.1:9180",
+				RunDir:  runDir,
+				Roster:  roster,
+				Past:    hubcore.NewPastIndex(""),
+				Spawner: &fakeRPCSpawner{
+					resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+						return rendezvous.Entry{}, errors.New(spawnFailure)
+					},
+				},
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
+			req.Host = "127.0.0.1:9180"
+			req.Header.Set("Origin", "http://127.0.0.1:9180")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("send status=%d, want 502 (body=%q)", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			for _, want := range tc.wantContain {
+				if !strings.Contains(body, want) {
+					t.Fatalf("send error is missing %q:\n%s", want, body)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(body, absent) {
+					t.Fatalf("send error should not contain %q:\n%s", absent, body)
+				}
+			}
+		})
+	}
 }
 
 // TestWeb_APIFork_DeferInputParity verifies the /api fork endpoint enforces
