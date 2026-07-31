@@ -1,0 +1,19 @@
+# Fixture for scripts/e2e-ratelimited-provider.sh (kata 3mn9). Routes the
+# "ratelimited" provider instance at fake429 instead of a real backend, so a
+# hub + serf spawned against this config get a 429 storm instead of a live
+# model response. See docs/agentic-testing.md for when and why to use this.
+#
+# The host:port in base_url below is filled in by the launch script with
+# fake429's actual kernel-assigned address (never a fixed port — kata 68fm)
+# before this file is copied into the disposable hub's own
+# $HOME/.serf/providers.toml. Copy it by hand and substitute the same way if
+# you are wiring fake429 into a hub without the script; the token the
+# script's sed replaces is the literal string on the base_url line, not
+# anything in this comment block.
+schema = 1
+default = "ratelimited"
+
+[instances.ratelimited]
+type = "openai"
+api_style = "chat-completions"
+base_url = "http://FAKE429_ADDR/v1"
