@@ -189,6 +189,9 @@ function assertResult(result, expectedWidth) {
         `attachment tile ${index} escapes its own row: ${JSON.stringify(tile)} vs ${JSON.stringify(staged.row)}`,
       );
     }
+    // Redundant with the staging wait, which already blocks on this exact
+    // condition - it cannot fail while that wait is in place, and it is here
+    // for the harness change that drops the wait. Not independent coverage.
     if (!tile.decoded) failures.push(`attachment tile ${index} never decoded its thumbnail`);
   }
   // Fixed-size boxes in a flex-wrap row: where the row is too narrow to hold
