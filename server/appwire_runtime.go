@@ -897,7 +897,11 @@ func (s *Server) handleAppJobsList(context.Context, appwire.JobsListParams) (app
 	if fn == nil {
 		return appwire.JobsListResponse{}, nil
 	}
-	return appwire.JobsListResponse{Data: fn()}, nil
+	data, err := fn()
+	if err != nil {
+		return appwire.JobsListResponse{}, err
+	}
+	return appwire.JobsListResponse{Data: data}, nil
 }
 
 func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {

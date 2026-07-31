@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,6 +55,56 @@ func TestSummarizeJobRecordDescriptionFallback(t *testing.T) {
 	}
 }
 
+// HasOutput means "a tail read is worth attempting", and either signal on
+// its own is reason enough: bytes were counted for a job whose OutputPath
+// the record never carried, or a path was recorded for a job that has not
+// written to it yet.
+func TestSummarizeJobRecordHasOutputEitherSignal(t *testing.T) {
+	bytesOnly := summarizeJobRecord(&jobstore.JobRecord{JobID: "job_b", OutputBytes: 42})
+	if !bytesOnly.HasOutput {
+		t.Error("HasOutput should be true when bytes were counted and no OutputPath is recorded")
+	}
+	pathOnly := summarizeJobRecord(&jobstore.JobRecord{JobID: "job_p", OutputPath: "/tmp/out.log"})
+	if !pathOnly.HasOutput {
+		t.Error("HasOutput should be true when an OutputPath is recorded and no bytes were counted")
+	}
+	if neither := summarizeJobRecord(&jobstore.JobRecord{JobID: "job_n"}); neither.HasOutput {
+		t.Error("HasOutput should be false with neither an output path nor counted bytes")
+	}
+}
+
+// Zero jobs must reach the wire as [], never null. jobData.ts reads null as
+// "this daemon has no job list at all" (an old one with no jobsFn) and
+// renders a capability gap; [] is the honest "no jobs ran", which the panel
+// shows as "No jobs yet". Every producer of this payload owes the same [].
+func TestJobSummariesEmptySetMarshalsAsJSONArray(t *testing.T) {
+	assertEmptyJSONArray := func(what string, jobs []JobSummary) {
+		t.Helper()
+		encoded, err := json.Marshal(jobs)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", what, err)
+		}
+		if string(encoded) != "[]" {
+			t.Errorf("%s: got %s, want []", what, encoded)
+		}
+	}
+	assertEmptyJSONArray("summarizeJobRecords(nil)", summarizeJobRecords(nil))
+
+	jm := newTestJM(t)
+	live, err := (&Session{id: jm.sessionID, jobManager: jm}).JobSummaries()
+	if err != nil {
+		t.Fatalf("live JobSummaries: %v", err)
+	}
+	assertEmptyJSONArray("a live session that ran no jobs", live)
+
+	var nilSession *Session
+	none, err := nilSession.JobSummaries()
+	if err != nil {
+		t.Fatalf("nil-manager JobSummaries: %v", err)
+	}
+	assertEmptyJSONArray("a session with no job manager", none)
+}
+
 func TestLoadSessionJobListEmptyWhenNoLog(t *testing.T) {
 	dir := t.TempDir()
 	got, err := LoadSessionJobList(dir, identifier.MustNewSessionID())
@@ -62,6 +113,12 @@ func TestLoadSessionJobListEmptyWhenNoLog(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("want empty list, got %+v", got)
+	}
+	// Non-nil too: the hub's past-session fallback puts this straight into
+	// JobsListResponse.Data, where nil would marshal as null and read as a
+	// capability gap instead of "no jobs ran".
+	if encoded, err := json.Marshal(got); err != nil || string(encoded) != "[]" {
+		t.Errorf("no-log job list: got %s (err=%v), want []", encoded, err)
 	}
 }
 
@@ -163,10 +220,72 @@ func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
 
 func TestSessionJobSummariesAndOutputTailNilManager(t *testing.T) {
 	var s *Session
-	if got := s.JobSummaries(); got == nil || len(got) != 0 {
+	got, err := s.JobSummaries()
+	if err != nil {
+		t.Fatalf("nil session JobSummaries: %v", err)
+	}
+	if got == nil || len(got) != 0 {
 		t.Errorf("nil session JobSummaries: %+v", got)
 	}
 	if _, found, err := s.JobOutputTail("job_1", 0); err != nil || found {
 		t.Errorf("nil session JobOutputTail: found=%v err=%v", found, err)
+	}
+}
+
+// The live-daemon path end to end - the one cmd/serf/serve.go's SetJobsFunc
+// actually calls. Every other test here reaches the projection directly or
+// through the past-session reader; this one lets a real Session's own job
+// manager create, feed and finish a job, then reads back what the durable
+// store holds.
+func TestSessionJobSummariesLiveSession(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "make build", Description: "build the tree"})
+	if err != nil {
+		t.Fatalf("create shell job: %v", err)
+	}
+	appendManualJobOutput(s.jobManager, rec.JobID, "build ok\n")
+	if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, rec.JobID)
+
+	got, err := s.JobSummaries()
+	if err != nil {
+		t.Fatalf("JobSummaries: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("live job list: got %d jobs, want 1: %+v", len(got), got)
+	}
+	sum := got[0]
+	if sum.JobID != rec.JobID || sum.Type != "shell" || sum.Status != "completed" {
+		t.Errorf("identity/status: %+v", sum)
+	}
+	if sum.Description != "build the tree" || sum.Command != "make build" {
+		t.Errorf("description/command: %+v", sum)
+	}
+	if sum.StartedAt == "" || sum.EndedAt == "" {
+		t.Errorf("a finished job carries both timestamps: %+v", sum)
+	}
+	if !sum.HasOutput || sum.OutputBytes != int64(len("build ok\n")) {
+		t.Errorf("output: %+v", sum)
+	}
+}
+
+// A jobstore that cannot be read is not a session that ran no jobs. The
+// past-session reader for this same payload (LoadSessionJobList) has always
+// surfaced the read error; the live one used to answer the empty list a
+// job-less session answers, which the webui renders as "No jobs yet" - a far
+// more reassuring claim than the truth.
+func TestSessionJobSummariesSurfacesLoadError(t *testing.T) {
+	jm := newTestJM(t)
+	s := &Session{id: jm.sessionID, jobManager: jm}
+	s1cov_corruptJobLog(t, filepath.Join(jm.dir, "jobs.jsonl"))
+
+	got, err := s.JobSummaries()
+	if err == nil {
+		t.Fatalf("corrupt jobstore should surface an error, got %d jobs", len(got))
+	}
+	if got != nil {
+		t.Errorf("a failed projection should carry no jobs, got %+v", got)
 	}
 }
