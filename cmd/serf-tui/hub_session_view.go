@@ -57,9 +57,9 @@ func (m hubModel) sessionHeaderLines() []string {
 		addPart("dir", modeldisplay.AbbreviatePath(m.detail.WorkingDir, 32))
 	}
 	// ctx is the one meta cell that escalates: a filling window is news the
-	// reader has to act on, and the strip is the only live surface that shows it.
+	// reader has to act on.
 	if ctx := formatContextFragment(m.detail); ctx != "" {
-		addColoredPart("ctx", ctx, contextPressureColor(m.detail))
+		addColoredPart("ctx", ctx, contextPressureColor(m.detail, th.Text))
 	}
 	if m.detail.WorkMillis > 0 {
 		addPart("work", formatWorkMillis(m.detail.WorkMillis))
@@ -86,16 +86,19 @@ func (m hubModel) sessionHeaderLines() []string {
 	return []string{rule, titleLine, meta}
 }
 
-// contextPressureColor returns the foreground for the meta strip's ctx value:
-// StateWarning from warnThreshold, StateError from compactThreshold, plain
-// Text below (spec §7.5). The ratio is the used/window one the fragment's own
-// percentage and "N to compact" figure come from, so the color can never
-// disagree with the number beside it. A source that reports no window gives no
-// ratio to band on — and no divisor — so it renders plain.
-func contextPressureColor(detail hubSessionDetail) lipgloss.Color {
+// contextPressureColor returns the foreground for a context value:
+// StateWarning from warnThreshold, StateError from compactThreshold, and the
+// caller's calm tone below (spec §7.5). Callers pass their own calm because
+// the live surfaces that report pressure rest at different tones — the header
+// strip's Text, the details drawer's ghost — and only the escalation has to be
+// common. The ratio is the used/window one the header fragment's percentage
+// and "N to compact" figure come from, so the color can never disagree with
+// the number beside it. A source that reports no window gives no ratio to band
+// on — and no divisor — so it renders calm.
+func contextPressureColor(detail hubSessionDetail, calm lipgloss.Color) lipgloss.Color {
 	th := tuitheme.ActiveTheme()
 	if detail.ContextUsed <= 0 || detail.ContextWindow <= 0 {
-		return th.Text
+		return calm
 	}
 	switch ratio := float64(detail.ContextUsed) / float64(detail.ContextWindow); {
 	case ratio >= compactThreshold:
@@ -103,7 +106,7 @@ func contextPressureColor(detail hubSessionDetail) lipgloss.Color {
 	case ratio >= warnThreshold:
 		return th.StateWarning
 	default:
-		return th.Text
+		return calm
 	}
 }
 

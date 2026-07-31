@@ -201,6 +201,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestDetailsDrawerShowsMCPServerStatusAndError,
 		TestDetailsDrawerShowsWorkTimeAndTokens,
 		TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent,
+		TestDetailsDrawerBandsContextPressure,
 		TestAddPendingAttachment_InsertsMarkerAtCursor,
 		TestAddPendingAttachment_NumbersMonotonic,
 		TestAddPendingAttachment_InsertsAtCursorPosition,
