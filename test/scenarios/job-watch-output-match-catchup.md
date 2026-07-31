@@ -10,8 +10,9 @@ terminal target with `events` still fails `target_terminal`.
 Pre-design, (a) silently never fired (the matcher only saw post-attach
 appends) and (b) errored — the `job_watch` description had to warn
 about a race the model could not avoid; these assertions are that
-warning's retirement. Contract rows: spec §8 for
-`docs/job-control.md` lines 506/534/542/546. Executed by plan
+warning's retirement. Contract anchors: `docs/job-control.md:552`
+(level-triggered), `:590` (terminal catch-up and `target_terminal`),
+`:75` (which watch types accept a terminal target). Executed by plan
 Phase 5.2.
 
 ## Pre-state
@@ -30,12 +31,11 @@ Phase 5.2.
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'echo LEVEL_TOKEN_A; echo LEVEL_TOKEN_B; sleep 30; echo LEVEL_TOKEN_C; sleep 240'`.
    >    Capture the job_id.
-   > 2. Call job_read_output for that job_id once (no block) and
-   >    confirm the output already contains LEVEL_TOKEN_A and
-   >    LEVEL_TOKEN_B. Report what you saw.
-   > 3. Call job_watch with operation "create", target that job_id,
-   >    and output_match "LEVEL_TOKEN_[ABC]" (no send). Report the
-   >    full JSON.
+   > 2. Call read_transcript on this session and confirm the shell
+   >    tool result already shows LEVEL_TOKEN_A and LEVEL_TOKEN_B in
+   >    the job's retained output. Report what you saw.
+   > 3. Call job_watch with operation "create", source that job_id,
+   >    and output_match "LEVEL_TOKEN_[ABC]". Report the full JSON.
    > 4. Say WATCH_ATTACHED and end your turn. Do not poll.
 3. Watch the transcript. Two separate watch notifications should
    arrive: the attach-scan fire right after turn 1 ends, then the
@@ -48,15 +48,14 @@ Phase 5.2.
    > report everything verbatim.
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'echo CATCHUP_TOKEN_OK'`. Capture the job_id, then call
-   >    job_read_output for it with max_wait_ms 5000, and confirm
-   >    status is completed.
-   > 2. Call job_watch with operation "create", target that job_id,
+   >    job_status for it and confirm status is completed.
+   > 2. Call job_watch with operation "create", source that job_id,
    >    and output_match "CATCHUP_TOKEN_OK". Report the full JSON
    >    verbatim.
-   > 3. Call job_watch with operation "create", target that job_id,
+   > 3. Call job_watch with operation "create", source that job_id,
    >    and output_match "CATCHUP_TOKEN_MISSING". Report the full JSON
    >    verbatim.
-   > 4. Call job_watch with operation "create", target that job_id,
+   > 4. Call job_watch with operation "create", source that job_id,
    >    and events ["job.notification"]. Report the result or error
    >    verbatim.
    > 5. End your turn.
@@ -124,11 +123,17 @@ Phase 5.2.
   once the fired:true notification has arrived, the transcript must
   contain exactly one catch-up watch notification for that job and
   none mentioning CATCHUP_TOKEN_MISSING.
-- The catch-up SEND variant (terminal job + output_match + send.to)
-  settles through a detached terminal-flush config per spec §7.1 and
-  is not covered here — it deserves its own card if live coverage is
-  wanted beyond the unit suite.
-- Sequential one-shots share the (session, target, send.to) key but
-  install nothing: `replaced_existing` should not be true on the
-  second catch-up call. If it is, the one-shot leaked into the watch
-  table — record what ships.
+- There is no `send` variant to cover: `job_watch` delivers to the
+  session that created the watch and rejects a `send` argument with
+  `additionalProperties 'send' not allowed`
+  (`agent/session_tools_jobs_watch_test.go:240`). The detached
+  terminal-flush config the old card pointed at is internal-only now.
+- Sequential one-shots share the watch key
+  `(watcher_session_id, source identity, receiver identity, condition
+  hash)` (`docs/job-control.md:599`) but install nothing:
+  `replaced_existing` should not be true on the second catch-up call.
+  If it is, the one-shot leaked into the watch table — record what
+  ships.
+- `job_read_output` no longer exists (retired by `cf84923c6`); use
+  `job_status` for lifecycle and `read_transcript` for the tool
+  result's retained output.

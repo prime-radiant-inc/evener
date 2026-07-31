@@ -2,7 +2,12 @@
 
 **What this covers**: memory/context injection as a passive observer.
 The sidecar watches only successful `read_file` tool results and sends
-a scoped reminder when a project rule appears.
+a scoped reminder when a project rule appears. Driving mechanism:
+`delegate(watch_parent:true)` + observer-installed
+`job_watch(source:"parent", events:["assistant.tool"], event_filter:
+{...})` + the observer's terminal `communicate(end_turn:true)` callback
+— see `docs/job-control.md` "Observer and sidecar composition" and the
+reference card `job-watch-observer-snide-thread.md`.
 
 ## Pre-state
 
@@ -22,40 +27,47 @@ a scoped reminder when a project rule appears.
 2. Prompt:
 
    > Run the memory reminder sidecar scenario.
-   > 1. Start an observer delegate with `agent_type` "subagent" and
-   >    `max_wait_ms` 120000. Its task is: "You are MEMORY_SIDECAR.
-   >    First turn call the communicate tool with exactly
-   >    MEMORY_READY. Later, when a Watch frame arrives for a
-   >    successful assistant.tool read_file event, inspect the
-   >    delivered frame. If it refers to memory.md and the content
-   >    includes PROJECT_RULE: no-force-push, call
-   >    delegate_send(to=\"caller\") with exactly MEMORY_REMINDER
-   >    rule=no-force-push, then call the communicate tool with exactly
-   >    MEMORY_RECORDED. For unrelated Watch frames, call the
-   >    communicate tool with exactly MEMORY_IGNORED."
-   > 2. After MEMORY_READY is returned by the delegate call, create a
-   >    `job_watch` on target "caller" for events ["assistant.tool"]
-   >    with event_filter {"tool_name":"read_file","status":"ok"} and
-   >    send.to set to the observer delegate_id.
-   > 3. In the response after the watch creation result, read
-   >    `memory.md`.
-   > 4. When the observer callback arrives, call the communicate tool
-   >    with exactly SCENARIO_DONE memory-reminder.
+   > 1. Call `delegate` with `agent_type` "subagent", `watch_parent`
+   >    true, and `max_wait_ms` 120000. Its task is: "You are
+   >    MEMORY_SIDECAR. First: call job_watch with operation 'create',
+   >    source 'parent', events ['assistant.tool'], event_filter
+   >    {\"tool_name\":\"read_file\",\"status\":\"ok\"}. Then call the
+   >    communicate tool with exactly MEMORY_READY and finish. When
+   >    later resumed with a message containing 'Watch frame', inspect
+   >    the frame's event block. If it refers to memory.md and its
+   >    output includes PROJECT_RULE: no-force-push, finish with
+   >    communicate end_turn true and message exactly MEMORY_REMINDER
+   >    rule=no-force-push. For unrelated Watch frames, finish with
+   >    communicate end_turn true and message exactly MEMORY_IGNORED."
+   > 2. After the delegate result reports `watching: true` and
+   >    MEMORY_READY, capture the watch_id from its `watches` entry,
+   >    then read `memory.md`.
+   > 3. When the observer callback arrives, call `job_watch` with
+   >    operation "clear" and that watch_id, then call the communicate
+   >    tool with exactly SCENARIO_DONE memory-reminder.
    >
-   > Use the delegate result, watch result, file-read result, and
-   > observer callback as the happy-path signals. Diagnostic job or
-   > transcript inspection is only for recovering from an actual error.
+   > Use the delegate result, file-read result, and observer callback as
+   > the happy-path signals. Diagnostic job or transcript inspection is
+   > only for recovering from an actual error.
 
 ## Expected
 
-- The watch is not created until after the observer's `MEMORY_READY`
-  job is terminal.
+- The observer installs the watch itself, before it reports
+  `MEMORY_READY`; the readiness delegate result carries `watching:
+  true` and the watch under `watches`. The parent never calls
+  `job_watch(operation="create")`.
 - The condition is `events: [assistant.tool] where tool_name=read_file,
   status=ok`.
-- The observer emits `MEMORY_REMINDER` with `delegate_send(to="caller")`
-  and records `MEMORY_RECORDED` with `communicate`.
+- The delivered frame's `event:` block carries `tool_name: read_file`,
+  `status: ok`, the `arguments_json` naming `memory.md`, and the
+  `output:` containing `PROJECT_RULE: no-force-push` — everything the
+  observer needs without an audit tool
+  (`writeAssistantToolWatchEvent`, `agent/job_watch.go:4874`).
+- The observer emits `MEMORY_REMINDER` as its terminal
+  `communicate(end_turn=true)`, which reaches the parent as an
+  `Observer callback:` block.
 - The parent does not emit `SCENARIO_DONE` before the reminder exists.
-- The parent does not use `job_list` or `job_read_output` as a waiting
+- The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.
 
 ## Doctor audit
@@ -66,21 +78,30 @@ go run ./cmd/serf-doctor tree "$SID" --observers
 go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$SID" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --count job_read_output
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/serf-doctor transcript "$SID" --count job_status
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Sharp edges
 
-- A prior Kimi run exposed a readiness race: the parent created the
-  watch before the observer's first turn ended, so the real frame was
-  consumed by setup behavior and the parent still declared done. That
-  is a failure, even if `SCENARIO_DONE` appears.
-- Another Kimi run exposed a tool-surface bug: explicit
-  `agent_type:"subagent"` did not include `delegate_send`, so the
-  observer could not call back. A fluent run should show
-  `delegate_send: 1 call` in the observer transcript.
-- GPT-5.4 mini may include a harmless repair if it asks for
-  `include_excerpt` on a caller-session watch. The repair is acceptable
-  when the next watch creation succeeds before the watched `read_file`
-  is triggered.
+- The readiness race the old parent-installed shape had is gone by
+  construction: the observer installs its own watch inside its first
+  turn, so `watching: true` on the readiness result IS the proof the
+  watch predates the parent's `read_file`. If the parent reads
+  `memory.md` before that result comes back, the frame can be missed —
+  re-run rather than reinterpreting.
+- `watch_parent:true` is what puts `job_watch` in an explicit
+  `agent_type:"subagent"` tool set (`agent/subagents.go:534-540`).
+  Without it the observer's first call fails `source_not_watchable:
+  source parent requires delegate(watch_parent=true)`. `delegate_send`
+  is not needed at all — the callback is the observer's own terminal
+  `communicate`, so a fluent observer transcript shows
+  `delegate_send: 0 calls`.
+- `include_excerpt` no longer exists on any watch shape. A model that
+  reaches for it gets an `additionalProperties` schema error; the
+  repair is to drop it, since assistant.tool frames already carry the
+  tool `output`.
+- The reminder and the record collapse into one call: the terminal
+  `communicate(end_turn=true)` IS the callback
+  (`docs/job-control.md:1190`).

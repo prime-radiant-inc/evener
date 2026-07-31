@@ -1,16 +1,24 @@
-# job-watch-caller-notification-delivery: caller-targeted watch fires wake an idle session as notification turns, coalesced latest-frame-wins
+# job-watch-caller-notification-delivery: a watch fire wakes its idle creator as a notification turn, and busy fires coalesce latest-wins
 
-**What this covers**: watch-mailbox spec §4.3 — the caller alias's
-delivery mechanism is the notification turn. A LEGAL caller-delivery
-watch (`output_match` on a concrete job; send omitted → caller
-notification, and send.to="caller" → rendered watch-send frame) that
-fires while the session is IDLE wakes it without user input, and the
-model receives the notification/frame as a job-notification turn
-(spec §4.4 wake path). N fires against a BUSY session produce N wake
-tokens but coalesce to the latest-frame-wins current frame, rendered
-once per delivery boundary (never one frame per fire) — render-by-key
-(spec §4.3; contract coalescing-not-silence rule,
-`docs/job-control.md` line 549). Executed by plan Phase 5.2.
+**What this covers**: delivery is implicit — a watch's fires go to the
+session that CREATED it, with no delivery target to configure. Run 1: a
+fire while that session is IDLE wakes it with no user input, and the
+model receives the notification as a job-notification turn. Run 2: N
+fires against a BUSY session produce N wake tokens but coalesce to the
+latest-frame-wins current frame, rendered once per delivery boundary,
+never one render per fire. Contract anchors: `docs/job-control.md:484-486`
+("delivers a bounded notification/frame back to that watcher. There is
+no model-facing `send` object"), `:607` (coalescing must not become silence),
+`:1067` (mid-turn notifications queue for a safe turn boundary).
+
+**Scope change (kata `f9gn`)**: this card used to install the same
+watch two ways — implicit notify, and an explicit `send:{to:"caller"}`
+— and assert they were distinct coexisting watch keys. `send` was
+removed from the public schema by commit `9d0d777c6` (2026-06-22); it
+is now rejected with `additionalProperties 'send' not allowed`
+(`agent/session_tools_jobs_watch_test.go:240`) and there is exactly one
+delivery model. That arm is gone. The idle-wake and coalescing arms are
+untouched by the removal and are what this card now covers.
 
 ## Pre-state
 
@@ -28,7 +36,7 @@ once per delivery boundary (never one frame per fire) — render-by-key
 
 ## Steps
 
-Run 1 — idle wake, both delivery flavors on one fire:
+Run 1 — idle wake:
 
 1. Spawn session A via `/api/spawn` with `working_dir=$tmpA`. Capture
    `SID_A`.
@@ -38,12 +46,11 @@ Run 1 — idle wake, both delivery flavors on one fire:
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 25; echo WAKE_TOKEN_GO; sleep 240'`. Capture the
    >    job_id.
-   > 2. Call job_watch with operation "create", target that job_id,
-   >    and output_match "WAKE_TOKEN_GO" (no send). Report the full
-   >    JSON.
-   > 3. Call job_watch with operation "create", target that job_id,
-   >    output_match "WAKE_TOKEN_GO", and send {to: "caller", message:
-   >    "CALLER_FRAME_MARK"}. Report the full JSON including
+   > 2. Call job_watch with operation "create", source that job_id,
+   >    and output_match "WAKE_TOKEN_GO". Report the full JSON.
+   > 3. Call job_watch with operation "create", source that same
+   >    job_id, and output_match "WAKE_TOKEN_GO" again — the identical
+   >    configuration. Report the full JSON including
    >    replaced_existing.
    > 4. Say WATCHES_ARMED and end your turn. Do not poll; you will be
    >    woken.
@@ -51,10 +58,10 @@ Run 1 — idle wake, both delivery flavors on one fire:
    before the token prints (~+25s from the job start).
 4. Keep polling through the fire: watch for the state to leave `idle`
    with NO user input sent, then inspect the transcript
-   (`$SID_A.transcript.jsonl`) and the durable job log
-   (`find ~/.local/state/serf/projects -path "*sessions/$SID_A/jobs.jsonl"`).
+   (`$SID_A.transcript.jsonl`) and read
+   `serf-doctor watches $SID_A --state-dir <state base>`.
 
-Run 2 — busy session, three fires, one rendered frame:
+Run 2 — busy session, three fires, one rendered notification:
 
 5. Spawn session B with `working_dir=$tmpB` (AGENTS.md present).
    Capture `SID_B`.
@@ -65,112 +72,99 @@ Run 2 — busy session, three fires, one rendered frame:
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 10; echo TICK_MARK_1; sleep 6; echo TICK_MARK_2; sleep 6; echo TICK_MARK_3; sleep 240'`.
    >    Capture the job_id.
-   > 2. Call job_watch with operation "create", target that job_id,
-   >    output_match "TICK_MARK_[0-9]", and send {to: "caller",
-   >    message: "TICK_FRAME"}.
+   > 2. Call job_watch with operation "create", source that job_id,
+   >    and output_match "TICK_MARK_[0-9]".
    > 3. Then write a five-paragraph essay about software engineering,
    >    following the AGENTS.md pacing rules exactly, so this turn
    >    stays busy for at least 40 more seconds.
    > 4. End your turn after the essay.
 7. After the busy turn ends, inspect session B's transcript for the
-   notification turn, and its `jobs.jsonl` for the send lifecycle.
+   notification turn and read `serf-doctor watches $SID_B` for the
+   watch's delivery count.
 
 ## Expected
 
 Run 1:
 
-- Both installs succeed; the step-3 result has
-  `replaced_existing: false` — the notify flavor and the explicit
-  caller-send flavor are distinct watch keys (implicit caller
-  endpoint vs `send.to="caller"`) and coexist. If step 3 reports
-  `replaced_existing: true` instead, the keys collapsed: split the two
-  flavors across two sessions to finish the run, and file the finding
-  (see sharp edges — this is a contract ambiguity).
+- Step 2 returns `watching: true` with a `watch_id` and
+  `replaced_existing: false`.
+- Step 3 is IDEMPOTENT, not a second watch: identical
+  `(watcher_session_id, source identity, receiver identity, condition
+  hash)` is one key (`docs/job-control.md:599`). Expect the same
+  `watch_id` back. `job_watch(operation="list")` must show ONE active
+  watch on that job, not two. Falsification: two watch_ids for the
+  same configuration, or a `replaced_existing: true` that silently
+  discarded the first.
 - The session is `idle` before the fire, then wakes WITHOUT user
   input: the state leaves `idle`, and the transcript gains NO new
   USER_INPUT entry — instead a notification turn: a STEERING-kind
-  entry whose text contains `<job-notification` content.
-  <!-- pin: notification turns persist as kind STEERING transcript
-       entries today; re-verify the persisted kind on shipped code. -->
-- That wake delivers BOTH flavors of the single fire (same
-  notification turn, or at minimum the same wake):
-  - the caller-notification block: `event="watch"` and
-    `job_type="watch"` attributes, the concrete job_id, and a reason
-    referencing `output_match:` with `WAKE_TOKEN_GO`;
-  - the rendered watch-send frame: `CALLER_FRAME_MARK` plus a
-    `Watch frame` body with `job_id:`, a non-empty `delivery_id:`
-    line, and `trigger:` referencing WAKE_TOKEN_GO.
-    <!-- pin: spec §4.3 render-by-key branch — current rendering uses
-         a job-notification block with event="watch_send",
-         delivery_id= and trigger= attributes; re-verify attribute
-         names on shipped code. -->
+  entry whose text contains a `<job-notification` block.
+- That block is the watch flavour, not a lifecycle terminal:
+  `event="watch"` and `job_type="watch"` with `status="watch"`, the
+  concrete job_id, and `reason="output_match: <the matched line>"`
+  naming WAKE_TOKEN_GO (`watchNotificationFromWatch`,
+  `agent/job_watch.go:2855`; rendered by `agent/job_notify.go:178-190`).
 - An assistant turn follows the notification turn (the model received
   the wake and reacted), and the session returns to `idle`.
-- The durable log settles after the turn persists: `jobs.jsonl` gains
-  a `watch_send_pending` for the fire and then a matching
-  `watch_send_delivered`; no `watch_send_dropped`.
-- Falsification (wake hole): the token printed — confirm with a
-  manual follow-up `job_read_output` if needed — but the session sat
-  `idle` past ~90s with the pending recorded: observation without
-  wake.
-- Falsification (rail gap): the notify-flavor block arrives but
-  CALLER_FRAME_MARK never does — caller sends persisted but
-  undeliverable, the spec §11 "rail without §4.3" failure shape.
-- Falsification (old mechanism): CALLER_FRAME_MARK appears as a bare
-  steering message with no job-notification framing and no
-  corresponding settle in `jobs.jsonl` — the deleted steering-turn
-  delivery path is back.
+- `serf-doctor watches $SID_A` shows the watch with a delivery count of
+  at least 1 and no self-loop verdict. There are NO `watch_send_*` rows
+  in `jobs.jsonl` for this watch, and their absence is not a failure: a
+  watch with no delivery target enqueues a notification directly
+  (`enqueueWatchNotifications`) instead of persisting a send. The
+  `watch_send_pending`/`watch_send_delivered` pair belongs to
+  cross-session observer frames — see
+  `job-watch-observer-snide-thread.md` for that rail.
+- Falsification (wake hole): the token printed — confirm with a manual
+  follow-up `job_status` — but the session sat `idle` past ~90s:
+  observation without wake.
+- Falsification (old mechanism): the fire arrives as a bare steering
+  message with no `<job-notification` framing — the deleted
+  steering-turn delivery path is back.
 
 Run 2:
 
 - All three TICK lines print while the turn is still busy (ticks land
   ~+10/+16/+22s after the job starts; the paced essay holds the turn
-  well past that). TICK_FRAME never appears mid-stream (inside a
-  streaming model response) — but it MAY surface between tool rounds:
-  the contract's owner-session boundaries are "between tool rounds, at
-  input end, or on idle wake" (`docs/job-control.md` "Delivery
-  modes"), so a between-rounds delivery during the paced essay is
-  contract-true, not a leak.
-- Each rendered `TICK_FRAME`'s `trigger:` references the LATEST tick
-  that had fired by its delivery time — latest-frame-wins per watch
-  key; a superseded stale token renders nothing. Observed shipped
-  behavior with this pacing: one frame, trigger `TICK_MARK_3`.
-  <!-- pin: spec §4.3 — fires between deliveries coalesce to one
-       durable latest-frame-wins pending per watch key; each delivery
-       renders exactly the current frame, never one frame per fire. -->
-- `jobs.jsonl` shows superseded pendings and a matching
-  `watch_send_delivered` per rendered frame; no `watch_send_dropped`.
-- Falsification: more rendered frames than deliveries (token-per-fire
-  leaked into rendering — coalescing broken); zero rendered (the
-  matched condition turned into silence — violates the contract's
-  coalescing rule); a frame whose `trigger:` references a tick OLDER
-  than the latest fire at its delivery time (a stale frame won); or
-  any frame content injected mid-stream.
+  well past that). No notification appears mid-stream (inside a
+  streaming model response) — but one MAY surface between tool rounds:
+  mid-turn notifications queue for a safe turn boundary
+  (`docs/job-control.md:1067`), so a between-rounds delivery during the
+  paced essay is contract-true, not a leak.
+- Each rendered notification's `reason` references the LATEST tick that
+  had fired by its delivery time — latest-wins per watch key; a
+  superseded stale token renders nothing. Observed shipped behavior
+  with this pacing: one notification, reason `output_match:
+  TICK_MARK_3`.
+- Falsification: more rendered notifications than delivery boundaries
+  (one-per-fire leaked into rendering — coalescing broken); zero
+  rendered (the matched condition turned into silence, which the
+  contract forbids at `docs/job-control.md:607`); or a notification
+  whose `reason` references a tick OLDER than the latest fire at its
+  delivery time.
 
 ## Cleanup
 
-- In each session: `job_stop` the sleeper job (240s tails), then shut
-  the session down.
+- In each session: `job_watch(operation="clear", watch_id=...)`, then
+  `job_stop` the sleeper job (240s tails), then shut the session down.
 - `rm -rf "$tmpA" "$tmpB"`.
 
 ## Sharp edges
 
-- Contract ambiguity surfaced while writing this card: line 541 of
-  `docs/job-control.md` says the notify flavor's key uses "the
-  implicit caller notification endpoint" but never states whether that
-  endpoint equals the literal `caller` send target. Run 1 assumes they
-  are distinct keys; `replaced_existing: true` on step 3 is the signal
-  they are not.
 - Run 1 needs the session idle before +25s: a three-tool-call turn
   fits easily, but if the model dawdles the fire lands mid-turn and
   run 1 degrades into run-2 shape. Re-run rather than reinterpret.
 - Run 2 inverts the risk: the essay must HOLD the turn past the last
   tick (+22s). The pacing file plus model latency gives >40s; if the
   model skips the pacing, later ticks fire while idle and arrive as
-  separate wakes — rerun rather than reinterpreting a 2-frame result.
+  separate wakes — rerun rather than reinterpreting a 2-notification
+  result.
 - Latency note (accepted by the spec): during one long uninterrupted
-  model stream, delivery waits for the stream to end — frames landing
-  a few seconds after a long assistant message is normal, not a bug.
-- Duplicate frames across a daemon crash/restore are legal
-  (at-least-once; the frame's delivery_id identifies them) — only
-  duplicates within one uninterrupted run falsify coalescing.
+  model stream, delivery waits for the stream to end — a notification
+  landing a few seconds after a long assistant message is normal.
+- Duplicate notifications across a daemon crash/restore are legal
+  (at-least-once) — only duplicates within one uninterrupted run
+  falsify coalescing.
+- Each watch has a 50-delivery budget (`watchDeliveryBudget`,
+  `agent/job_watch.go:56`); a watch that exhausts it is auto-cleared
+  with one final notification. Neither run comes close, but a runaway
+  `output_match` in a variant of this card will hit it.

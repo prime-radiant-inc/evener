@@ -2,7 +2,12 @@
 
 **What this covers**: cost/quota and non-progress governance. The
 sidecar watches caller communications for an explicit loop trigger and
-reports a concise intervention note.
+reports a concise intervention note. Driving mechanism:
+`delegate(watch_parent:true)` + observer-installed
+`job_watch(source:"parent")` + the observer's terminal
+`communicate(end_turn:true)` callback — see `docs/job-control.md`
+"Observer and sidecar composition" and the reference card
+`job-watch-observer-snide-thread.md`.
 
 ## Pre-state
 
@@ -16,28 +21,33 @@ reports a concise intervention note.
 2. Prompt:
 
    > Run the feedback governor sidecar scenario.
-   > 1. Start observer delegate with `max_wait_ms` 120000 and task:
-   >    "You are LOOP_GOVERNOR. First turn communicate exactly
-   >    GOVERNOR_READY. Later, for a Watch frame whose event.message
-   >    contains LOOP_TRIGGER, extract delivery_id and delegate_send to
-   >    caller exactly LOOP_GOVERNOR_ALERT delivery=<delivery_id>
-   >    pattern=repeated-tool-choice recommendation=change-approach.
-   >    Then communicate exactly LOOP_RECORDED delivery=<delivery_id>.
-   >    For nonmatching frames, return bare LOOP_IGNORED and use no
-   >    tools."
-   > 2. After GOVERNOR_READY, create a `job_watch` on target `caller`,
-   >    events ["communicate"], send to the observer with message
-   >    "Loop governor check.". Capture watch_id.
-   > 3. Communicate exactly LOOP_TRIGGER tool=read_file repeats=3.
-   > 4. Wait for LOOP_GOVERNOR_ALERT if needed, clear the watch, and
+   > 1. Call `delegate` with `watch_parent` true, `max_wait_ms` 120000,
+   >    and this exact task: "You are LOOP_GOVERNOR. First: call
+   >    job_watch with operation 'create', source 'parent', events
+   >    ['communicate']. Then communicate exactly GOVERNOR_READY and
+   >    finish. When later resumed with a message containing 'Watch
+   >    frame' whose event message contains LOOP_TRIGGER, read the
+   >    delivery_id from the frame and finish with communicate end_turn
+   >    true, message exactly LOOP_GOVERNOR_ALERT delivery=<delivery_id>
+   >    pattern=repeated-tool-choice recommendation=change-approach. For
+   >    nonmatching frames, finish with communicate end_turn true and
+   >    message exactly LOOP_IGNORED. Use no other tools."
+   > 2. After the delegate result reports `watching: true`, capture the
+   >    watch_id from its `watches` entry, then communicate exactly
+   >    LOOP_TRIGGER tool=read_file repeats=3.
+   > 3. When the LOOP_GOVERNOR_ALERT observer callback arrives, call
+   >    `job_watch` with operation "clear" and that watch_id, then
    >    communicate exactly SCENARIO_DONE feedback-governor.
 
 ## Expected
 
-- The registered watch is `events: [communicate]`.
-- The observer reports `LOOP_GOVERNOR_ALERT` once.
+- The readiness delegate result reports `watching: true` and lists the
+  observer's watch under `watches` — the OBSERVER owns the watch.
+- The registered watch is `events: [communicate]` on source `parent`.
+- The observer reports `LOOP_GOVERNOR_ALERT` once, as an `Observer
+  callback:` block from its terminal `communicate(end_turn=true)`.
 - The observer does not start a debate with the parent; it reports and
-  records.
+  stops.
 
 ## Doctor audit
 
@@ -53,3 +63,12 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
 - As with the drift detector, `assistant.message` is not a public watch
   event. The sidecar should observe the explicit loop signal through
   `communicate`.
+- The observer must install its watch BEFORE communicating readiness,
+  or the readiness result cannot report `watching: true`.
+- The alert and the record collapse into one call: the observer's
+  terminal `communicate(end_turn=true)` IS the callback
+  (`docs/job-control.md:1190`).
+- The parent's acknowledgement of the callback is itself a
+  `communicate` event and re-fires the watch. Bounded by the
+  self-influence breaker; clear the watch rather than reading the extra
+  `LOOP_IGNORED` as a failure.
