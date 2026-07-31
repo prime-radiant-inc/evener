@@ -35,6 +35,9 @@ func FuzzTask8OutputRecovery(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 2}, []byte("complete trailing event\n"))
 	// Exercises the corrupt trailing-event forensic path and different chunking.
 	f.Add([]byte{77, 2, 2, 31}, []byte("\x00longer payload\nwith lines\n"))
+	// Multi-byte runes wider than a chunk, under the smallest cap: the retained
+	// tail, the prune cut, and the read windows all land inside a rune.
+	f.Add([]byte{0, 1, 0, 2}, []byte("😀😀😀😀😀"))
 
 	f.Fuzz(func(t *testing.T, program, payload []byte) {
 		if len(program) > 128 || len(payload) > 512 {
@@ -134,7 +137,7 @@ func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capB
 	}
 	wantTail := retained
 	if len(wantTail) > limit {
-		wantTail = wantTail[len(wantTail)-limit:]
+		wantTail = t8AlignWindowStart(wantTail[len(wantTail)-limit:])
 	}
 	wantTruncated := retainedStart > 0 || len(retained) > limit
 	if total != int64(len(lifetime)) || tailTruncated != wantTruncated || !bytes.Equal(tail, wantTail) {
@@ -152,6 +155,19 @@ func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capB
 	if headTotal != int64(len(lifetime)) || headTruncated != wantTruncated || !bytes.Equal(head, wantHead) {
 		t.Fatalf("Head(%d) = %q/%d/%v, want %q/%d/%v", limit, head, headTotal, headTruncated, wantHead, len(lifetime), wantTruncated)
 	}
+}
+
+// t8AlignWindowStart models what Tail does to its own cut: a window that opens
+// inside a rune drops the orphaned continuation bytes, at most the three a
+// 4-byte rune can leave behind. Re-derived here from the UTF-8 bit pattern
+// rather than borrowed from the production helper, so this stays an independent
+// oracle; the exhaustive edges live in output_rune_align_test.go.
+func t8AlignWindowStart(window []byte) []byte {
+	drop := 0
+	for drop < len(window) && drop < 3 && window[drop]&0xC0 == 0x80 {
+		drop++
+	}
+	return window[drop:]
 }
 
 func t8RetainedTail(lifetime []byte, capBytes int64) ([]byte, int64) {

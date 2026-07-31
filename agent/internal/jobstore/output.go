@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/serf/agent/internal/runetrim"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains
@@ -182,6 +184,15 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
+	}
+	if start > 0 {
+		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
+		// dangling continuation bytes rather than reading further back: the window
+		// SHRINKS, which keeps the caller's retained-start arithmetic (total minus the
+		// bytes returned) naming the first byte actually handed over. Only our own cut
+		// is realigned — at start 0 the first byte is the file's own, and binary output
+		// keeps it.
+		buf = runetrim.TrimLeadingPartial(buf)
 	}
 	return buf, total, truncated, nil
 }
