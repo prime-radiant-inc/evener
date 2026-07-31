@@ -803,7 +803,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// One seam replaces sixteen read-time callbacks. The daemon samples session
 	// state through this at the moments it changes (server/thread_envelope.go's
 	// facetsByEvent) and never on a read.
-	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{session: getSession})
+	srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{
+		session: func() agent.EnvelopeSampling { return getSession() },
+	})
 	pendingEscalations := func() []appwire.SandboxEscalationRequested {
 		return mapServePendingEscalations(getSession().PendingEscalations())
 	}
@@ -1265,8 +1267,19 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 // It resolves the session per call rather than capturing one, so it follows
 // /clear onto the replacement session exactly as the sixteen closures it
 // replaced did.
+//
+// The session is reached as agent.EnvelopeSampling rather than as *agent.Session
+// ON PURPOSE, and the narrowing is a deadlock guard rather than tidiness. These
+// methods run on the bridge's drain goroutine, which is the session's
+// AUTHORITATIVE event consumer: a sample that blocks on a lock an emitter holds
+// stops the drain, fills the event buffer, blocks the emitter inside that same
+// critical section, and leaves the session unclosable. Which locks those are is a
+// fact about package agent that is invisible from here, so the interface is where
+// a new facet has to go to ask — read its doc comment before adding a method to
+// it, and note that agent/session_envelope_sampling_test.go proves the answer for
+// every method it declares.
 type liveThreadEnvelopeSource struct {
-	session func() *agent.Session
+	session func() agent.EnvelopeSampling
 }
 
 func (l liveThreadEnvelopeSource) ContextPressure() float64 {

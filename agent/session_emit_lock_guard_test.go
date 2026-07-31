@@ -45,6 +45,11 @@ import (
 //   - evaluating watches off the emitting goroutine (`go jm.onSessionEvent(ev)`),
 //     so emitWithProvenance no longer takes jobManager.mu.
 //
+// This file covers one direction only: an EMIT that happens under a lock the
+// consumer takes. The mirror hazard — a SAMPLE the consumer takes under a lock
+// an emitter holds — has no self-deadlock to lean on and is covered by
+// session_envelope_sampling.go and its test instead.
+//
 // Known residual, deliberately not tested here: emitDiagnosticWarning reaches
 // sendEvent WITHOUT going through onSessionEvent, so it carries the Session.mu
 // guard but not the jobManager.mu one. Its call sites are all outside any
