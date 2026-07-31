@@ -52,9 +52,10 @@ Run them via the shell tool. First positional arg is a session selector:
 
 | Command | Answers | Key flags |
 |---|---|---|
-| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs files? | `--all-buckets` |
+| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs / client-mutation files? | `--all-buckets` |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
 | `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes**; `--validate` strictly decodes offset zero..EOF and reports every corrupt/malformed/oversized/unsupported record with its offset (whole-file scan, explicit diagnostics only) | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary`, `--validate` |
+| `serf-doctor mutations <sel>` | **did the user's input reach the daemon?** — the journal of every client mutation the daemon accepted or rejected, plus the durable input queue, pending executions, accepted turns, and queue revision | — |
 | `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)** | `--watch <id>`, `--self-loops` |
 | `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
 
@@ -84,6 +85,7 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 | Hand-parse JSONL with grep/jq/python | Run `serf-doctor <cmd>` |
 | Read an artifact before reading `data-model.md` | Consult the data model first |
 | Count `watch_send_pending` lines as deliveries | Read distinct deliveries from `serf-doctor watches` |
+| `jq` the client-mutation store to see whether a message arrived | `serf-doctor mutations <sel>` — absence from the journal is the "it never arrived" verdict |
 | Treat a `delegate_send` text mention as a call | `serf-doctor transcript --count delegate_send` |
 | Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `serf-doctor watches --self-loops` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |

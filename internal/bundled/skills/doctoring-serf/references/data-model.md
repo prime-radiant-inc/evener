@@ -13,13 +13,15 @@ it — you should rarely open these files by hand.
 ## The big picture
 
 A serf session's durable state lives under a per-project **bucket** directory.
-Up to four artifacts per session:
+Up to five artifacts per session:
 
 - the **transcript** — the append-only semantic conversation/lifecycle log.
 - the **API log** — exact provider attempts and outer-call settlements.
 - the **meta** — session metadata (model, config, lineage, observers).
 - **jobs.jsonl** — an append-only *event log* for jobs, watches, delegates, and
   grants; the records you reason about are *folded* from it.
+- the **client-mutation store** — the journal of every client mutation the
+  daemon accepted AND every one it rejected, plus the durable input queue.
 
 "Durable" state (these files) is distinct from the **live** event stream
 (`events.SessionEvent` over appwire → tui/hub). serf-doctor reads settled
@@ -39,6 +41,8 @@ it was never read). Under an XDG home the layout is:
     <SID>.api.jsonl             ← API log      (flat, SID-prefixed, private)
     <SID>.meta.json             ← meta         (flat, SID-prefixed)
     <SID>/jobs.jsonl            ← jobs         (per-session SUBDIR)
+<stateHome>/serf/projects/<bucket>/mutations/
+    <SID>.json                  ← client mutations (SIBLING of sessions/)
 ```
 
 - The **bucket** is `hexHash(key)` where `key` is the git origin URL, or the
@@ -50,6 +54,9 @@ it was never read). Under an XDG home the layout is:
 - **jobs.jsonl is in a per-session SUBDIR**: `<bucket>/sessions/<SID>/jobs.jsonl`
   (`jobsDir` → `filepath.Join(dir, "jobs.jsonl")`). It is **not** a flat
   `<SID>.jobs.jsonl` beside the transcript — a recurring mistake.
+- **the client-mutation store is a third shape again**: a flat `<SID>.json` in a
+  bucket-level `mutations/` dir that is a **sibling** of `sessions/`, not a file
+  under it (`clientMutationFilePath`).
 - When `SERF_STATE_DIR` / `--state-dir` is set, that path **is** the bucket
   (sessions sit directly under it — no `serf/projects/<hash>` layer). This is the
   E2E / scratch-root shape.
@@ -57,7 +64,7 @@ it was never read). Under an XDG home the layout is:
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 
-**Read it via:** `serf-doctor locate <selector>` (resolves all four paths +
+**Read it via:** `serf-doctor locate <selector>` (resolves all five paths +
 bucket hash; never recompute the hash by hand — resolve by glob).
 
 ---
@@ -206,6 +213,39 @@ provenance.Causal{
 **Read it via:** `serf-doctor watches <selector> --self-loops` (now reads breaker
 telemetry: per-watch `max_self_influence_depth` and `runaway_drops`, surfacing
 only watches whose fuse fired).
+
+---
+
+## The client-mutation store (`clientMutationSnapshot`)
+
+`<bucket>/mutations/<SID>.json` is the daemon's durable record of what clients
+asked it to do. It is the artifact that settles **"did the user's input ever
+reach the daemon?"** — the journal holds every client mutation the daemon
+accepted AND every one it rejected (`executeAtomic` writes a rejected record via
+`rejectClientMutation`, with `operation_state: "rejected"` and the wire
+rejection). **Absence from the journal means the request never arrived**; a
+present record shows exactly what happened to it. That distinction is what
+separates a client-side wedge (a browser outbox that never sent) from a
+server-side one.
+
+Fields that carry a diagnosis:
+
+- `journal` — per client-mutation-ID: `method` (`turn/start`, `turn/queue`,
+  `turn/steer`, …), `operation_state` (`inFlight` / `applied` / `rejected` /
+  `terminal`), `execution_state`, `stable_turn_id`, and on refused records the
+  `rejection` code + message.
+- `input_queue` — inputs durably queued and still waiting for a turn to drain
+  them, in drain order.
+- `pending_executions` — mutations the daemon is still executing.
+- `accepted_turns`, `queue_revision` — the counters the optimistic client
+  reconciles against.
+
+The client mutation ID is the join key to the client's own outbox: a reply the
+browser holds but the journal does not know about never left the browser.
+
+**Read it via:** `serf-doctor mutations <selector>`. A session with no store
+reports that cleanly (it accepted no client mutations); a file the reader cannot
+decode is an error naming the file, never an empty journal.
 
 ---
 
