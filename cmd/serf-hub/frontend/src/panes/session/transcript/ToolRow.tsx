@@ -70,6 +70,16 @@ const CLASS = {
 export interface ToolRowProps {
   /** The descriptor's own one-line verb/target/meta string. */
   summary: string;
+  /** A URL literally present in `summary` that should render as a real link
+   * (the descriptor's `summaryLink`, kata xw3t) rather than plain text.
+   * Applied only to the FULL, untruncated rendering of `summary` - never
+   * inside the collapsed head/tail clamp (character-position truncation can
+   * cut a URL mid-way, or split it across the two independently
+   * ellipsis-clamped spans, with no sound "which half is clickable" answer)
+   * - opening the row shows the summary in full, with the link. Undefined
+   * (every descriptor but web_fetch, today) or a value not literally found
+   * inside `summary` renders unchanged. */
+  summaryLink?: string;
   /** The agent's stated reason for the call (ItemModel.description). Blank or
    * absent renders nothing at all — no placeholder, no empty separator. */
   purpose?: string;
@@ -118,8 +128,34 @@ function middleSplit(text: string): [head: string, tail: string] {
   return [chars.slice(0, cut).join(""), chars.slice(cut).join("")];
 }
 
+/** Makes exactly the substring of `text` equal to `href` a real link (same
+ * target/rel idiom as tcp9's expanded-body link), leaving the rest as plain
+ * text; renders `text` unchanged if `href` is undefined or isn't literally
+ * present in it (a descriptor bug, never a mismatched or fabricated href -
+ * kata xw3t's own "never a dead anchor" carryover from tcp9). stopPropagation
+ * on the anchor's own click keeps it from also toggling the enclosing
+ * <summary>'s disclosure: that element's onClick (below) unconditionally
+ * preventDefaults every click that reaches it, which - since this is the
+ * SAME bubbled event - would otherwise cancel the link's native navigation
+ * too, not just skip the toggle. */
+function linkifySummary(text: string, href: string | undefined): ReactNode {
+  if (href === undefined) return text;
+  const start = text.indexOf(href);
+  if (start === -1) return text;
+  return (
+    <>
+      {text.slice(0, start)}
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+        {href}
+      </a>
+      {text.slice(start + href.length)}
+    </>
+  );
+}
+
 export function ToolRow({
   summary,
+  summaryLink,
   purpose,
   icon,
   monoSummary,
@@ -200,7 +236,7 @@ export function ToolRow({
               </span>
             </>
           ) : (
-            summary
+            linkifySummary(summary, summaryLink)
           )}
           {!hasPurpose && chevron}
           {/* Affordances ride the TOOL-CALL line (see the grammar above):

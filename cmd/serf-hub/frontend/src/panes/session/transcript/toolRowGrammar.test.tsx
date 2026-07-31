@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
@@ -571,4 +571,128 @@ test("all of the row's motion sits behind a prefers-reduced-motion gate", () => 
   for (const gate of gates ?? []) outsideGates = outsideGates.replace(gate, "");
   expect(outsideGates).not.toMatch(/\btransition:/);
   expect(outsideGates).not.toMatch(/\banimation:/);
+});
+
+// --- kata xw3t: summaryLink linkifies a URL embedded in the row's own
+// summary text - the collapsed-row counterpart to tcp9's expanded-body link
+// on web_fetch (tcp9 deliberately left this surface inert; toolRenderers.ts's
+// own summaryLink field doc explains why a parallel field, not a widened
+// summary() return type). Same http(s)-only/target/rel idiom throughout. ----
+
+test("a summaryLink matching text inside summary() renders as a real link, same target/rel idiom as tcp9's expanded-body link", () => {
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page · 4096 bytes"
+      summaryLink="https://example.com/page"
+      failed={false}
+      expandable={false}
+      expanded={false}
+    />,
+  );
+  const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("https://example.com/page");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  // No text lost or duplicated splitting the summary around the link.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Fetched https://example.com/page · 4096 bytes");
+});
+
+test("a summaryLink NOT literally present in summary() renders plain text - never a fabricated or mismatched link", () => {
+  render(
+    <ToolRow
+      summary="Fetched (no url) · 8 bytes"
+      summaryLink="https://example.com"
+      failed={false}
+      expandable={false}
+      expanded={false}
+    />,
+  );
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Fetched (no url) · 8 bytes");
+});
+
+test("no summaryLink means the summary renders exactly as before - every descriptor but web_fetch, today", () => {
+  render(<ToolRow summary="Ran ls" failed={false} expandable={false} expanded={false} />);
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran ls");
+});
+
+// The clamped state middle-truncates on raw character position (ToolRow's
+// own middleSplit) and can cut a URL mid-way, or split it across the two
+// independently-ellipsis-clamped head/tail spans - there is no sound "which
+// half is clickable" answer there, so the collapsed+purpose state stays
+// plain text; opening the row (one click, the same chevron already on the
+// row) shows the summary in full, with the link.
+test("a collapsed row WITH a purpose keeps the clamped plain-text split - no link inside the ellipsis-truncated head/tail", () => {
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page · 4096 bytes"
+      summaryLink="https://example.com/page"
+      purpose="Read the docs"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary-head")).toBeTruthy();
+});
+
+test("the SAME purpose-bearing row, expanded, drops the clamp and shows the real link", () => {
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page · 4096 bytes"
+      summaryLink="https://example.com/page"
+      purpose="Read the docs"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+    />,
+  );
+  const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+// The collapsed row IS a native <summary> (ToolRow's expandable branch), and
+// its own onClick unconditionally preventDefaults + toggles on every click
+// that reaches it. Without stopping propagation on the link's own click, the
+// SAME bubbled event would both cancel the anchor's native navigation and
+// toggle the row - a link that looks clickable but does neither correctly.
+test("clicking the linkified URL opens it, not toggles the row - the click must not bubble to the summary's own handler", () => {
+  const onToggle = vi.fn();
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page · 4096 bytes"
+      summaryLink="https://example.com/page"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+    />,
+  );
+  fireEvent.click(screen.getByRole("link"));
+  expect(onToggle).not.toHaveBeenCalled();
+  // Clicking anywhere else on the row still toggles, unaffected.
+  fireEvent.click(screen.getByTestId("tool-row"));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+});
+
+// The mechanism-level ToolRow tests above prove the row CAN linkify a
+// summaryLink; this proves ToolCallItem actually THREADS a descriptor's
+// summaryLink through to it - a wiring bug (the prop never passed) would
+// pass every test above and still ship a plain-text collapsed row.
+test("ToolCallItem threads a descriptor's summaryLink through to the row, not only a ToolRow-level contract", () => {
+  registerToolRenderer({
+    match: "trg_summarylink",
+    summary: () => "Fetched https://example.com/page · 4096 bytes",
+    summaryLink: () => "https://example.com/page",
+    body: () => <div>b</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "trg_summarylink" })} turn={turn} live={false} />);
+  const link = screen.getByRole("link", { name: "https://example.com/page" }) as HTMLAnchorElement;
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
 });

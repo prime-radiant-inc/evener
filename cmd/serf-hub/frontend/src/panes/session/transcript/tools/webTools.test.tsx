@@ -142,3 +142,81 @@ test("kata tcp9: no url argument means no link, never a dead anchor", () => {
   render(<Body item={item({ toolName: "web_fetch", argumentsJSON: "not json", output: "text" })} live={false} />);
   expect(screen.queryByRole("link")).toBeNull();
 });
+
+// kata xw3t: the collapsed row's own "Fetched <url> · N bytes" summary was
+// the surface tcp9 deliberately left inert. The descriptor's summaryLink
+// must return the SAME URL, under the SAME http(s)-only rule, as the
+// expanded body's own link above - never a second, independently-drifting
+// source of truth for "what does this call's own link point to".
+test("kata xw3t: web_fetch's descriptor exposes the fetched url as summaryLink, for the collapsed row", () => {
+  const d = toolRendererFor("web_fetch");
+  const args = JSON.stringify({ url: "https://example.com/page", question: "q" });
+  expect(d.summaryLink?.(item({ toolName: "web_fetch", argumentsJSON: args }))).toBe("https://example.com/page");
+});
+
+test("kata xw3t: web_fetch's summaryLink is undefined for a non-http(s) or missing url, same rule as the body's own link", () => {
+  const d = toolRendererFor("web_fetch");
+  expect(d.summaryLink?.(item({ toolName: "web_fetch", argumentsJSON: "not json" }))).toBeUndefined();
+  const jsArgs = JSON.stringify({ url: "javascript:alert(1)" });
+  expect(d.summaryLink?.(item({ toolName: "web_fetch", argumentsJSON: jsArgs }))).toBeUndefined();
+});
+
+// kata xw3t: web_search's result lines are free-form prose (agent/
+// tool_web_search.go's webSearch returns the grounded model's own
+// resp.Text() - no structured URL field like web_fetch's own
+// argumentsJSON.url), so any URL is wherever the model's own text put it -
+// this scans the rendered line itself, same http(s)-only/target/rel idiom.
+test("kata xw3t: web_search body linkifies a bare URL inside a result line", () => {
+  const d = toolRendererFor("web_search");
+  const Body = d.body!;
+  const output = "See https://example.com/article for details";
+  render(<Body item={item({ toolName: "web_search", output })} live={false} />);
+  const link = screen.getByRole("link", { name: "https://example.com/article" }) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("https://example.com/article");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  // No text lost or duplicated splitting the line around the link.
+  expect(link.closest("li")?.textContent).toBe(output);
+});
+
+test("kata xw3t: web_search body linkifies more than one URL on the same line", () => {
+  const d = toolRendererFor("web_search");
+  const Body = d.body!;
+  const output = "Compare https://a.example/one and https://b.example/two";
+  render(<Body item={item({ toolName: "web_search", output })} live={false} />);
+  expect(screen.getByRole("link", { name: "https://a.example/one" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "https://b.example/two" })).toBeTruthy();
+});
+
+test("kata xw3t: a URL ending a sentence does not pull the period into the href", () => {
+  const d = toolRendererFor("web_search");
+  const Body = d.body!;
+  const output = "Read more at https://example.com/article.";
+  render(<Body item={item({ toolName: "web_search", output })} live={false} />);
+  const link = screen.getByRole("link") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("https://example.com/article");
+  expect(link.textContent).toBe("https://example.com/article");
+  // The trailing period is still on screen, just outside the anchor.
+  expect(link.closest("li")?.textContent).toBe(output);
+});
+
+// clip() (helpers.ts, RESULT_LINE_CLIP=200) cuts on a raw character budget
+// with no notion of "mid-URL" and appends its own "…". A match touching
+// that boundary may not be the real URL at all - linkifying it anyway would
+// be exactly the dead-or-wrong anchor tcp9's own carried-over rule forbids.
+test("kata xw3t: a URL right at the 200-char clip boundary is never linkified - a truncated href would be a dead anchor", () => {
+  const d = toolRendererFor("web_search");
+  const Body = d.body!;
+  const longUrl = `https://example.com/${"a".repeat(200)}`;
+  render(<Body item={item({ toolName: "web_search", output: longUrl })} live={false} />);
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByText(`${longUrl.slice(0, 200)}…`)).toBeTruthy();
+});
+
+test("kata xw3t: a line with no URL is unaffected - no accidental link", () => {
+  const d = toolRendererFor("web_search");
+  const Body = d.body!;
+  render(<Body item={item({ toolName: "web_search", output: "no links here" })} live={false} />);
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByText("no links here")).toBeTruthy();
+});

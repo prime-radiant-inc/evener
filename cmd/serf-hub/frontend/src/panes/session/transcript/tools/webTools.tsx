@@ -19,6 +19,7 @@
 // stays a short line-oriented preview, matching the legacy
 // webSearchRenderer's own "don't dump the whole page inline" restraint.
 
+import type { ReactNode } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -29,6 +30,59 @@ const RESULT_LINE_CLIP = 200;
 
 function nonBlankLines(text: string): string[] {
   return text.split("\n").filter((line) => line.trim() !== "");
+}
+
+// A conservative bare-URL matcher for web_search's free-form result text
+// (kata xw3t): unlike web_fetch, this tool has no structured URL field to
+// read (agent/tool_web_search.go's webSearch returns the grounded model's
+// own resp.Text(), plain prose - see that file), so any URL is wherever the
+// model's own text happens to put it. Stops at whitespace and a small set
+// of characters a bare URL a human is reading is unlikely to end in itself
+// (quotes, angle brackets, clip()'s own ellipsis below).
+const BARE_URL_PATTERN = /https?:\/\/[^\s<>"'…]+/g;
+
+// Trims sentence punctuation trailing a matched URL - the period ending the
+// SENTENCE, not the URL - off both the href and the visible label, matching
+// common autolink convention. Falls back to the untrimmed match if
+// stripping would leave no host/path character at all (a pathological
+// "https://..." run), rather than link to a bare scheme.
+const URL_TRAILING_PUNCTUATION = /[.,;:!?)\]}]+$/;
+function stripUrlTrailingPunctuation(url: string): string {
+  const stripped = url.replace(URL_TRAILING_PUNCTUATION, "");
+  return /^https?:\/\/./.test(stripped) ? stripped : url;
+}
+
+// linkifyLine turns bare http(s) URLs inside one line of free text into
+// real links, same target/rel idiom as tcp9's web_fetch link. A match
+// touching the very end of a line clip() (below) has truncated - the line
+// ends in clip's own "…" - is left as plain text instead: clip() cuts on a
+// raw character budget with no notion of "mid-URL", so the tail of that
+// match may not be the real URL at all, and tcp9's "never a dead anchor"
+// rule carries over here too.
+function linkifyLine(line: string): ReactNode {
+  const truncated = line.endsWith("…");
+  const matches = [...line.matchAll(BARE_URL_PATTERN)].filter((m) => {
+    const end = (m.index ?? 0) + m[0].length;
+    return !(truncated && end === line.length - 1);
+  });
+  if (matches.length === 0) return line;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const start = match.index ?? 0;
+    const raw = match[0];
+    const href = stripUrlTrailingPunctuation(raw);
+    nodes.push(line.slice(cursor, start));
+    nodes.push(
+      <a key={start} href={href} target="_blank" rel="noopener noreferrer">
+        {href}
+      </a>,
+    );
+    nodes.push(raw.slice(href.length)); // trailing punctuation stripped from the href, kept as plain text
+    cursor = start + raw.length;
+  }
+  nodes.push(line.slice(cursor));
+  return nodes;
 }
 
 // webFetchByteCount prefers the JSON envelope's own size_bytes (the
@@ -81,6 +135,12 @@ registerToolRenderer({
     const url = str(args, "url") ?? "";
     return `Fetched ${url} · ${formatByteCount(webFetchByteCount(item.output ?? ""))}`;
   },
+  // kata xw3t: the collapsed row's own "Fetched <url> · N bytes" line reuses
+  // the exact same http(s)-only URL webFetchLink already computes for the
+  // expanded body (tcp9) - same source (argumentsJSON, not the output
+  // envelope), same validation, so the collapsed and expanded surfaces can
+  // never disagree about which URL is safe to link.
+  summaryLink: webFetchLink,
   body: WebFetchBody,
 });
 
@@ -98,7 +158,7 @@ function WebSearchBody({ item }: ToolRenderProps) {
         // time, never reordered; two lines can also legitimately share
         // identical clipped text, which a content-based key would collide on.
         // biome-ignore lint/suspicious/noArrayIndexKey: fixed source text, possible duplicate lines, see above
-        <li key={i}>{line}</li>
+        <li key={i}>{linkifyLine(line)}</li>
       ))}
     </ul>
   );
