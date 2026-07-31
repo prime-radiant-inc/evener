@@ -185,6 +185,63 @@ test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-p
   expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
 });
 
+// --- live: the draft treatment + the bounded stream (mockup #4) -------------
+// In-flight reasoning reads as a DRAFT - italic while streaming, settling to
+// roman - and the open stream stops claiming the whole viewport: the body caps
+// at ~6 body lines, pinned to its own tail, a fade marking the cut. The
+// thought stays OPEN the whole time (the live-state law); it just stops
+// growing without bound on screen.
+
+test("the live body carries the draft treatment - italic in flight, roman once settled (declaration-level)", () => {
+  const css = thinkCss();
+  const rule = /\.liveBody\s*\{([^}]*)\}/.exec(css);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("font-style: italic");
+  // Nothing re-italicizes the settled views: summary and body stay roman.
+  expect(css).not.toMatch(/\.body\s*\{[^}]*font-style/);
+  expect(css).not.toMatch(/\.summary\s*\{[^}]*font-style/);
+});
+
+test("the live stream is bounded to six body lines and hides its overflow (declaration-level)", () => {
+  const rule = /\.liveScroll\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("max-height: calc(6 * var(--font-size-body) * var(--line-height-body))");
+  expect(rule![1]).toContain("overflow: hidden");
+});
+
+test("the live stream pins to its own tail as chunks land - the newest text is what stays on screen", () => {
+  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["one\n"]] })} turn={turn} live={true} />);
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  // jsdom lays nothing out, so real metrics are all zero; stub the geometry a
+  // grown stream would have, then land another chunk.
+  Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
+  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["one\n", "two\n"]] })} turn={turn} live={true} />);
+  expect(scroller.scrollTop).toBe(300);
+});
+
+test("the fade only marks an actual cut: data-clipped tracks whether the stream overflows its cap", () => {
+  const { rerender } = render(<ThinkBlock item={item({ reasoningSummaries: [["short"]] })} turn={turn} live={true} />);
+  const body = screen.getByTestId("think-block-live-body");
+  const scroller = screen.getByTestId("think-block-live-scroll");
+  // Nothing overflows (jsdom metrics are 0/0): no cut, no fade hook.
+  expect(body.dataset.clipped).toBe("false");
+
+  Object.defineProperty(scroller, "scrollHeight", { get: () => 300, configurable: true });
+  Object.defineProperty(scroller, "clientHeight", { get: () => 100, configurable: true });
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["short", " grew"]] })} turn={turn} live={true} />);
+  expect(body.dataset.clipped).toBe("true");
+});
+
+test("the fade lives on the non-scrolling wrapper, gated on the clipped state (declaration-level)", () => {
+  const css = thinkCss();
+  expect(css).toMatch(
+    /\.liveBody\[data-clipped="true"\]::before\s*\{[^}]*linear-gradient\(to bottom,\s*var\(--surface-0\),\s*transparent\)/,
+  );
+  // Never ungated: a short thought must not wash out its own first line.
+  expect(css).not.toMatch(/\.liveBody::before/);
+});
+
 // --- settled: duration + final context --------------------------------------
 
 test("settled collapses to a closed details with duration and the final nonblank context line", () => {

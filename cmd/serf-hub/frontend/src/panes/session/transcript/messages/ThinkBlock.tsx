@@ -46,7 +46,8 @@
 // AgentMessageItem's identical live-plain/settled-markdown split, so both
 // message types behave the same way under streaming.
 
-import { memo } from "react";
+import { memo, useLayoutEffect, useRef } from "react";
+import type { ItemModel } from "../../../../protocol/model";
 import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -67,6 +68,7 @@ const CLASS = {
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
   icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
+  liveScroll: requireClass(styles.liveScroll, "thinkblock.module.css", "liveScroll"),
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
@@ -102,21 +104,43 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
   return parts.join(" · ");
 }
 
-// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
-// component never reads `turn` at all (only `item`/`live`, destructured
-// below), so a fresh turn object on every streaming delta targeting a
-// DIFFERENT item must not re-render an already-settled think block.
-export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: ItemRenderProps) {
-  const isLive = live || item.status === "inProgress";
-  if (isLive) {
-    return (
-      <div className={CLASS.block} data-testid="think-block" data-live="true">
-        <div className={CLASS.live}>
-          <span className={CLASS.label}>
-            {thoughtIcon}
-            Thinking…
-          </span>
-          <div className={CLASS.liveBody}>
+// The live view (mockup #4's draft treatment) is its own component because it
+// alone needs hooks, and ThinkBlock's settled branch must not have to thread a
+// matching hook order past its own early return.
+//
+// The bounded stream: .liveScroll caps the open thought at ~6 body lines and
+// this effect pins it to its own tail, so the newest reasoning is what stays
+// on screen while the cut is marked by the wrapper's fade (gated on
+// data-clipped - a short thought has no cut to mark). Deliberately NO
+// dependency array: every delta to this item re-renders this component (the
+// memo above ignores only `turn` identity), and the child StreamingText's own
+// layout effect appends its text BEFORE a parent layout effect runs - so by
+// the time this measures, the new text is in the DOM. Re-pinning on a commit
+// with nothing new is a no-op assignment.
+//
+// scrollTop on an overflow: hidden box is programmatic-only, which is the
+// point: while live the tail is the only honest viewport (the reader cannot
+// hold a position in text that is still moving); the full body arrives at the
+// settled disclosure the moment the item completes.
+function LiveThinkBlock({ item }: { item: ItemModel }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    const scroller = scrollRef.current;
+    if (!body || !scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    body.dataset.clipped = scroller.scrollHeight > scroller.clientHeight ? "true" : "false";
+  });
+  return (
+    <div className={CLASS.block} data-testid="think-block" data-live="true">
+      <div className={CLASS.live}>
+        <span className={CLASS.label}>
+          {thoughtIcon}
+          Thinking…
+        </span>
+        <div className={CLASS.liveBody} data-testid="think-block-live-body" ref={bodyRef}>
+          <div className={CLASS.liveScroll} data-testid="think-block-live-scroll" ref={scrollRef}>
             {(item.reasoningSummaries ?? []).map((chunks, i) =>
               // A zero-chunk index (a later summaryIndex has started streaming
               // before this earlier one has) renders nothing rather than an
@@ -143,8 +167,17 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
           </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`/`live`, destructured
+// below), so a fresh turn object on every streaming delta targeting a
+// DIFFERENT item must not re-render an already-settled think block.
+export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: ItemRenderProps) {
+  const isLive = live || item.status === "inProgress";
+  if (isLive) return <LiveThinkBlock item={item} />;
 
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   if (paragraphs.length === 0) return null; // empty thoughts removed
