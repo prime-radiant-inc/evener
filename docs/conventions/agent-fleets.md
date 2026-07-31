@@ -169,13 +169,36 @@ Merge with `git merge --ff-only` and run `git worktree remove` from the
 main checkout, never from inside the worktree, and confirm the target
 branch actually advanced.
 
-Classifying a worktree as removable needs **two** facts: it has commits
-of its own, and they have landed. A freshly-created branch is trivially
-an ancestor of what it was cut from, so an ancestor check alone marks
-unstarted work as merged — that deleted five worktrees ninety seconds
-after five agents were given them. The dirty-check did not save them
-either: a checkout nobody has written to yet is perfectly clean. Failure
-must always fall toward keeping.
+Classifying a worktree as removable needs **two** facts about its
+branch: it has work of its own, and that work has landed. Only the
+second is a question about ancestry. A freshly-created branch is
+trivially an ancestor of what it was cut from, so an ancestor check
+alone marks unstarted work as merged — that deleted six worktrees ninety
+seconds after six agents were given them, and the dirty-check did not
+save them, because a checkout nobody has written to yet is perfectly
+clean.
+
+The follow-up fix read the first fact as "the branch tip is still the
+base's tip". That holds only at cut time: two merges landed on the base
+between `worktree add` and the next run, five more fresh worktrees
+stopped matching, and they went too. `scripts/disk-reclaim.sh` now takes
+the first fact from the **branch's own reflog** — the commit it was
+created at, and whether anyone has committed on it since — so a moving
+base cannot change the answer. Nothing has to be done at creation time
+for this to hold, so a worktree made by any means is covered; a branch
+whose reflog is missing is kept.
+
+**Ignored is not disposable.** git calls a checkout whose only content
+is git-ignored clean, so `git worktree remove` without `--force` deleted
+one holding an agent's `.superpowers/` SDD archive. The script keeps any
+candidate holding ignored content it cannot name as regenerable
+(`node_modules`, `.build/`, the built binaries, `.DS_Store`), and never
+considers the main checkout at all.
+
+Failure must always fall toward keeping. A worktree kept that could have
+gone costs disk; the other direction costs a running agent its
+workspace. `scripts/disk-reclaim-selftest.sh` carries a scenario per
+hole — run it after touching the classifier.
 
 ## Model tiering
 

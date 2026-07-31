@@ -54,9 +54,14 @@
 #                                           # Floor defaults to 5 (GiB); override
 #                                           # with SERF_DISK_MIN_FREE_GB.
 #
-# Safety: an unmerged worktree is NEVER removed, and neither is the one you are
-# standing in. ~/.serf and ~/.local/state/serf are never touched. Emptying the
-# build cache costs a cold rebuild (~2-3 min) and nothing else.
+# Safety: four things must ALL hold before a worktree is removed. Its branch
+# must have commits of its own (read from the branch's reflog - see the
+# classifier below), those commits must have landed, the checkout must hold no
+# git-ignored content this repo cannot regenerate, and `git worktree remove`
+# must accept it without --force. The worktree you are standing in and the MAIN
+# checkout are never candidates at all. ~/.serf and ~/.local/state/serf are
+# never touched. Emptying the build cache costs a cold rebuild (~2-3 min) and
+# nothing else.
 set -uo pipefail
 
 RECLAIM_CACHE=0
@@ -82,7 +87,7 @@ while [ $# -gt 0 ]; do
 		}
 		;;
 	-h | --help)
-		sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -228,27 +233,83 @@ fi
 merged=()
 unmerged=()
 here=$(git rev-parse --show-toplevel)
+
+# The commit a branch was CREATED at, read from the oldest entry of the
+# branch's own reflog. Empty when the branch has no reflog (deleted, expired,
+# or core.logAllRefUpdates off) - `git reflog show` prints nothing and exits 0
+# for a ref with no log, so an absent log reads as "cut point unknown", never
+# as the branch's whole history.
+branch_cut_point() {
+	git reflog show --no-abbrev --format=%H "refs/heads/$1" 2>/dev/null | tail -1
+}
+
+# Did anyone ever COMMIT on this branch? Every reflog message git writes for a
+# commit starts with "commit" ("commit:", "commit (initial):", "commit
+# (amend):", "commit (merge):"); reflog messages are not translated, so this
+# does not vary by locale. A branch that only ever fast-forwarded to catch up
+# with its base has no such entry - its messages are "merge <ref>:
+# Fast-forward" or "reset: moving to <ref>".
+#
+# Read into a variable rather than piping into grep: this script runs under
+# `pipefail`, and grep -q closing the pipe early makes git exit on SIGPIPE,
+# which would turn every match into a non-zero pipeline status.
+branch_has_own_commit() {
+	local msgs
+	msgs=$(git reflog show --format=%gs "refs/heads/$1" 2>/dev/null)
+	grep -q '^commit' <<<"$msgs"
+}
+
 classify_worktree() {
-	local path="$1" branch="$2" tip
+	local path="$1" branch="$2" tip cut own
 	[ -n "$path" ] || return
 	[ "$path" = "$here" ] && return
+	# The MAIN checkout is never a removal candidate. It reached the candidate
+	# list once (reported as "kept main (dirty or in use)") and was saved only
+	# by git's own refusal to remove a main working tree - which is luck, not a
+	# rule this script gets to rely on.
+	[ "$path" = "$main_root" ] && return
 	[ -n "$branch" ] || return # detached HEAD: nothing to classify against
-	# A branch with no commits of its own is UNSTARTED, not merged - and
-	# --is-ancestor cannot tell the difference, because a branch that has not
-	# diverged yet is trivially an ancestor of what it was cut from. This
-	# script deleted six worktrees ninety seconds after they were created for
-	# six running agents, and the dirty-check did not save them: a fresh
-	# checkout nobody has written to yet is perfectly clean.
+	# "Removable" needs BOTH halves: the branch has commits of its own, AND
+	# those commits have landed. Ancestry answers only the second half. It
+	# cannot tell "contributed nothing because it merged" from "contributed
+	# nothing because nobody has started" - a branch that has not diverged yet
+	# is trivially an ancestor of what it was cut from - and the dirty-check
+	# does not save an untouched checkout, because a fresh checkout nobody has
+	# written to is perfectly clean. That deleted six live agent worktrees
+	# ninety seconds after they were created.
 	#
-	# So "removable" needs both halves: the branch has commits of its own, AND
-	# those commits have landed. Same tip as the base means the first half
-	# fails, and the worktree is left alone.
-	# An unresolvable branch is classified unmerged: this script's failure mode
-	# must always be "kept something it could have removed", never the reverse.
+	# `tip == into_tip` was the first attempt at the missing half. It is only
+	# true at cut time: let two merges land on the base between `worktree add`
+	# and this run and every fresh branch has a tip that is no longer the
+	# base's while still being its ancestor. That deleted five more, and is why
+	# the first half is now read from the branch's own reflog instead: the
+	# commit the branch was created at, and whether anyone has committed on it
+	# since. Both are facts about THIS branch, so neither moves when the base
+	# does.
+	#
+	# Every unknown resolves to unmerged - unresolvable branch, no reflog, no
+	# commits of its own. This script's failure mode must always be "kept
+	# something it could have removed", never the reverse.
 	tip=$(git rev-parse --verify --quiet "$branch^{commit}" 2>/dev/null) || tip=""
+	cut=$(branch_cut_point "$branch")
+	# How far the branch has moved since it was created. An empty answer is
+	# rev-list declining to walk it - a cut point pruned out of the object store,
+	# say - and reads as zero, because an unknown has to be kept.
+	own=$(git rev-list --count "$cut..$branch" 2>/dev/null)
 	if [ -z "$tip" ]; then
 		unmerged+=("$path	$branch (unresolvable)")
 	elif [ "$tip" = "$into_tip" ]; then
+		# The base points AT this branch's tip. Whether it got there by an
+		# ff-merge of this branch or because the branch never moved, someone
+		# may still be standing in the checkout; keep it either way.
+		unmerged+=("$path	$branch (is the base tip)")
+	elif [ -z "$cut" ]; then
+		unmerged+=("$path	$branch (no reflog: cut point unknown)")
+	elif ! branch_has_own_commit "$branch"; then
+		unmerged+=("$path	$branch (unstarted)")
+	elif [ "${own:-0}" = 0 ]; then
+		# Committed on, then moved back to where it started: nothing of its own
+		# survives, so it is unstarted again.
 		unmerged+=("$path	$branch (unstarted)")
 	elif git merge-base --is-ancestor "$branch" "$INTO" 2>/dev/null; then
 		merged+=("$path	$branch")
@@ -276,6 +337,49 @@ while IFS= read -r line; do
 	esac
 done < <(git worktree list --porcelain
 	echo)
+
+# Content this repo can rebuild from a fresh checkout, and nothing else. Every
+# other git-ignored path in a worktree is treated as somebody's work (see
+# worktree_ignored_work). Adding a row here is a deliberate act: get it wrong
+# and the script deletes the thing you named. Forgetting to add a row only
+# costs a reclaim opportunity, which is the failure direction this script is
+# allowed to have.
+is_regenerable_ignored_path() {
+	case "${1%/}" in
+	node_modules | node_modules/* | */node_modules | */node_modules/*) return 0 ;;
+	.build | .build/*) return 0 ;;
+	.DS_Store | */.DS_Store) return 0 ;;
+	serf | serf-hub | serf-tui | serf-doctor | serf-namingcheck | serfeval | llmcall | serf-linux-amd64) return 0 ;;
+	esac
+	return 1
+}
+
+# Prints the first git-IGNORED path in a worktree that this repo cannot
+# regenerate, or nothing if there is none.
+#
+# `git worktree remove` without --force refuses a worktree with modified
+# tracked files or untracked files, and that refusal is this script's backstop
+# against removing a checkout somebody is standing in. It does not see IGNORED
+# content, by design - git considers such a checkout clean. So an agent whose
+# only writes so far went into `.superpowers/` sits in a "clean" worktree, and
+# a long-merged worktree holding a `.superpowers/sdd/` archive was silently
+# deleted with it. Ignored is not the same as disposable.
+#
+# -unormal: `--porcelain` alone implies `-uall`, which expands an ignored
+# directory into every file underneath it - tens of thousands of lines for a
+# real node_modules. -unormal collapses each to a single entry.
+# --no-optional-locks: this reads OTHER agents' live worktrees; do not let a
+# status refresh write to an index somebody else is using.
+worktree_ignored_work() {
+	local path="$1" entry
+	while IFS= read -r -d '' entry; do
+		[ "${entry:0:2}" = "!!" ] || continue
+		if ! is_regenerable_ignored_path "${entry:3}"; then
+			printf '%s' "${entry:3}"
+			return
+		fi
+	done < <(git --no-optional-locks -C "$path" status --porcelain -unormal --ignored -z 2>/dev/null)
+}
 
 wt_size=$(du -sh "$worktrees_dir" 2>/dev/null | cut -f1)
 echo "  worktrees        ${wt_size:-0}	${#merged[@]} merged into ${INTO:0:12}, ${#unmerged[@]} unmerged"
@@ -310,16 +414,27 @@ if [ "$RECLAIM_WORKTREES" = 1 ]; then
 	else
 		echo "Removing ${#merged[@]} worktree(s) merged into ${INTO:0:12}:"
 		kept_dirty=0
+		kept_ignored=0
 		for entry in "${merged[@]}"; do
 			path=${entry%%	*}
 			branch=${entry##*	}
+			# Before touching anything: does this checkout hold ignored content
+			# nobody can regenerate? Ask BEFORE dropping the node_modules
+			# symlink below, so a worktree that is about to be kept is left
+			# exactly as it was found.
+			held=$(worktree_ignored_work "$path")
+			if [ -n "$held" ]; then
+				echo "  kept     $branch	(holds ignored work: $held)"
+				kept_ignored=$((kept_ignored + 1))
+				continue
+			fi
 			# Drop the shared-install symlink first: `git worktree remove` will
 			# not delete a symlink's target, but leaving it makes the removal
 			# noisier than it needs to be.
 			nm="$path/cmd/serf-hub/frontend/node_modules"
 			[ -L "$nm" ] && rm -f "$nm"
 			# NO --force, deliberately. git refuses a worktree with
-			# uncommitted changes, and that refusal is the only thing standing
+			# uncommitted changes, and that refusal is the last thing standing
 			# between this script and another agent's live work: "merged" only
 			# says the BRANCH landed, not that nobody is standing in the
 			# checkout right now. A skip here is the safe outcome.
@@ -333,6 +448,7 @@ if [ "$RECLAIM_WORKTREES" = 1 ]; then
 	fi
 	[ "${#unmerged[@]}" -gt 0 ] && echo "Kept ${#unmerged[@]} unmerged worktree(s)."
 	[ "${kept_dirty:-0}" -gt 0 ] && echo "Kept ${kept_dirty} merged worktree(s) that were dirty or in use."
+	[ "${kept_ignored:-0}" -gt 0 ] && echo "Kept ${kept_ignored} merged worktree(s) holding git-ignored work; look before removing by hand."
 fi
 
 echo
