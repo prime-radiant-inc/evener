@@ -110,7 +110,6 @@ const (
 	NotifySerfThreadModelRetry         = "serf/thread/modelRetry"
 	NotifySerfThreadResync             = "serf/thread/resync"
 	NotifySerfTaskUpdated              = "serf/task/updated"
-	NotifySerfJobUpdated               = "serf/job/updated"
 	NotifySerfSteeringInjected         = "serf/steering/injected"
 	NotifySerfJobStarted               = "serf/job/started"
 	NotifySerfJobFinished              = "serf/job/finished"
@@ -412,16 +411,6 @@ type TaskUpdatedParams struct {
 	Ref      string `json:"ref"`
 	Total    int    `json:"total"`
 	Done     int    `json:"done"`
-}
-
-// JobUpdatedParams is the params shape for serf/job/updated: one job's
-// lifecycle state changed, so a client with an open jobs panel re-fetches
-// serf/jobs/list event-driven instead of polling.
-type JobUpdatedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	JobID    string `json:"jobId"`
-	Status   string `json:"status"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the

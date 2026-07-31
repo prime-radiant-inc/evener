@@ -905,10 +905,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:             p.ref,
 			ReasoningEffort: data.ReasoningEffort,
 		})}
+	// The job lifecycle pair below is the ONLY job push on the wire, and it
+	// serves every consumer: the webui folds it into subagent rows and uses it
+	// as the jobs panel's refetch trigger, and the TUI applies it to its
+	// transcript reducer. Job.JobID/Job.Status carry what a refetch trigger
+	// needs, so no lighter-weight second notification exists for the same
+	// instants (kata j7y6).
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
-		started := p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -925,20 +931,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginToolCallID: data.OriginToolCallID,
 				OriginItemID:     data.OriginItemID,
 			},
-		})
-		// serf/job/updated: the lightweight lifecycle notification the webui jobs
-		// panel reducer consumes (paired with the full serf/job/started above).
-		updated := p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			JobID:    data.JobID,
-			Status:   data.Status,
-		})
-		return []AppNotification{started, updated}
+		})}
 	case events.EventJobFinished:
 		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
-		finished := p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
+		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -961,16 +958,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginToolCallID: data.OriginToolCallID,
 				OriginItemID:     data.OriginItemID,
 			},
-		})
-		// serf/job/updated: the lightweight lifecycle notification the webui jobs
-		// panel reducer consumes (paired with the full serf/job/finished above).
-		updated := p.notification(appwire.NotifySerfJobUpdated, appwire.JobUpdatedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			JobID:    data.JobID,
-			Status:   data.Status,
-		})
-		return []AppNotification{finished, updated}
+		})}
 	case events.EventTurnEnded:
 		if p.activeTurnID == "" {
 			return nil // turn already completed (e.g. failed via EventError)

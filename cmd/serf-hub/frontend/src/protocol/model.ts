@@ -154,9 +154,9 @@ export interface ThreadModel {
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
   tasks: { total: number; done: number } | null;
-  // Bumped (to the reducer's frame time) by every serf/job/updated for this
-  // thread; the jobs panel re-fetches its list when this changes. null until
-  // the first push arrives.
+  // Bumped (to the reducer's frame time) by every serf/job/started and
+  // serf/job/finished for this thread; the jobs panel re-fetches its list when
+  // this changes. null until the first push arrives.
   jobsUpdatedAt: number | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input

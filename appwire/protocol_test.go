@@ -162,11 +162,15 @@ func TestJobsCatalogEntries(t *testing.T) {
 			t.Errorf("request catalog missing %s", m)
 		}
 	}
+	// The panel's live refetch trigger is serf/job/started|finished, not a
+	// notification of its own (kata j7y6), so those two are all this pins.
 	notifs := map[string]bool{}
 	for _, e := range Notifications {
 		notifs[e.Name] = true
 	}
-	if !notifs[NotifySerfJobUpdated] {
-		t.Errorf("notification catalog missing %s", NotifySerfJobUpdated)
+	for _, n := range []string{NotifySerfJobStarted, NotifySerfJobFinished} {
+		if !notifs[n] {
+			t.Errorf("notification catalog missing %s", n)
+		}
 	}
 }

@@ -726,11 +726,6 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       return { ...model, tasks: { total: n.params.total, done: n.params.done }, lastFrameAt: now };
     }
 
-    case "serf/job/updated": {
-      if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
-    }
-
     case "serf/thread/name/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, name: n.params.name, lastFrameAt: now };
@@ -765,14 +760,16 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       return { ...resolvePendingEscalation(model, n.params.escalationId), lastFrameAt: now };
     }
 
-    // Job lifecycle carries no ThreadModel-tracked state (no job list at
-    // this layer) — only its liveness signal (lastFrameAt) applies. Live
-    // steering (below) is handled separately: unlike jobs, it becomes a
-    // transcript item.
+    // The model holds no job LIST at this layer, so the lifecycle pair leaves
+    // its liveness signal (lastFrameAt) and a timestamp the jobs panel watches
+    // to know its list went stale — the whole reason the panel need not poll.
+    // Both ends bump it: starting and finishing both change what
+    // serf/jobs/list returns. Live steering (below) is handled separately:
+    // unlike jobs, it becomes a transcript item.
     case "serf/job/started":
     case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, lastFrameAt: now };
+      return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
     }
 
     case "warning": {

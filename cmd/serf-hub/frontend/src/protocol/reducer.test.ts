@@ -2639,29 +2639,35 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
   ).toEqual({ total: 0, done: 0 });
 });
 
-test("serf/job/updated bumps jobsUpdatedAt for the targeted thread", () => {
+// The jobs panel's refetch trigger rides the job lifecycle notifications the
+// client already receives, rather than a second stream at the same instants
+// (kata j7y6). Both ends of the lifecycle bump it: a job that starts and a
+// job that finishes both change what serf/jobs/list would return.
+const jobParams = (ref: string, status: string) => ({
+  threadId: ref === "ref_t" ? "thr_t" : "not_thr_t",
+  ref,
+  job: { jobId: "job_1", jobType: "shell", status, outputBytes: 0 },
+});
+
+test("serf/job/started bumps jobsUpdatedAt for the targeted thread", () => {
   let model = testHydrate();
   expect(model.jobsUpdatedAt).toBeNull();
-  model = applyNotification(
-    model,
-    { method: "serf/job/updated", params: { threadId: "thr_t", ref: "ref_t", jobId: "job_1", status: "running" } },
-    2000,
-  );
+  model = applyNotification(model, { method: "serf/job/started", params: jobParams("ref_t", "running") }, 2000);
   expect(model.jobsUpdatedAt).toBe(2000);
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test("serf/job/updated for another thread leaves the model untouched", () => {
+test("serf/job/finished bumps jobsUpdatedAt for the targeted thread", () => {
+  let model = testHydrate();
+  model = applyNotification(model, { method: "serf/job/finished", params: jobParams("ref_t", "completed") }, 3000);
+  expect(model.jobsUpdatedAt).toBe(3000);
+  expect(model.lastFrameAt).toBe(3000);
+});
+
+test("a job notification for another thread leaves the model untouched", () => {
   const model = testHydrate();
   expect(
-    applyNotification(
-      model,
-      {
-        method: "serf/job/updated",
-        params: { threadId: "not_thr_t", ref: "not_ref_t", jobId: "job_1", status: "running" },
-      },
-      2000,
-    ),
+    applyNotification(model, { method: "serf/job/started", params: jobParams("not_ref_t", "running") }, 2000),
   ).toBe(model);
 });
 

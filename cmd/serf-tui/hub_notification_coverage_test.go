@@ -16,10 +16,6 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// dashboard's own poll rather than folded from a push.
 	appwire.NotifySerfTreeChanged,
 	appwire.NotifySerfAttentionChanged,
-	// The jobs panel is a webui surface (Jesse, 2026-07-31); the TUI's job
-	// view reads job state through its session reads and has no panel to
-	// refresh event-driven. Revisit if a TUI jobs surface appears.
-	appwire.NotifySerfJobUpdated,
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
 	appwire.NotifyThreadNameChanged,
