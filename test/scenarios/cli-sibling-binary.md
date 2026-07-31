@@ -45,8 +45,15 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
   (`flock <path>: resource temporarily unavailable (another serf-hub
   may already be running; a disposable hub needs its own HOME)`,
   `cmd/serf-hub/internal/hostlock/hostlock.go:32`).
-  If no other hub is running, you'll see a different startup error
-  (port conflict, missing perms) — still proves the exec happened.
+  If no other serf-hub holds that flock, the sibling hub starts
+  instead of failing and the TUI attaches to it — no `serf-hub exited
+  during startup` line at all, which is still a pass, since the
+  falsification below is the only failure this card reads. A port
+  conflict is not one of the outcomes any more: step 4's port was free
+  when the kernel handed it back. The hub started this way is
+  deliberately detached and outlives the TUI
+  (`cmd/serf-tui/internal/hubstart/hub_start.go:441`), so look for one
+  on `$PORT` before you leave (kata `zw9j`).
 - Falsification: stderr contains `executable file not found in $PATH`
   or `cannot run executable found relative to current directory` —
   the kata regression is back.
