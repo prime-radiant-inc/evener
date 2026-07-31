@@ -36,9 +36,6 @@ the area they exercise.
   starts a dormant session: `input: []` on the wire, no turn, no
   error (kata `ytpa`; replaces the old `spawn-empty-prompt-blocked.md`,
   kata `xj9j`).
-- `spawn-picker-enter-noop.md` — pressing Enter inside the model
-  picker search selects first match and prevents form submit (kata
-  `t13x`).
 
 ## Session workspace
 
