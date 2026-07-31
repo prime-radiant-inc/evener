@@ -60,9 +60,17 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 // discarded: Go permits ignoring a non-error return, errcheck does not cover it,
 // and no linter here flags it, so `ConsumeEventsLossless(consume)` compiled
 // cleanly and put the shutdown crash straight back. A parameter cannot be
-// omitted, so the sink's teardown has nowhere to live except inside the
-// contract. Same principle as authoritativeConsumer above: the unsafe state is
-// made unspellable rather than discouraged.
+// omitted, so no call site can be SILENT about the wait.
+//
+// That closes omission, not misuse, and the distinction is load-bearing rather
+// than pedantic: passing `func() {}` here and tearing the sink down elsewhere
+// compiles, and reproduces the original crash with a byte-identical stack.
+// cmd/serf/serve.go is deliberately that shape -- one --verbose tee outlives N
+// drains across /clear, so the session cannot own the sink's lifetime and the
+// wait has to live at the caller that joins them. So unlike
+// authoritativeConsumer above, the unsafe state here is still spellable; what
+// the parameter buys is that choosing it is a visible decision at the call site
+// instead of an absent return nobody reads.
 //
 // onDrained must not be nil. A caller with nothing to tear down passes an empty
 // function, which is a visible decision; nil would be the discardable return in
