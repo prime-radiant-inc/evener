@@ -45,8 +45,7 @@ func TestSupportedEnvVarsUseRegistryRows(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", ".claude", ".worktrees", "docs", "envvars", "inspo", "worktrees":
+			if path != "." && envvarsAuditSkipsDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -83,6 +82,37 @@ func TestSupportedEnvVarsUseRegistryRows(t *testing.T) {
 	if len(findings) > 0 {
 		sort.Strings(findings)
 		t.Fatalf("supported env vars must be sourced from envvars rows:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// envvarsAuditSkipsDir reports whether the audit walk skips a directory.
+// Dot- and underscore-prefixed names mirror the go tool, which never builds
+// them — a scratch probe there cannot ship, so auditing it only turns
+// working-tree debris into failures. The named entries hold prose or the
+// registry itself rather than shipping Go.
+func envvarsAuditSkipsDir(name string) bool {
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+		return true
+	}
+	switch name {
+	case "docs", "envvars", "inspo", "worktrees":
+		return true
+	}
+	return false
+}
+
+func TestEnvvarsAuditSkipDir_MirrorsGoToolIgnores(t *testing.T) {
+	skipped := []string{".scratch-probe", "_experiment", ".git", ".claude", ".worktrees", "docs", "envvars", "inspo", "worktrees"}
+	for _, name := range skipped {
+		if !envvarsAuditSkipsDir(name) {
+			t.Errorf("directory %q must be skipped", name)
+		}
+	}
+	scanned := []string{"agent", "cmd", "internal", "server", "scratch"}
+	for _, name := range scanned {
+		if envvarsAuditSkipsDir(name) {
+			t.Errorf("directory %q must be audited", name)
+		}
 	}
 }
 
