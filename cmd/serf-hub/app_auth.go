@@ -170,14 +170,12 @@ func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.Aut
 
 	// Legacy path: name treated as a provider type.
 	if name == "openai" {
-		resp, err := c.openAIStatus()
-		if err != nil {
-			return resp, err
-		}
-		resp.AuthModes = []string{"apiKey", "oauth"}
-		return resp, nil
+		return c.openAIStatus()
 	}
-	modes := credentialAuthModes(name)
+	// The envvars registry owns what each provider authenticates with. A name it
+	// does not carry is a provider the hub knows nothing about, so it cannot say
+	// how to authenticate it.
+	modes := envvars.AuthModes(name)
 	if modes == nil {
 		return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: string(credentials.SourceAbsent)}, nil
 	}
@@ -192,23 +190,6 @@ func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.Aut
 		HasStoredFile: hasFile,
 		EnvVar:        envVar,
 	}, nil
-}
-
-func credentialAuthModes(provider string) []string {
-	known := map[string][]string{
-		"anthropic":            {"apiKey"},
-		"google":               {"apiKey"},
-		"gemini":               {"apiKey"},
-		"minimax":              {"apiKey"},
-		"openrouter":           {"apiKey"},
-		"openrouter-anthropic": {"apiKey"},
-		"kimi":                 {"apiKey"},
-		"kimi-anthropic":       {"apiKey"},
-		"glm":                  {"apiKey"},
-		"openai-compatible":    {"apiKey"},
-		"ollama":               {"none"},
-	}
-	return known[provider]
 }
 
 func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
@@ -599,7 +580,11 @@ func (c *hubAuthController) instanceStatus(name, typ string) appwire.AuthStatusR
 	// Non-openai: key-based credential check, resolving by instance name.
 	v, src := c.creds.ResolveKey(name, typ)
 	hasFile, envVar := c.creds.InstanceLayers(name, typ)
-	modes := credentialAuthModes(typ)
+	// Auth modes are a property of the instance's type, not of the name it was
+	// given, and the envvars registry owns them. A type the registry does not
+	// carry gets the credential-bearing default rather than a claim that it
+	// needs nothing.
+	modes := envvars.AuthModes(typ)
 	if modes == nil {
 		modes = []string{"apiKey"}
 	}
@@ -653,12 +638,17 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		active = authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
 	}
 
+	// Every caller has already resolved this instance to the openai type, so its
+	// modes are that type's registry row — including the "oauth" mode this
+	// helper's whole OAuth-record path exists to serve.
+	modes := envvars.AuthModes("openai")
+
 	status := appwire.AuthStatusResponse{
 		Provider:      name,
 		Supported:     true,
 		SignedIn:      active.SignedIn,
 		ActiveSource:  active.Source,
-		AuthModes:     []string{"apiKey", "oauth"},
+		AuthModes:     modes,
 		Email:         active.Email,
 		AccountID:     active.AccountID,
 		WorkspaceID:   active.WorkspaceID,
