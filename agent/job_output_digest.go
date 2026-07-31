@@ -4,38 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
-	"unicode/utf8"
+
+	"primeradiant.com/serf/agent/internal/runetrim"
 )
-
-// trimTrailingPartialRune drops an incomplete UTF-8 sequence left dangling at the
-// END of a byte slice cut at an arbitrary offset, so slicing valid UTF-8 output
-// never yields an invalid tail fragment.
-func trimTrailingPartialRune(b []byte) []byte {
-	i := len(b) - 1
-	for i >= 0 && !utf8.RuneStart(b[i]) {
-		i--
-	}
-	if i < 0 {
-		return b
-	}
-	if r, size := utf8.DecodeRune(b[i:]); r == utf8.RuneError && size == 1 {
-		return b[:i]
-	}
-	return b
-}
-
-// trimLeadingPartialRune drops UTF-8 continuation bytes left dangling at the START
-// of a byte slice cut at an arbitrary offset. It drops at most three: that is the
-// longest continuation run a 4-byte rune can leave behind a cut, so output that
-// is not UTF-8 at all (binary logs are legal) keeps every byte past that bound
-// instead of having a whole run of 0x80-0xBF bytes eaten.
-func trimLeadingPartialRune(b []byte) []byte {
-	i := 0
-	for i < len(b) && i < utf8.UTFMax-1 && !utf8.RuneStart(b[i]) {
-		i++
-	}
-	return b[i:]
-}
 
 // assembleOutputDigest renders a head+tail line digest: the head slice, an
 // elision marker describing what sits between, then the tail slice. total is the
@@ -104,7 +75,7 @@ func shellInlineDigest(full string, total, dropped int64) string {
 		}
 		// A single long line with no newline before the cut leaves the byte slice
 		// ending mid-rune; drop the dangling partial rune so the head is valid UTF-8.
-		headRaw = trimTrailingPartialRune(headRaw)
+		headRaw = runetrim.TrimTrailingPartial(headRaw)
 	}
 	tailRaw := b
 	if len(tailRaw) > shellDigestHalfBytes {
@@ -114,7 +85,7 @@ func shellInlineDigest(full string, total, dropped int64) string {
 			tailRaw = tailRaw[i+1:]
 		}
 		// Likewise drop a dangling partial rune at the cut so the tail is valid UTF-8.
-		tailRaw = trimLeadingPartialRune(tailRaw)
+		tailRaw = runetrim.TrimLeadingPartial(tailRaw)
 	}
 	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
 	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)

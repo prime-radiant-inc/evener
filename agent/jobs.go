@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/runetrim"
 	"primeradiant.com/serf/agent/provenance"
 )
 
@@ -1935,7 +1936,7 @@ func tailOutputFileWithOpen(path string, tailBytes int, total int64, open func(s
 		// jobOutputTailFrom) naming the first byte actually returned. Only our own cut
 		// is realigned — at start 0 the first byte is the file's own, and binary output
 		// keeps it.
-		buf = trimLeadingPartialRune(buf)
+		buf = runetrim.TrimLeadingPartial(buf)
 	}
 	return string(buf), totalBytes, truncated, nil
 }
