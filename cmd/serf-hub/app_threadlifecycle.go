@@ -287,12 +287,43 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
-		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureMessage(cfg, sessionID, err))
 	}
 	if cfg.Roster != nil {
 		hubRosterRefresh(cfg.Roster)
 	}
 	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
+}
+
+// resumeFailureMessage explains a failed replacement spawn when the daemon the
+// ownership predicate above refused to reuse is STILL running. That daemon
+// holds the session's exclusive API-log reservation, so no replacement can
+// start until it stops, and the spawn failure that comes back names only the
+// locked file — it is raised inside the child process, which has no idea a hub
+// is replacing an incompatible daemon, and its stock advice ("send work to the
+// live session") is the one thing that cannot work here. The hub is the only
+// party holding the blocking daemon's pid and address, so it owes the operator
+// both plus the command that releases the session (kata ew86).
+//
+// The roster is re-read rather than reused from the pre-spawn check: the spawn
+// attempt takes seconds, and naming a pid that has since exited would send the
+// operator after a process that is not there.
+func resumeFailureMessage(cfg hubcore.WebConfig, sessionID string, err error) string {
+	if cfg.Roster == nil {
+		return err.Error()
+	}
+	hubRosterRefresh(cfg.Roster)
+	blocker, ok := cfg.Roster.Find(sessionID)
+	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
+		return err.Error()
+	}
+	remedy := fmt.Sprintf("kill %d", blocker.PID)
+	if blocker.Address != "" {
+		remedy = fmt.Sprintf("curl -X POST http://%s/shutdown (or kill %d)", blocker.Address, blocker.PID)
+	}
+	return fmt.Sprintf(
+		"session %s is still held by live daemon pid %d (AppWire protocol %q; this hub speaks %q), which the hub can neither route to nor replace. Stop it and resume again: %s. Replacement spawn failed: %v",
+		sessionID, blocker.PID, blocker.Protocol, appwire.ProtocolVersion, remedy, err)
 }
 
 // hubResumedThreadResponse reads the freshly-resumed local thread back and
