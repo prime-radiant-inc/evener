@@ -728,3 +728,49 @@ func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string
 		t.Fatal(err)
 	}
 }
+
+// TestStampSessionImageURLsIsTheOnlyAuthorityForTheSHARoute pins the three
+// rules the sha-addressed route depends on. Producers (the agent live, the
+// transcript projector on reload) mint sha-only descriptors and never a URL;
+// this is where the route is decided, once, for both.
+func TestStampSessionImageURLsIsTheOnlyAuthorityForTheSHARoute(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	turns := []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{
+		{Source: "tool-result", SHA: sha},
+		{Source: "read-file", SHA: sha, URL: "/doc/image?session=s&path=shot.png"},
+		{Source: "shell-path", Path: "shot.png"},
+	}}}}}
+	stampSessionImageURLs("proj/one", turns)
+	got := turns[0].Items[0].OutputImages
+	if got[0].URL != "/s/proj%2Fone/images/"+sha {
+		t.Errorf("sha-only descriptor URL=%q, want the escaped sha route", got[0].URL)
+	}
+	if got[1].URL != "/doc/image?session=s&path=shot.png" {
+		t.Errorf("already-routed descriptor URL=%q, want it left alone", got[1].URL)
+	}
+	if got[2].URL != "" {
+		t.Errorf("sha-less descriptor URL=%q, want no route invented for it", got[2].URL)
+	}
+}
+
+func TestStampSessionImageURLsLeavesDescriptorsAloneWithoutASession(t *testing.T) {
+	sha := strings.Repeat("b", 64)
+	turns := []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: sha}}}}}}
+	stampSessionImageURLs("", turns)
+	if url := turns[0].Items[0].OutputImages[0].URL; url != "" {
+		t.Fatalf("URL=%q, want no route stamped when the session is unknown", url)
+	}
+}
+
+// TestStampThreadImageURLsFallsBackToThreadID mirrors how the file-backed
+// enrichment resolves a thread's session: SessionID first, thread ID second.
+func TestStampThreadImageURLsFallsBackToThreadID(t *testing.T) {
+	sha := strings.Repeat("c", 64)
+	thread := stampThreadImageURLs(appwire.Thread{
+		ID:    "02wMz5Txv733WHFsVy66SR",
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: sha}}}}}},
+	})
+	if url := thread.Turns[0].Items[0].OutputImages[0].URL; url != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
+		t.Fatalf("URL=%q, want the sha route built from the thread id", url)
+	}
+}

@@ -48,7 +48,7 @@ func TestReplayedFailureProjectsFailedItem(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnFailure, llm.System("provider error: access denied"))
 	persisted.Error = &schema.TurnFailureInfo{Message: "provider error: access denied"}
 
-	items := appItemsFromReplayTurn("s", "turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want exactly one", items)

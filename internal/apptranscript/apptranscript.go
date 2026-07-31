@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -35,6 +36,32 @@ type ImageProjector func(image llm.ImageData) appwire.InputItem
 // OutputImageProjector converts a transcript tool result into AppWire output
 // image descriptors. The descriptors carry fetch metadata only, not image bytes.
 type OutputImageProjector func(result *llm.ToolResultData) []appwire.OutputImage
+
+// ToolResultOutputImages is the OutputImageProjector for a tool result's own
+// image bytes: the persisted counterpart of the live descriptor the agent puts
+// on TOOL_CALL_END. Both are decided by events.ToolResultOutputImage, so a
+// reloaded session describes an image exactly the way the live stream did.
+//
+// URL is left empty on purpose — see events.ToolResultOutputImage. The server
+// publishing the thread stamps the route it serves the sha on.
+func ToolResultOutputImages(result *llm.ToolResultData) []appwire.OutputImage {
+	if result == nil {
+		return nil
+	}
+	img, ok := events.ToolResultOutputImage(result.Name, result.ImageData, result.ImageMediaType)
+	if !ok {
+		return nil
+	}
+	return []appwire.OutputImage{{
+		Source:    img.Source,
+		Name:      img.Name,
+		MediaType: img.MediaType,
+		Size:      img.Size,
+		URL:       img.URL,
+		SHA:       img.SHA,
+		Path:      img.Path,
+	}}
+}
 
 // ScanPrelude validates the full semantic transcript and returns its v2 header.
 func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {

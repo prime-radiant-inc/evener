@@ -785,7 +785,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
@@ -801,7 +801,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		t.Fatalf("communicate items=%+v", items)
 	}
 
-	results := appItemsFromReplayTurn("01TEST", "turn_2", 2, schema.Turn{
+	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
@@ -814,7 +814,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_result",
@@ -844,7 +844,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -866,7 +866,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -884,7 +884,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
 		t.Fatalf("web_search items=%+v", items)
 	}
@@ -906,7 +906,7 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
@@ -923,7 +923,7 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "commandExecution",
@@ -942,7 +942,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
@@ -966,7 +966,7 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	img := []byte("png")
-	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, schema.Turn{
+	items := appItemsFromReplayTurn("turn_3", 3, schema.Turn{
 		Kind: "STEERING",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "image",
@@ -1003,7 +1003,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1023,7 +1023,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("01TEST", "turn_4", 4, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1034,7 +1034,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 }
 
 func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
-	checkpoint := appItemsFromReplayTurn("01TEST", "turn_4", 4, schema.Turn{
+	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
 	}, map[string]string{})
@@ -1045,7 +1045,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 		t.Fatalf("checkpoint item=%+v", got)
 	}
 
-	summary := appItemsFromReplayTurn("01TEST", "turn_5", 5, schema.Turn{
+	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
 	}, map[string]string{})

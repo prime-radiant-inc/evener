@@ -429,11 +429,12 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return appItemsFromReplayTurn(entry.Meta.ID, turnID, entryIndex, turn, toolNames)
+		return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
 	})
 	if err != nil {
 		return nil, err
 	}
+	stampSessionImageURLs(entry.Meta.ID, turns)
 	// TurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's model, so the cost estimate is stamped
 	// here as a post-pass against entry.Meta.Model.
@@ -449,7 +450,7 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 // (decoded once by apptranscript's own reader, not here — kata j13r) into
 // AppWire items.
 func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return appItemsFromReplayTurn("", turnID, entryIndex, turn, toolNames)
+	return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
 }
 
 // decodeTranscriptTurn reads one saved transcript line into the turn the daemon
@@ -470,7 +471,7 @@ func pastEntryLatestTurns(entry hubcore.PastEntry, limit int) ([]appwire.Turn, s
 	if err != nil {
 		return nil, "", err
 	}
-	stampPastEmbeddedImageURLs(entry.Meta.ID, turns)
+	stampSessionImageURLs(entry.Meta.ID, turns)
 	stampPastTurnCosts(entry.Meta.Model, turns)
 	return turns, cursor, nil
 }
@@ -481,7 +482,7 @@ func pastEntryPageTurns(entry hubcore.PastEntry, cursor string, limit int) (appw
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
-	stampPastEmbeddedImageURLs(entry.Meta.ID, page.Turns)
+	stampSessionImageURLs(entry.Meta.ID, page.Turns)
 	stampPastTurnCosts(entry.Meta.Model, page.Turns)
 	return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
 }
@@ -494,17 +495,49 @@ func stampPastTurnCosts(model string, turns []appwire.Turn) {
 	}
 }
 
-func stampPastEmbeddedImageURLs(sessionID string, turns []appwire.Turn) {
+// stampSessionImageURLs fills in the route this hub serves sha-addressed image
+// bytes on (handleSessionImage, web_workspace.go) for every descriptor that
+// names content by sha but no route to fetch it from.
+//
+// Producers deliberately leave that URL empty: the agent minting a live
+// descriptor (events.ToolResultOutputImage) and the transcript projector
+// minting the reload counterpart (apptranscript.ToolResultOutputImages) both
+// know the sha and neither knows the serving route. This is the one place that
+// decision is made, for live turns and reloaded ones alike.
+//
+// A descriptor that already carries a URL is left alone: the file-backed
+// mechanism (output_images.go) resolves its own /doc/image route for the same
+// bytes, and that route serves a file this hub can re-read rather than a sha it
+// must scan the transcript for.
+func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
+	if sessionID == "" {
+		return
+	}
 	for ti := range turns {
 		for ii := range turns[ti].Items {
 			for oi := range turns[ti].Items[ii].OutputImages {
 				image := &turns[ti].Items[ii].OutputImages[oi]
-				if image.URL == "/s//images/"+image.SHA {
-					image.URL = "/s/" + url.PathEscape(sessionID) + "/images/" + image.SHA
+				if image.URL == "" && image.SHA != "" {
+					image.URL = sessionImageURL(sessionID, image.SHA)
 				}
 			}
 		}
 	}
+}
+
+// stampThreadImageURLs is stampSessionImageURLs over a whole thread, resolving
+// the session the same way the file-backed enrichment does.
+func stampThreadImageURLs(thread appwire.Thread) appwire.Thread {
+	sessionID := strings.TrimSpace(thread.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(thread.ID)
+	}
+	stampSessionImageURLs(sessionID, thread.Turns)
+	return thread
+}
+
+func sessionImageURL(sessionID, sha string) string {
+	return "/s/" + url.PathEscape(sessionID) + "/images/" + sha
 }
 
 func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
@@ -514,10 +547,8 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 	return enrichThreadFileBackedOutputImages(thread)
 }
 
-func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, func(result *llm.ToolResultData) []appwire.OutputImage {
-		return projectReplayOutputImages(sessionID, result)
-	})
+func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, apptranscript.ToolResultOutputImages)
 }
 
 // projectReplayInputImage stamps the sha and size the client needs to fetch an
@@ -529,22 +560,6 @@ func projectReplayInputImage(image llm.ImageData) appwire.InputItem {
 	}
 	item.Metadata = map[string]string{"sha": imageSha(image.Data), "size": strconv.Itoa(len(image.Data))}
 	return item
-}
-
-func projectReplayOutputImages(sessionID string, result *llm.ToolResultData) []appwire.OutputImage {
-	if result == nil || len(result.ImageData) == 0 {
-		return nil
-	}
-	sha := imageSha(result.ImageData)
-	mediaType := result.ImageMediaType
-	if mediaType == "" {
-		mediaType = "image/png"
-	}
-	return []appwire.OutputImage{{
-		Source: "tool-result", Name: result.Name, MediaType: mediaType,
-		Size: int64(len(result.ImageData)), SHA: sha,
-		URL: "/s/" + url.PathEscape(sessionID) + "/images/" + sha,
-	}}
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {

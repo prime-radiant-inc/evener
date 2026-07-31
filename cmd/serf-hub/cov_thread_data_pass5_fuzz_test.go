@@ -103,11 +103,11 @@ func FuzzThreadDataPass5(f *testing.F) {
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "view", Content: "ok", ImageData: []byte("png")}},
 			}
 			turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}
-			items := appItemsFromReplayTurn("id/escaped", "turn", 2, turn, map[string]string{})
+			items := appItemsFromReplayTurn("turn", 2, turn, map[string]string{})
 			if len(items) == 0 {
 				t.Fatal("replay projected no items")
 			}
-			_ = appItemsFromReplayTurn(id, "empty", 0, schema.Turn{}, nil)
+			_ = appItemsFromReplayTurn("empty", 0, schema.Turn{}, nil)
 			_ = windowedReadResponse(appwire.Thread{Turns: []appwire.Turn{{ID: "one"}, {ID: "two"}}}, 1)
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
 				_, _, _ = pastThreadForRead(cfg, params)

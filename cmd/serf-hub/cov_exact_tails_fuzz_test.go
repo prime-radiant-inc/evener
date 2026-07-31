@@ -139,16 +139,20 @@ func FuzzExactTails(f *testing.F) {
 		if pe, ok := past.Find("past"); ok {
 			_, _ = pastEntryTurns(pe)
 		}
-		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Content: []llm.ContentPart{
+		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
 		}}}, map[string]string{})
-		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
+		_ = appItemsFromReplayTurn("t", 0, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ImageData: []byte("x")}},
 		}}}, map[string]string{})
 		_ = projectReplayInputImage(llm.ImageData{})
 		_ = projectReplayInputImage(llm.ImageData{Data: []byte("x")})
-		_ = projectReplayOutputImages("s", nil)
-		_ = projectReplayOutputImages("s", &llm.ToolResultData{ImageData: []byte("x")})
+		_ = apptranscript.ToolResultOutputImages(nil)
+		_ = apptranscript.ToolResultOutputImages(&llm.ToolResultData{ImageData: []byte("x")})
+		stampSessionImageURLs("", []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: "abc"}}}}}})
+		stampSessionImageURLs("a/b", []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: "abc"}, {SHA: "abc", URL: "/doc/image?x"}, {}}}}}})
+		_ = stampThreadImageURLs(appwire.Thread{})
+		_ = stampThreadImageURLs(appwire.Thread{ID: "s", Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: "abc"}}}}}}})
 
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Serf: appwire.SerfThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)
