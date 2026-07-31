@@ -3,7 +3,12 @@
 **What this covers**: the human approval broker use case from the
 observer-sidecar research. The sidecar should stay idle until the main
 agent emits an explicit approval request, then package the decision and
-send it back through `delegate_send(to="caller")`.
+hand it back as an observer callback. Driving mechanism:
+`delegate(watch_parent:true)` + observer-installed
+`job_watch(source:"parent")` + the observer's terminal
+`communicate(end_turn:true)` callback — see `docs/job-control.md`
+"Observer and sidecar composition" and the reference card
+`job-watch-observer-snide-thread.md`.
 
 ## Pre-state
 
@@ -36,41 +41,54 @@ send it back through `delegate_send(to="caller")`.
 2. Use this prompt:
 
    > Run the approval broker sidecar scenario.
-   > 1. Start an observer delegate with `agent_type` "subagent" and
-   >    `max_wait_ms` 120000. Its task is: "You are APPROVAL_BROKER.
-   >    First turn call the communicate tool with exactly
-   >    APPROVAL_READY. Later, when a Watch frame arrives whose
-   >    event.message contains APPROVAL_REQUEST, call
-   >    delegate_send(to=\"caller\") with exactly APPROVAL_PACKET
-   >    decision=approve target=staging-deploy, then call the
-   >    communicate tool with exactly APPROVAL_RECORDED. For unrelated
-   >    Watch frames, call the communicate tool with exactly
-   >    APPROVAL_IGNORED."
-   > 2. After the observer returns APPROVAL_READY, create a `job_watch`
-   >    with target "caller", events ["communicate"], and send.to set to
-   >    the observer delegate_id.
-   > 3. In the response after the watch creation result, call the
-   >    communicate tool with exactly APPROVAL_REQUEST action=deploy
-   >    target=staging-deploy risk=low.
-   > 4. When the observer callback arrives, call the communicate tool
-   >    with exactly SCENARIO_DONE approval-broker.
+   > 1. Call `delegate` with `agent_type` "subagent", `watch_parent`
+   >    true, and `max_wait_ms` 120000. Its task is: "You are
+   >    APPROVAL_BROKER. First: call job_watch with operation 'create',
+   >    source 'parent', events ['communicate']. Then call the
+   >    communicate tool with exactly APPROVAL_READY and finish. When
+   >    later resumed with a message containing 'Watch frame' whose
+   >    event message contains APPROVAL_REQUEST, finish with communicate
+   >    end_turn true and message exactly APPROVAL_PACKET
+   >    decision=approve target=staging-deploy. For unrelated Watch
+   >    frames, finish with communicate end_turn true and message
+   >    exactly APPROVAL_IGNORED."
+   > 2. After the delegate result reports `watching: true` and
+   >    APPROVAL_READY, capture the watch_id from its `watches:` line,
+   >    then call the communicate tool with exactly APPROVAL_REQUEST
+   >    action=deploy target=staging-deploy risk=low.
+   > 3. When the observer callback arrives, call `job_watch` with
+   >    operation "clear" and that watch_id, then call the communicate
+   >    tool with exactly SCENARIO_DONE approval-broker.
    >
-   > Use the delegate result, watch result, approval request result, and
-   > observer callback as the happy-path signals. Diagnostic job or
-   > transcript inspection is only for recovering from an actual error.
+   > Use the delegate result, approval request result, and observer
+   > callback as the happy-path signals. Diagnostic job or transcript
+   > inspection is only for recovering from an actual error.
 
 ## Expected
 
-- The parent waits for `APPROVAL_READY` before creating the watch.
-- The watch condition is `events: [communicate]`. Attempts to use
-  `events: [assistant.message]` should be rejected before a watch is
-  installed.
-- The observer sends `APPROVAL_PACKET` through
-  `delegate_send(to="caller")` and then records `APPROVAL_RECORDED`
-  with `communicate`.
+- The observer installs its own watch and only then reports
+  `APPROVAL_READY`; the readiness delegate result carries
+  `watching: true` and the watch under `watches:`.
+- The watch condition is `events: [communicate]` on source `parent`.
+  Attempts to use `events: [assistant.message]` are rejected before a
+  watch is installed.
+- The observer returns `APPROVAL_PACKET` as its terminal
+  `communicate(end_turn=true)`; the parent receives it as an `Observer
+  callback:` block (`agent/session_tools_communicate.go:118`) and
+  finishes from it.
 - The parent does not use `job_list` or `job_read_output` as a waiting
   mechanism before the callback.
 - The watch has no dropped deliveries or self-loop verdict.
+- Falsification (dead surface): if the task asks the observer for
+  `delegate_send(to="caller")`, the call fails
+  `invalid_request: delegate_send sends to child delegate_id only;
+  observer callbacks use communicate(end_turn=true)`
+  (`agent/session_tools_jobs.go:163`). If the parent tries to install
+  the watch itself with `target`/`send`, the schema rejects it with
+  `additionalProperties 'target' not allowed` /
+  `additionalProperties 'send' not allowed`
+  (`agent/session_tools_jobs_watch_test.go:239-240`). Either error means
+  the run is following a pre-`9d0d777c6` recipe.
 
 ## Doctor audit
 
@@ -95,9 +113,21 @@ rm -rf "$tmpdir" "$XDG_STATE_HOME"
 - Kimi previously chose `assistant.message` for caller-message
   scenarios. That is now an invalid event selection; a fluent run
   should recover by creating a `communicate` watch.
-- Explicit `agent_type:"subagent"` must include `delegate_send`; without
-  that tool, the observer can only finish with `communicate` and cannot
-  wake the caller through the callback path.
-- A terminal notification for the observer's watch-delivery job can
-  arrive after `SCENARIO_DONE` as confirmation of `APPROVAL_RECORDED`.
-  Treat a follow-up summary as noise, not as evidence of polling.
+- `watch_parent:true` is what puts `job_watch` in an explicit
+  `agent_type:"subagent"` tool set (`agent/subagents.go:534-540`).
+  Without it the observer's first call fails
+  `source_not_watchable: source parent requires
+  delegate(watch_parent=true)` — or `job_watch` is absent entirely.
+  `delegate_send` is NOT needed: the callback is the observer's own
+  terminal `communicate`.
+- The observer must install its watch BEFORE communicating readiness,
+  or the readiness result cannot report `watching: true`.
+- The packet and the record collapse into one call: the terminal
+  `communicate(end_turn=true)` IS the callback
+  (`docs/job-control.md:1190`). A watch-origin observer job that has
+  sent that callback records terminal state without a second owner
+  notification (`docs/job-control.md:1044`), so do not wait for one.
+- The parent's acknowledgement of the callback is itself a
+  `communicate` event and re-fires the watch. Bounded by the
+  self-influence breaker; clear the watch rather than reading the extra
+  `APPROVAL_IGNORED` as a failure.
