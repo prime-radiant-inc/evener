@@ -126,7 +126,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	if !ok {
 		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
 	}
-	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, nil))
+	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, apptranscript.ToolResultOutputImages))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {
 		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
@@ -207,6 +207,13 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 				ToolName:  p.ToolResult.Name,
 				CallID:    p.ToolResult.ToolCallID,
 				ToolState: p.ToolResult.ToolState,
+			}
+			// Mirror agent/session_tools.go: a result carrying image bytes
+			// describes them on the event, by the same rule the reload side
+			// projects them (kata 2fxm). Synthesizing this by hand instead
+			// would let the two descriptions drift apart unnoticed.
+			if img, ok := events.ToolResultOutputImage(p.ToolResult.Name, p.ToolResult.ImageData, p.ToolResult.ImageMediaType); ok {
+				end.OutputImages = []events.OutputImage{img}
 			}
 			content := apptranscript.StringifyToolContent(p.ToolResult.Content)
 			if p.ToolResult.IsError {
@@ -345,6 +352,7 @@ func FuzzHubReplayLiveVsReloadStructured(f *testing.F) {
 	f.Add(byte(0), byte(0xff), "answer", "reasoning", "serf query", "shell", "ls -la")
 	f.Add(byte(1), byte(0xff), "look", "", "", "", "")
 	f.Add(byte(2), byte(1), "tool output", "", "", "", "")
+	f.Add(byte(2), byte(7), "tool output with images", "", "", "", "")
 	f.Add(byte(3), byte(1), "summary text", "", "", "", "")
 
 	f.Fuzz(func(t *testing.T, turnSel, partsSel byte, text, think, query, name, cmd string) {
@@ -385,6 +393,8 @@ func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd stri
 		role = "tool"
 		menu = []string{
 			`{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":` + js(text) + `,"is_error":false}}`,
+			`{"kind":"tool_result","tool_result":{"tool_call_id":"c2","name":"screenshot","content":` + js(text) + `,"is_error":false,"image_data":"aGVsbG8=","image_media_type":"image/png"}}`,
+			`{"kind":"tool_result","tool_result":{"tool_call_id":"c3","name":"read_file","content":` + js(text) + `,"is_error":false,"image_data":"aGVsbG8="}}`,
 		}
 	default: // SUMMARY
 		role = "assistant"

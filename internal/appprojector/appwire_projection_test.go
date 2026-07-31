@@ -2681,3 +2681,47 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 		t.Errorf("model retry emitted an item lifecycle notification: %+v", out)
 	}
 }
+
+// TestProjectToolCallEndCarriesOutputImagesToTheWire pins the middle link of
+// the live tool-result image path (kata 2fxm): the agent describes the image on
+// TOOL_CALL_END, and the item/completed frame a dashboard actually reads has to
+// carry that description through unchanged.
+func TestProjectToolCallEndCarriesOutputImagesToTheWire(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "shoot"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "screenshot", CallID: "call_shot", Output: "captured",
+		OutputImages: []events.OutputImage{{
+			Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12,
+			SHA: strings.Repeat("a", 64),
+		}},
+	}})
+
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	want := appwire.OutputImage{
+		Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12,
+		SHA: strings.Repeat("a", 64),
+	}
+	if len(item.OutputImages) != 1 || item.OutputImages[0] != want {
+		t.Fatalf("item.OutputImages=%+v, want %+v", item.OutputImages, want)
+	}
+}
+
+// TestProjectToolCallEndDropsAnUnaddressableOutputImage keeps a descriptor that
+// names neither a sha nor a URL off the wire: nothing can fetch it, so it would
+// render as a broken thumbnail.
+func TestProjectToolCallEndDropsAnUnaddressableOutputImage(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "shoot"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "screenshot", CallID: "call_shot",
+		OutputImages: []events.OutputImage{{Source: "tool-result", Name: "screenshot"}},
+	}})
+
+	if item := notificationThreadItem(t, out, appwire.NotifyItemCompleted); len(item.OutputImages) != 0 {
+		t.Fatalf("item.OutputImages=%+v, want the unaddressable descriptor dropped", item.OutputImages)
+	}
+}

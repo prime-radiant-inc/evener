@@ -69,3 +69,23 @@ func TestMergeAppThreadItem(t *testing.T) {
 		t.Fatalf("incoming values should win: %+v", merged)
 	}
 }
+
+// TestMergeAppThreadItemKeepsOutputImages holds OutputImages to the same
+// never-clobber rule as every other field. A tool-result image is described
+// once, on the frame that settles the call; a later update carrying no images
+// is silent about them, not a report that there are none.
+func TestMergeAppThreadItemKeepsOutputImages(t *testing.T) {
+	described := []appwire.OutputImage{{Source: "tool-result", SHA: "abc"}}
+	existing := appwire.ThreadItem{Type: "commandExecution", CallID: "call_1", OutputImages: described}
+
+	merged := mergeAppThreadItem(existing, appwire.ThreadItem{Status: appwire.TurnStatusCompleted})
+	if len(merged.OutputImages) != 1 || merged.OutputImages[0] != described[0] {
+		t.Fatalf("OutputImages=%+v, want the earlier description kept", merged.OutputImages)
+	}
+
+	replacement := []appwire.OutputImage{{Source: "written-file", Path: "plot.png"}}
+	merged = mergeAppThreadItem(existing, appwire.ThreadItem{OutputImages: replacement})
+	if len(merged.OutputImages) != 1 || merged.OutputImages[0] != replacement[0] {
+		t.Fatalf("OutputImages=%+v, want the incoming description to win", merged.OutputImages)
+	}
+}
