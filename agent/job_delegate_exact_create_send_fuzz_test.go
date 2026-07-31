@@ -52,7 +52,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				BwrapCapable:     true,
 				OverlaySupported: true,
 			}}
-			res := s.createDelegate(nil, delegateArgs{Task: "sandboxed", Sandbox: "restricted", Background: true})
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "sandboxed", Sandbox: "restricted", Background: true})
 			if res.Err != nil {
 				t.Fatalf("sandboxed create: %v", res.Err)
 			}
