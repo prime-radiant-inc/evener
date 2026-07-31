@@ -565,9 +565,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// buffered tail -- at most its 256-deep channel, each event memory work plus
 	// at most one jobs.jsonl read -- which is milliseconds, and still under
 	// 100ms with the deliberately slowed observer serve_verbose_e2e_test uses.
-	// Thirty seconds is two orders of magnitude past that, so an expiry here is
-	// always a genuine wedge, and it stays inside systemd's 90s default stop
-	// timeout so the daemon still gets to exit by its own decision.
+	// Thirty seconds is two orders of magnitude past that, so an expiry here
+	// ordinarily means a genuine wedge, and it stays inside systemd's 90s
+	// default stop timeout so the daemon still gets to exit by its own
+	// decision.
+	//
+	// One exception is neither a wedge nor real work, and still spends the
+	// full budget every time it occurs. bridgeSession's registration below is
+	// guarded only by teardownStarted, not by whether the session it bridges
+	// still has a closer: a /clear whose bridgeSession call lands after the
+	// shutdown goroutine's one getSession().Close() call has already closed
+	// the session being replaced, but before this snapshot sets
+	// teardownStarted, still registers the replacement's drain. Nothing
+	// closes that replacement afterward, so its drain cannot end at any
+	// budget. The race is pre-existing and accepted, not new behavior.
 	defer func() {
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
