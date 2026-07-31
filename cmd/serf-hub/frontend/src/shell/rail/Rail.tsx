@@ -85,6 +85,32 @@ function isEmptyTree(tree: TreeResponse): boolean {
   );
 }
 
+// n15j's safety contract for any delete that actually happened: "if the
+// deleted session is open in the WebUI, navigate to a surviving
+// workspace/session rather than leaving a dead route." Closing every pane
+// still showing a session whose files are gone is the whole of what this
+// layer owes - workspace.ts's own invariant (DockHost's relaunchWelcome)
+// refills an emptied main slot from there, so this never picks a
+// replacement. Shared by BOTH delete paths: one deleted session and a whole
+// deleted project leave the workspace in the same dead-route state, so they
+// clean it up the same way.
+//
+// Both endpoints report what they actually removed as bare thread ids
+// (web_api_project_delete.go's result.Deleted carries target.ThreadID;
+// web_api_session_delete.go ships the same shape for one target), and both
+// only ever delete LOCAL sessions - so a bare id names the "local:<id>" ref
+// a pane carries. An id that already carries a source prefix passes through
+// unchanged, the same both-forms tolerance stores/tree.ts's sessionIDMatches
+// applies to this very field.
+function closePanesForDeletedSessions(deletedIDs: string[]): void {
+  const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));
+  const workspace = workspaceStore.getState();
+  for (const pane of workspace.panes) {
+    const paneRef = (pane.params as { ref?: unknown }).ref;
+    if (typeof paneRef === "string" && goneRefs.has(paneRef)) workspace.closePane(pane.id);
+  }
+}
+
 interface RailSectionProps {
   title: string;
   nodes: RailNode[];
@@ -418,6 +444,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         result.deleted,
         result.skipped.map((session) => session.id),
       );
+      // The rail row is gone; the panes routed at its sessions have to go too.
+      closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length > 0) {
         toasts.push(
           "warning",
@@ -444,19 +472,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     try {
       const result = await deleteSession(target.ref);
       await treeStore.getState().refresh();
-      if (result.deleted.length > 0) {
-        // The session is actually gone: close every open pane still showing
-        // it (n15j's "navigate to a surviving workspace/session rather than
-        // leaving a dead route") instead of leaving a phantom tab open.
-        // workspace.ts's own invariant (DockHost's relaunchWelcome) takes it
-        // from there once the main slot is empty - this layer only owes
-        // closing the pane(s), not choosing what replaces them.
-        const workspace = workspaceStore.getState();
-        for (const pane of workspace.panes) {
-          const paneRef = (pane.params as { ref?: unknown }).ref;
-          if (paneRef === target.ref) workspace.closePane(pane.id);
-        }
-      }
+      // The session is actually gone: close every open pane still showing it
+      // instead of leaving a phantom tab open (see
+      // closePanesForDeletedSessions).
+      closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length > 0) {
         const reason = result.skipped[0]?.reason ?? "still in use";
         toasts.push("warning", `Couldn't delete "${target.title}": ${reason}`);
