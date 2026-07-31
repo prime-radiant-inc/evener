@@ -13,6 +13,7 @@ import { RequestTimeoutError, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
+  AnyNotification,
   ModelListResponse,
   QueueState,
   Thread,
@@ -2195,6 +2196,58 @@ describe("notification routing", () => {
     // ...while B, simultaneously active on the same numbered turn_1, is a
     // same-reference no-op because v2's ref/thread identity is authoritative.
     expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
+  });
+
+  test("a session's startup announcements reach the tracked model even though their synthetic turn is never active", async () => {
+    // The daemon bundles every SESSION_START-time announcement into one
+    // synthetic prelude turn and sends it as turn/completed
+    // (internal/appprojector/appwire_projection.go's systemAnnouncementItem).
+    // That turn is never the model's activeTurnId, so an activeTurnId gate on
+    // delivery drops the whole startup burst and the "N system events" group
+    // materializes only on the next hydrate. Identity (ref/threadId) is what
+    // decides delivery; where the frame lands inside the model is the
+    // reducer's call.
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
+
+    // The wire payload is a map literal with no top-level "turnId" key at all;
+    // TurnCompletedParams declares it required, hence the cast.
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              type: "systemMessage",
+              id: "item_plugin_loaded_1",
+              turnId: "turn_system",
+              description: "Plugin loaded: superpowers",
+              text: "",
+              eventKind: "plugin_loaded",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_system", "turn_1"]);
+    expect(model?.turns[0]?.items[0]?.id).toBe("item_plugin_loaded_1");
+    // The real turn above it is still in flight.
+    expect(model?.activeTurnId).toBe("turn_1");
   });
 });
 
