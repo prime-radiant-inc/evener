@@ -218,6 +218,26 @@ func TestHubJobsListDeadSessionNotInPastIndex(t *testing.T) {
 	}
 }
 
+// TestHubJobsListNonLocalRefKeepsTheLiveError proves the past gate's
+// local-ref requirement on the list path, the counterpart to
+// TestHubJobsOutputNonLocalRefKeepsTheLiveError: jobs.jsonl under a project
+// state dir is LOCAL session state, so a non-local ref must never be
+// answered from it. The past index deliberately holds a session whose id is
+// the codex ref's thread id — dropping the local-source check would serve
+// another source's caller this local session's job list.
+func TestHubJobsListNonLocalRefKeepsTheLiveError(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_local", description: "local past job", command: "make local"},
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(&jobsListSource{id: "codex", jobsErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
+
+	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "codex:" + sessionID})
+	if !isDeadSessionError(err) {
+		t.Fatalf("hubJobsList = (%#v, %v), want the codex source's own dead-session error; local past state is not this ref's to serve", resp.Data, err)
+	}
+}
+
 // TestHubJobsListLiveErrorPropagates reproduces the real risk class from
 // TestHubTasksList_LiveDialFailureIsNotMaskedByPast: a LIVE rendezvous entry
 // whose endpoint is unreachable. The dial failure maps to a
