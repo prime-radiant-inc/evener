@@ -87,8 +87,18 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 	return out
 }
 
+// enrichOutputImageNotification completes a live tool call's output images on
+// their way to the browser: it adds the file-backed descriptors this hub can
+// resolve by re-reading the call's own file argument off disk, and it stamps
+// the sha-addressed route onto whatever descriptors the daemon minted without
+// one (see stampOutputImageURLs).
+//
+// Only the sha stamp works without a cwd, so a session whose working directory
+// is unknown still gets its tool-result thumbnails.
 func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[string]string, notification appwire.Notification) appwire.Notification {
-	if argsByCallID == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(cwd) == "" {
+	sessionID = strings.TrimSpace(sessionID)
+	cwd = strings.TrimSpace(cwd)
+	if sessionID == "" {
 		return notification
 	}
 	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
@@ -105,24 +115,29 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	if item.Type != "commandExecution" {
 		return notification
 	}
-	if item.CallID != "" && item.ArgumentsJSON != "" {
+	if argsByCallID != nil && item.CallID != "" && item.ArgumentsJSON != "" {
 		argsByCallID[item.CallID] = item.ArgumentsJSON
 	}
 	if notification.Method != appwire.NotifyItemCompleted {
 		return notification
 	}
-	argsJSON := item.ArgumentsJSON
-	if argsJSON == "" && item.CallID != "" {
-		argsJSON = argsByCallID[item.CallID]
+	var fileBacked []appwire.OutputImage
+	if cwd != "" {
+		argsJSON := item.ArgumentsJSON
+		if argsJSON == "" && item.CallID != "" {
+			argsJSON = argsByCallID[item.CallID]
+		}
+		fileBacked = outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
 	}
-	fileBacked := outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
-	if item.CallID != "" {
+	if argsByCallID != nil && item.CallID != "" {
 		delete(argsByCallID, item.CallID)
 	}
-	if len(fileBacked) == 0 {
+	images := appendOutputImagesUnique(item.OutputImages, fileBacked)
+	stamped := stampOutputImageURLs(sessionID, images)
+	if len(fileBacked) == 0 && !stamped {
 		return notification
 	}
-	item.OutputImages = appendOutputImagesUnique(item.OutputImages, fileBacked)
+	item.OutputImages = images
 	itemData, err := outputImageMarshal(item)
 	if err != nil {
 		return notification
@@ -134,6 +149,62 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	}
 	notification.Params = data
 	return notification
+}
+
+// stampOutputImageURLs fills in the route this hub serves sha-addressed image
+// bytes on (handleSessionImage, web_workspace.go) for every descriptor that
+// names its content by sha but carries no route to fetch it from. It reports
+// whether it changed anything.
+//
+// Producers deliberately leave that URL empty: the agent minting a live
+// descriptor (events.ToolResultOutputImage) and the transcript projector
+// minting the reload counterpart (apptranscript.ToolResultOutputImages) both
+// know the sha and neither knows the serving route. This is the one place that
+// decision is made, for live turns and reloaded ones alike.
+//
+// A descriptor that already carries a URL is left alone: the file-backed
+// mechanism above resolves its own /doc/image route for the same bytes, and
+// that route serves a file this hub can re-read rather than a sha it has to
+// scan the transcript for.
+func stampOutputImageURLs(sessionID string, images []appwire.OutputImage) bool {
+	if sessionID == "" {
+		return false
+	}
+	stamped := false
+	for i := range images {
+		if images[i].URL == "" && images[i].SHA != "" {
+			images[i].URL = sessionImageURL(sessionID, images[i].SHA)
+			stamped = true
+		}
+	}
+	return stamped
+}
+
+// stampSessionImageURLs is stampOutputImageURLs over every item of every turn.
+func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
+	if sessionID == "" {
+		return
+	}
+	for ti := range turns {
+		for ii := range turns[ti].Items {
+			stampOutputImageURLs(sessionID, turns[ti].Items[ii].OutputImages)
+		}
+	}
+}
+
+// stampThreadImageURLs is stampSessionImageURLs over a whole thread, resolving
+// the session the same way the file-backed enrichment does.
+func stampThreadImageURLs(thread appwire.Thread) appwire.Thread {
+	sessionID := strings.TrimSpace(thread.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(thread.ID)
+	}
+	stampSessionImageURLs(sessionID, thread.Turns)
+	return thread
+}
+
+func sessionImageURL(sessionID, sha string) string {
+	return "/s/" + url.PathEscape(sessionID) + "/images/" + sha
 }
 
 func shellOutputImageCandidates(output string) []string {

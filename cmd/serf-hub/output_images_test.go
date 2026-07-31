@@ -406,3 +406,85 @@ func TestEnrichOutputImageNotificationUsesStartedArgumentsForCompletedItem(t *te
 		t.Fatalf("OutputImages=%+v, want written-file plot.png descriptor", params.Item.OutputImages)
 	}
 }
+
+// enrichedItem runs a live item/completed notification through the relay's
+// output-image enrichment and returns the item the browser would receive.
+func enrichedItem(t *testing.T, sessionID, cwd string, item appwire.ThreadItem) appwire.ThreadItem {
+	t.Helper()
+	params, err := json.Marshal(map[string]any{"threadId": sessionID, "turnId": "turn_1", "item": item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := enrichOutputImageNotification(sessionID, cwd, map[string]string{}, appwire.Notification{
+		Method: appwire.NotifyItemCompleted,
+		Params: params,
+	})
+	var decoded struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(got.Params, &decoded); err != nil {
+		t.Fatalf("unmarshal enriched params: %v", err)
+	}
+	return decoded.Item
+}
+
+// TestEnrichOutputImageNotificationStampsTheSHARouteOnALiveToolResult is the
+// live half of the sha-addressed path: the daemon publishes a descriptor that
+// names the bytes but no route, and the relay is where the route it can be
+// fetched from gets attached.
+func TestEnrichOutputImageNotificationStampsTheSHARouteOnALiveToolResult(t *testing.T) {
+	sha := strings.Repeat("d", 64)
+	item := enrichedItem(t, "02wMz5Txv733WHFsVy66SR", t.TempDir(), appwire.ThreadItem{
+		Type: "commandExecution", ToolName: "screenshot", CallID: "call_shot",
+		Status:       appwire.TurnStatusCompleted,
+		OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12, SHA: sha}},
+	})
+	if len(item.OutputImages) != 1 {
+		t.Fatalf("OutputImages=%+v, want the one tool-result descriptor", item.OutputImages)
+	}
+	if item.OutputImages[0].URL != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
+		t.Fatalf("OutputImages[0].URL=%q, want the sha route", item.OutputImages[0].URL)
+	}
+}
+
+// TestEnrichOutputImageNotificationStampsTheSHARouteWithoutACWD pins that the
+// sha stamp does not depend on knowing the session's working directory — only
+// the file-backed mechanism needs that, and a session with no recorded cwd
+// still has servable tool-result bytes.
+func TestEnrichOutputImageNotificationStampsTheSHARouteWithoutACWD(t *testing.T) {
+	sha := strings.Repeat("e", 64)
+	item := enrichedItem(t, "02wMz5Txv733WHFsVy66SR", "", appwire.ThreadItem{
+		Type: "commandExecution", ToolName: "screenshot", CallID: "call_shot",
+		Status:       appwire.TurnStatusCompleted,
+		OutputImages: []appwire.OutputImage{{Source: "tool-result", SHA: sha}},
+	})
+	if len(item.OutputImages) != 1 || item.OutputImages[0].URL != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped with no cwd", item.OutputImages)
+	}
+}
+
+// TestEnrichOutputImageNotificationKeepsOneEntryWhenBothMechanismsSeeTheSameFile
+// covers a read_file of an image, where the sha-addressed tool-result
+// descriptor and the file-backed /doc/image descriptor describe the same bytes.
+// appendOutputImagesUnique's sha-first key collapses them; the tool-result
+// route wins because it is already in hand.
+func TestEnrichOutputImageNotificationKeepsOneEntryWhenBothMechanismsSeeTheSameFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sha := imageSha(png)
+	item := enrichedItem(t, "02wMz5Txv733WHFsVy66SR", cwd, appwire.ThreadItem{
+		Type: "commandExecution", ToolName: "read_file", CallID: "call_read",
+		ArgumentsJSON: `{"file_path":"shot.png"}`,
+		Status:        appwire.TurnStatusCompleted,
+		OutputImages:  []appwire.OutputImage{{Source: "tool-result", MediaType: "image/png", Size: int64(len(png)), SHA: sha}},
+	})
+	if len(item.OutputImages) != 1 {
+		t.Fatalf("OutputImages=%+v, want the two mechanisms deduped to one entry", item.OutputImages)
+	}
+	if item.OutputImages[0].Source != "tool-result" || item.OutputImages[0].URL != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
+		t.Fatalf("OutputImages[0]=%+v, want the sha-routed tool-result descriptor", item.OutputImages[0])
+	}
+}

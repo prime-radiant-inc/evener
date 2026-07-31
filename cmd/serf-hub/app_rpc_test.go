@@ -1987,6 +1987,67 @@ func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
 	}
 }
 
+// TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns is the reload-into-a-
+// running-session half of the sha-addressed path. The daemon's own snapshot
+// carries tool-result descriptors that name their bytes by sha and no route;
+// the hub is what turns them into something the browser can fetch.
+func TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns(t *testing.T) {
+	sessionID := "02wMz5Txv9yYdSRJat13MZ"
+	sha := strings.Repeat("f", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{
+				ID: "turn_1",
+				Items: []appwire.ThreadItem{{
+					Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+					ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
+					Status:       appwire.TurnStatusCompleted,
+					OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12, SHA: sha}},
+				}},
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       19 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	imgs := resp.Thread.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped onto the daemon's descriptor", imgs)
+	}
+}
+
 func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")

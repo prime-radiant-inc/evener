@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -493,51 +492,6 @@ func stampPastTurnCosts(model string, turns []appwire.Turn) {
 			turns[i].Cost = appwire.EstimateCost(model, turns[i].Usage)
 		}
 	}
-}
-
-// stampSessionImageURLs fills in the route this hub serves sha-addressed image
-// bytes on (handleSessionImage, web_workspace.go) for every descriptor that
-// names content by sha but no route to fetch it from.
-//
-// Producers deliberately leave that URL empty: the agent minting a live
-// descriptor (events.ToolResultOutputImage) and the transcript projector
-// minting the reload counterpart (apptranscript.ToolResultOutputImages) both
-// know the sha and neither knows the serving route. This is the one place that
-// decision is made, for live turns and reloaded ones alike.
-//
-// A descriptor that already carries a URL is left alone: the file-backed
-// mechanism (output_images.go) resolves its own /doc/image route for the same
-// bytes, and that route serves a file this hub can re-read rather than a sha it
-// must scan the transcript for.
-func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
-	if sessionID == "" {
-		return
-	}
-	for ti := range turns {
-		for ii := range turns[ti].Items {
-			for oi := range turns[ti].Items[ii].OutputImages {
-				image := &turns[ti].Items[ii].OutputImages[oi]
-				if image.URL == "" && image.SHA != "" {
-					image.URL = sessionImageURL(sessionID, image.SHA)
-				}
-			}
-		}
-	}
-}
-
-// stampThreadImageURLs is stampSessionImageURLs over a whole thread, resolving
-// the session the same way the file-backed enrichment does.
-func stampThreadImageURLs(thread appwire.Thread) appwire.Thread {
-	sessionID := strings.TrimSpace(thread.SessionID)
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(thread.ID)
-	}
-	stampSessionImageURLs(sessionID, thread.Turns)
-	return thread
-}
-
-func sessionImageURL(sessionID, sha string) string {
-	return "/s/" + url.PathEscape(sessionID) + "/images/" + sha
 }
 
 func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
