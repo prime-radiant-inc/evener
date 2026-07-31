@@ -1,6 +1,9 @@
 package appwire
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 const ProtocolVersion = "serf-appwire-v2"
 
@@ -600,6 +603,25 @@ type Turn struct {
 // is the signal the empty-transcript invitation keys on. Real turns always
 // use "turn_N" (N >= 1), so this can never collide with one.
 const SystemPreludeTurnID = "turn_system"
+
+// ClientMutationTurnID names the turn a client-authored input (turn/start,
+// turn/queue) will occupy, from the daemon's durable per-mutation counter.
+//
+// It is deliberately NOT in the "turn_N" namespace the transcript's
+// entry-index numbering owns. A session accumulates transcript entries
+// several times faster than it accumulates client mutations, so a reservation
+// numbered off the mutation counter always names a LOW number — one that an
+// unrelated early entry already owns once a restart reseeds the served
+// snapshot from the transcript. The reply then merges into that entry's turn,
+// taking the whole agent response with it (kata rk09).
+//
+// Raising the counter the way internal/appprojector fences its own live
+// counter (SeedPersistedTurns, kata eptj) cannot fix this: the entry index
+// outgrows the mutation counter, so a fenced reservation falls behind and
+// collides again within a few turns. Only a disjoint namespace closes it.
+func ClientMutationTurnID(sequence uint64) string {
+	return fmt.Sprintf("turn_m%d", sequence)
+}
 
 type TurnError struct {
 	Message           string           `json:"message"`

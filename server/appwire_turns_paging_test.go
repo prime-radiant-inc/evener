@@ -792,3 +792,66 @@ func TestPreparedAppIdentityKeepsLiveTurnIDsAboveSeededTranscriptIDs(t *testing.
 		t.Fatalf("live turn reused seeded transcript id %q; seeded = %v", newest.ID, turnIDs(seeded))
 	}
 }
+
+// TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn pins kata rk09,
+// the SECOND minter in the same collision class as eptj.
+//
+// A client-authored input reserves its turn id from the daemon's durable
+// mutation counter (agent's reserveClientMutationTurnID), and that counter is
+// not the projector's — SeedPersistedTurns never fenced it. One reply is one
+// mutation but several transcript entries, so the reservation always names a
+// LOW number, and after a restart reseeds this snapshot every low number is
+// already an unrelated early turn. ensureTurn then appends the reply's
+// userMessage to THAT turn, and since the reserved id becomes the projector's
+// active turn, the whole agent response follows it.
+func TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn(t *testing.T) {
+	srv, _ := seedTranscriptServerPath(t, 5)
+	seeded := srv.appAllTurns("th_1")
+	if len(seeded) != 10 {
+		t.Fatalf("seeded turns = %v, want the transcript's 10", turnIDs(seeded))
+	}
+	seededItems := map[string]int{}
+	for _, turn := range seeded {
+		seededItems[turn.ID] = len(turn.Items)
+	}
+
+	// The daemon restarted: the projector is fenced above the persisted entry
+	// count, exactly as PrepareAppIdentity and a restored SessionStart leave it.
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: len(seeded), Profile: "openai", Model: "gpt-5.5"},
+	})
+
+	// The reply answering a pending ask carries the id reserved from the
+	// mutation counter, which is far behind the entry count.
+	reserved := appwire.ClientMutationTurnID(3)
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data: events.UserInputData{
+			Text:             "the answer",
+			StableTurnID:     reserved,
+			ClientMutationID: "reply-1",
+			Turn:             len(seeded) + 1,
+		},
+	})
+
+	live := srv.appAllTurns("th_1")
+	if len(live) != len(seeded)+1 {
+		t.Fatalf("turns after the reply = %v, want one more than the seed %v — the reserved id %q named a turn that already existed, so the reply merged into it",
+			turnIDs(live), turnIDs(seeded), reserved)
+	}
+	newest := live[len(live)-1]
+	if newest.ID != reserved {
+		t.Fatalf("newest turn = %q, want the reserved %q", newest.ID, reserved)
+	}
+	for _, turn := range live {
+		want, wasSeeded := seededItems[turn.ID]
+		if !wasSeeded || len(turn.Items) == want {
+			continue
+		}
+		t.Fatalf("seeded turn %q now holds %d items, want its original %d — the reply landed in it",
+			turn.ID, len(turn.Items), want)
+	}
+}

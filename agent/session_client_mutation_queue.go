@@ -641,7 +641,7 @@ func (s *Session) AcceptClientMutationCancelQueued(params appwire.TurnCancelQueu
 
 func reserveClientMutationTurnID(snapshot *clientMutationSnapshot, record *clientMutationRecord) {
 	snapshot.NextTurnSequence++
-	record.StableTurnID = fmt.Sprintf("turn_%d", snapshot.NextTurnSequence)
+	record.StableTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
 }
 
 // acceptedClientMutationProjection reports the projection state a mutation
