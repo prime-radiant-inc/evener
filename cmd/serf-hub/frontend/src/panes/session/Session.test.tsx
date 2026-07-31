@@ -1086,6 +1086,51 @@ test("clicking the real NewContentPill clears it", async () => {
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
 
+// --- liveness line placement (kata x47h) ----------------------------------
+//
+// FlowOverlay's `top` slot is position:absolute with no reserved height, so
+// anything placed there floats OVER the scrollable transcript instead of
+// displacing it - live evidence on the kata: the retry line rendered
+// literally on top of the transcript's first row, the two texts
+// interleaving into unreadable garbage. A DOM presence/text assertion
+// passes even while broken (the kata's own finding: element present,
+// visible, correct text - only a screenshot shows the collision), so this
+// pins the STRUCTURAL property that actually prevents the overlap instead:
+// the liveness line must live in PaneScaffold's reserved, non-scrolling
+// footer (flex: none, always laid out after body - panescaffold.module.css)
+// beside the composer, never inside the transcript's floating overlay.
+test("the liveness line renders in the reserved footer beside the composer, never inside the transcript's floating overlay", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", { status: { type: "active" }, turns: [turnFixture("turn_1", "hi")] }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
+  });
+
+  // Cross the quiet threshold (20s) so the liveness line actually renders -
+  // useNowTick's own clock, advanced the same way the Cadence frame-trace
+  // test above advances it.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(21_000);
+  });
+
+  const line = screen.getByTestId("liveness-line");
+  expect(line.textContent).toContain("Quiet");
+
+  // The structural property that prevents the collision: reserved footer
+  // layout, never the absolutely-positioned transcript overlay.
+  expect(within(screen.getByTestId("pane-footer")).getByTestId("liveness-line")).toBe(line);
+  expect(screen.queryByTestId("flow-overlay-top")?.contains(line) ?? false).toBe(false);
+});
+
 // --- older-turn paging failure (round-3 C3) ------------------------------
 //
 // Paging is automatic (LoadOlderRow's own IntersectionObserver sentinel), so a

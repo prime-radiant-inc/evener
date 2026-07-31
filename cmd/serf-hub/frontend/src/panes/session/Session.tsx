@@ -11,11 +11,16 @@
 // the ONLY part of this pane that grows/shrinks with content - composer and
 // status row sit in the `footer` slot instead, which PaneScaffold pins
 // outside the scroll region (flex:none, always after body), so they never
-// scroll out of view regardless of transcript length. PendingChips travels
-// with the composer (it's contextually "chips beside the composer", per its
-// own doc comment) and shares its 76rem measure so the input aligns with the
-// transcript's own content column; SessionChrome (the status row) stays
-// full-width beneath, reading like a status bar.
+// scroll out of view regardless of transcript length. LivenessLine lives
+// here too now (kata x47h): FlowOverlay's `top` slot is a non-reserved
+// absolute overlay floating over the scrollable transcript, so the one
+// thing every liveness message needs - never landing on top of transcript
+// text - is exactly what that slot cannot promise. The footer's flex:none
+// layout can. PendingChips travels with the composer (it's contextually
+// "chips beside the composer", per its own doc comment) and shares its
+// 76rem measure so the input aligns with the transcript's own content
+// column; SessionChrome (the status row) stays full-width beneath, reading
+// like a status bar.
 import { useEffect, useMemo, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
@@ -206,19 +211,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     <div className={styles.transcript}>
       <FlowOverlay
         top={
-          <>
-            {model.olderCursor && (
-              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-            )}
-            <LivenessLine
-              lastFrameAt={model.lastFrameAt}
-              now={now}
-              active={model.status.type === "active"}
-              sessionRef={ref}
-              turnId={model.activeTurnId}
-              retry={model.modelRetry}
-            />
-          </>
+          model.olderCursor && (
+            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+          )
         }
         pill={
           <NewContentPill
@@ -265,6 +260,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       footer={
         <div className={styles.footer}>
           <div className={styles.measure}>
+            <LivenessLine
+              lastFrameAt={model.lastFrameAt}
+              now={now}
+              active={model.status.type === "active"}
+              sessionRef={ref}
+              turnId={model.activeTurnId}
+              retry={model.modelRetry}
+            />
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>
