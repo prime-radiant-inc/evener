@@ -24,6 +24,7 @@ const ONE_INSTANCE: InstanceEntry = {
   hasStoredOAuth: true,
   envVar: "",
   storedEmail: "me@example.com",
+  credentialRequired: true,
 };
 
 const LIST_RESPONSE: InstanceListResponse = {

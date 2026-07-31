@@ -10,6 +10,7 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
     isDefault: false,
     activeSource: "absent",
     hasStoredOAuth: false,
+    credentialRequired: true,
     ...overrides,
   };
 }
@@ -58,12 +59,24 @@ describe("unconfiguredLabel", () => {
     expect(unconfiguredLabel(instance({ name: "a", type: "x", hasStoredFile: true, activeSource: "file" }))).toBeNull();
   });
 
-  test("'Not configured' for activeSource absent", () => {
-    expect(unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "absent" }))).toBe("Not configured");
+  test("'Not configured' for activeSource absent when the instance needs a credential", () => {
+    expect(
+      unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "absent", credentialRequired: true })),
+    ).toBe("Not configured");
+  });
+
+  // A gateway needs no key of ours (the hub's credentialRequired gate says so),
+  // so an absent one is a choice rather than a gap - kata bg3n.
+  test("'No key set · optional' for activeSource absent when no credential is required", () => {
+    expect(
+      unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "absent", credentialRequired: false })),
+    ).toBe("No key set · optional");
   });
 
   test("'No credentials required' for activeSource none", () => {
-    expect(unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "none" }))).toBe("No credentials required");
+    expect(
+      unconfiguredLabel(instance({ name: "a", type: "x", activeSource: "none", credentialRequired: false })),
+    ).toBe("No credentials required");
   });
 
   test("falls back to the raw activeSource string for an unrecognized value", () => {
