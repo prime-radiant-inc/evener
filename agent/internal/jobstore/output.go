@@ -377,6 +377,12 @@ func (o *OutputStore) pruneLocked() error {
 	if _, err := io.ReadFull(o.f, tail); err != nil {
 		return fmt.Errorf("jobstore: read output prune tail: %w", err)
 	}
+	// The cap is a raw byte count, so it can cut inside a rune. Evict the orphaned
+	// continuation bytes too: what survives here becomes the file's OWN first byte,
+	// which readers pass through untouched rather than realigning — only a reader's
+	// own window cut gets realigned.
+	tail = runetrim.TrimLeadingPartial(tail)
+	keep = int64(len(tail))
 	retainedStart := o.total - keep
 	if err := writeOutputMetaFileFsSync(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
 		TotalBytes:     o.total,
