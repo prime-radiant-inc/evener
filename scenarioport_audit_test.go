@@ -174,9 +174,12 @@ func TestScenarioPortAllowlistEntriesActuallyExist(t *testing.T) {
 	}
 }
 
+// scenarioDir is the one directory the scenario audits read, relative to the
+// repo root that `go test` runs them from.
+const scenarioDir = "test" + string(filepath.Separator) + "scenarios"
+
 func scenarioCardFiles(t *testing.T) []string {
 	t.Helper()
-	const scenarioDir = "test" + string(filepath.Separator) + "scenarios"
 	var files []string
 	entries, err := os.ReadDir(scenarioDir)
 	if err != nil {
