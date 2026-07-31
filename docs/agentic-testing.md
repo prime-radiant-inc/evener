@@ -1004,6 +1004,13 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
 - **Per-session transcript**: `$HOME/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
+- **Per-daemon log** (everything a spawned session's `serf serve` writes,
+  including its `[serve]` lines): `$HOME/.serf/run/logs/daemon-<SID>.log`,
+  under the hub's run dir. `$run/hub.log` holds hub lines only; each launch
+  prints one `[hub] daemon session=… pid=… log=…` banner there naming this
+  file. Daemon lines are stamped `[serve <RFC3339 UTC ms> session=<SID>]`,
+  so they cross-reference directly against rendezvous `started_at` and the
+  provider API logs.
 - **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)

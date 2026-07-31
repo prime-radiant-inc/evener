@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ type daemonLog struct {
 // reports the id it minted for itself.
 func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 	if runDir == "" {
-		return nil, fmt.Errorf("daemon log: no run dir to write it under")
+		return nil, errors.New("daemon log: no run dir to write it under")
 	}
 	dir := filepath.Join(runDir, daemonLogDirName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

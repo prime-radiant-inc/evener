@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -108,8 +107,8 @@ func TestEveryServeLineGoesThroughTheStamper(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if i := strings.Index(string(src), `"[serve] `); i >= 0 {
-			line := 1 + strings.Count(string(src)[:i], "\n")
+		if before, _, found := bytes.Cut(src, []byte(`"[serve] `)); found {
+			line := 1 + bytes.Count(before, []byte("\n"))
 			t.Fatalf("%s:%d writes a bare \"[serve] \" prefix: route it through serveLogf so it carries its session and instant", name, line)
 		}
 	}
