@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -186,23 +187,39 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobsList", MethodSerfJobsList, JobsListResponse{Data: []string{"j1"}}, func(ctx context.Context, c *Client) error {
+		{"JobsList", MethodSerfJobsList, JobsListResponse{Data: []JobSummary{{
+			JobID: "job_a", Type: "shell", Status: "running", Description: "go test ./...", OutputBytes: 128, HasOutput: true,
+		}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobsList(ctx, JobsListParams{Ref: "local:th"})
 			if err != nil {
 				return err
 			}
-			if out.Data == nil {
-				return errors.New("JobsList decode mismatch")
+			// Data is `any` in the catalog, so a decoded row is a map keyed by
+			// JobSummary's own json tags — the exact names the web client's
+			// parser reads. Asserting them here is what makes this a contract
+			// check rather than a "something arrived" check.
+			rows, ok := out.Data.([]any)
+			if !ok || len(rows) != 1 {
+				return fmt.Errorf("JobsList data = %#v, want one row", out.Data)
+			}
+			row, ok := rows[0].(map[string]any)
+			if !ok || row["jobId"] != "job_a" || row["type"] != "shell" || row["status"] != "running" ||
+				row["description"] != "go test ./..." || row["outputBytes"] != float64(128) || row["hasOutput"] != true {
+				return fmt.Errorf("JobsList row = %#v", rows[0])
 			}
 			return nil
 		}},
-		{"JobOutput", MethodSerfJobsOutput, JobsOutputResponse{Data: "tail-bytes"}, func(ctx context.Context, c *Client) error {
+		{"JobOutput", MethodSerfJobsOutput, JobsOutputResponse{Data: JobOutputTail{
+			Tail: "tail-bytes", TotalBytes: 4096, RetainedStart: 3968, Truncated: true,
+		}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
 			if err != nil {
 				return err
 			}
-			if out.Data == nil {
-				return errors.New("JobOutput decode mismatch")
+			tail, ok := out.Data.(map[string]any)
+			if !ok || tail["tail"] != "tail-bytes" || tail["totalBytes"] != float64(4096) ||
+				tail["retainedStart"] != float64(3968) || tail["truncated"] != true {
+				return fmt.Errorf("JobOutput data = %#v", out.Data)
 			}
 			return nil
 		}},
