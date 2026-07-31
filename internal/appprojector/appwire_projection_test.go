@@ -2686,18 +2686,27 @@ func TestProjectModelRetryEmitsThreadScopedNotice(t *testing.T) {
 // the live tool-result image path (kata 2fxm): the agent describes the image on
 // TOOL_CALL_END, and the item/completed frame a dashboard actually reads has to
 // carry that description through unchanged.
+//
+// Which frame that is moved in kata v3dv. The description reaches the wire on
+// the round's TOOL_RESULT_IMAGES_PERSISTED rather than on the call's own
+// settle, because until the round is written nothing can serve the bytes it
+// names; see TestToolResultImageDescriptorWaitsForItsBytes. What this test
+// still pins is that it arrives, and arrives unchanged.
 func TestProjectToolCallEndCarriesOutputImagesToTheWire(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "shoot"}})
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
 	}})
-	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 		ToolName: "screenshot", CallID: "call_shot", Output: "captured",
 		OutputImages: []events.OutputImage{{
 			Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12,
 			SHA: strings.Repeat("a", 64),
 		}},
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolResultImagesPersisted, SessionID: "th_1", Data: events.ToolResultImagesPersistedData{
+		CallIDs: []string{"call_shot"},
 	}})
 
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)

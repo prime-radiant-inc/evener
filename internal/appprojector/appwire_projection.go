@@ -59,7 +59,12 @@ type AppEventProjector struct {
 	// #37: the web hover meta shows server truth or nothing).
 	toolStartByKey  map[string]time.Time
 	suppressedTools map[string]struct{}
-	skillCandidate  skillActivationCandidate
+	// heldToolResultImages keeps, per call id, the completed tool item whose
+	// sha-addressed result images no server can serve yet — see
+	// holdUnfetchableToolResultImages. Entries leave on the round's
+	// TOOL_RESULT_IMAGES_PERSISTED, or with the turn that opened them.
+	heldToolResultImages map[string]appwire.ThreadItem
+	skillCandidate       skillActivationCandidate
 
 	lastAssistantTurnID string
 	lastAssistantText   string
@@ -87,12 +92,13 @@ type AppEventProjector struct {
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	return &AppEventProjector{
-		threadID:        threadID,
-		ref:             ref,
-		toolItemsByKey:  map[string]string{},
-		toolArgsByKey:   map[string]string{},
-		toolStartByKey:  map[string]time.Time{},
-		suppressedTools: map[string]struct{}{},
+		threadID:             threadID,
+		ref:                  ref,
+		toolItemsByKey:       map[string]string{},
+		toolArgsByKey:        map[string]string{},
+		toolStartByKey:       map[string]time.Time{},
+		suppressedTools:      map[string]struct{}{},
+		heldToolResultImages: map[string]appwire.ThreadItem{},
 	}
 }
 
@@ -550,12 +556,35 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		delete(p.toolItemsByKey, data.CallID)
 		delete(p.toolArgsByKey, data.CallID)
+		p.holdUnfetchableToolResultImages(&item)
 		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			Item:     item,
 		})}
+	case events.EventToolResultImagesPersisted:
+		// The bytes behind the descriptors held above have reached the
+		// transcript, so the promise they make is now one a server can keep.
+		// Re-send each item exactly as it settled, with its images restored:
+		// a client that has already seen this id replaces its copy wholesale,
+		// so a partial item would erase the call's output.
+		data := eventData[events.ToolResultImagesPersistedData](event.Data)
+		var released []AppNotification
+		for _, callID := range data.CallIDs {
+			item, held := p.heldToolResultImages[callID]
+			if !held {
+				continue
+			}
+			delete(p.heldToolResultImages, callID)
+			released = append(released, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   item.TurnID,
+				Item:     item,
+			}))
+		}
+		return released
 	case events.EventToolCallRepaired:
 		// This fires before EventToolCallStart creates the CallID-keyed tool
 		// item (repair runs before PreToolUse hooks, which run before the
@@ -1391,6 +1420,42 @@ func fallbackLabel(value, fallback string) string {
 	return fallback
 }
 
+// holdUnfetchableToolResultImages takes off a settling tool item the image
+// descriptors nothing can serve yet, keeping the whole item to re-send when
+// the round says they can be (kata v3dv).
+//
+// A descriptor whose bytes came back INSIDE the tool result is addressed by
+// sha and carries no URL, because the route belongs to whichever server
+// publishes the thread; those bytes reach that server only through the round's
+// tool-result turn, and rounds are written whole. So between this item
+// settling and that write there is no reader for them — microseconds for a
+// single-call round, the length of a build for an image read batched with one
+// — and a thumbnail that fails to load in that gap is dropped for good.
+//
+// A descriptor that already names a URL is left alone: it points at bytes some
+// server can re-read on its own (the file-backed /doc/image route for a file
+// the call named), so holding it would delay a thumbnail that already works.
+func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.ThreadItem) {
+	if len(item.OutputImages) == 0 {
+		return
+	}
+	fetchable := make([]appwire.OutputImage, 0, len(item.OutputImages))
+	for _, image := range item.OutputImages {
+		if image.Source == events.OutputImageSourceToolResult && image.URL == "" {
+			continue
+		}
+		fetchable = append(fetchable, image)
+	}
+	if len(fetchable) == len(item.OutputImages) {
+		return
+	}
+	p.heldToolResultImages[item.CallID] = *item
+	if len(fetchable) == 0 {
+		fetchable = nil
+	}
+	item.OutputImages = fetchable
+}
+
 func (p *AppEventProjector) startTurn() string {
 	if p.reservedTurnID != "" {
 		p.activeTurnID = p.reservedTurnID
@@ -1405,6 +1470,9 @@ func (p *AppEventProjector) startTurn() string {
 	p.midSessionAnnouncementTurnID = ""
 	p.assistantItem = ""
 	p.assistantText = ""
+	// A round interrupted before its results were written never announces
+	// them, so whatever it held belongs to a turn that is over.
+	clear(p.heldToolResultImages)
 	p.activeTurnUsage = llm.Usage{}
 	p.activeTurnModel = ""
 	// startTurn always yields a usable turn id (a promoted reservation or a
