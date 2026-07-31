@@ -16,6 +16,21 @@
 // the next unanswered question (see askDockStore.setAnswer). A
 // single-question batch has nothing to switch to, so it gets no strip.
 //
+// The footer's primary button follows the same one-question-at-a-time
+// model (kata w2zy): a multi-select/free-text/"let serf decide" answer
+// never auto-advances (askDockStore's advancesOnAnswer - more typing or
+// more boxes may follow), so without this the reader's only move was the
+// button that ALWAYS submitted the whole batch, silently skipping whatever
+// they had not gotten to yet. AskBatchCard now computes an advance target
+// (askDockStore.nextUnansweredKey, same helper setAnswer's auto-advance
+// uses) from the VISIBLE question: once it has an answer and another
+// question remains open, the button moves the reader on instead of
+// sending, and relabels to say so. It reverts to Send once nothing is left
+// to advance to - every question answered (the final advance position) or
+// a single-question batch, which keeps its original always-send contract
+// (parity-m5-composer.md §C: Send is always enabled, an unanswered
+// question composes as skipped) since there is nowhere else to advance.
+//
 // Mount expectations for whoever wires this into Composer.tsx's tree (T2,
 // at merge - see that file's own header, "T3/T4 render inside Composer's
 // own tree"):
@@ -40,7 +55,7 @@ import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskResolution } from "./askCompose";
-import { type AskAnswerState, askDockStore, useAskDockStore } from "./askDockStore";
+import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
 import styles from "./askdock.module.css";
 import type { AskBatch } from "./reconcileBatches";
 
@@ -101,6 +116,18 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   const activeIndex = batch.questions.findIndex((q) => q.key === activeKey);
   const activeQuestion = activeIndex >= 0 ? batch.questions[activeIndex] : undefined;
 
+  // The footer's primary-button target (kata w2zy): a question key to move
+  // to, or undefined to send. Only ever set when there is somewhere else to
+  // go - more than one question, the visible one already answered, and a
+  // still-unanswered question elsewhere in the batch - so a single-question
+  // batch, an unanswered current question, or the final answered question
+  // (nextUnansweredKey finds nothing left) all fall through to undefined,
+  // i.e. keep sending, exactly like the button's original always-send
+  // behavior.
+  const activeAnswer = activeQuestion !== undefined ? answerFor(answers, activeQuestion.key) : UNTOUCHED_ANSWER;
+  const advanceTarget =
+    total > 1 && activeAnswer.resolution !== null ? nextUnansweredKey(batch, answers, activeIndex) : undefined;
+
   const tabId = (index: number) => `${baseId}-tab-${index}`;
   const panelId = `${baseId}-panel`;
 
@@ -109,6 +136,14 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     if (!question) return;
     askDockStore.getState().setActive(sessionRef, batch.id, question.key);
     if (focus) tabRefs.current[index]?.focus();
+  }
+
+  function handlePrimaryAction() {
+    if (advanceTarget !== undefined) {
+      askDockStore.getState().setActive(sessionRef, batch.id, advanceTarget);
+      return;
+    }
+    onSend(batch.id);
   }
 
   // ARIA tabs with automatic activation (arrow keys both move and select -
@@ -212,9 +247,12 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
         {/* Blue primary, same pattern as sandboxEscalation's Allow button
             (topic 16: amber owns the container above, blue owns the one
             action that resolves it) - Button's own primary variant is the
-            token-contract-ungated --accent, so this needs no allowlisting. */}
-        <Button variant="primary" size="sm" disabled={batch.sending} onClick={() => onSend(batch.id)}>
-          Send answers
+            token-contract-ungated --accent, so this needs no allowlisting.
+            Label follows advanceTarget (kata w2zy) so the button never
+            claims "Send answers" while actually just moving the reader to
+            another question. */}
+        <Button variant="primary" size="sm" disabled={batch.sending} onClick={handlePrimaryAction}>
+          {advanceTarget !== undefined ? "Next question" : "Send answers"}
         </Button>
       </div>
     </div>

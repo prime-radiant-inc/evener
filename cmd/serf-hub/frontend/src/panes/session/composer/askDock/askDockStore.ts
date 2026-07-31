@@ -137,15 +137,22 @@ function removeBatch(ref: string, batchId: string): void {
   });
 }
 
-// nextUnansweredKey finds the tab to auto-advance to after a one-click
-// resolution lands (kata 99yf): the first still-unanswered question AFTER
-// `fromIndex` in posting order, wrapping to earlier questions if none
-// follows, so answering the last tab circles back to whatever was skipped.
-// `answers` must be the post-write map (the just-answered question reads as
+// nextUnansweredKey finds the tab to advance to after the current question
+// is resolved: the first still-unanswered question AFTER `fromIndex` in
+// posting order, wrapping to earlier questions if none follows, so
+// resolving the last tab circles back to whatever was skipped. `answers`
+// must be the post-write map (the just-answered question reads as
 // answered). Returns undefined when every other question is answered too -
 // the reader stays put on the last tab rather than the dock yanking them
 // away from a finished set.
-function nextUnansweredKey(
+//
+// Two callers: setAnswer below drives kata 99yf's auto-advance (a one-click
+// resolution moves on by itself), and AskDock.tsx's footer button drives
+// kata w2zy's explicit advance (the primary action moves the reader on
+// instead of submitting early, once the question on screen has an answer -
+// see that file's own header for why a multi-select/free/decide answer,
+// which never auto-advances, still needs this).
+export function nextUnansweredKey(
   batch: AskBatch,
   answers: Record<string, AskAnswerState>,
   fromIndex: number,
