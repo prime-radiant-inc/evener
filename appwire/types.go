@@ -600,8 +600,9 @@ type Turn struct {
 // notification path). Both paths reuse the SAME id deliberately: a client
 // that sees only this one turn, from either path, is looking at a session
 // that has never had a real turn (kata bz2z) — genuinely "dormant" — which
-// is the signal the empty-transcript invitation keys on. Real turns always
-// use "turn_N" (N >= 1), so this can never collide with one.
+// is the signal the empty-transcript invitation keys on. Real turns use
+// "turn_N" (N >= 1) or the reserved "turn_mN" below, so this can never
+// collide with one.
 const SystemPreludeTurnID = "turn_system"
 
 // ClientMutationTurnID names the turn a client-authored input (turn/start,
