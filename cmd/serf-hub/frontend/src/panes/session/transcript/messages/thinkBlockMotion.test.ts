@@ -40,6 +40,18 @@ test("the motion sits behind a prefers-reduced-motion gate", () => {
   expect(text.replace(gate![0], "")).not.toMatch(/\banimation:/);
 });
 
+test("the chevron turn is a token-timed transition behind the reduced-motion gate", () => {
+  const text = css();
+  const gate = /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\n\}/g;
+  const gated = text.match(gate)?.join("\n") ?? "";
+  expect(gated).toMatch(
+    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform\s+var\(--motion-duration-overlay\)\s+var\(--motion-easing-standard\)/,
+  );
+  // Outside the gates there is no transition at all - reduced motion means
+  // the chevron snaps, exactly like ToolRow's own chevron.
+  expect(text.replace(gate, "")).not.toMatch(/\btransition:/);
+});
+
 test("the motion is a fade, not a slide or a bounce", () => {
   const keyframes = /@keyframes\s+thinkblock-body-in\s*\{([\s\S]*?)\n\}/.exec(css());
   expect(keyframes).not.toBeNull();

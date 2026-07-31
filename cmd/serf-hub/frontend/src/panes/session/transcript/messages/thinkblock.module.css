@@ -117,6 +117,37 @@
   color: var(--ink-low);
 }
 
+/* The label text as its own flex item so it - not the chevron after it - is
+ * what gives way under width pressure: overflow + ellipsis let the span
+ * shrink (a flex item with overflow set has an automatic minimum of zero),
+ * keeping the trailing chevron on screen at the end of whatever text
+ * survives. The JS-side 120-char preview clamp remains the primary bound;
+ * this is the same rare-case guard .summary's own ellipsis used to be. */
+.summaryText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mockup #4's trailing disclosure affordance: the shared widgets/chevron at
+ * the tail of the collapsed line, in the same ink-mid ToolRow's chevron uses
+ * so it reads a step firmer than the ink-low words it opens. flex: none - the
+ * summaryText span ahead of it absorbs all shrink; align-self: center because
+ * .summary aligns items to baseline, which would seat the svg's box on its
+ * bottom edge (the same fix .icon documents). The turn rotates the SQUARE svg
+ * itself, never this wrapper - toolcallitem.module.css's own comment records
+ * why a non-square box must not be the thing that rotates. */
+.chevron {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  margin-left: var(--space-2);
+  color: var(--ink-mid);
+}
+
+.chevron[data-open="true"] > svg {
+  transform: rotate(90deg);
+}
+
 /* Same ink-wash idiom as ToolCallItem's own summary.row:hover - a tint of
  * the ink reads as "clickable" against whatever surface it sits on. */
 .summary:hover {
@@ -156,6 +187,12 @@
 @media (prefers-reduced-motion: no-preference) {
   .details[open] > .body {
     animation: thinkblock-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+
+  /* The chevron's turn eases on the same tokens (ToolRow's idiom); under
+   * reduced motion it snaps instead. */
+  .chevron > svg {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
   }
 }
 

@@ -3,9 +3,10 @@
 // stays open the whole time it's the current thought, never collapsed
 // mid-stream this wave - see the wave-4 T2 scope's own "OPEN + StreamingText
 // while live", a deliberate simplification of legacy's mid-stream-
-// collapsible button). Settled: collapses to "Thought [for duration]" plus a
-// bounded final context line, while the full Markdown body remains available
-// at the one disclosure level.
+// collapsible button). Settled: collapses to "Thought [· duration] · context"
+// with a trailing rotate-on-open chevron (the draft restyle, mockup #4 of
+// /dev/thoughts, Jesse's pick 2026-07-31), while the full Markdown body
+// remains available at the one disclosure level.
 //
 // reasoningSummaries is string[][] - per-summaryIndex chunk lists
 // (protocol/model.ts). Each index's chunks only ever grow by appending
@@ -46,7 +47,7 @@
 // message types behave the same way under streaming.
 
 import { memo } from "react";
-import { Markdown, ToolIcon } from "../../../../widgets";
+import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
@@ -69,6 +70,8 @@ const CLASS = {
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
+  summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
+  chevron: requireClass(styles.chevron, "thinkblock.module.css", "chevron"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
 };
 
@@ -86,12 +89,17 @@ const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
 // thoughtLabel never fabricates a duration: `durationMs` is undefined whenever
 // neither the wire pair nor the observed pair is available or valid (see
-// reasoningFormat.ts). The context is a bounded plain-text rendering of the
-// final meaningful line, not a second Markdown body; opening the disclosure
-// still reveals the complete source through Markdown.
+// reasoningFormat.ts). Every part joins on the same " · " separator - the
+// draft restyle's "Thought · 12s · preview" grammar (mockup #4), one delimiter
+// instead of the old "Thought for 12s" phrase. The context is a bounded
+// plain-text rendering of the final meaningful line, not a second Markdown
+// body; opening the disclosure still reveals the complete source through
+// Markdown.
 function thoughtLabel(durationMs: number | undefined, preview: string): string {
-  const duration = durationMs === undefined ? "Thought" : `Thought for ${formatThoughtDuration(durationMs)}`;
-  return preview ? `${duration} · ${preview}` : duration;
+  const parts = ["Thought"];
+  if (durationMs !== undefined) parts.push(formatThoughtDuration(durationMs));
+  if (preview) parts.push(preview);
+  return parts.join(" · ");
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -166,7 +174,25 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live, sessionRef }: I
           }}
         >
           {thoughtIcon}
-          {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
+          {/* The label text in its own shrinkable span (not bare summary text):
+              as a flex item it can ellipsize under pressure, so the trailing
+              chevron always stays on screen at the end of the words instead of
+              being pushed past the summary's clipped edge. */}
+          <span className={CLASS.summaryText}>
+            {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
+          </span>
+          {/* Mockup #4's trailing affordance: the shared widgets/chevron at the
+              tail of the collapsed line, turning 90° when open via the same
+              data-open idiom ToolRow uses (rotation turns the SQUARE svg, so it
+              cannot widen its painted box - see toolcallitem.module.css). */}
+          <span
+            className={CLASS.chevron}
+            aria-hidden="true"
+            data-open={open ? "true" : "false"}
+            data-testid="think-block-chevron"
+          >
+            <Chevron />
+          </span>
         </summary>
         <div className={CLASS.body}>
           {/* One document, not one per summaryIndex: a markdown parser needs

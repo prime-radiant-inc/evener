@@ -215,6 +215,60 @@ test("opening the disclosure drops the preview from the summary", () => {
   expect(summary.textContent).not.toContain(preview);
 });
 
+test("the open disclosure keeps the dot-joined duration label - never the old 'for' phrasing", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        id: "think_open_duration",
+        reasoningSummaries: [["content"]],
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:04.000Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summary = document.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought · 4s · content");
+  fireEvent.click(summary!);
+  expect(summary?.textContent).toBe("Thought · 4s");
+});
+
+// --- the trailing chevron: mockup #4's disclosure affordance ----------------
+// The draft restyle's collapsed line is "close to today plus a chevron" - the
+// same shared widgets/chevron every disclosure uses, riding at the tail of the
+// summary and turning 90° when open (ToolRow's data-open idiom).
+
+test("the settled summary trails with a chevron that tracks the open state", () => {
+  render(
+    <ThinkBlock item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })} turn={turn} live={false} />,
+  );
+  const summary = document.querySelector("summary");
+  const chevron = screen.getByTestId("think-block-chevron");
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(chevron.querySelector("svg")).not.toBeNull();
+  expect(summary?.lastElementChild).toBe(chevron);
+  expect(chevron.dataset.open).toBe("false");
+  fireEvent.click(summary!);
+  expect(chevron.dataset.open).toBe("true");
+});
+
+test("the live eyebrow carries no chevron - there is nothing to disclose while streaming", () => {
+  render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
+  expect(screen.queryByTestId("think-block-chevron")).toBeNull();
+});
+
+test("the chevron turns via the shared rotate-on-open idiom, scoped to data-open (declaration-level, jsdom runs no cascade)", () => {
+  expect(thinkCss()).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
+});
+
+test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
+  const rule = /\.summaryText\s*\{([^}]*)\}/.exec(thinkCss());
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("overflow: hidden");
+  expect(rule![1]).toContain("text-overflow: ellipsis");
+});
+
 test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
   const { container } = render(
     <ThinkBlock
@@ -385,7 +439,7 @@ test("a replay item's real startedAt/completedAt pair produces a duration label"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
 });
 
 test("a live-observed timing pair (no wire pair) produces a real duration label once settled", () => {
@@ -400,7 +454,7 @@ test("a live-observed timing pair (no wire pair) produces a real duration label 
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 3s · content");
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
@@ -417,7 +471,7 @@ test("the wire pair wins over the observed pair when both are present", () => {
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 4s · content");
 });
 
 test("a completed sub-second thought reports milliseconds, not a rounded second", () => {
@@ -432,7 +486,7 @@ test("a completed sub-second thought reports milliseconds, not a rounded second"
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 250ms · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought · 250ms · content");
 });
 
 test("an in-progress streaming thought never shows a duration summary", () => {
@@ -449,7 +503,7 @@ test("an in-progress streaming thought never shows a duration summary", () => {
     />,
   );
   expect(screen.getByText("Thinking…")).toBeTruthy();
-  expect(screen.queryByText(/Thought for/)).toBeNull();
+  expect(screen.queryByText(/Thought/)).toBeNull();
   expect(document.querySelector("details")).toBeNull();
 });
 
