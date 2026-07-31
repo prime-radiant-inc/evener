@@ -451,19 +451,23 @@ The read-only inspector (`cmd/serf-doctor` over `agent/doctor`) and the
 `doctor` agent type that drives it. The watch/provenance material these
 cards read is produced by the `job-watch-*` cards above.
 
-- `serf-doctor-forensics.md` — the four corrections the tool exists for:
+- `serf-doctor-forensics.md` — the six corrections the tool exists for:
   `watches` collapses `watch_send_pending` coalescing into distinct
   settled deliveries, `--self-loops` reads the recorded breaker
   telemetry instead of re-deriving from the provenance chain,
   `transcript --count` separates structural tool calls from prose
-  mentions, and `locate` resolves the per-session `jobs.jsonl` subdir.
+  mentions, `locate` resolves the per-session `jobs.jsonl` subdir,
+  `jobs` folds the log into per-job status-plus-reason off settled
+  disk, and each `watches` row carries the state of the job it was
+  watching so an unfired watch is not mistaken for broken delivery.
 - `doctor-agent-diagnose.md` — the `doctor` agent type runs a real
   LLM-driven diagnosis: the `doctoring-serf` skill loads, the tools run
   through the shell tool, and a healthy session yields zero Findings
   while a real defect yields exactly one schema-correct Finding.
 - `doctor-forensics.md` — both halves in one pass: the forensic tools
-  read settled on-disk state through serf's own folds and types, and the
-  doctor agent diagnoses what they report.
+  (`locate`, `watches` with its target-job join, `transcript --count`,
+  `apilog`, `tree`, `jobs`) read settled on-disk state through serf's own
+  folds and types, and the doctor agent diagnoses what they report.
 
 ## Sidebar (rebuilt)
 

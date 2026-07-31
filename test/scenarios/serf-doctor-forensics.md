@@ -3,7 +3,7 @@
 **What this covers**: the `serf-doctor` binary (`cmd/serf-doctor` over the
 `agent/doctor` package) end-to-end against a real on-disk state tree — the data
 plane that produced the *wrong numbers* during the observer-provenance work.
-Proves the four corrections the tool exists for:
+Proves the six corrections the tool exists for:
 
 1. **`watches` collapses `watch_send_pending` coalescing** — distinct settled
    deliveries, not the raw pending-line count `grep -c` reports.
@@ -18,6 +18,14 @@ Proves the four corrections the tool exists for:
    the `delegate_send` "5 mentions / 0 calls" trap.
 4. **`locate` resolves the per-session `jobs.jsonl` SUBDIR** (`sessions/<sid>/jobs.jsonl`),
    not a flat `<sid>.jobs.jsonl` beside the transcript.
+5. **`jobs` folds the log into per-job state** — status *and* the reason that
+   produced it, exit code, output bytes, timings — off settled disk, where the
+   2026-07-31 outbox diagnosis could only get them from a live daemon's
+   `/status`. See Step 5.
+6. **`watches` joins each row with its target job's state** — a watch that
+   never fired reads as broken delivery machinery until the row shows the
+   target job stopped with zero output and so could never match its condition
+   (`agent/doctor/watches.go:33-41,206-221`). See Step 6.
 
 Unit coverage: `agent/doctor/*_test.go`, `cmd/serf-doctor/main_test.go`. This
 card proves it against a built binary on a real state-dir shape.
@@ -36,12 +44,19 @@ card proves it against a built binary on a real state-dir shape.
   # identifier/uuid.go:12,64-73), so a readable fake like 01SCNDOCTOR... is
   # rejected with `invalid session id` and no step below runs. This literal is
   # a generated, validated id; keep it or generate another.
+  #
+  # Every watch_registered line below carries generation + owner_session_id +
+  # visible_session_id + target + config_hash. FoldWatches SKIPS a registration
+  # missing any one of them (agent/internal/jobstore/fold.go:234-237) and says
+  # nothing about it — the deliveries still fold from the watch_send events, so
+  # a dropped registration costs you the `target=`/`owner=` lines and the whole
+  # target-job join in Step 6 while the delivery counts look perfectly fine.
   SCR=$(mktemp -d); SESS="$SCR/sessions"; SID=033z4xc9zDkqiOXWEe1X4l
   mkdir -p "$SESS/$SID"
   printf '{"kind":"header","session_id":"%s"}\n' "$SID" > "$SESS/$SID.transcript.jsonl"
   printf '{"id":"%s"}'                          "$SID" > "$SESS/$SID.meta.json"
   cat > "$SESS/$SID/jobs.jsonl" <<'EOF'
-  {"kind":"watch_registered","seq":1,"watch_id":"w1","watch":{"generation":"g1","target":"job:j1","send_to":"obs","condition":"output_match"}}
+  {"kind":"watch_registered","seq":1,"watch_id":"w1","watch":{"generation":"g1","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job:j1","send_to":"obs","condition":"output_match","config_hash":"h1"}}
   {"kind":"watch_send_pending","seq":2,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j1"},"delivery_id":"d1","update_seq":1}}
   {"kind":"watch_send_pending","seq":3,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j1"},"delivery_id":"d1","update_seq":2}}
   {"kind":"watch_send_pending","seq":4,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j1"},"delivery_id":"d1","update_seq":3}}
@@ -50,7 +65,7 @@ card proves it against a built binary on a real state-dir shape.
   {"kind":"watch_send_dropped","seq":7,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j2"},"delivery_id":"d2","update_seq":1,"diagnostic_reason":"send_to gone"}}
   {"kind":"watch_send_pending","seq":8,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j3"},"delivery_id":"d3","update_seq":1}}
   {"kind":"watch_send_evicted","seq":9,"watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"job:j3"},"delivery_id":"d3","update_seq":1}}
-  {"kind":"watch_registered","seq":10,"watch_id":"w2","watch":{"generation":"g2","target":"job:j9"}}
+  {"kind":"watch_registered","seq":10,"watch_id":"w2","watch":{"generation":"g2","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job:j9","config_hash":"h2"}}
   {"kind":"watch_send_delivered","seq":11,"watch_id":"w2","watch_send":{"key":{"watch_id":"w2"},"delivery_id":"dl","provenance":{"watch_keys":[{"watch_id":"w2","watch_generation":"g2"}],"chain":[{"kind":"watch","watch_id":"w2","delivery_id":"dprior"},{"kind":"watch","watch_id":"w2","delivery_id":"dl"}]}}}
   EOF
   ```
@@ -103,7 +118,49 @@ card proves it against a built binary on a real state-dir shape.
    ASSERT `delegate_send: 0 calls` with a non-zero "textual mention(s)" note —
    the structural invocation count is 0 even though the name appears in text.
 
-5. **Real-data spot check (non-deterministic, optional).** Point the binary at
+5. **`jobs` folds the log into per-job state.** The fixture so far is all
+   watches and no jobs; append two job records plus two watches on them, for
+   this step and the next:
+   ```bash
+   cat >> "$SESS/$SID/jobs.jsonl" <<'EOF'
+  {"kind":"job_started","seq":13,"job_id":"job_033z4xc9zDkqiOXWEe1X4m","type":"shell","command":"make test","started_at":"2026-07-31T18:00:00Z"}
+  {"kind":"job_finished","seq":14,"job_id":"job_033z4xc9zDkqiOXWEe1X4m","status":"completed","exit_code":0,"ended_at":"2026-07-31T18:01:00Z","output_bytes":4096}
+  {"kind":"job_started","seq":15,"job_id":"job_033z4xc9zDkqiOXWEe1X4n","type":"shell","command":"npm run dev","started_at":"2026-07-31T18:00:00Z"}
+  {"kind":"job_finished","seq":16,"job_id":"job_033z4xc9zDkqiOXWEe1X4n","status":"stopped","reason":"run_timeout","exit_code":-1,"ended_at":"2026-07-31T18:02:00Z","output_bytes":0}
+  {"kind":"watch_registered","seq":17,"watch_id":"w3","watch":{"generation":"g3","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job_033z4xc9zDkqiOXWEe1X4n","send_to":"caller","condition":"output_match:ready","config_hash":"h3"}}
+  {"kind":"watch_cleared","seq":18,"watch_id":"w3","watch":{"generation":"g3","end_reason":"auto_removed_terminal"}}
+  {"kind":"watch_registered","seq":19,"watch_id":"w4","watch":{"generation":"g4","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job_033z4xc9zDkqiOXWEe1X4o","send_to":"caller","condition":"output_match:ready","config_hash":"h4"}}
+  EOF
+   /tmp/serf-doctor jobs "$SID" --state-dir "$SCR"
+   ```
+   ASSERT two blocks, in the log's append order: `job
+   job_033z4xc9zDkqiOXWEe1X4m  (completed)` with `exit=0  output_bytes=4096`,
+   and `job job_033z4xc9zDkqiOXWEe1X4n  (stopped: run_timeout)` with `exit=-1
+   output_bytes=0`. The parenthetical is `status: reason`, so the *reason* a
+   job stopped travels with the status — `grep -c job_finished` gives 2 and
+   tells you neither. ASSERT `--job job_033z4xc9zDkqiOXWEe1X4n` renders that
+   job alone, and that `--job job_nope` prints `job job_nope not found in this
+   session` and exits 0 — NOT `no jobs recorded`, which would wrongly say the
+   session ran nothing (`agent/doctor/jobs.go:209-214`).
+
+6. **`watches` joins each row with its target job's state.**
+   ```bash
+   /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --watch w3
+   /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --watch w4
+   ```
+   ASSERT `w3` — the watch on the job the run timeout stopped — renders
+   `(ended: auto_removed_terminal)`, `deliveries: 0 distinct`, and the joined
+   line `target job: status=stopped  reason=run_timeout  exit=-1
+   output_bytes=0  ended=2026-07-31T18:02:00Z`. Zero deliveries plus a target
+   that produced no output is "the condition could never match", not "delivery
+   is broken" — the two readings the join exists to separate. ASSERT `w4`,
+   whose target job id appears in no record, renders `target job: not recorded
+   in this session's jobs.jsonl` rather than nothing at all. In `--json`, those
+   are `target_job` (a full job view) and `target_job_missing: true`; `w1` and
+   `w2` carry neither, because a target that is not a `job_` id is a session
+   watch, not a missing job.
+
+7. **Real-data spot check (non-deterministic, optional).** Point the binary at
    the live state home and confirm it reads real provenance:
    ```bash
    /tmp/serf-doctor watches <a-real-SID-with-watch_send-events>
@@ -121,3 +178,10 @@ card proves it against a built binary on a real state-dir shape.
   `ContainsWatch` as the verdict.
 - If `locate`'s `jobs_path` were `sessions/<sid>.jobs.jsonl`, it would have the
   §8 path wrong and `watches` would read an empty/absent file.
+- If `jobs` reported the stopped job as just `stopped` with no `run_timeout`,
+  the reason would have been dropped from the fold and the row would no longer
+  say *why* the job ended.
+- If `w3`'s row carried no `target job:` line, the join regressed and the row
+  would again read as broken delivery machinery. If `w4`'s said nothing rather
+  than `not recorded`, an absent target would be indistinguishable from a
+  session watch — the guess the `TargetJobMissing` flag exists to refuse.
