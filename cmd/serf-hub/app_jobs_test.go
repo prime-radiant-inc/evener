@@ -448,6 +448,97 @@ func TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess(t *testing.T) {
 	}
 }
 
+// dispatchHubJobsRPC drives one request through the hub app server's real RPC
+// router (app_rpc.go registerMiscHandlers) instead of calling hubJobsList/
+// hubJobsOutput directly: registration, HandleTyped's params decode, the
+// registered closure's forwarding, and the router's error surface. Params
+// arrive as a raw JSON literal on purpose — marshaling a params struct would
+// rename its keys in lockstep with the wire tags and prove nothing about the
+// contract a webui client actually sends. HubStateRoot is pinned to a temp
+// dir so the constructed server's controllers never reach for real hub state.
+func dispatchHubJobsRPC(t *testing.T, cfg hubcore.WebConfig, sources *appsource.Registry, method, params string) (any, error) {
+	t.Helper()
+	cfg.HubStateRoot = t.TempDir()
+	server := newHubAppServer(cfg, sources)
+	return server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: method,
+		Params: json.RawMessage(params),
+	})
+}
+
+// TestSerfJobsListRouteReachesTheHubHandler proves serf/jobs/list is wired to
+// hubJobsList with this hub's cfg and sources: the route answers, the ref
+// decodes, and the past-fallback list built from cfg.Past comes back as the
+// typed JobsListResponse.
+func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_a", description: "run the build", command: "make build"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsList, `{"ref":"local:`+sessionID+`"}`)
+	if err != nil {
+		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsList, err)
+	}
+	resp, ok := raw.(appwire.JobsListResponse)
+	if !ok {
+		t.Fatalf("response = %#v (%T), want appwire.JobsListResponse", raw, raw)
+	}
+	jobs, ok := resp.Data.([]agent.JobSummary)
+	if !ok || len(jobs) != 1 || jobs[0].JobID != "job_a" {
+		t.Fatalf("resp.Data = %#v, want the seeded job (the route must reach hubJobsList with the decoded ref)", resp.Data)
+	}
+}
+
+// TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes drives serf/jobs/output at
+// the same boundary. jobId and maxBytes are what no direct hubJobsOutput test
+// can vouch for: they exist only on the wire, so a wrong JSON tag or a route
+// closure forwarding less than it decoded would still answer — with the wrong
+// job, or with the whole log.
+func TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_x","maxBytes":4}`)
+	if err != nil {
+		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsOutput, err)
+	}
+	resp, ok := raw.(appwire.JobsOutputResponse)
+	if !ok {
+		t.Fatalf("response = %#v (%T), want appwire.JobsOutputResponse", raw, raw)
+	}
+	tail, ok := resp.Data.(agent.JobOutputTail)
+	if !ok {
+		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
+	}
+	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
+		t.Fatalf("tail = %+v, want the last 4 of job_x's 10 bytes, truncated", tail)
+	}
+}
+
+// TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams proves the route's
+// error surface: the handler's InvalidParams reaches the caller through
+// Dispatch with its code and message intact, rather than arriving flattened
+// into an internal error or paired with a response.
+func TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_nope","maxBytes":4}`)
+	if raw != nil {
+		t.Fatalf("response = %#v, want no response alongside the error", raw)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
+	}
+	if want := "job not found: job_nope"; wire.Message != want {
+		t.Fatalf("err message = %q, want %q", wire.Message, want)
+	}
+}
+
 // TestHubJobsOutputCorruptJobsLogReturnsErrorNotUnknownJob proves the same for
 // the output path, and that the read failure is not downgraded to the
 // unknown-job InvalidParams: a corrupt log is the hub's problem to report,
