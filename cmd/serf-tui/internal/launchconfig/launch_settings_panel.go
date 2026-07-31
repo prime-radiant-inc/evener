@@ -177,7 +177,9 @@ func (p LaunchSettingsPanel) renderActiveTab() string {
 	case launchTabGlobal:
 		b.WriteString(p.renderLayerView("global", p.global, p.cursor))
 	case launchTabProject:
-		b.WriteString("cwd: " + p.cwd + "\n")
+		b.WriteString("cwd: ")
+		b.WriteString(p.cwd)
+		b.WriteString("\n")
 		b.WriteString(p.renderLayerView("project", p.project, p.cursor))
 	case launchTabRepo:
 		b.WriteString(renderRepoView(p.resolved.Repo))

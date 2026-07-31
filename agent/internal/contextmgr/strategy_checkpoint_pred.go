@@ -184,9 +184,13 @@ func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnUserInput:
-			b.WriteString("User: " + truncate(t.Message.Text(), 300) + "\n")
+			b.WriteString("User: ")
+			b.WriteString(truncate(t.Message.Text(), 300))
+			b.WriteString("\n")
 		case schema.TurnAssistant:
-			b.WriteString("Assistant: " + truncate(t.Message.Text(), 300) + "\n")
+			b.WriteString("Assistant: ")
+			b.WriteString(truncate(t.Message.Text(), 300))
+			b.WriteString("\n")
 		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {

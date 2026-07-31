@@ -275,9 +275,6 @@ type sendMessageResult struct {
 }
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
 		return delegateStartFailed(errors.New("invalid_request: task is required"))

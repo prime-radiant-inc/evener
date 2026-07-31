@@ -122,7 +122,9 @@ func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Cl
 	for _, t := range recent {
 		switch t.Kind {
 		case schema.TurnAssistant:
-			b.WriteString("Assistant: " + truncate(t.Message.Text(), 200) + "\n")
+			b.WriteString("Assistant: ")
+			b.WriteString(truncate(t.Message.Text(), 200))
+			b.WriteString("\n")
 		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {

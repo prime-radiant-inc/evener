@@ -210,7 +210,8 @@ func writeWrappedList(b *strings.Builder, label string, items []string, width in
 	prefix := "  " + label + " "
 	indent := strings.Repeat(" ", len(prefix))
 
-	b.WriteString("\n" + prefix)
+	b.WriteString("\n")
+	b.WriteString(prefix)
 	col := len(prefix)
 	for i, item := range items {
 		entry := item
@@ -222,7 +223,8 @@ func writeWrappedList(b *strings.Builder, label string, items []string, width in
 			needed++ // space before item
 		}
 		if col+needed > width && col > len(prefix) {
-			b.WriteString("\n" + indent)
+			b.WriteString("\n")
+			b.WriteString(indent)
 			col = len(indent)
 		} else if i > 0 {
 			b.WriteString(" ")

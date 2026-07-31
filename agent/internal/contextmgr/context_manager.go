@@ -870,7 +870,8 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		}
 		fixed.WriteString("Last shell results:\n")
 		for _, r := range data.lastShellResults[start:] {
-			fixed.WriteString(r + "\n")
+			fixed.WriteString(r)
+			fixed.WriteString("\n")
 		}
 	}
 
@@ -1177,7 +1178,8 @@ func renderTurnForElicit(t schema.Turn) string {
 		switch p.Kind {
 		case llm.ContentText:
 			if p.Text != "" {
-				b.WriteString(p.Text + "\n")
+				b.WriteString(p.Text)
+				b.WriteString("\n")
 			}
 		case llm.ContentToolCall:
 			if p.ToolCall != nil {
@@ -1244,16 +1246,22 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			if len(text) > 5000 {
 				text = text[:5000] + "..."
 			}
-			b.WriteString("User: " + text + "\n")
+			b.WriteString("User: ")
+			b.WriteString(text)
+			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 1000) + "\n")
+			b.WriteString("Previous compaction: ")
+			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
 			// talked to the user, while still distinguishing questions from
 			// non-await replies.
 			text := t.Message.Text()
 			if text != "" {
-				b.WriteString("Assistant: " + truncText(text, 500) + "\n")
+				b.WriteString("Assistant: ")
+				b.WriteString(truncText(text, 500))
+				b.WriteString("\n")
 			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
@@ -1280,7 +1288,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: " + t.Message.Text() + "\n")
+			b.WriteString("System: ")
+			b.WriteString(t.Message.Text())
+			b.WriteString("\n")
 		}
 		if b.Len() > maxHistoryChars {
 			b.WriteString("\n[... truncated ...]\n")

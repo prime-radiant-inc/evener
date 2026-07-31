@@ -161,7 +161,8 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		for i := range 9 {
 			name := fmt.Sprintf("d%d.png", i)
 			mustWrite(name, png)
-			distinct.WriteString(name + " ")
+			distinct.WriteString(name)
+			distinct.WriteString(" ")
 		}
 		_ = outputImagesForToolCall("s", cwd, "shell", `{}`, distinct.String())
 		_, _ = resolveOutputImageFile("s", cwd, "../x.png", "x")

@@ -68,7 +68,9 @@ func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]schema.Turn
 	if len(s.macroSummaries) > 0 {
 		b.WriteString("Session overview:\n")
 		for _, ms := range s.macroSummaries {
-			b.WriteString("  " + ms + "\n")
+			b.WriteString("  ")
+			b.WriteString(ms)
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 	}
@@ -76,7 +78,9 @@ func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]schema.Turn
 	if len(s.microSummaries) > 0 {
 		b.WriteString("Recent actions:\n")
 		for _, ms := range s.microSummaries {
-			b.WriteString("  " + ms + "\n")
+			b.WriteString("  ")
+			b.WriteString(ms)
+			b.WriteString("\n")
 		}
 	}
 
@@ -139,7 +143,9 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *l
 	for _, t := range recent {
 		switch t.Kind {
 		case schema.TurnAssistant:
-			b.WriteString("Assistant: " + truncate(t.Message.Text(), 200) + "\n")
+			b.WriteString("Assistant: ")
+			b.WriteString(truncate(t.Message.Text(), 200))
+			b.WriteString("\n")
 		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {

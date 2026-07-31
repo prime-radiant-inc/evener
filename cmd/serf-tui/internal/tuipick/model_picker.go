@@ -138,7 +138,8 @@ func (m ModelPicker) renderBody() string {
 	} else {
 		filterText = tuitheme.MpFilterStyle.Render(filterText)
 	}
-	b.WriteString("Filter: " + filterText)
+	b.WriteString("Filter: ")
+	b.WriteString(filterText)
 	b.WriteString("\n\n")
 
 	filtered := m.filtered()

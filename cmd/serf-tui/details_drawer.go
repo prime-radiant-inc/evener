@@ -35,7 +35,8 @@ func (d detailsDrawer) View() string {
 	// Header: section label + state badge.
 	b.WriteString(sectionLabel("details"))
 	if state := strings.TrimSpace(detail.State); state != "" {
-		b.WriteString("  " + tuiprim.StatusBadge(stateColor(state), state))
+		b.WriteString("  ")
+		b.WriteString(tuiprim.StatusBadge(stateColor(state), state))
 	}
 	b.WriteString("\n")
 
@@ -85,13 +86,15 @@ func (d detailsDrawer) View() string {
 		fmt.Fprintf(&b, "Capabilities: %s\n", caps)
 	}
 	if len(detail.RecentErrors) > 0 {
-		b.WriteString(sectionLabel("recent errors") + "\n")
+		b.WriteString(sectionLabel("recent errors"))
+		b.WriteString("\n")
 		for _, err := range detail.RecentErrors {
 			fmt.Fprintf(&b, "  %s\n", err)
 		}
 	}
 	if detail.Diagnostics == nil {
-		b.WriteString(ghostText("Diagnostics: not reported by source") + "\n")
+		b.WriteString(ghostText("Diagnostics: not reported by source"))
+		b.WriteString("\n")
 		return strings.TrimSpace(b.String())
 	}
 	writeSerfDiagnostics(&b, detail.Diagnostics)

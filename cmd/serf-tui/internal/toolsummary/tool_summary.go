@@ -240,10 +240,14 @@ func unifiedDiff(filename, old, new_ string) string {
 	fmt.Fprintf(&b, "--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
 		filename, filename, 1, len(oldLines), 1, len(newLines))
 	for _, l := range oldLines {
-		b.WriteString("-" + l + "\n")
+		b.WriteString("-")
+		b.WriteString(l)
+		b.WriteString("\n")
 	}
 	for _, l := range newLines {
-		b.WriteString("+" + l + "\n")
+		b.WriteString("+")
+		b.WriteString(l)
+		b.WriteString("\n")
 	}
 	raw := b.String()
 

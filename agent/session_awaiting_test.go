@@ -59,7 +59,7 @@ func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
 	// Active goal + wired kick: settle must kick and report it.
 	kickCh := make(chan string, 1)
 	sess.SetKickFunc(func(p string) { kickCh <- p })
-	if _, err := sess.SetGoal(nil, "test objective"); err != nil { //nolint:staticcheck // ctx unused by SetGoal
+	if _, err := sess.SetGoal(context.Background(), "test objective"); err != nil {
 		t.Fatal(err)
 	}
 	<-kickCh // drain the SetGoal idle-kick itself

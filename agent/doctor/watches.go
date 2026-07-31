@@ -255,7 +255,8 @@ func RenderWatches(r WatchReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s  (jobs: %s)\n", r.SessionID, r.JobsPath)
 	if len(r.Watches) == 0 {
-		b.WriteString(emptyWatchesMessage(r.Filtered) + "\n")
+		b.WriteString(emptyWatchesMessage(r.Filtered))
+		b.WriteString("\n")
 		return b.String()
 	}
 	for _, w := range r.Watches {

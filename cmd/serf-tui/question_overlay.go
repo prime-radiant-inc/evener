@@ -551,7 +551,8 @@ func (o *questionOverlay) questionView() string {
 	}
 	b.WriteString(q.Question)
 	if q.MultiSelect {
-		b.WriteString("  " + dim.Render("(pick any)"))
+		b.WriteString("  ")
+		b.WriteString(dim.Render("(pick any)"))
 	}
 	b.WriteString("\n")
 	if q.Why != "" {

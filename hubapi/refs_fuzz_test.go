@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -136,10 +137,14 @@ func coverClient(t *testing.T) {
 	if err := client.post(ctx, "/post", make(chan int), nil); err == nil {
 		t.Fatal("post marshaled unsupported body")
 	}
-	if err := client.get(nil, "/get", &struct{}{}); err == nil { //nolint:staticcheck // Verifies nil contexts are rejected before an HTTP request is built.
-		t.Fatal("get accepted a nil context")
+	// A control character in the host survives url.URL.String() unescaped, so the
+	// request builder rejects the endpoint before any transport work. Both paths
+	// must surface that error rather than swallow it.
+	unbuildable := &Client{baseURL: &url.URL{Scheme: "http", Host: "h\x7fost"}, httpClient: client.httpClient}
+	if err := unbuildable.get(ctx, "/get", &struct{}{}); err == nil {
+		t.Fatal("get accepted an unbuildable request")
 	}
-	if err := client.post(nil, "/post", nil, nil); err == nil { //nolint:staticcheck // Verifies nil contexts are rejected before an HTTP request is built.
-		t.Fatal("post accepted a nil context")
+	if err := unbuildable.post(ctx, "/post", nil, nil); err == nil {
+		t.Fatal("post accepted an unbuildable request")
 	}
 }

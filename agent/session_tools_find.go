@@ -149,7 +149,8 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 		if m.IsCurrent {
 			meta += " · current"
 		}
-		b.WriteString(meta + "\n")
+		b.WriteString(meta)
+		b.WriteString("\n")
 		if m.ParentRef != "" {
 			fmt.Fprintf(&b, "   parent: %s\n", m.ParentRef)
 		}

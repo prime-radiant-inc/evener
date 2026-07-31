@@ -6,15 +6,14 @@ import (
 	"testing"
 )
 
-// createDelegate defaults a nil context before validating, and an empty task is
+// createDelegate trims the task before validating, so an all-whitespace task is
 // rejected as an invalid request.
-func TestW2Dlg_CreateDelegate_NilContextEmptyTask(t *testing.T) {
+func TestW2Dlg_CreateDelegate_BlankTask(t *testing.T) {
 	t.Parallel()
 	s := w2dlg_session(t)
-	//nolint:staticcheck // exercising the nil-context defaulting arm on purpose
-	res := s.createDelegate(nil, delegateArgs{Task: "   "})
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "   "})
 	if res.Err == nil {
-		t.Fatalf("empty task: want invalid_request error, got %+v", res)
+		t.Fatalf("blank task: want invalid_request error, got %+v", res)
 	}
 }
 
