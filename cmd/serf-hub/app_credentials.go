@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -121,11 +122,19 @@ func configuredInstance(cfg providercfg.Config, name string) (providercfg.Instan
 	return providercfg.InstanceConfig{}, false
 }
 
+// credentialRequired reports whether there is a credential to look for at all,
+// which is the question serf/auth/test asks before it decides the instance is
+// unconfigured. The envvars registry owns the auth-mode half of that answer —
+// envvars.RequiresNoCredential is the predicate the launch preflight,
+// credentials.Store.List and instanceStatus all ask — and it is keyed on the
+// behavior tag, so an openai instance routed through chat-completions is judged
+// as the openai-compatible provider it resolves as.
 func credentialRequired(inst providercfg.InstanceConfig) bool {
-	if string(inst.Type) == "ollama" {
+	tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+	if envvars.RequiresNoCredential(tag) {
 		return false
 	}
-	if providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)) == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
+	if tag == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
 		return false
 	}
 	return true
