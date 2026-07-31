@@ -1216,6 +1216,35 @@ function installCanvasStubs(): void {
   URL.revokeObjectURL = () => {};
 }
 
+// The third decode stub, alongside installCanvasStubs (settles) and
+// installFailingDecodeStub (rejects) below: this one never settles either
+// way, so a staged item stays pending === true for the whole test.
+//
+// That state is not just "not finished yet" - it renders a DIFFERENT
+// element. A pending attachment has no data/width/height, so Composer.tsx's
+// own `isImage` test fails and it renders a text <Chip>; the instant the
+// decode lands, that whole subtree is REPLACED by an image tile (a
+// different element type at the same position, so React unmounts the chip
+// rather than updating it). Any test that captures a node from the pending
+// chip and then interacts with it is racing that swap, and a test that
+// wants the settled tile has to wait for the tile itself, not merely for
+// the marker text the paste inserted synchronously.
+function installStalledDecodeStub(): void {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback
+  class NeverLoadsImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    src = ""; // a plain field: assigning it never schedules onload/onerror
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = NeverLoadsImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+}
+
 test("pasting an image renders a removable attachment chip and inserts its marker", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
@@ -1264,22 +1293,7 @@ test("a successful submit includes the pasted image as a base64 InputAttachment"
 });
 
 test("submitting while an attachment is still mid-encode is blocked with a toast, no request fires", async () => {
-  // No canvas stubs installed: reencodeToPng's promise never resolves within
-  // this test, so the item stays pending === true throughout.
-  HTMLCanvasElement.prototype.getContext = (() => ({
-    drawImage() {},
-  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback - decode never settles
-  class NeverLoadsImage {
-    onload: (() => void) | null = null;
-    onerror: (() => void) | null = null;
-    src = "";
-  }
-  // @ts-expect-error stubbing the global Image constructor for this test file only
-  globalThis.Image = NeverLoadsImage;
-  URL.createObjectURL = () => "blob:fake";
-  URL.revokeObjectURL = () => {};
-
+  installStalledDecodeStub();
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
   fake.on("turn/start", (params) => ({
@@ -1415,8 +1429,22 @@ test("two attachment gestures fired back-to-back with no intervening render stil
   await waitFor(() => expect(screen.getAllByRole("button", { name: /remove/i })).toHaveLength(2));
 });
 
+// The chip in this test's name is the PENDING rendering, and the decode is
+// stalled so it stays that way for the whole gesture (see
+// installStalledDecodeStub's own comment for why pending is a different
+// element, not just a different flag). With a settling decode this test
+// races the chip -> tile swap and loses under load: the marker text lands
+// synchronously with the paste, so the waitFor below can return while the
+// item is still pending, user-event then captures the CHIP's remove button,
+// and the decode settling during the click's own event sequence unmounts
+// that node - the click reaches a detached element, React never routes it,
+// and removeItem never runs. Reproduced under full-suite load with the
+// diagnosis recorded on the failure: clickedWasPendingChip=true,
+// clickedStillConnected=false, with only the tile's remove button left in
+// the tree. Removing a SETTLED attachment is the thumbnail/lightbox test
+// above, which waits for the tile itself before clicking its remove button.
 test("removing an attachment chip strips its marker from the textarea", async () => {
-  installCanvasStubs();
+  installStalledDecodeStub();
   const user = userEvent.setup();
   await mountComposer("ref_a");
 
