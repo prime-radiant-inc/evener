@@ -7,9 +7,13 @@ Proves the four corrections the tool exists for:
 
 1. **`watches` collapses `watch_send_pending` coalescing** — distinct settled
    deliveries, not the raw pending-line count `grep -c` reports.
-2. **`watches` self-loop verdict reads the provenance `Chain`**, not the
-   always-present `WatchKeys` stamp (`ContainsWatch` is vacuously true on any
-   recorded delivery — `agent/provenance.ContainsWatch`).
+2. **`watches --self-loops` returns only watches whose runaway fuse fired**,
+   read from the recorded breaker telemetry (`runaway_drops`,
+   `max_self_influence_depth` — `agent/doctor/watches.go:46-49`), never
+   re-derived from the provenance `Chain` and never from the always-present
+   `WatchKeys` stamp (`ContainsWatch` is vacuously true on any recorded
+   delivery — `agent/provenance.ContainsWatch`). Bounded self-influence is
+   normal under the inform+breaker policy, so it is not a finding. See Step 3.
 3. **`transcript --count` separates structural calls from textual mentions** —
    the `delegate_send` "5 mentions / 0 calls" trap.
 4. **`locate` resolves the per-session `jobs.jsonl` SUBDIR** (`sessions/<sid>/jobs.jsonl`),
@@ -100,8 +104,9 @@ card proves it against a built binary on a real state-dir shape.
    /tmp/serf-doctor watches <a-real-SID-with-watch_send-events>
    ```
    ASSERT the printed `distinct_deliveries` is ≤ `grep -c watch_send_pending` on
-   the same `jobs.jsonl` (coalescing only ever collapses), and that any
-   `self-loop` verdict is read from the `Chain`.
+   the same `jobs.jsonl` (coalescing only ever collapses), and that the
+   `breaker:` line reports `runaway_drops`/`max_self_influence_depth` from the
+   recorded stamps rather than anything walked out of the `Chain`.
 
 ## Falsifiable failure modes
 

@@ -5,9 +5,10 @@
 `apilog`, `tree` — read settled on-disk state (transcript / private API log /
 meta / jobs.jsonl) through
 serf's own folds and types, and report the numbers a hand-parser got wrong:
-distinct deliveries after coalescing collapse, the watch self-loop verdict from
-the provenance `Chain` (not the always-present `WatchKeys` stamp), and the
-structural tool-call count vs assistant-prose mentions. (b) The `doctor` agent type
+distinct deliveries after coalescing collapse, the watch breaker verdict read
+from the runtime's own stamps (`max_self_influence_depth`/`runaway_drops`,
+`agent/doctor/watches.go:46-49` — never re-derived from the provenance
+`Chain`), and the structural tool-call count vs assistant-prose mentions. (b) The `doctor` agent type
 loads the `doctoring-serf` skill, runs the tools, and emits structured Findings
 — **healthy ⇒ zero findings**, a real defect ⇒ exactly one. The watch/provenance
 mechanics under test are produced by `job-watch-actually-monty-python-injection.md`
@@ -40,7 +41,7 @@ Assert the output names: `transcript:` = `<bucket>/sessions/$SID.transcript.json
 `$SID.jobs.jsonl`). `--json` emits `{transcript_ref, transcript_path, meta_path,
 jobs_path, api_log_path, project_id}`.
 
-### 2 — watches collapses coalescing and reads the self-loop verdict
+### 2 — watches collapses coalescing and reads the breaker verdict
 
 ```
 serf-doctor watches $SID
@@ -54,10 +55,16 @@ Assert, for the observer watch:
   `grep -c watch_send_pending` would have reported the inflated pending count.
 - every delivery `delivered` (0 dropped, 0 evicted), each `trigger=caller/…` —
   caller-caused, not a feedback loop.
-- `self_loop.detected == false`. `serf-doctor watches $SID --self-loops` prints
-  **no watches** (empty list) — the verdict comes from the absence of a
-  same-`watch_id` prior `Chain` hop, and the always-present `WatchKeys` stamp is
-  explicitly NOT treated as the signal.
+- `runaway_drops == 0`, and the human line reads `breaker: bounded
+  self-influence, max depth N (no runaway)` or `breaker: no self-influence`
+  (`agent/doctor/watches.go:263-267`). There is no `self_loop` field on the
+  report at all: bounded self-influence is normal under the inform+breaker
+  policy, so what the verdict turns on is whether the depth fuse fired, read
+  from the runtime's stamps rather than re-derived from the provenance `Chain`.
+- `serf-doctor watches $SID --self-loops` returns **no watches**, with the
+  message `no watches where the runaway fuse fired (self-influence is
+  bounded)` (`watches.go:315`) — distinct from `no watches recorded` (`:319`),
+  which would mean the session never registered one and the fixture is wrong.
 
 ### 3 — transcript --count separates calls from mentions
 
@@ -107,24 +114,30 @@ PATH="$PWD:$PATH" ./serf --model kimi/kimi-for-coding --agent doctor \
   --skills-dir "$PWD/docs/skills" --dir "$(mktemp -d)" --max-rounds 40 \
   "Diagnose serf session $SID using the serf-doctor tools. Run the
    watch-delivery-health and observer-self-loop checks; report distinct
-   deliveries, the self-loop verdict, the communicate/delegate_send counts, and
+   deliveries, the breaker verdict, the communicate/delegate_send counts, and
    any Findings (healthy ⇒ zero)."
 ```
 
 Assert the run log shows: `agent:doctor` loaded, `[skill] activated
 doctoring-serf`, `shell` calls to `serf-doctor watches/transcript`, and a final
 `communicate` reporting the session is **healthy with zero findings**, citing the
-distinct-delivery count and `self_loop: none`. The doctor must NOT emit a
-finding for the expected coalescing (that is visibility, not a violation).
+distinct-delivery count and zero runaway drops. The doctor must NOT emit a
+finding for the expected coalescing, nor for bounded self-influence depth —
+both are visibility, not violations.
 
 ### 7 — the doctor agent emits ONE finding on a BROKEN session
 
-Synthesize a self-loop in a scratch state dir (a `watch_send_delivered` whose
-provenance `Chain` carries a prior hop of the same `watch_id` with a different
-`delivery_id`), then:
+Synthesize a **fired breaker** in a scratch state dir — a `watch_send_dropped`
+event carrying `"diagnostic_reason":"runaway"` and a deep
+`self_influence_depth`, alongside the `watch_registered` and
+`watch_send_delivered` events for the same `watch_id`
+(`doctor-agent-diagnose.md`'s Part B has a ready-made three-line `jobs.jsonl`
+fixture). A delivered send whose provenance `Chain` merely repeats the same
+`watch_id` is **not** enough: bounded self-influence is expected under the
+inform+breaker policy and `--self-loops` will not list it. Then:
 
 ```
-serf-doctor watches $BROKEN_SID --state-dir "$SCRATCH" --self-loops   # flags the loop
+serf-doctor watches $BROKEN_SID --state-dir "$SCRATCH" --self-loops   # flags the fired fuse
 PATH="$PWD:$PATH" ./serf --model kimi/kimi-for-coding --agent doctor \
   --skills-dir "$PWD/docs/skills" --dir "$(mktemp -d)" --max-rounds 40 \
   "Diagnose session $BROKEN_SID with serf-doctor (use --state-dir $SCRATCH).
@@ -132,10 +145,14 @@ PATH="$PWD:$PATH" ./serf --model kimi/kimi-for-coding --agent doctor \
 ```
 
 Assert `serf-doctor watches … --self-loops` lists the watch with
-`SELF-LOOP: 1 deliver(ies) …`, and the doctor emits exactly one structured
-Finding with `category: watch_self_loop`, `severity: high`, a stable
-`signature` keyed to the session+watch, a `doctorCommand` in `evidence`, and
-`suggestedFix.type: diagnosis`.
+`breaker: FIRED — 1 runaway drop(s) (depth fuse); max self-influence depth N`
+(`agent/doctor/watches.go:263`), and the doctor emits exactly one structured
+Finding with `category: watch_runaway`, `severity: high`,
+`signature: watch_runaway:<sessionID>:<watchID>`, `evidence.deliveryIds`
+naming the dropped send, a `doctorCommand` in `evidence`, and
+`suggestedFix.type: diagnosis` — the vocabulary the doctoring-serf runbook
+prescribes (`internal/bundled/skills/doctoring-serf/runbooks/observer-self-loop.md:34-45`).
+There is no `watch_self_loop` category.
 
 ## Out of scope
 

@@ -16,8 +16,8 @@ is needed; the watcher only cares about the on-disk record's
 `source` (`"oauth"`) and `obtained_at` (>= the moment the device
 flow started). Sibling coverage: `cli-device-code-flow.md` (the
 happy-path round trip), `auth-device-autodetect.md` (mode picker),
-`device_test.go::TestLoginWithDeviceDetectsConcurrentLogin` (mocked
-unit).
+`auth/openai/device_test.go:477::TestLoginWithDeviceDetectsConcurrentSuccess`
+(mocked unit).
 
 ## Pre-state
 
@@ -29,9 +29,8 @@ unit).
 - Network reachable to `auth.openai.com` — `RequestDeviceCode` is
   a real HTTPS call before the poll begins.
 - The watcher polls `auth.json` once per second
-  (`defaultConcurrentLoginWatchInterval` in
-  `internal/auth/openai/service.go`). Expect detection within
-  ~1–2s of the on-disk write.
+  (`defaultConcurrentLoginWatchInterval`, `auth/openai/service.go:23`).
+  Expect detection within ~1–2s of the on-disk write.
 
 ## Steps
 
@@ -88,10 +87,11 @@ unit).
    write_ts=$(date +%s%N)
    ```
    Every field on this JSON is load-bearing for `AuthRecord.Validate()`:
-   `version=1`, `provider="openai"`, non-empty `source`,
-   `access_token`, `refresh_token`, `token_type`, non-zero
-   `expiry`, non-zero `obtained_at`. Drop any one and the
-   watcher's `LoadAuth` will reject the file and keep polling.
+   `version=1`, non-empty `source`, `access_token`, `refresh_token`,
+   `token_type`, non-zero `expiry`, non-zero `obtained_at`. Drop any
+   one and the watcher's `LoadAuth` will reject the file and keep
+   polling. `provider` is written for readability but `Validate()`
+   never reads it (`auth/openai/storage.go:187-205`).
 
 5. **Wait for the process to exit and time it**:
    ```bash
@@ -168,10 +168,10 @@ hangs, `pkill -f 'serf openai login'` it.
   records whose source is `"env"` or `"signed-out"` because those
   represent the env-var fallback, not a real parallel login.
 - **All required `AuthRecord` fields must validate**
-  (`internal/auth/openai/storage.go::Validate`). `version=1`,
-  `provider="openai"`, non-empty `source` / `access_token` /
-  `refresh_token` / `token_type`, non-zero `expiry` and
-  `obtained_at`. A malformed file is treated identically to a
+  (`auth/openai/storage.go:187-205`, `AuthRecord.Validate`). `version=1`,
+  non-empty `source` / `access_token` / `refresh_token` / `token_type`,
+  non-zero `expiry` and `obtained_at` — `provider` is not among them,
+  `Validate` never reads it. A malformed file is treated identically to a
   half-written file (mid-rename): the watcher logs nothing and
   keeps polling. Failed tests where the watcher "never fires"
   are usually a missing field.
