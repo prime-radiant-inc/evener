@@ -204,7 +204,8 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // own JSON quotes (now &quot;) are no longer valid JSON syntax. excerpt
   // itself stays raw/undecoded: NotificationCard's Excerpt decodes it
   // separately, only when there is no communicate message to show instead.
-  const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
+  const communicate =
+    attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
   let type = "job";
   if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
   if (attrs.event === "watch_send") type = "watch-send";

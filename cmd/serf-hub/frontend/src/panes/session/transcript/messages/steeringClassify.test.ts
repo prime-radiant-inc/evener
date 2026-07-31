@@ -147,11 +147,7 @@ test("leftover text around a notification block is preserved for a trailing divi
 
 // escapeLikeProducer mirrors agent/job_notify.go's escapeNotificationText.
 function escapeLikeProducer(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 test("a producer-escaped excerpt containing wrapper-shaped delimiters still parses as exactly one card", () => {
