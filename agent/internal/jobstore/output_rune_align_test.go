@@ -61,6 +61,58 @@ func TestOutputStoreTailWindowEdges(t *testing.T) {
 	}
 }
 
+// A head window that ends mid-rune stops at the last whole rune instead of
+// trailing orphaned continuation bytes, so a digest of a live job's output never
+// closes on a replacement character.
+func TestOutputStoreHeadAlignsMidRuneWindowEnd(t *testing.T) {
+	// Two 4-byte emoji: a 6-byte window ends 2 bytes into the second one.
+	o := openAlignStore(t, "😀😀", 0)
+
+	data, total, truncated, err := o.Head(6)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if !utf8.Valid(data) {
+		t.Fatalf("head is not valid UTF-8: %x", data)
+	}
+	if string(data) != "😀" || total != 8 || !truncated {
+		t.Fatalf("head = (%q, %d, %v), want (😀, 8, true)", data, total, truncated)
+	}
+}
+
+// A head window already on a rune boundary is returned whole, and a window
+// narrower than the rune it lands in is empty rather than a lone replacement
+// character. A window that covers the whole retained file is never realigned:
+// its last byte is the file's own, so an incomplete trailing sequence survives.
+func TestOutputStoreHeadWindowEdges(t *testing.T) {
+	o := openAlignStore(t, "😀😀", 0)
+
+	data, _, _, err := o.Head(4)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if string(data) != "😀" {
+		t.Fatalf("aligned window = %q, want 😀", data)
+	}
+	data, _, _, err = o.Head(2)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("narrow window = %x, want empty", data)
+	}
+
+	partial := []byte{'a', 'b', 0xF0, 0x9F}
+	whole := openAlignStore(t, string(partial), 0)
+	data, _, truncated, err := whole.Head(10)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if !bytes.Equal(data, partial) || truncated {
+		t.Fatalf("whole file = (%x, %v), want (%x, false)", data, truncated, partial)
+	}
+}
+
 // Output is not required to be UTF-8, and alignment must not censor it. Only the
 // window's own cut is realigned, and only continuation bytes are skipped: a whole
 // retained file is returned byte for byte even when it opens on continuation

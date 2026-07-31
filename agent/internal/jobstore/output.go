@@ -237,6 +237,13 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
+	if n < retained {
+		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
+		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
+		// Only our own cut is realigned — when the window reaches the end of the file
+		// the last byte is the file's own, and binary output keeps it.
+		buf = runetrim.TrimTrailingPartial(buf)
+	}
 	return buf, total, truncated, nil
 }
 

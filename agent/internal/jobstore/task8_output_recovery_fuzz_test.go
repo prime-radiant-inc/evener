@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/afero"
 
@@ -150,7 +151,7 @@ func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capB
 	}
 	wantHead := retained
 	if len(wantHead) > limit {
-		wantHead = wantHead[:limit]
+		wantHead = t8AlignWindowEnd(wantHead[:limit])
 	}
 	if headTotal != int64(len(lifetime)) || headTruncated != wantTruncated || !bytes.Equal(head, wantHead) {
 		t.Fatalf("Head(%d) = %q/%d/%v, want %q/%d/%v", limit, head, headTotal, headTruncated, wantHead, len(lifetime), wantTruncated)
@@ -168,6 +169,24 @@ func t8AlignWindowStart(window []byte) []byte {
 		drop++
 	}
 	return window[drop:]
+}
+
+// t8AlignWindowEnd models what Head does to its own cut: a window that closes
+// inside a rune drops the incomplete trailing sequence. It walks back over the
+// continuation bytes to the byte that opened the sequence and cuts there unless
+// those bytes decode as one whole rune.
+func t8AlignWindowEnd(window []byte) []byte {
+	i := len(window) - 1
+	for i >= 0 && window[i]&0xC0 == 0x80 {
+		i--
+	}
+	if i < 0 {
+		return window
+	}
+	if r, size := utf8.DecodeRune(window[i:]); r == utf8.RuneError && size == 1 {
+		return window[:i]
+	}
+	return window
 }
 
 func t8RetainedTail(lifetime []byte, capBytes int64) ([]byte, int64) {
