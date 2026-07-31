@@ -1101,6 +1101,14 @@ func (s *scriptedAppSource) ListTasks(context.Context, appwire.TaskListParams) (
 	return appwire.TaskListResponse{}, appwire.Unavailable("scripted source does not list tasks")
 }
 
+func (s *scriptedAppSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	return appwire.JobsListResponse{}, appwire.Unavailable("scripted source does not list jobs")
+}
+
+func (s *scriptedAppSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("scripted source does not read job output")
+}
+
 func (s *scriptedAppSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification, len(s.notifications))
 	for _, notification := range s.notifications {

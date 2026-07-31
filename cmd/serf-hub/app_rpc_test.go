@@ -5145,6 +5145,14 @@ func (s *relayLifecycleSource) ListTasks(context.Context, appwire.TaskListParams
 	return appwire.TaskListResponse{}, appwire.Unavailable("relay lifecycle source does not list tasks")
 }
 
+func (s *relayLifecycleSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	return appwire.JobsListResponse{}, appwire.Unavailable("relay lifecycle source does not list jobs")
+}
+
+func (s *relayLifecycleSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("relay lifecycle source does not read job output")
+}
+
 func (s *relayLifecycleSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	out := make(chan appwire.Notification)
 	go func() {

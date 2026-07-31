@@ -109,8 +109,8 @@ no router (reserved).
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
-| `serf/jobs/list` | daemon | `JobsListParams` | `JobsListResponse` | Lists the session's jobs (shell and delegate). Daemon-served; the hub relay lands with the jobs-panel hub task, which flips this to ScopeBoth. |
-| `serf/jobs/output` | daemon | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Daemon-served; the hub relay lands with the jobs-panel hub task, which flips this to ScopeBoth. |
+| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Lists the session's jobs (shell and delegate). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `serf/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `serf/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
