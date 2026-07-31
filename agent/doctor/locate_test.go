@@ -64,6 +64,24 @@ func TestLocate_StateHomeLayout_BareID(t *testing.T) {
 	}
 }
 
+// The client-mutation store is the artifact that proves whether a user's input
+// reached the daemon, so locate must name it. It sits in a bucket-level
+// mutations/ dir — a sibling of sessions/, not a file under it.
+func TestLocate_MutationsPathIsBucketLevel(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+
+	got, err := Locate(base, sidA)
+	if err != nil {
+		t.Fatalf("Locate: %v", err)
+	}
+	want := filepath.Join(bucket, "mutations", sidA+".json")
+	if got.MutationsPath != want {
+		t.Errorf("MutationsPath = %q, want %q", got.MutationsPath, want)
+	}
+}
+
 // The jobs.jsonl SUBDIR form is the load-bearing §8 correction: it must never be
 // built by suffixing ".jobs.jsonl" onto the transcript path.
 func TestLocate_JobsPathIsSubdirNotSuffix(t *testing.T) {
