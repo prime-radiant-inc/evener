@@ -220,6 +220,16 @@ Markdown body. The newer kgp2 record explicitly supersedes the earlier
 no-preview choice; session-keyed disclosure state remains unchanged. The preview
 is closed-only; the open state shows just the short label, per `docs/web-ui/specs/2026-07-27-transcript-tiered-density-design.md` §Decision revisions requiring Jesse's ratification, item 4.
 
+Restyled 2026-07-31 (the **draft restyle** — mockup #4 of the `/dev/thoughts`
+candidates, Jesse's pick): the collapsed label grammar is dot-joined
+(`Thought · 12s · preview`, superseding kgp2's `Thought for <duration>`
+wording) and trails a rotate-on-open chevron (ToolRow's data-open idiom); the
+live stream renders as italic draft text — settling to roman — with the
+eyebrow at body size (quiet through ink, never size), capped at six body
+lines, pinned to its own tail, a surface-0 fade marking the cut only while
+one exists. The always-open live law, the no-caret law, the closed-only
+preview, and session-keyed disclosure state all stand.
+
 **06 · Tool calls & long output** — chose A (cluster summary leads with the
 mutating step) + D (peek / ride / drop). Shipped `7bbe0e91e`.
 
