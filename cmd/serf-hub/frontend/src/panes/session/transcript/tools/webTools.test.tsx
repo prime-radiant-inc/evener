@@ -129,7 +129,9 @@ test("kata tcp9: a failed fetch's plain-text body still links the URL the call w
   const d = toolRendererFor("web_fetch");
   const Body = d.body!;
   const args = JSON.stringify({ url: "https://example.com/down", question: "q" });
-  render(<Body item={item({ toolName: "web_fetch", argumentsJSON: args, output: "fetch failed: timeout" })} live={false} />);
+  render(
+    <Body item={item({ toolName: "web_fetch", argumentsJSON: args, output: "fetch failed: timeout" })} live={false} />,
+  );
   expect((screen.getByRole("link") as HTMLAnchorElement).getAttribute("href")).toBe("https://example.com/down");
   expect(screen.getByText("fetch failed: timeout")).toBeTruthy();
 });
