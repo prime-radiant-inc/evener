@@ -36,8 +36,8 @@ describe("parseJobListData", () => {
         hasOutput: false,
       },
     ]);
-    expect(rows![0].endedAt).toBeUndefined();
-    expect(rows![0].exitCode).toBeUndefined();
+    expect(rows![0]?.endedAt).toBeUndefined();
+    expect(rows![0]?.exitCode).toBeUndefined();
   });
 
   it("returns null for null data (old daemon capability gap)", () => {
@@ -65,7 +65,7 @@ describe("parseJobListData", () => {
       },
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows![0].jobId).toBe("job_3");
+    expect(rows![0]?.jobId).toBe("job_3");
   });
 });
 
