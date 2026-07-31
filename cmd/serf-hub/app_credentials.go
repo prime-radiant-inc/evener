@@ -131,6 +131,13 @@ func credentialRequired(inst providercfg.InstanceConfig) bool {
 	return true
 }
 
+// instanceHasEffectiveCredential reports whether the instance has a credential
+// to test. The question is whether launch would find one, so the answer has to
+// be drawn from where launch looks: the inline key and headers carried by the
+// config, then credentials.Store.ResolveKey keyed by the behavior tag — the
+// same call cmdutil.LoadClient makes when it builds the client — and finally,
+// for an instance that behaves as OpenAI proper, the stored OAuth record that
+// has no key of its own to resolve.
 func (c *hubAuthController) instanceHasEffectiveCredential(name string, inst providercfg.InstanceConfig) bool {
 	if apiKey, err := providercfg.ResolveAPIKey(inst.APIKey); err == nil && strings.TrimSpace(apiKey) != "" {
 		return true
@@ -141,7 +148,11 @@ func (c *hubAuthController) instanceHasEffectiveCredential(name string, inst pro
 	if providercfg.CompatFamily(inst.Type, inst.APIStyle) && hasResolvedAuthorizationHeader(inst.Headers) {
 		return true
 	}
-	if string(inst.Type) == "openai" {
+	behaviorTag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+	if key, _ := c.creds.ResolveKey(name, behaviorTag); strings.TrimSpace(key) != "" {
+		return true
+	}
+	if behaviorTag == "openai" {
 		status, err := c.openAIInstanceStatus(name)
 		return err == nil && status.SignedIn
 	}
