@@ -587,8 +587,16 @@ func (c *hubAuthController) instanceStatus(name, behaviorTag string) appwire.Aut
 	}
 
 	// Everything else: key-based credential check, resolving by instance name.
-	v, src := c.creds.ResolveKey(name, behaviorTag)
+	_, src := c.creds.ResolveKey(name, behaviorTag)
 	hasFile, envVar := c.creds.InstanceLayers(name, behaviorTag)
+	// A provider that authenticates nothing has no key to resolve, so nothing
+	// resolving is not a credential gone missing. credentials.Store.List states
+	// that as SourceNone for its own rows; the instance-keyed path must state it
+	// too, or serf/auth/list and serf/instance/list describe one provider two
+	// ways and the credentials pane renders a working provider as unconfigured.
+	if envvars.RequiresNoCredential(behaviorTag) {
+		src = credentials.SourceNone
+	}
 	// Auth modes are a property of how the instance behaves, not of the name it
 	// was given, and the envvars registry owns them. A tag the registry does not
 	// carry gets the credential-bearing default rather than a claim that it
@@ -598,9 +606,12 @@ func (c *hubAuthController) instanceStatus(name, behaviorTag string) appwire.Aut
 		modes = []string{"apiKey"}
 	}
 	return appwire.AuthStatusResponse{
-		Provider:      name,
-		Supported:     true,
-		SignedIn:      v != "",
+		Provider:  name,
+		Supported: true,
+		// Signed in is a statement about the source, derived here exactly as
+		// List derives it from the store's rows: a file or env credential is a
+		// sign-in, and "none" is not one to make.
+		SignedIn:      src == credentials.SourceFile || src == credentials.SourceEnv,
 		ActiveSource:  string(src),
 		AuthModes:     modes,
 		HasStoredFile: hasFile,
