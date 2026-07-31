@@ -73,20 +73,14 @@ func isDeadSessionError(err error) bool {
 	return strings.HasPrefix(wire.Message, threadNotFoundMessagePrefix)
 }
 
-// pastTasksListResponse mirrors pastThreadForRead's past-index gating
-// (app_threadread.go): it resolves ref to a local past thread id and requires
-// that id to already be known to the past index before serving anything, so a
-// task file is never returned for a session the hub cannot otherwise account
-// for. Only then does it read the session's persisted task file.
+// pastTasksListResponse gates on pastEntryForRead (app_threadread.go), the
+// same gate the jobs fallbacks use: the ref must resolve to a LOCAL past
+// thread id the index already knows, so a task file is never returned for a
+// session the hub cannot otherwise account for — and never from local state
+// for another source's ref. Only then does it read the session's persisted
+// task file.
 func pastTasksListResponse(cfg hubcore.WebConfig, params appwire.TaskListParams) (appwire.TaskListResponse, bool, error) {
-	if cfg.Past == nil {
-		return appwire.TaskListResponse{}, false, nil
-	}
-	threadID, ok := localPastThreadID(appwire.ThreadReadParams{Ref: params.Ref})
-	if !ok {
-		return appwire.TaskListResponse{}, false, nil
-	}
-	entry, ok := cfg.Past.Find(threadID)
+	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {
 		return appwire.TaskListResponse{}, false, nil
 	}

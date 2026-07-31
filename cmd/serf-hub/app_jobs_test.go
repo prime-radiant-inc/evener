@@ -253,6 +253,67 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestHubJobsOutputLiveDaemon is the output path's counterpart to
+// TestHubJobsListLiveDaemon: a running daemon owns the job's live output
+// buffer, so a successful live JobOutput response is passed through untouched
+// and past is never consulted — even though a past index entry holds its own,
+// different, persisted output for the very same job id.
+func TestHubJobsOutputLiveDaemon(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
+	})
+	liveTail := agent.JobOutputTail{Tail: "live", TotalBytes: 44, RetainedStart: 40, Truncated: true}
+	sources := appsource.NewRegistry()
+	sources.Add(&jobsListSource{id: "local", outResp: appwire.JobsOutputResponse{Data: liveTail}})
+
+	resp, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if err != nil {
+		t.Fatalf("hubJobsOutput: %v", err)
+	}
+	tail, ok := resp.Data.(agent.JobOutputTail)
+	if !ok {
+		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
+	}
+	if tail != liveTail {
+		t.Fatalf("tail = %+v, want the live tail %+v (past must not be consulted)", tail, liveTail)
+	}
+}
+
+// TestHubJobsOutputLiveErrorPropagates is the output path's counterpart to
+// TestHubJobsListLiveErrorPropagates: a LIVE rendezvous entry whose endpoint
+// is unreachable. The dial failure maps to a SessionUnavailable-SHAPED error
+// ("local daemon unavailable: ...") that is NOT the dead-session condition;
+// hubJobsOutput must propagate it rather than silently serving the stale
+// past-index output tail.
+func TestHubJobsOutputLiveErrorPropagates(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc", // reserved port: dial fails ECONNREFUSED
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		}}}
+	}, nil))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := hubJobsOutput(ctx, cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	if err == nil {
+		t.Fatal("hubJobsOutput returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
+		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
+	}
+	if isDeadSessionError(err) {
+		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
+	}
+}
+
 // TestHubJobsOutputDeadSessionFallsBackToPast proves the exited-session
 // fallback reads the persisted job's output tail through
 // agent.LoadSessionJobOutputTail: the last MaxBytes of the durable output
@@ -384,6 +445,97 @@ func TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess(t *testing.T) {
 	}
 	if isDeadSessionError(err) {
 		t.Fatalf("err = %v, want the jobs.jsonl read error; the dead-session error would report a readable session as simply gone", err)
+	}
+}
+
+// dispatchHubJobsRPC drives one request through the hub app server's real RPC
+// router (app_rpc.go registerMiscHandlers) instead of calling hubJobsList/
+// hubJobsOutput directly: registration, HandleTyped's params decode, the
+// registered closure's forwarding, and the router's error surface. Params
+// arrive as a raw JSON literal on purpose — marshaling a params struct would
+// rename its keys in lockstep with the wire tags and prove nothing about the
+// contract a webui client actually sends. HubStateRoot is pinned to a temp
+// dir so the constructed server's controllers never reach for real hub state.
+func dispatchHubJobsRPC(t *testing.T, cfg hubcore.WebConfig, sources *appsource.Registry, method, params string) (any, error) {
+	t.Helper()
+	cfg.HubStateRoot = t.TempDir()
+	server := newHubAppServer(cfg, sources)
+	return server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: method,
+		Params: json.RawMessage(params),
+	})
+}
+
+// TestSerfJobsListRouteReachesTheHubHandler proves serf/jobs/list is wired to
+// hubJobsList with this hub's cfg and sources: the route answers, the ref
+// decodes, and the past-fallback list built from cfg.Past comes back as the
+// typed JobsListResponse.
+func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_a", description: "run the build", command: "make build"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsList, `{"ref":"local:`+sessionID+`"}`)
+	if err != nil {
+		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsList, err)
+	}
+	resp, ok := raw.(appwire.JobsListResponse)
+	if !ok {
+		t.Fatalf("response = %#v (%T), want appwire.JobsListResponse", raw, raw)
+	}
+	jobs, ok := resp.Data.([]agent.JobSummary)
+	if !ok || len(jobs) != 1 || jobs[0].JobID != "job_a" {
+		t.Fatalf("resp.Data = %#v, want the seeded job (the route must reach hubJobsList with the decoded ref)", resp.Data)
+	}
+}
+
+// TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes drives serf/jobs/output at
+// the same boundary. jobId and maxBytes are what no direct hubJobsOutput test
+// can vouch for: they exist only on the wire, so a wrong JSON tag or a route
+// closure forwarding less than it decoded would still answer — with the wrong
+// job, or with the whole log.
+func TestSerfJobsOutputRouteDecodesJobIDAndMaxBytes(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_x","maxBytes":4}`)
+	if err != nil {
+		t.Fatalf("dispatch %s: %v", appwire.MethodSerfJobsOutput, err)
+	}
+	resp, ok := raw.(appwire.JobsOutputResponse)
+	if !ok {
+		t.Fatalf("response = %#v (%T), want appwire.JobsOutputResponse", raw, raw)
+	}
+	tail, ok := resp.Data.(agent.JobOutputTail)
+	if !ok {
+		t.Fatalf("resp.Data = %#v (%T), want agent.JobOutputTail", resp.Data, resp.Data)
+	}
+	if tail.Tail != "6789" || tail.TotalBytes != 10 || !tail.Truncated {
+		t.Fatalf("tail = %+v, want the last 4 of job_x's 10 bytes, truncated", tail)
+	}
+}
+
+// TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams proves the route's
+// error surface: the handler's InvalidParams reaches the caller through
+// Dispatch with its code and message intact, rather than arriving flattened
+// into an internal error or paired with a response.
+func TestSerfJobsOutputRouteMapsUnknownJobToInvalidParams(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
+		{id: "job_x", description: "noisy build", command: "make noisy", output: "0123456789"},
+	})
+
+	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsOutput, `{"ref":"local:`+sessionID+`","jobId":"job_nope","maxBytes":4}`)
+	if raw != nil {
+		t.Fatalf("response = %#v, want no response alongside the error", raw)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
+	}
+	if want := "job not found: job_nope"; wire.Message != want {
+		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}
 }
 
