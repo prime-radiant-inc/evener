@@ -746,6 +746,13 @@ func (s *Server) handleAppThreadShutdown(context.Context, appwire.ThreadShutdown
 	return appwire.EmptyResponse{}, nil
 }
 
+// handleAppThreadClear is unwired on purpose: v2 disabled the Serf clear
+// capability pending a retry-safe mutation shape for it. Whatever reinstates it
+// has to take the same single-in-flight gate handleClear holds, because two
+// clears running at once each replace the SAME live session and only one of the
+// two replacements can be current — nothing closes the other, so its env's
+// Cleanup() never runs (kata mz2f). The gate lives in handleClear rather than
+// around clearFunc because POST /clear is currently its only caller.
 func (s *Server) handleAppThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("thread/clear is unavailable in serf-appwire-v2")
 }
