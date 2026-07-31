@@ -177,7 +177,7 @@ func (s *Store) List() []Provider {
 		modes := append([]string(nil), provider.AuthModes...)
 		_, src := s.Get(name)
 		// Ollama needs no creds — report SourceNone.
-		if len(modes) == 1 && modes[0] == "none" {
+		if envvars.RequiresNoCredential(name) {
 			src = SourceNone
 		}
 		out = append(out, Provider{Name: name, AuthModes: modes, Source: src})

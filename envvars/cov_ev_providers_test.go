@@ -92,3 +92,20 @@ func TestAuthModes(t *testing.T) {
 		t.Errorf("AuthModes(unknown) = %v, want nil", got)
 	}
 }
+
+func TestRequiresNoCredential(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		want     bool
+	}{
+		{"ollama", true},
+		{"OLLAMA", true},
+		{"anthropic", false},
+		{"openai", false},
+		{"unknown", false},
+	} {
+		if got := RequiresNoCredential(tc.provider); got != tc.want {
+			t.Errorf("RequiresNoCredential(%q) = %v, want %v", tc.provider, got, tc.want)
+		}
+	}
+}
