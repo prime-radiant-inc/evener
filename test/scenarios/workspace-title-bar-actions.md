@@ -1,14 +1,20 @@
 # workspace-title-bar-actions: interrupt, compact, shutdown end-to-end
 
-**What this covers**: kata `gx92`. The workspace title-bar buttons
-(interrupt, compact, shutdown) hit `handleSessionAction` in
-`cmd/serf-hub/web.go`, which forwards to the daemon via appwire
-(`TurnInterruptParams`, `ThreadCompactStartParams`,
-`ThreadShutdownParams`). The jstest suite (`test-actions.js`) confirms
-the click handlers POST the right URLs. This scenario is the
-server-side counterpart: did the daemon actually stop / compact /
-exit? Without this, a regression in the daemon-side wiring of these
-RPCs would not be caught.
+**What this covers**: kata `gx92`. The session actions (interrupt, compact,
+shutdown) hit `handleSessionAction` in `cmd/serf-hub/web_session.go:188`,
+which forwards to the daemon via appwire (`TurnInterruptParams`,
+`ThreadCompactStartParams`, `ThreadShutdownParams`). This scenario is the
+server-side counterpart to `SessionActionsMenu.test.tsx`: did the daemon
+actually stop / compact / exit? Without this, a regression in the daemon-side
+wiring of these RPCs would not be caught.
+
+**Surface**: see `docs/agentic-testing.md`, "The REST surface, and what is no
+longer on it" — the verb table there is the single place these routes are
+maintained. This card is **almost entirely browser-free**; only step 2b's
+queue leg needs a client, because queue has no REST route at all. The old
+`$HUB/s/$SID/<action>` form-POST shim is gone (`660376f78`) and now 404s
+silently, leaving the daemon running — every action below uses
+`$HUB/api/sessions/local:$SID/<action>`.
 
 ## Pre-state
 
@@ -32,8 +38,8 @@ TOKEN=$(cat "$HOME/.serf/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
-1. **Spawn**. Use `openai/gpt-5.4-mini` (cheap, fast). The initial
-   prompt asks the agent to do a trivial reply so the session reaches
+1. **[browser-free] Spawn**. Use `openai/gpt-5.4-mini` (cheap, fast). The
+   initial prompt asks the agent to do a trivial reply so the session reaches
    `idle` quickly:
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
@@ -50,12 +56,12 @@ HUB=http://127.0.0.1:$PORT
    done
    ```
 
-2. **Interrupt**. Send a slow turn that drives `exec_command` to run a
-   long bash loop, then immediately try to interrupt:
+2. **[browser-free] Interrupt**. Send a slow turn that drives `exec_command`
+   to run a long bash loop, then immediately try to interrupt:
    ```bash
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
      -d '{"text":"call exec_command with command=\"bash -c '\''for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done'\''\" then report"}' \
-     "$HUB/s/$SID/send" &
+     "$HUB/api/sessions/local:$SID/send" &
    # wait until the session is actually active
    for i in $(seq 1 10); do
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
@@ -66,21 +72,39 @@ HUB=http://127.0.0.1:$PORT
    done
    echo "state=$state turn=$turn"
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"turn_id\":\"$turn\"}" "$HUB/s/$SID/interrupt"
+     -d "{\"turn_id\":\"$turn\"}" "$HUB/api/sessions/local:$SID/interrupt"
    ```
 
 **2b. Interrupt with a queued message** (kata `0bq1` natural
-composition). Re-send a slow turn, queue one user message
-(via `POST /queue`), then interrupt. The queued message must
-survive the interrupt — after the cancelled turn settles back
-to idle, the daemon's outer ProcessInput loop pops the queue
-head and runs it as a fresh user turn:
+composition). Re-send a slow turn, queue one user message, then interrupt.
+The queued message must survive the interrupt — after the cancelled turn
+settles back to idle, the daemon's outer ProcessInput loop pops the queue
+head and runs it as a fresh user turn.
+
+   **There is no REST route for queue.** `handleAPISession`'s verb list
+   (`cmd/serf-hub/web_api_tree.go:1376-1416`) has no `queue` case, and the
+   old `/s/<id>/queue` shim died with the vanilla frontend. `turn/queue`
+   lives only on the AppWire WebSocket (`appwire/types.go:26`), so this leg
+   needs one of:
+
+   - **[browser-free]** dial `ws://127.0.0.1:$PORT/rpc` with
+     `Authorization: Bearer $TOKEN`, `initialize`, then call
+     `turn/queue{ref:"local:<SID>", ...}` directly; or
+   - **[browser]** navigate to `/auth?token=$TOKEN&next=/s/local:$SID`, type
+     into the textarea inside `[data-testid="composer-input-card"]` and click
+     `[data-testid="composer-submit"]` — **Send** routes to `turn/queue`
+     while a turn is running and `turn/start` otherwise
+     (`panes/session/composer/submitRouting.ts:19-23`), one label with two
+     timings. The queue then shows up as the heading
+     `Queued messages (N)` (`composer/queue/QueueStrip.tsx:278`) and as
+     `[data-testid="status-row-queue"]` reading `N queued` on the status
+     strip (`chrome/StatusRow.tsx:355-359`).
 
    ```bash
    # Re-send a slow turn so we have a window to queue + interrupt.
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
      -d '{"text":"call exec_command with command=\"bash -c '\''for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done'\''\" then report"}' \
-     "$HUB/s/$SID/send" &
+     "$HUB/api/sessions/local:$SID/send" &
    for i in $(seq 1 10); do
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
      state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
@@ -89,17 +113,17 @@ head and runs it as a fresh user turn:
      sleep 1
    done
 
-   # Queue a follow-up. capability check first:
+   # Capability check first — the REST detail still reports whether the
+   # daemon WOULD accept a queue, which is enough for a gating assertion
+   # even though there is no REST verb to exercise it.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
      | python3 -c "import json,sys; d=json.load(sys.stdin); print('queue_cap=',d['capabilities'].get('queue'))"
    # queue_cap= True
-   curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{"text":"after the loop, reply with the single word DONE"}' "$HUB/s/$SID/queue" | head -3
-   # HTTP 204
 
-   # Interrupt the in-flight turn.
+   # Queue "after the loop, reply with the single word DONE" via turn/queue
+   # (WebSocket or composer — see above), then interrupt the in-flight turn.
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d "{\"turn_id\":\"$turn\"}" "$HUB/s/$SID/interrupt" | head -3
+     -d "{\"turn_id\":\"$turn\"}" "$HUB/api/sessions/local:$SID/interrupt" | head -3
 
    # The cancelled turn drops to idle; the queued message should
    # then run as a fresh user turn. Wait for the second turn to
@@ -114,47 +138,29 @@ head and runs it as a fresh user turn:
      sleep 2
    done
    echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
-   # Confirm the queued text appears in the transcript as a USER turn
-   # AFTER the interrupted turn's cancellation marker:
-   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
-   python3 - <<EOF
-   import json
-   kinds = []
-   for line in open("$TFILE"):
-       j = json.loads(line)
-       t = j.get("turn", {})
-       k = t.get("kind", "")
-       if k in ("USER", "STEERING"):
-           texts = []
-           for c in t.get("message", {}).get("content", []):
-               if c.get("kind") == "text":
-                   texts.append(c.get("text", "")[:60])
-           kinds.append((k, " | ".join(texts)))
-   for k in kinds:
-       print(k)
-   EOF
-   # Expect to see a STEERING containing "The user interrupted the
-   # previous turn" followed by a USER entry containing "after the
-   # loop, reply with the single word DONE".
+   # Confirm the queued text appears in the transcript as a USER turn AFTER
+   # the interrupted turn's cancellation marker. Use serf-doctor rather than
+   # hand-parsing JSONL (see docs/agentic-testing.md, "Inspecting transcript
+   # and meta on disk"):
+   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
    ```
 
-   **Expected**: queue POST returns 204 (kata `111a` capability
-   gating ensures `queue_cap=true` mid-turn). Interrupt cancels
-   the in-flight turn (state cycles active → idle) but does
-   NOT drop the queued message: the daemon's outer ProcessInput
-   loop still pops the queue head on its next iteration and runs
-   it as a fresh user turn. `turn_count` increments by exactly
-   one (the queued message becomes a single new user turn,
-   independent of the cancelled one). The transcript shows the
-   cancellation STEERING immediately followed by the queued
-   USER entry. Falsification: queue POST returns 409 (would mean
-   the daemon dropped the Queue capability during the interrupt),
-   `turn_count` does not advance (queued message lost), or the
-   queued message appears as STEERING (would mean drainAsSteer
-   ran when it shouldn't have).
+   **Expected**: `queue_cap=True` mid-turn (kata `111a` capability
+   gating). Interrupt cancels the in-flight turn (state cycles
+   active → idle) but does NOT drop the queued message: the
+   daemon's outer ProcessInput loop still pops the queue head on
+   its next iteration and runs it as a fresh user turn.
+   `turn_count` increments by exactly one (the queued message
+   becomes a single new user turn, independent of the cancelled
+   one). The outline shows the cancellation STEERING immediately
+   followed by the queued USER entry. Falsification: the queue call
+   is rejected (would mean the daemon dropped the Queue capability
+   during the interrupt), `turn_count` does not advance (queued
+   message lost), or the queued message appears as STEERING (would
+   mean drainAsSteer ran when it shouldn't have).
 
-3. **Wait for the turn to settle** (interrupt should land within
-   a few seconds — see Expected). Then **compact**:
+3. **[browser-free] Wait for the turn to settle** (interrupt should land
+   within a few seconds — see Expected). Then **compact**:
    ```bash
    # wait until idle (the slow turn will finish on its own — ~25-30s)
    for i in $(seq 1 90); do
@@ -171,34 +177,26 @@ head and runs it as a fresh user turn:
    echo "before compact: turn_count=$TC_BEFORE lines=$LINES_BEFORE"
    # compact
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{}' "$HUB/s/$SID/compact" | head -3
+     -d '{}' "$HUB/api/sessions/local:$SID/compact" | head -3
    ```
 
-4. **Follow-up turn** to verify compacted context survives. Ask
-   about an earlier message; the agent should still know it:
+4. **[browser-free] Follow-up turn** to verify compacted context survives.
+   Ask about an earlier message; the agent should still know it:
    ```bash
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
      -d '{"text":"in one short sentence: what was my first message to you?"}' \
-     "$HUB/s/$SID/send"
+     "$HUB/api/sessions/local:$SID/send"
    for i in $(seq 1 30); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
               | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
      [ "$state" = "idle" ] && break
      sleep 1
    done
-   tail -3 "$TFILE" | python3 -c "
-   import json, sys
-   for line in sys.stdin:
-       j = json.loads(line)
-       msg = j.get('turn', {}).get('message', {})
-       for c in msg.get('content', []):
-           if c.get('kind') == 'tool_call' and c.get('tool_call', {}).get('name') == 'communicate':
-               print('REPLY:', c['tool_call']['arguments'].get('message'))
-   "
+   go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:5
    ```
 
-5. **Shutdown**. Capture pre-state (daemon pid via rendezvous, meta
-   file path), POST shutdown, watch the daemon exit:
+5. **[browser-free] Shutdown**. Capture pre-state (daemon pid via rendezvous,
+   meta file path), POST shutdown, watch the daemon exit:
    ```bash
    RFILE=$(grep -l "\"session_id\":\"$SID\"" $HOME/.serf/run/*.json)
    PID=$(basename "$RFILE" .json)
@@ -206,7 +204,7 @@ head and runs it as a fresh user turn:
    echo "pid=$PID rfile=$RFILE meta=$META"
    ts_start=$(date +%s)
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{}' "$HUB/s/$SID/shutdown" | head -3
+     -d '{}' "$HUB/api/sessions/local:$SID/shutdown" | head -3
    for i in $(seq 1 10); do
      kill -0 "$PID" 2>/dev/null || { echo "process gone after $(($(date +%s) - ts_start))s"; break; }
      sleep 1
@@ -228,25 +226,28 @@ head and runs it as a fresh user turn:
   `0ax1`): the abort signal cancels the **turn**, not the session.
   The transcript records the partial tool output plus a system
   interrupt marker (a `STEERING` turn whose text contains
-  `The user interrupted the previous turn`). The active turn is
-  reported `status=canceled` on `turn/completed`. The session
-  remains alive — steps 3-5 below still work on the same SID.
-  Send a follow-up `/send` immediately and it must complete
-  normally. Falsification: state stays `active` for the full
-  ~25-30s of the bash loop, or state flips to `closed`/`ended`
-  (the old pre-`0ax1` semantic — would mean the ProcessInput abort
-  path is still calling `s.Close()`), or `capabilities.interrupt=false`
-  mid-turn, or the hub returns 503 on the interrupt POST. Verify
-  the follow-up: `curl -s -X POST ... "$HUB/s/$SID/send" -d
-  '{"text":"reply with just OK"}'` and confirm state cycles back
-  to `idle` with a new assistant turn.
-- **Step 3 (compact)**: hub returns `204 No Content` essentially
-  instantly (compaction here is local re-projection of in-memory
-  context; the daemon does not call the model). Transcript grows by
-  exactly one entry of `turn.kind = "CHECKPOINT"` whose `message.text`
-  contains `[CONTEXT CHECKPOINT]` and includes the prior user
-  messages and agent replies summarized. `turn_count` is unchanged.
-- **Step 4 (follow-up after compact)**: assistant's `communicate`
+  `The user interrupted the previous turn`,
+  `agent/session_lifecycle.go:658`). The turn is reported
+  `status=interrupted` on `turn/completed` — the `TurnStatus` enum has no
+  `canceled` value at all (`appwire/types.go:147-152`), so a controller
+  grepping for that literal will never find it. The session remains alive —
+  steps 3-5 below still work on the same SID. Send a follow-up `/send`
+  immediately and it must complete normally. Falsification: state stays
+  `active` for the full ~25-30s of the bash loop, or state flips to
+  `closed`/`ended` (the old pre-`0ax1` semantic — would mean the
+  ProcessInput abort path is still calling `s.Close()`), or
+  `capabilities.interrupt=false` mid-turn, or the hub returns 503 on the
+  interrupt POST. Verify the follow-up: `curl -s -X POST ...
+  "$HUB/api/sessions/local:$SID/send" -d '{"text":"reply with just OK"}'`
+  and confirm state cycles back to `idle` with a new assistant turn.
+- **Step 3 (compact)**: hub returns `204 No Content`. The transcript grows by
+  one entry of `turn.kind = "CHECKPOINT"` (`agent/schema/turn.go:28`) whose
+  text starts with `[CONTEXT CHECKPOINT]`
+  (`agent/internal/contextmgr/context_manager.go:927`) and includes the prior
+  user messages and agent replies summarized. `turn_count` is unchanged. The
+  POST is synchronous over the whole compaction, which is **two** layers, not
+  one — see Sharp edges before assuming it should be instant.
+- **Step 4 (follow-up after compact)**: the assistant's `communicate`
   reply references the first prompt (the literal `"reply with the
   word 'ready' and nothing else"`). Confirms the checkpoint
   preserved earlier-turn content.
@@ -272,25 +273,47 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
 
 ## Sharp edges
 
-- **Interrupt wiring** (kata `k7t8`, fixed). `cmd/serf/serve.go`
-  wraps each turn in a per-turn `context.WithCancel(ctx)` and
-  registers the cancel via `srv.SetCancelFunc` for the duration of
-  the turn (cleared on completion). This means `capabilities.interrupt`
-  is true only mid-turn. The REST `/interrupt` handler returns 503
-  if no cancel is registered (mirrors the appwire path's
-  `Unavailable` semantics) — so a stale "interrupt" click on an
-  idle session surfaces an honest error rather than a silent 204.
+- **Interrupt wiring** (kata `k7t8`) — **confirmed still fixed; this step is
+  a regression guard, not a repro.** `cmd/serf/serve.go` wraps each turn in a
+  per-turn `context.WithCancel(ctx)` and registers the cancel via
+  `srv.SetCancelFunc` for the duration of the turn (`:957`, `:965`, `:977`),
+  clearing it on completion (`:986`). This means `capabilities.interrupt` is
+  true only mid-turn. The REST `/interrupt` handler returns 503 if no cancel
+  is registered (mirrors the appwire path's `Unavailable` semantics) — so a
+  stale interrupt on an idle session surfaces an honest error rather than a
+  silent 204.
 - **Interrupt semantics** (kata `0ax1`, fixed). A successful
   interrupt cancels the in-flight turn but keeps the session
   alive. State transitions `active → idle` (NOT `closed`),
   the outer session loop in `cmd/serf/serve.go` remains ready for
-  the next `/input` POST, and the user can immediately follow up
+  the next input, and the user can immediately follow up
   with another message. The transcript records a `STEERING` turn
   with a `<SYSTEM-REMINDER>` so the model sees on its next turn
   that the previous round was cut short. If you see state stay at
   `closed` after the interrupt, the abort path in
-  `agent/session.go` ProcessInput regressed to its pre-`0ax1`
-  behaviour of calling `s.Close()`.
+  `agent/session_lifecycle.go:517-527`'s `ProcessInputKind` regressed to its
+  pre-`0ax1` behaviour of calling `s.Close()`.
+- **Compact is not free, and its checkpoint text depends on the strategy.**
+  `Session.Compact` (`agent/session_compaction.go:20-58`) runs
+  `Manager.ForceCompact` (`agent/internal/contextmgr/context_manager.go:355`),
+  which is Layer 1 (a deterministic checkpoint) **plus** Layer 2 (LLM
+  summarization) whenever a client is available. Layer 2 short-circuits on a
+  short history — `summarizeWithLLMSteered` returns the input unchanged when
+  `len(history) <= PreserveRecentTurns` (`:1216-1223`) — which is why this
+  card's two-turn session sees a fast 204 and why a longer one will not.
+  Don't generalize the timing. The default strategy is `compact`
+  (`agent/session_init.go:51-53`, selected for an empty `ContextStrategy`,
+  which is what the hub spawns with) and it writes the bare
+  `[CONTEXT CHECKPOINT]` header. `--context-strategy session-log` writes
+  `[CONTEXT CHECKPOINT - SESSION LOG]` instead
+  (`strategy_session_log.go:186`); grep for the shared prefix
+  `[CONTEXT CHECKPOINT` if a run may use either.
+- **Compact is refused while a question is pending.**
+  `agent/session_compaction.go:34-36` returns
+  `a question is pending; reply or clear first` — summarizing away the
+  transcript tail the pending question lives in would compact out from under
+  the user's reply. If step 3 fails, check for an unanswered `ask_user`
+  before suspecting the RPC.
 - The slow-turn prompt depends on the model actually choosing to run
   `exec_command` with a sleep loop. `gpt-5.4-mini` did so reliably in
   testing, but a model that shortcuts (responds with "I'll do that"
@@ -298,20 +321,14 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
   seconds. If you see `state=active` for less than ~5 seconds,
   inspect the transcript — the model may not have run the loop and
   the interrupt may have raced the natural turn completion.
-- The compact endpoint is synchronous and very fast here (single
-  digit ms) because our compact strategy is `session_log` which only
-  emits a CHECKPOINT entry — no LLM round-trip. Other strategies
-  (`recursive_distill`, `memory_crystals`) would take seconds and
-  may briefly flip `state` to a compacting variant. Adjust the wait
-  loop accordingly when testing those.
 - `turn_count` semantics: it counts committed exchanges, not
   transcript entries. Compact adds one entry but no exchange, so
   `turn_count` is unchanged. After the follow-up send it ticks by
   one. Don't confuse line counts with turn counts.
 - The session detail endpoint is `/api/sessions/local:<sid>`, NOT
   `/api/sessions/<sid>` (returns 404) and NOT `/s/<sid>` (returns
-  HTML). The local: prefix is required because the route parses a
-  `hubapi.Ref`.
+  the SPA shell). The `local:` prefix is required because the route parses a
+  `hubapi.Ref` (`web_api_tree.go:1360-1374`).
 - Multiple `$HOME/.serf/run/*.json` files can exist for different
   daemons. Use `grep -l "\"session_id\":\"$SID\""` to find the
   right one; do not pick the most recent.
