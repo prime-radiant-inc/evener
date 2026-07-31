@@ -537,6 +537,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// event channel closes.
 	var drainsMu sync.Mutex
 	var bridgeDrains []<-chan struct{}
+	// teardownStarted says the snapshot below has already been taken, so no
+	// later drain can ever appear in it. bridgeSession refuses to start one
+	// past this point; see the refusal there for why that is the right answer.
+	var teardownStarted bool
 	// The tee must OUTLIVE every drain. Session.Close() closes the event channel
 	// but does not wait for the buffered tail, so a drain is still calling the
 	// observer after the session is closed -- and observe on a closed tee panics
@@ -567,6 +571,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	defer func() {
 		drainsMu.Lock()
 		pending := append([]<-chan struct{}(nil), bridgeDrains...)
+		// Closing the list and reading it are ONE critical section, so no
+		// bridgeSession can slip a drain in behind the snapshot.
+		teardownStarted = true
 		drainsMu.Unlock()
 		// One budget for the whole teardown, not one per drain: what must be
 		// bounded is how long SIGTERM goes unanswered.
@@ -668,6 +675,25 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		drained := make(chan struct{})
 		drainsMu.Lock()
 		defer drainsMu.Unlock()
+		// Past the teardown's snapshot, a drain started here would be one the
+		// wait cannot see, and the tee would be closed under it -- the same
+		// crash the wait exists to prevent, reached from the other side. The
+		// lock that makes the registration atomic makes this mutually exclusive
+		// with the snapshot for free.
+		//
+		// Refusing leaves this session with no authoritative consumer, which
+		// anywhere else on this branch is the corruption being prevented. Here
+		// it costs nothing: the only caller that can reach this is /clear on a
+		// handler goroutine that outlived httpSrv.Close(), and by the time the
+		// snapshot has been taken the listener is closed, the rendezvous entry
+		// has been removed, and the input loop has exited. The replacement
+		// cannot take a turn and no client can read it, so there is no reader
+		// for its projection to be permanently wrong for. Bridging it instead
+		// would register a LOSSLESS consumer -- one whose feed blocks its
+		// emitter -- on a session nothing will ever close.
+		if teardownStarted {
+			return
+		}
 		deps.bridge(srv, s, eventObserver, func() { close(drained) })
 		bridgeDrains = append(bridgeDrains, drained)
 	}
