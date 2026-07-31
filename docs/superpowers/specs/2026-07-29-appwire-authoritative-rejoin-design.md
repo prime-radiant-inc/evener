@@ -480,14 +480,27 @@ What remains, precisely:
   asserting at `sendEvent`'s blocking branch: it buys nothing, because
   emit-under-`Session.mu` is already an immediate self-deadlock and the assert
   would sit in a branch no test reaches.
-- **The consumer side of that rule is still unenforced, and is the live
-  exposure.** Four locks are held across emits today — `queueEventsMu`,
+- **The consumer side of that rule is enforced by a type plus a test** (kata
+  s9xc). Four locks are held across emits today — `queueEventsMu`,
   `queuePersistMu`, `responseSideEffectsMu` (`TOOL_CALL_END` and its
-  output-delta chunk loop) and `subagent.mu` — and they are safe only because
-  `liveThreadEnvelopeSource` does not take them. That is a property of a file
-  in `cmd/serf`, not of `agent`. A new envelope facet sampling under any of the
-  four wedges the daemon on the next large tool output with nothing to warn
-  first.
+  output-delta chunk loop) and `subagent.mu`. They used to be safe only because
+  `liveThreadEnvelopeSource` does not take them, which was a property of one
+  file in `cmd/serf` rather than of `agent`. The envelope source now reaches the
+  session as `agent.EnvelopeSampling`, so a facet cannot sample anything that
+  interface does not declare, and `agent/session_envelope_sampling_test.go`
+  calls every method it *does* declare while each of those locks is held — and
+  while every other `Session`/`subagent` mutex is held too, except `Session.mu`,
+  which the emit path re-acquires and therefore can never be held across an
+  emit. A companion test fails when a mutex is added to either struct without
+  being classified, so the coverage cannot quietly narrow. `Close`'s
+  `responseSideEffectsMu`-before-`mu` ordering — which is what keeps a wedged
+  emitter from also making `Session.mu` unavailable to the sampler, and so from
+  turning a stall into an unrecoverable cycle — is pinned by
+  `agent/session_close_lock_order_test.go` rather than by its comment.
+  Residual: a facet can still escape the interface with a type assertion back to
+  `*agent.Session`, and a `sync.Once` whose body emitted would be the same
+  hazard through a primitive no test can hold from outside (kata cb1k verified
+  that neither reachable `Once` body emits).
 
 `serf/thread/resync` still has no producer. It is not needed for the daemon's
 own feed any more, but it remains the only repair path if a future consumer is

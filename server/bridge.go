@@ -91,18 +91,23 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // It buys nothing: emit-under-Session.mu is already an immediate self-deadlock
 // by construction, and the assert would sit in a branch no test reaches.
 //
-// What is NOT closed is the other direction, and it is where the next incident
-// comes from. Four locks are held across live emits TODAY —
-// Session.queueEventsMu (agent/session_client_mutation_queue.go's
-// reflectDurableInputQueue, agent/session_queue.go's popSteeringHead),
-// queuePersistMu (persistQueuesSnapshot), responseSideEffectsMu
-// (agent/session_tools.go's TOOL_CALL_END and its output-delta chunk loop, the
-// highest-volume emit in the system) and subagent.mu (agent/job_delegate.go).
-// They are safe only because THIS consumer does not take them, which is a
-// property of cmd/serf's liveThreadEnvelopeSource, not of anything in agent.
-// Adding an envelope facet that samples session state under any of those four
-// wedges the daemon on the next large tool output, and nothing anywhere would
-// say so first.
+// The other direction — a facet that SAMPLES under a lock an emitter holds —
+// has no self-deadlock to lean on and needed its own mechanism. Four locks are
+// held across live emits TODAY: Session.queueEventsMu
+// (agent/session_client_mutation_queue.go's reflectDurableInputQueue,
+// agent/session_queue.go's popSteeringHead), queuePersistMu
+// (persistQueuesSnapshot), responseSideEffectsMu (agent/session_tools.go's
+// TOOL_CALL_END and its output-delta chunk loop, the highest-volume emit in the
+// system) and subagent.mu (agent/job_delegate.go). They used to be safe only
+// because THIS consumer does not take them — a property of one file in cmd/serf,
+// invisible from agent and invisible from here.
+//
+// It is a property of a type now. The envelope source reaches the session as
+// agent.EnvelopeSampling, so a facet cannot sample anything that interface does
+// not declare, and agent/session_envelope_sampling_test.go calls every method it
+// DOES declare while each of those locks is held. A facet that samples under one
+// of them fails in agent's own suite, naming the method and the lock, instead of
+// wedging the daemon on the next large tool output.
 func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.SessionEvent)) {
 	if observer != nil {
 		observer(ev)

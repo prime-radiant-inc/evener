@@ -73,6 +73,14 @@ type threadEnvelope struct {
 // injected read-time callbacks into one seam with one caller, so a reader can
 // see at a glance where session state enters the daemon's projection and can be
 // sure it is not the read path.
+//
+// ADDING A METHOD HERE IS A CONCURRENCY DECISION, not just a wiring one. The
+// sampling runs on the authoritative consumer's drain goroutine, so a sample
+// that waits on a lock a session emitter holds wedges both (BridgeEvent's LOCK
+// RULE note has the full argument). What stops that is the type on the other
+// side of the seam: cmd/serf's implementation reaches the session as
+// agent.EnvelopeSampling, so a new value has to be declared there, where the
+// rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {
 	ContextPressure() float64
 	ContextMetrics() ContextMetrics
