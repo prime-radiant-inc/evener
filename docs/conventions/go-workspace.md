@@ -1,8 +1,8 @@
 # Working in the Go workspace
 
-serf is a `go.work` workspace of seven modules: the root plus `agent`,
-`llm`, `auth`, `envvars`, `invariant`, and `identifier`. Most of what is
-surprising about working here follows from that one fact.
+serf is a `go.work` workspace of eight modules: the root plus `agent`,
+`llm`, `auth`, `envvars`, `invariant`, `identifier`, and `fuzz`. Most of
+what is surprising about working here follows from that one fact.
 
 ## `./...` covers one module, not the repo
 
