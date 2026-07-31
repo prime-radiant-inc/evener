@@ -30,7 +30,7 @@ single-session, canonical-types design intact. Malformed `api_call` lines are sk
 
 ```
 serf-doctor apilog <selector> [--empty] [--errors] [--cache-spikes [--threshold N]]
-                              [--summary] [--json]
+                              [--summary] [--validate] [--json]
 ```
 
 - default — one row per call: round, model, latency, input/output tokens, cache-read,
@@ -41,7 +41,20 @@ serf-doctor apilog <selector> [--empty] [--errors] [--cache-spikes [--threshold 
 - `--errors` — only failed calls.
 - `--cache-spikes [--threshold N]` — only calls whose uncached input (input − cache-read)
   is ≥ N (default 50000). Surfaces cache misses driving spend.
-- `--json` — `APILogResult{session_id, calls[], totals{}}`.
+- `--validate` — a different operation, not a row filter (added by kata 7x84; short-circuits
+  before `--empty`/`--errors`/`--cache-spikes`/`--threshold`/`--summary` are consulted, same
+  as `transcript --count` short-circuits past `--format`/`--range`): strictly decode every
+  record in the canonical API log from offset zero through clean EOF via `apilog.Decoder`,
+  reporting every corrupt, malformed, oversized, or unsupported record with its byte offset
+  instead of stopping at the first one, and separating a genuine partial final fragment from a
+  decode defect. Explicit operator diagnostics — proportional to file size, never run at logger
+  open (open-time recovery stays bounded to the tail; see
+  `2026-07-17-project-2-yagni-landing-design.md`). Exits nonzero if the scan finds any
+  structural problem; a bare partial tail alone does not. `--json` →
+  `APILogValidationResult{session_id, api_log_path, file_size, records_ok, problems[],
+  problem_count, problems_truncated, partial_tail, clean}`.
+- `--json` — `APILogResult{session_id, calls[], totals{}}` (or `APILogValidationResult` under
+  `--validate`, above).
 
 Filters narrow the displayed rows; `totals` always reflects the whole session. Single-session
 by selector, like every other subcommand; for a coordinator+subagents picture, walk
