@@ -138,12 +138,17 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
   hub-materialized file stays credential-free unless the user hand-authors an
   `api_key`. The openai seed captures `OPENAI_BASE_URL` like every other type.
 - **Credential injection** — after loading or seeding the descriptor config,
-  `LoadClient` calls `credentials.Store.ResolveKey(name, typ)` (`store.go:184`)
+  `LoadClient` calls
+  `credentials.Store.ResolveKey(name, providercfg.CredentialTag(type, apiStyle, baseURL))`
   for each instance and sets the resolved key on the **in-memory** config only;
   the file stays descriptors-only. Resolution order: file entry keyed by instance
-  name → env vars for the instance name (e.g. `OPENAI_COMPATIBLE_API_KEY`) → env
-  vars for the type (e.g. `OPENAI_API_KEY`). OpenAI OAuth is resolved later by
-  `openai.NewForInstance` from `auth/<name>.json` and is unaffected.
+  name → env vars for the instance name → env vars for the credential tag (e.g.
+  `OPENAI_API_KEY`). The credential tag is the registry row whose key
+  authenticates the endpoint the adapter will contact, which for a
+  `chat-completions` instance depends on whether it declares a `base_url` — see
+  "Which key a lookup uses" in `docs/llm-provider-config-and-launch.md`. OpenAI
+  OAuth is resolved later by `openai.NewForInstance` from `auth/<name>.json` and
+  is unaffected.
 - **Build** — `llm.NewFromProviders(cfg, …)` (`providers_config.go:45`) constructs
   one adapter per instance through a **parallel registry**:
   `RegisterInstanceAdapterFactory(type, apiStyle, factory)` (`:28`) mirrors the env

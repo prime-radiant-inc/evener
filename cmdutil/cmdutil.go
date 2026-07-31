@@ -366,9 +366,13 @@ func queryModelContextWindowImpl(provider, model, instanceBaseURL, instanceAPIKe
 	case "kimi", "glm", "openrouter":
 		// Provider types with an env-registry fallback for key/base URL.
 	case "openai-compatible":
-		// openai + api_style=chat-completions instances (custom gateways):
-		// there is no meaningful type-level default endpoint, so the probe
-		// needs the instance's own base_url from providers.toml.
+		// openai + api_style=chat-completions. The probe needs the instance's
+		// own base_url from providers.toml: the env fallback below would reach
+		// for OPENAI_COMPATIBLE_BASE_URL, which names an unrelated host this
+		// instance never contacts. With no base_url the instance does have an
+		// endpoint — the adapter's api.openai.com default — but its models are
+		// the ones the embedded catalog already describes, so probing buys
+		// nothing a fallback does not already give.
 		if strings.TrimSpace(instanceBaseURL) == "" {
 			return 0
 		}

@@ -251,7 +251,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		_, _ = c.Logout(appwire.AuthLogoutParams{})
 		c.clearCredential = c.creds.Clear
 		c.loadAuth = authopenai.LoadAuth
-		_ = c.instanceStatus("fallback", "unknown-type")
+		_ = c.instanceStatus("fallback", "unknown-type", "unknown-type")
 
 		// Instance CRUD success and validation/error paths.
 		ip := filepath.Join(root, "instances.toml")

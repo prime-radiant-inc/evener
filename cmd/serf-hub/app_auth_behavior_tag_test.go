@@ -4,11 +4,16 @@ package main
 // providercfg.BehaviorTag, "the internal behavior identity every
 // provider-conditional behavior keys on" — and not by the raw type it was
 // declared with. An openai instance carrying api_style = "chat-completions" is
-// behaviorally an openai-compatible endpoint: its key is
-// OPENAI_COMPATIBLE_API_KEY and it has no OAuth at all. The spawn preflight has
-// keyed on the tag since kata nrv4; these tests hold the auth-status and
-// OAuth-entry paths to the same rule, so launch and the credentials pane cannot
-// hold opposite beliefs about one instance (kata jd5s).
+// behaviorally an openai-compatible endpoint, with no OAuth at all. The spawn
+// preflight has keyed on the tag since kata nrv4; these tests hold the
+// auth-status and OAuth-entry paths to the same rule, so launch and the
+// credentials pane cannot hold opposite beliefs about one instance (kata jd5s).
+//
+// WHICH key authenticates it is a separate question with a separate key,
+// providercfg.CredentialTag, because that answer belongs to the endpoint the
+// adapter contacts rather than to the dialect it speaks there. The fixture
+// below is a gateway at its own base_url, so no type-level key belongs to it
+// (kata z1gm).
 
 import (
 	"errors"
@@ -89,37 +94,66 @@ func TestAuthStatus_AuthModesFollowBehaviorTag(t *testing.T) {
 
 // TestAuthStatus_ChatCompletionsInstanceReportsResolvedCredential requires the
 // credential Status reports to be the one the launch path actually resolves.
-// credentials.Store.ResolveKey keyed by the behavior tag is what spawn and the
-// adapter use, so a status computed any other way tells the credentials pane a
-// different story than the one launch acts on.
+// credentials.Store.ResolveKey is what spawn and the adapter use, so a status
+// computed any other way tells the credentials pane a different story than the
+// one launch acts on.
+//
+// The key it resolves on is the CREDENTIAL tag, not the behavior tag: this
+// fixture is a gateway at its own base_url, and OPENAI_COMPATIBLE_API_KEY
+// belongs to the host OPENAI_COMPATIBLE_BASE_URL names rather than to this one.
+// cmdutil injects nothing for it — measured, the backend receives no
+// Authorization header — so a pane reporting that variable as a sign-in
+// describes a client nobody is running (kata z1gm).
 func TestAuthStatus_ChatCompletionsInstanceReportsResolvedCredential(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		compatKey string
+		name         string
+		compatKey    string
+		storedKey    string
+		wantSignedIn bool
+		wantSource   credentials.Source
+		wantEnvVar   string
+		why          string
 	}{
-		{"key in the environment", "sk-compat-probe"},
-		{"no key anywhere", ""},
+		{
+			name:       "the compatible key in the environment belongs to another host",
+			compatKey:  "sk-compat-probe",
+			wantSource: credentials.SourceAbsent,
+			why:        "cmdutil injects no key for a gateway at its own base_url, so the child sends no Authorization header",
+		},
+		{
+			name:       "no key anywhere",
+			wantSource: credentials.SourceAbsent,
+			why:        "nothing to resolve in any layer",
+		},
+		{
+			name:         "key stored for this instance by name",
+			storedKey:    "sk-gateway-stored",
+			wantSignedIn: true,
+			wantSource:   credentials.SourceFile,
+			why:          "the name-scoped layer is the one a gateway does resolve, and cmdutil injects it",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newCompatAuthController(t)
 			t.Setenv(envvars.OpenAICompatibleAPIKey.Name, tt.compatKey)
-
-			wantValue, wantSource := c.creds.ResolveKey("local", "openai-compatible")
-			_, wantEnvVar := c.creds.InstanceLayers("local", "openai-compatible")
+			if tt.storedKey != "" {
+				if err := c.creds.Set("local", tt.storedKey); err != nil {
+					t.Fatalf("Set(local): %v", err)
+				}
+			}
 
 			got, err := c.Status(appwire.AuthStatusParams{Provider: "local"})
 			if err != nil {
 				t.Fatalf("Status(local): %v", err)
 			}
-			if got.SignedIn != (wantValue != "") {
-				t.Errorf("Status(local).SignedIn = %v, want %v: ResolveKey(local, openai-compatible) resolved %q from %q",
-					got.SignedIn, wantValue != "", wantValue, wantSource)
+			if got.SignedIn != tt.wantSignedIn {
+				t.Errorf("Status(local).SignedIn = %v, want %v: %s", got.SignedIn, tt.wantSignedIn, tt.why)
 			}
-			if got.ActiveSource != string(wantSource) {
-				t.Errorf("Status(local).ActiveSource = %q, want %q from ResolveKey", got.ActiveSource, wantSource)
+			if got.ActiveSource != string(tt.wantSource) {
+				t.Errorf("Status(local).ActiveSource = %q, want %q: %s", got.ActiveSource, tt.wantSource, tt.why)
 			}
-			if got.EnvVar != wantEnvVar {
-				t.Errorf("Status(local).EnvVar = %q, want %q", got.EnvVar, wantEnvVar)
+			if got.EnvVar != tt.wantEnvVar {
+				t.Errorf("Status(local).EnvVar = %q, want %q: %s", got.EnvVar, tt.wantEnvVar, tt.why)
 			}
 		})
 	}
@@ -179,15 +213,23 @@ func TestAuthLogout_ChatCompletionsInstanceReportsCompatibleStatus(t *testing.T)
 
 // TestInstanceList_ChatCompletionsInstanceReportsCompatibleCredential covers the
 // settings surface. hubInstancesController.List enriches each row with
-// instanceStatus, so it is the second call site that must pass the behavior tag
-// rather than the configured type — the credentials pane renders exactly these
-// fields.
+// instanceStatus, so it is the second call site that must key an instance the
+// same way Status does — the credentials pane renders exactly these fields.
+//
+// Both keys are seeded at once so the row has to choose. The auth modes follow
+// the behavior tag; the credential follows the endpoint, which for a gateway at
+// its own base_url is neither api.openai.com nor the host
+// OPENAI_COMPATIBLE_BASE_URL names, so only the key stored under the instance's
+// own name authenticates it (kata z1gm).
 func TestInstanceList_ChatCompletionsInstanceReportsCompatibleCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv(envvars.OpenAICompatibleAPIKey.Name, "sk-compat-probe")
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, localCompatProvidersToml)
 	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir())
+	if err := ctl.auth.creds.Set("local", "sk-gateway-stored"); err != nil {
+		t.Fatalf("Set(local): %v", err)
+	}
 
 	resp := ctl.List()
 	var got *appwire.InstanceEntry
@@ -204,10 +246,12 @@ func TestInstanceList_ChatCompletionsInstanceReportsCompatibleCredential(t *test
 	if !reflect.DeepEqual(got.AuthModes, want) {
 		t.Errorf("List() entry for local: AuthModes = %v, want %v", got.AuthModes, want)
 	}
-	if got.ActiveSource != string(credentials.SourceEnv) {
-		t.Errorf("List() entry for local: ActiveSource = %q, want %q", got.ActiveSource, credentials.SourceEnv)
+	if got.ActiveSource != string(credentials.SourceFile) {
+		t.Errorf("List() entry for local: ActiveSource = %q, want %q: the stored key is the one cmdutil injects for this gateway",
+			got.ActiveSource, credentials.SourceFile)
 	}
-	if got.EnvVar != envvars.OpenAICompatibleAPIKey.Name {
-		t.Errorf("List() entry for local: EnvVar = %q, want %q", got.EnvVar, envvars.OpenAICompatibleAPIKey.Name)
+	if got.EnvVar != "" {
+		t.Errorf("List() entry for local: EnvVar = %q, want \"\": %s authenticates the host OPENAI_COMPATIBLE_BASE_URL names, not this gateway",
+			got.EnvVar, envvars.OpenAICompatibleAPIKey.Name)
 	}
 }

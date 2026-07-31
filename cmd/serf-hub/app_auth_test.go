@@ -754,7 +754,7 @@ func TestAuth_InstanceStatus_EnvVarReportedFromType(t *testing.T) {
 	// No stored file key for "work".
 	c := newHubAuthControllerWithStore(stateDir, store)
 
-	status := c.instanceStatus("work", "anthropic")
+	status := c.instanceStatus("work", "anthropic", "anthropic")
 
 	if status.ActiveSource != string(credentials.SourceEnv) {
 		t.Errorf("ActiveSource=%q, want %q", status.ActiveSource, credentials.SourceEnv)

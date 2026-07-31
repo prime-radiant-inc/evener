@@ -129,21 +129,61 @@ The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.tom
 ### Which key a lookup uses
 
 `credentials.toml` is keyed by instance name; the `envvars` registry is keyed by
-**behavior tag** (`providercfg.BehaviorTag`), not by the `type` an instance
-declares. The two differ for exactly one case today: an `openai` instance with
-`api_style = "chat-completions"` has tag `openai-compatible`, so it resolves
-`OPENAI_COMPATIBLE_API_KEY` and supports no OAuth at all.
+a **tag**, not by the `type` an instance declares. There are two tags, and they
+answer different questions.
 
-Both hub paths key on the tag, so launch and the credentials pane cannot
-disagree about one instance:
+**How the instance behaves** — which adapter serves it, which dialect it speaks,
+whether OAuth exists for it, which auth modes the pane offers — is
+`providercfg.BehaviorTag`. It differs from the declared type for exactly one
+case: an `openai` instance with `api_style = "chat-completions"` has tag
+`openai-compatible` and supports no OAuth at all.
 
-- `validateProviderCredentials` (`cmd/serf-hub/spawn.go`) computes the tag for
-  the launch preflight, and returns early for a tag that
-  `envvars.RequiresNoCredential` accepts.
-- `hubAuthController.resolveInstanceBehaviorTag` feeds `instanceStatus`, which
-  serves both `serf/auth/status` and `hubInstancesController.List`.
-  `instanceIsOpenAI` (behind `requiresOpenAI`) uses the same tag to gate the
-  OAuth RPCs.
+**Which key authenticates it** is `providercfg.CredentialTag`, because that
+answer belongs to the endpoint the adapter will actually contact rather than to
+the protocol it speaks there. `openai-compatible` is the one tag that labels a
+protocol rather than a provider — the only registry row with no
+`DefaultBaseURL` and the only one marked `RequiresBaseURL` — so it is the one
+tag where `base_url` decides:
+
+- **No `base_url`.** `newOpenAIChatCompletionsInstance` falls back to a
+  compile-time `https://api.openai.com/v1`, so the instance is OpenAI's own
+  endpoint and resolves `OPENAI_API_KEY`. `OPENAI_COMPATIBLE_API_KEY`
+  authenticates the host `OPENAI_COMPATIBLE_BASE_URL` names, which this instance
+  never contacts, and is deliberately not a second chance for it.
+- **With a `base_url`.** The instance is an arbitrary gateway, and no
+  type-level key belongs to it. Only a `credentials.toml` entry or an env var
+  under its own **name** authenticates it — which is exactly what
+  `cmdutil.LoadProviderConfigAt` injects, so a gateway with neither is a client
+  that sends no `Authorization` header, and the pane says so.
+
+Every other tag names a provider with a `DefaultBaseURL` of its own, so the two
+tags are equal for it and `base_url` changes nothing.
+
+All four sites ask the same derivation, so launch and the credentials pane
+cannot disagree about one instance:
+
+- `cmdutil.LoadProviderConfigAt` (`cmdutil/load_client.go`) injects the key the
+  spawned process signs its requests with. It is the arbiter: the other three
+  exist to describe or gate what it built.
+- `validateProviderCredentials` (`cmd/serf-hub/spawn.go`) gates the launch. It
+  resolves the same layers `credentials.Store.ResolveKey` does — the instance
+  name's, then the credential tag's — against the child's environment, and
+  returns early for a behavior tag that `envvars.RequiresNoCredential` accepts.
+- `hubAuthController.instanceStatusFor` derives both tags and feeds
+  `instanceStatus`, which serves `serf/auth/status` and
+  `hubInstancesController.List`.
+- `instanceHasEffectiveCredential` (`cmd/serf-hub/app_credentials.go`) decides
+  whether `serf/auth/test` has anything to probe.
+
+`instanceIsOpenAI` (behind `requiresOpenAI`), `credentialRequired`,
+`envvars.AuthModes` and the OAuth branches keep the **behavior** tag: OAuth is
+something the adapter can or cannot send, not a host it sends to. So a
+chat-completions instance is still refused entry to the OpenAI login flow, and a
+stored OAuth record does not open the launch preflight for one.
+
+`TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends`
+(`cmd/serf-hub/app_credential_endpoint_agreement_test.go`) states that agreement
+as one invariant over the shapes rather than four per-site assertions.
 
 ---
 

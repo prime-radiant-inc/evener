@@ -566,6 +566,11 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 				continue
 			}
 			tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+			// Which key authenticates this instance is a question about the
+			// endpoint its adapter contacts, not about the dialect it speaks
+			// there, so it keys on the credential tag while every behavior
+			// question below keys on the behavior tag.
+			credTag := providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL)
 			// A provider that authenticates nothing (ollama) has no credential
 			// to look for, so there is nothing to gate on. The auth mode is a
 			// property of the instance's type, not of the name it was given.
@@ -576,13 +581,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if strings.TrimSpace(inst.APIKey) != "" {
 				return nil
 			}
-			// The tag, not the declared type: InstanceLayers keys the lookup on
-			// the behavior tag the way ResolveKey does, so an openai instance
-			// routed through chat-completions is asked about as the
-			// openai-compatible provider it resolves as. Only the env-var
-			// candidate list reads that key today and this caller discards it,
-			// which is exactly why the wrong one stayed invisible.
-			if hasFile, _ := store.InstanceLayers(inst.Name, tag); hasFile {
+			if hasFile, _ := store.InstanceLayers(inst.Name, credTag); hasFile {
 				return nil
 			}
 			for _, value := range inst.CredentialHeaders {
@@ -590,8 +589,13 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 					return nil
 				}
 			}
-			// For openai-type instances, check per-instance OAuth at auth/<name>.json.
-			if inst.Type == "openai" {
+			// Per-instance OAuth at auth/<name>.json, for instances that behave
+			// as OpenAI proper. The behavior tag rather than the declared type:
+			// an openai instance routed through chat-completions is served by
+			// the openaicompat adapter, which sends a bearer API key and cannot
+			// use an OAuth record at all, so accepting one here would only move
+			// the failure to a 401 mid-session.
+			if tag == "openai" {
 				stateDir := openAIStateDirFromLaunchEnv(env)
 				if openAIInstanceOAuthUsable(stateDir, inst.Name) {
 					return nil
@@ -609,7 +613,11 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 					return nil
 				}
 			}
-			if providerCredentialInEnv(tag, env) {
+			// ResolveKey's layer order, asked of the launch environment rather
+			// than the hub's: the instance name's variables first, then the
+			// credential row's. Asking only the row would refuse an instance
+			// whose client cmdutil builds from the name-scoped key.
+			if providerCredentialInEnv(inst.Name, env) || providerCredentialInEnv(credTag, env) {
 				return nil
 			}
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))

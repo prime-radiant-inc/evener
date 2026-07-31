@@ -39,8 +39,9 @@ type hubAuthController struct {
 	setCredential     func(string, string) error
 	clearCredential   func(string) error
 	// providersConfigPath is the path to providers.toml. When non-empty, auth
-	// methods resolve the instance's behavior tag from the file and key
-	// credentials and OAuth state by instance name rather than provider type.
+	// methods resolve the instance from the file — its behavior tag for how it
+	// authenticates, its credential tag for which key does — and key credentials
+	// and OAuth state by instance name rather than provider type.
 	providersConfigPath string
 
 	credentialTestLoader credentialProbeLoader
@@ -160,10 +161,10 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 
-	// Instance-aware path: resolve the behavior tag from config when available.
+	// Instance-aware path: resolve the instance from config when available.
 	if c.providersConfigPath != "" {
-		if tag, err := c.resolveInstanceBehaviorTag(name); err == nil {
-			return c.instanceStatus(name, tag), nil
+		if inst, err := c.resolveInstance(name); err == nil {
+			return c.instanceStatusFor(inst), nil
 		}
 		// Unknown instance — fall through to legacy type-map path.
 	}
@@ -517,29 +518,38 @@ func normalizeAuthProvider(provider string) string {
 	return provider
 }
 
-// resolveInstanceBehaviorTag reads providers.toml (via providersConfigPath) and
-// returns the behavior tag for the named instance. The tag, not the declared
-// type, is what every provider-conditional decision keys on: an openai instance
-// with api_style = "chat-completions" is behaviorally an openai-compatible
-// endpoint. Returns an error when the config path is unset, the file cannot be
-// read/parsed, or the instance name is not found.
-func (c *hubAuthController) resolveInstanceBehaviorTag(name string) (string, error) {
+// resolveInstance reads providers.toml (via providersConfigPath) and returns the
+// named instance. Returns an error when the config path is unset, the file
+// cannot be read/parsed, or the instance name is not found.
+func (c *hubAuthController) resolveInstance(name string) (providercfg.InstanceConfig, error) {
 	if c.providersConfigPath == "" {
-		return "", errors.New("no providers config path configured")
+		return providercfg.InstanceConfig{}, errors.New("no providers config path configured")
 	}
 	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
 	if err != nil {
-		return "", fmt.Errorf("load providers config: %w", err)
+		return providercfg.InstanceConfig{}, fmt.Errorf("load providers config: %w", err)
 	}
 	if !exists {
-		return "", fmt.Errorf("providers config not found at %s", c.providersConfigPath)
+		return providercfg.InstanceConfig{}, fmt.Errorf("providers config not found at %s", c.providersConfigPath)
 	}
 	for _, inst := range cfg.Instances {
 		if inst.Name == name {
-			return providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)), nil
+			return inst, nil
 		}
 	}
-	return "", fmt.Errorf("instance %q not found in providers config", name)
+	return providercfg.InstanceConfig{}, fmt.Errorf("instance %q not found in providers config", name)
+}
+
+// resolveInstanceBehaviorTag returns the behavior tag for the named instance.
+// The tag, not the declared type, is what every provider-conditional behavior
+// keys on: an openai instance with api_style = "chat-completions" is
+// behaviorally an openai-compatible endpoint.
+func (c *hubAuthController) resolveInstanceBehaviorTag(name string) (string, error) {
+	inst, err := c.resolveInstance(name)
+	if err != nil {
+		return "", err
+	}
+	return providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)), nil
 }
 
 // instanceIsOpenAI returns true if the named instance behaves as OpenAI proper
@@ -567,28 +577,43 @@ func (c *hubAuthController) requiresOpenAI(name string) error {
 	return appwire.InvalidParams(fmt.Sprintf("OAuth is not supported for instance %q", name))
 }
 
+// instanceStatusFor computes the per-instance credential status for a
+// configured instance, deriving both tags it is keyed on from the instance
+// itself. This is the shared entry point for Status and the instance-list
+// controller.
+func (c *hubAuthController) instanceStatusFor(inst providercfg.InstanceConfig) appwire.AuthStatusResponse {
+	return c.instanceStatus(
+		inst.Name,
+		providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)),
+		providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL),
+	)
+}
+
 // instanceStatus computes the per-instance credential status for the given
-// instance name and its resolved behavior tag. For openai-behaving instances it
-// checks the per-instance OAuth file (auth/<name>.json) in addition to the
+// instance name, behavior tag and credential tag. For openai-behaving instances
+// it checks the per-instance OAuth file (auth/<name>.json) in addition to the
 // credentials store. For all others it checks only the store.
 //
-// The tag rather than the declared type is the key throughout: an openai
-// instance carrying api_style = "chat-completions" resolves
-// OPENAI_COMPATIBLE_API_KEY and has no OAuth, which is what the launch preflight
-// already believes about it.
+// Neither tag is the declared type, and the two answer different questions. How
+// the instance behaves — whether OAuth exists at all, whether it authenticates
+// with anything, which auth modes to report — is the behavior tag. Which key
+// authenticates it is the credential tag, because that answer belongs to the
+// endpoint its adapter contacts: an openai instance on chat-completions with no
+// base_url is api.openai.com and resolves OPENAI_API_KEY, while the same shape
+// with a base_url is a gateway that inherits no type-level key at all. The pane
+// names the variable the launch path signs with, or none.
 //
-// This is the shared helper reused by Status and the instance-list controller.
-// It is keyed purely by name+tag so callers that have already resolved the tag
-// can avoid re-reading the config.
-func (c *hubAuthController) instanceStatus(name, behaviorTag string) appwire.AuthStatusResponse {
+// It is keyed purely by name+tags so callers that have already resolved them can
+// avoid re-reading the config.
+func (c *hubAuthController) instanceStatus(name, behaviorTag, credentialTag string) appwire.AuthStatusResponse {
 	if behaviorTag == "openai" {
 		resp, _ := c.openAIInstanceStatus(name)
 		return resp
 	}
 
 	// Everything else: key-based credential check, resolving by instance name.
-	_, src := c.creds.ResolveKey(name, behaviorTag)
-	hasFile, envVar := c.creds.InstanceLayers(name, behaviorTag)
+	_, src := c.creds.ResolveKey(name, credentialTag)
+	hasFile, envVar := c.creds.InstanceLayers(name, credentialTag)
 	// A provider that authenticates nothing has no key to resolve, so nothing
 	// resolving is not a credential gone missing. credentials.Store.List states
 	// that as SourceNone for its own rows; the instance-keyed path must state it
