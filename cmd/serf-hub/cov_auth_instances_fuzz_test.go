@@ -63,16 +63,16 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		_ = c.config()
 
 		// Resolution, legacy status, key status, list, and API-key validation.
-		_, _, _ = c.resolveInstanceType("x")
+		_, _ = c.resolveInstanceBehaviorTag("x")
 		if err := os.WriteFile(providers, []byte("bad = ["), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _, _ = c.resolveInstanceType("x")
+		_, _ = c.resolveInstanceBehaviorTag("x")
 		if err := os.WriteFile(providers, []byte("schema=1\ndefault=\"work\"\n[instances.work]\ntype=\"openai\"\n[instances.ant]\ntype=\"anthropic\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, _, _ = c.resolveInstanceType("work")
-		_, _, _ = c.resolveInstanceType("missing")
+		_, _ = c.resolveInstanceBehaviorTag("work")
+		_, _ = c.resolveInstanceBehaviorTag("missing")
 		_ = c.instanceIsOpenAI("work")
 		_ = c.instanceIsOpenAI("openai")
 		_ = c.instanceIsOpenAI("ant")

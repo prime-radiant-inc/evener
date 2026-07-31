@@ -1,4 +1,4 @@
-# transcript-delegate-audit-children-of: audit a delegate child transcript
+# transcript-subagent-audit-children-of: audit a delegate child transcript
 
 **What this covers**: transcript discovery for delegate child sessions. A parent
 delegates work, then uses transcript tools to enumerate and inspect the child

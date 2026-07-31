@@ -302,7 +302,7 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
   `len(history) <= PreserveRecentTurns` (`:1216-1223`) — which is why this
   card's two-turn session sees a fast 204 and why a longer one will not.
   Don't generalize the timing. The default strategy is `compact`
-  (`agent/session_init.go:51-53`, selected for an empty `ContextStrategy`,
+  (`agent/session_init.go:52-54`, selected for an empty `ContextStrategy`,
   which is what the hub spawns with) and it writes the bare
   `[CONTEXT CHECKPOINT]` header. `--context-strategy session-log` writes
   `[CONTEXT CHECKPOINT - SESSION LOG]` instead

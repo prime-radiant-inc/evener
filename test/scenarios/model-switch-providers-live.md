@@ -2,11 +2,12 @@
 
 **What this covers**: spec `docs/superpowers/specs/2026-07-12-model-switching-design.md`
 Acceptance criterion 8 (a live cross-provider ladder) and the "Live ladder"
-test-plan bullet. Exercises `Session.SetModel` (`agent/session.go:674`), the
+test-plan bullet. Exercises `Session.SetModel` (`agent/session.go:783`), the
 persisted `Switched model: <old> → <new>` marker
-(`buildModelSwitchMarkerText`, `agent/session.go:774`), the effort-ladder
+(`buildModelSwitchMarkerText`, `agent/session.go:900`), the effort-ladder
 clamp re-derivation on switch (`ReasoningEffortLevels`/`SupportsReasoning`,
-`appwire/types.go:256-257`), and — for the anthropic-family leg — the
+`appwire/types.go:348-349` — a hub/AppWire-layer snapshot, not visible on
+this card's daemon HTTP surface; see Sharp edges), and — for the anthropic-family leg — the
 thinking-absence-when-effort=none contract against a **real** wire body, with
 `agent/session_replay_provenance_test.go` (Task 6's unit matrix) as the
 deterministic backstop for the same rule.
@@ -86,12 +87,16 @@ no hub, no browser — so the switch path under test is exactly
 3. **Switch → openai instance.**
    `curl -s -X POST http://127.0.0.1:9331/model -d
    '{"model":"openai/gpt-5.5"}'` (expect 204). Read the transcript: the
-   newest turn is `schema.TurnModelSwitch` with text exactly
-   `Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5`. `GET
-   /status`: `model` is now `gpt-5.5`, `detailed.reasoningEffortLevels` /
-   `detailed.supportsReasoning` (or the daemon's reasoning-info fields)
-   match gpt-5.5's catalog entry, not opus-4-6's — this is the effort-ladder
-   re-derivation the marker step must trigger.
+   newest turn is `schema.TurnModelSwitch` whose FIRST line is exactly
+   `Switched model: anthropic/claude-opus-4-6 → openai/gpt-5.5` (the marker
+   can carry further `Warning:` lines for context pressure or dropped
+   fallbacks — `agent/session.go:900-908` — so match the first line, not the
+   whole entry). `GET /status`: `model` is now `gpt-5.5`.
+   Do **not** assert an effort ladder here: the daemon's `/status` payload
+   (`StatusInfo`/`DetailedStatus`, `server/server.go:88-136`) has no
+   `reasoningEffortLevels`/`supportsReasoning` field at all — those live on
+   the hub/AppWire `thread/read` snapshot this card deliberately avoids.
+   `model-switch-resume.md` covers the ladder at that layer.
 
 4. **Tool-using turn on leg 2.** Same `/input` shape as step 2 (`echo LEG2`).
    Poll to idle. Assert `response_model == "gpt-5.5"`,
@@ -116,27 +121,30 @@ no hub, no browser — so the switch path under test is exactly
    {"model":"anthropic/claude-sonnet-4-5"}` (or any second catalogued model
    on the SAME anthropic-family instance used in step 1 — the point is a
    same-instance, cross-model hop, not a cross-provider one). Assert the
-   marker `Switched model: kimi/kimi-for-coding → anthropic/claude-sonnet-4-5`
-   and `detailed.reasoningEffortLevels` matches sonnet-4-5's ladder (not
-   opus-4-6's, not kimi's). Send one more tool-using turn, assert
+   marker's first line `Switched model: kimi/kimi-for-coding → anthropic/claude-sonnet-4-5`.
+   Again, no ladder assertion on this surface. Send one more tool-using turn, assert
    `response_model == "claude-sonnet-4-5"`.
 
 ## Expected
 
 - Every switch (steps 3, 5, 6) persists exactly one `schema.TurnModelSwitch`
-  turn with the literal marker text `Switched model: <old
-  provider/model> → <new provider/model>` — falsification: marker text
-  differs, is missing, or a switch silently no-ops the model.
+  turn whose first line is the literal marker text `Switched model: <old
+  provider/model> → <new provider/model>` — falsification: that line
+  differs, is missing, or a switch silently no-ops the model. Trailing
+  `Warning:` lines are legitimate marker content, not a mismatch.
 - Every subsequent turn's persisted `response_model`/`response_provider`
   matches the just-switched target, never the pre-switch model —
   falsification: a turn runs on the old model after a successful switch
   (the profile swap under `s.mu` in `SetModel` didn't take, or a
   concurrently-in-flight round used a stale profile snapshot).
-- `reasoningEffortLevels`/`supportsReasoning` (or equivalent daemon status
-  fields) change to the NEW model's catalog entry immediately after the
-  switch RPC returns — falsification: the ladder stays pinned to the old
-  model until the next turn re-derives it (a G2-class staleness regression;
-  see `server/appwire_runtime.go` / `UpdateSessionInfo`).
+- The effort-ladder re-derivation (`reasoningEffortLevels`/
+  `supportsReasoning` following the new model immediately, rather than
+  staying pinned until the next turn — the G2-class staleness regression,
+  `server/appwire_runtime.go` / `UpdateSessionInfo`) is **out of scope for
+  this card**: it is only observable on the hub/AppWire `thread/read`
+  snapshot (`appwire/types.go:348-349`), and this card runs against the
+  daemon's raw HTTP surface by design. Assert it in `model-switch-resume.md`
+  instead of inventing a `/status` field that does not exist.
 - Step 5's explicitly expanded request body for the anthropic-family kimi leg under
   effort=none has no `thinking` key — falsification: a `thinking` object is
   present despite effort=none (regression in the effort→thinking wiring);
@@ -158,16 +166,19 @@ no hub, no browser — so the switch path under test is exactly
 - The daemon's own HTTP surface (this card's path) is a strict subset of
   what the hub/appwire layer offers (`thread/model/set`,
   `web-model-switch-mid-session.md`) — it proves `Session.SetModel` and the
-  marker/ladder contract directly, but does NOT exercise the hub's
+  marker contract directly, but reaches no ladder fields at all
+  (`DetailedStatus` carries tools/mcp/skills/plugins/hooks/jobs/agents and
+  nothing about reasoning — `server/server.go:88-96`), and does NOT exercise the hub's
   turn-active/queue-drain rejection semantics; those are covered by
   `web-model-switch-mid-session.md` and are out of scope here.
 - Effort is a **launch-only** flag on this HTTP surface — there is no
   `/effort` route and `POST /model`'s body (`ModelRequest`) carries only
   `model`, so effort cannot change mid-session here. The whole ladder runs
-  at step 1's `--reasoning-effort none`; the effort-ladder re-derivation
-  checked in step 3 is about the per-model `reasoningEffortLevels` **array**
-  (a catalog-intrinsic property that changes by model regardless of the
-  current effort value), not about the current effort clamping. Some
+  at step 1's `--reasoning-effort none`. The per-model
+  `reasoningEffortLevels` **array** (a catalog-intrinsic property that
+  changes by model regardless of the current effort value) is a distinct
+  thing from the current effort clamping — but neither is readable here, so
+  step 3 no longer checks it. Some
   anthropic-family coding-plan backends have been observed defaulting
   extended thinking on server-side regardless of the request; see Results
   below.

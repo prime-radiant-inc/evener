@@ -82,69 +82,106 @@ api_key = "sk-..."
 api_key = "sk-ant-..."
 ```
 
-- `LoadStore` (`store.go:89`) reads the file. A missing file yields an empty
-  store (no error). A present file **must** be mode `0600` — group/world bits set
-  cause a hard error (`store.go:98`). Writes go through a temp-file + rename with
-  `0600` (`store.go:184`).
-- **The fixed provider set is defined in code, not config.** Two hardcoded maps
-  are the source of truth:
-  - `providerEnvVars` (`store.go:37`) — provider → the env var(s) checked as a
-    fallback (first non-empty wins).
-  - `providerAuthModes` (`store.go:58`) — provider → supported auth flows
-    (`apiKey` / `oauth` / `none`). `List()` (`store.go:163`) iterates *this* map,
-    so it is effectively the definition of "what providers exist" to the hub.
-- `Get(provider)` (`store.go:116`) resolves a key with lookup order **file → env
-  → absent**, returning the value and a `Source` (`SourceFile` / `SourceEnv` /
+- `LoadStore` reads the file. A missing file yields an empty store (no error). A
+  present file **must** be mode `0600` — group/world bits set cause a hard error.
+  Writes go through a temp-file + rename with `0600`.
+- **The fixed provider set is defined in code, not config**, and the store keeps
+  no copy of it. The single source is the `envvars` registry: `envvars/providers.go`
+  holds one `ProviderEnv` row per provider, and the store asks it per lookup.
+  - `envvars.Providers()` enumerates the rows. `List()` iterates it, so
+    `envvars/providers.go` is the definition of "what providers exist" to the hub.
+  - `envvars.APIKeyVars(provider)` — the env var(s) checked as a fallback, in
+    order (first non-empty wins). `Get`, `Layers`, `InstanceLayers`, and
+    `ResolveKey` each read it.
+  - `envvars.AuthModes(provider)` — the supported auth flows (`apiKey` /
+    `oauth` / `none`). `envvars.RequiresNoCredential(provider)` names the
+    derived case of a provider that authenticates nothing, so no caller has to
+    restate it.
+- `Get(provider)` resolves a key with lookup order **file → env → absent**,
+  returning the value and a `Source` (`SourceFile` / `SourceEnv` /
   `SourceAbsent`).
-- `Layers(provider)` (`store.go:131`) reports the file and env layers
-  *independently* of priority, so the UI can show a stored key shadowed by (or
-  shadowing) an env var.
-- `Set` / `Clear` / `List` / `APIKeyFor` round out the API. `APIKeyFor`
-  (`store.go:179`) is the `launchconfig.CredentialResolver` implementation the
-  spawner uses.
-- `ollama` is special: it maps to `nil` env vars and auth mode `{"none"}`;
-  `List()` reports it as `SourceNone` (`store.go:167`).
+- `Layers(provider)` reports the file and env layers *independently* of
+  priority, so the UI can show a stored key shadowed by (or shadowing) an env
+  var.
+- `ResolveKey(name, tag)` and `InstanceLayers(name, tag)` are the instance-keyed
+  pair: the file entry is looked up under the instance **name**, then the name's
+  env vars, then the behavior **tag**'s. They are what a `providers.toml` setup
+  resolves through.
+- `Set` / `Clear` / `List` / `APIKeyFor` round out the API. `APIKeyFor` is the
+  `launchconfig.CredentialResolver` implementation the spawner uses.
+- `ollama` needs no credential: its registry row's only auth mode is `none`,
+  though it still accepts an optional `OLLAMA_API_KEY`. `List()` reports
+  `SourceNone` for any provider `envvars.RequiresNoCredential` accepts, so the
+  rule holds for a second such provider with no edit here.
 
 The hub loads exactly one store at `filepath.Join(hubStateRoot, "credentials.toml")`
-(`cmd/serf-hub/main.go:103`) and hands it to the spawner and the auth controller.
+(`cmd/serf-hub/main.go`) and hands it to the spawner and the auth controller.
 
 > Note: the UI copy and several code comments say keys live in
-> `~/.serf/credentials.toml` (e.g. `cmd/serf-hub/templates/partials/credentials.html:9`,
-> the package doc at `store.go:1`). That is the *documented default home*; the
-> hub actually uses whatever `hubStateRoot` is configured to. The hub auth
-> controller's fallback constructors derive the path as
+> `~/.serf/credentials.toml` (e.g. the package doc at the top of `store.go`).
+> That is the *documented default home*; the hub actually uses whatever
+> `hubStateRoot` is configured to. The hub auth controller's fallback
+> constructors derive the path as
 > `filepath.Join(filepath.Dir(stateDir), "credentials.toml")`
-> (`cmd/serf-hub/app_auth.go:57,88`).
+> (`newHubAuthController` / `newHubAuthControllerWithStore` in
+> `cmd/serf-hub/app_auth.go`).
+
+### Which key a lookup uses
+
+`credentials.toml` is keyed by instance name; the `envvars` registry is keyed by
+**behavior tag** (`providercfg.BehaviorTag`), not by the `type` an instance
+declares. The two differ for exactly one case today: an `openai` instance with
+`api_style = "chat-completions"` has tag `openai-compatible`, so it resolves
+`OPENAI_COMPATIBLE_API_KEY` and supports no OAuth at all.
+
+Both hub paths key on the tag, so launch and the credentials pane cannot
+disagree about one instance:
+
+- `validateProviderCredentials` (`cmd/serf-hub/spawn.go`) computes the tag for
+  the launch preflight, and returns early for a tag that
+  `envvars.RequiresNoCredential` accepts.
+- `hubAuthController.resolveInstanceBehaviorTag` feeds `instanceStatus`, which
+  serves both `serf/auth/status` and `hubInstancesController.List`.
+  `instanceIsOpenAI` (behind `requiresOpenAI`) uses the same tag to gate the
+  OAuth RPCs.
 
 ---
 
 ## Environment-variable reference
 
-Every variable below is read by name somewhere in the code. "Read by" cites the
-file that calls `os.Getenv` (or the map that lists it).
+Every variable below is a row in the `envvars` package: the name and its
+metadata in `envvars/envvars.go`, the provider it belongs to in
+`envvars/providers.go`. Production code reads the row (`envvars.Var.Trimmed`,
+`envvars.APIKeyVars`, …) rather than calling `os.Getenv` on a literal name, and
+a default test asserts that, so "Read by" cites the consumers that act on a
+variable rather than a definition site.
 
 ### API keys
 
+Each of these appears in the named provider's `APIKeyVars`, so
+`credentials.Store` resolves it for that provider — and for any instance whose
+behavior tag is that provider — with no per-variable code.
+
 | Env var | Provider(s) | Read by |
 |---------|-------------|---------|
-| `OPENAI_API_KEY` | openai | `credentials/store.go:38`; `llm/providers/openai/adapter.go:123`; `auth/openai/service.go:364,386` |
-| `ANTHROPIC_API_KEY` | anthropic | `credentials/store.go:39`; `launchconfig/env.go:32` |
-| `GEMINI_API_KEY` | google, gemini | `credentials/store.go:40-41` (primary) |
-| `GOOGLE_API_KEY` | google, gemini | `credentials/store.go:40-41` (fallback after `GEMINI_API_KEY`) |
-| `MINIMAX_API_KEY` | minimax | `credentials/store.go:42` |
-| `OPENROUTER_API_KEY` | openrouter, openrouter-anthropic | `credentials/store.go:43-44`; `cmdutil/cmdutil.go:273` |
-| `KIMI_API_KEY` | kimi | `credentials/store.go:45`; `cmdutil/cmdutil.go:271` |
-| `KIMI_CODING_API_KEY` | kimi-anthropic (Kimi coding plan) | `credentials/store.go`; `launchconfig/env.go` |
-| `GLM_API_KEY` | glm | `credentials/store.go:46`; `cmdutil/cmdutil.go:272` |
-| `OPENAI_COMPATIBLE_API_KEY` | openai-compatible | `credentials/store.go:47`; `llm/providers/openaicompat/adapter.go:107` |
-| `OLLAMA_API_KEY` | ollama (optional) | `llm/providers/ollama/adapter.go:189` |
+| `OPENAI_API_KEY` | openai | `llm/providers/openai/adapter.go`; `auth/openai/service.go` |
+| `ANTHROPIC_API_KEY` | anthropic | `llm/providers/anthropic/adapter.go` |
+| `GEMINI_API_KEY` | google, gemini (primary) | `llm/providers/google/adapter.go` |
+| `GOOGLE_API_KEY` | google, gemini (fallback after `GEMINI_API_KEY`) | `llm/providers/google/adapter.go` |
+| `MINIMAX_API_KEY` | minimax | `llm/providers/minimax/adapter.go` |
+| `OPENROUTER_API_KEY` | openrouter, openrouter-anthropic | `llm/providers/openrouter/adapter.go`; `llm/providers/openrouter_anthropic/adapter.go`; `cmdutil/cmdutil.go` |
+| `KIMI_API_KEY` | kimi | `llm/providers/kimi/adapter.go`; `cmdutil/cmdutil.go` |
+| `KIMI_CODING_API_KEY` | kimi-anthropic (Kimi coding plan) | `llm/providers/kimi_anthropic/adapter.go` |
+| `GLM_API_KEY` | glm | `llm/providers/glm/adapter.go`; `cmdutil/cmdutil.go` |
+| `OPENAI_COMPATIBLE_API_KEY` | openai-compatible | `llm/providers/openaicompat/adapter.go` |
+| `OLLAMA_API_KEY` | ollama (optional) | `llm/providers/ollama/adapter.go` |
 
-Note that `credentials.toml` only stores keys (no per-provider base URLs). Both
-the credentials store and the `launchconfig` injector key off provider name, but
-they are **separate maps**: `providerEnvVars` (`store.go:37`, supports the
-`GOOGLE_API_KEY` fallback) vs. `providerEnvVar` (`launchconfig/env.go:30`, single
-canonical var per provider, no `ollama` entry). The launchconfig map is what
-actually gets injected into the spawned subprocess.
+Note that `credentials.toml` only stores keys (no per-provider base URLs). The
+credentials store and the `launchconfig` injector read the same registry row but
+different fields: `APIKeyVars` is the ordered fallback list the store resolves
+through (which is how `GOOGLE_API_KEY` backs up `GEMINI_API_KEY`), while
+`InjectAPIKeyVar` is the single canonical var `ToEnv` injects into the spawned
+subprocess. A row with no `InjectAPIKeyVar` — ollama — injects nothing.
 
 ### Base URLs
 
@@ -242,10 +279,13 @@ OpenAI API key in `credentials.toml` like any other provider — the standalone
 
 ### How a user signs in
 
-The hub auth controller (`hubAuthController`, `app_auth.go:19`) gates every OAuth
-RPC on `provider == "openai"` and exposes:
+The hub auth controller (`hubAuthController` in `cmd/serf-hub/app_auth.go`)
+gates every OAuth RPC on the named instance's behavior tag being `openai`
+(`requiresOpenAI` → `instanceIsOpenAI`), and exposes:
 `Status` / `List` / `Logout` / `LoginStart` / `LoginComplete` / `DeviceStart` /
-`DevicePoll` / `ApiKeySet`.
+`DevicePoll` / `ApiKeySet`. A chat-completions `openai` instance is refused with
+an invalid-params error rather than handed an authorize URL that could never
+authenticate it.
 
 The web Credentials screen drives this (see Web/TUI surfaces below):
 
@@ -322,9 +362,11 @@ from the parent env (`os.Environ()`), it sets, in increasing priority:
 2. `SERF_PROVIDERS_CONFIG`, when the hub loaded a `providers.toml`
    (`env.go:65-66`) — the only config file that crosses the boundary; the child
    re-reads it.
-3. **Exactly one** provider API key — `providerEnvVar[in.Provider]` resolved via
-   `Creds.APIKeyFor` (`env.go:70-74`). Only the launched provider's key is
-   injected; nothing else from the credentials store crosses the boundary.
+3. **Exactly one** provider API key — the registry's
+   `envvars.InjectAPIKeyVar(in.Provider)`, resolved via `Creds.APIKeyFor`. Only
+   the launched provider's key is injected; nothing else from the credentials
+   store crosses the boundary. A provider with no `InjectAPIKeyVar` (ollama)
+   contributes nothing here.
 4. Per-launch env overrides from `Resolved.Effective.Env`, applied last
    (sorted, last-write-wins) so they win over everything (`env.go:78-85`).
 
@@ -393,7 +435,7 @@ likewise build via `cmdutil.LoadClient`, so all three see custom instances.
 — it loads `providers.toml` when present, or seeds the config in memory from the
 environment via `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) when
 absent, then injects credentials via `credentials.Store.ResolveKey(name, typ)`
-(`internal/credentials/store.go:184`) into the in-memory config and calls
+(`internal/credentials/store.go`) into the in-memory config and calls
 `llm.NewFromProviders`. No disk write ever occurs in `LoadClient`; persisting
 `providers.toml` is the hub's responsibility. The hub (`cmd/serf-hub/main.go:120–131`)
 materializes the file on startup when absent via

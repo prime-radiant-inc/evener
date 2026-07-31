@@ -68,12 +68,21 @@ type hubForkDraft struct {
 }
 
 type hubModel struct {
-	client   *appwire.Client
-	hubURL   string
-	stateDir string
-	width    int
-	height   int
-	err      error
+	client *appwire.Client
+	// frames is the hub connection's ordered notification feed. main wires it
+	// to the client before the receive loop starts; a model without one never
+	// receives notifications, which is what a model without a hub wants.
+	frames *hubFrameFeed
+	// dialHub opens a replacement connection after this one dies. A model
+	// without one reports the loss and tells the user to restart instead.
+	dialHub          hubDialer
+	connectionLost   bool
+	reconnectAttempt int
+	hubURL           string
+	stateDir         string
+	width            int
+	height           int
+	err              error
 
 	mode     hubMode
 	tree     hubTreeResponse
@@ -248,7 +257,7 @@ func (m hubModel) Init() tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
-	return tea.Batch(fetchHubTree(m.client), waitHubNotification(m.client))
+	return tea.Batch(fetchHubTree(m.client), waitHubNotification(m.frames))
 }
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

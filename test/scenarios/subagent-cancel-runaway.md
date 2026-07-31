@@ -1,4 +1,4 @@
-# job-stop-runaway: job_stop stops a runaway delegate and delegate_send starts its next turn
+# subagent-cancel-runaway: job_stop stops a runaway delegate and delegate_send starts its next turn
 
 **What this covers**: `job_stop` as the public stop primitive for delegate work,
 plus the resumable follow-up path through `delegate_send`.

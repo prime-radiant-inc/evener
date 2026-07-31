@@ -13,16 +13,19 @@ longer on it" and "Driving the web UI" — the selector map there is the single
 place these hooks are maintained. This card is now runnable **end to end
 without a browser**: the resume is triggered by two entry points that share
 one implementation, and the REST one needs only `curl`. The old
-`textarea[placeholder="message the agent…"]` selector is stale twice over
-(the placeholder is `Message the agent…`, capital M) — the composer is
-`[data-testid="composer-input-card"]` now.
+`textarea[placeholder="message the agent…"]` selector is stale twice over:
+the composer is `[data-testid="composer-input-card"]` now, and its
+placeholder is not a stable hook at all — see step 6.
 
 ## Pre-state
 
-- Hub running with `-serf` set so it can spawn fresh daemons, on an isolated
-  `$HOME` and a kernel-assigned port — see the Setup checklist in
-  `docs/agentic-testing.md`. Every `~/.serf` path below resolves inside that
-  isolated `$HOME`; a run against a real one would kill a real daemon.
+- An isolated hub built from the branch under test, running with `-serf` set
+  so it can spawn fresh daemons — the scratch `$HOME` and kernel-assigned
+  port from the Setup checklist in `docs/agentic-testing.md`, never Jesse's
+  real hub. Every `~/.serf/run` path below is that isolated home's
+  rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go:39-49`):
+  step 2 globs it for a pid and step 3 kills that pid, so under a real
+  `$HOME` this card kills a real daemon.
 - A session exists whose last completed turn ended in idle (i.e.
   not stuck mid-turn — the r6y9 case is different). Spawn one if
   needed: `curl ... /api/spawn` with a quick prompt.
@@ -69,12 +72,18 @@ one implementation, and the REST one needs only `curl`. The old
    one through the same `resumeRequestFor` → `Spawner.Resume` path before
    starting the turn (`cmd/serf-hub/web_session.go:69-171`, kata `x3hp`).
 
-6. **[browser, optional]** Repeat from a browser to cover the *other* entry
-   point: navigate to `/auth?token=$TOKEN&next=/s/local:$SID`, type into the
-   textarea inside `[data-testid="composer-input-card"]`
-   (`aria-label="Message"`, placeholder `Message the agent…`,
-   `panes/session/composer/Composer.tsx:782-783`) and click
-   `[data-testid="composer-submit"]`. That routes to appwire `turn/start`,
+6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
+   then drive the *other* entry point from a browser: navigate to
+   `/auth?token=$TOKEN&next=/s/local:$SID` and type into the textarea inside
+   `[data-testid="composer-input-card"]` (`aria-label="Message"`,
+   `panes/session/composer/Composer.tsx:760,783`). Address it by that
+   testid, never by placeholder text: the placeholder is
+   `Message the agent…` on a live session but `Send a follow-up…` on the
+   ended one this leg needs (`:782`). Typing is also what makes the control
+   row appear — an ended session's card is a bare invitation until it has
+   focus or content (`:793,814`) — so click
+   `[data-testid="composer-submit"]` (or press `⌘↵`) after the text is in.
+   That routes to appwire `turn/start`,
    whose hub handler retries through the same `hubThreadResume`
    (`cmd/serf-hub/app_rpc.go:330` registers it; `:356,368` do the resume via
    the `resumeTurnStartThread` alias declared at `:58`). Note the ref form —

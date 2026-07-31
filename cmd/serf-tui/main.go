@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/cmdutil"
@@ -75,7 +76,7 @@ func run() int {
 	go warmModelCatalog()
 
 	ctx := context.Background()
-	runtime, err := startHubClient(ctx, hubstart.HubStartConfig{
+	hubConfig := hubstart.HubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
 		StateDir:          startupOpts.StateDir,
@@ -84,7 +85,25 @@ func run() int {
 		CurrentExecutable: currentExecutable(),
 		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,
-	})
+	}
+	// Every connection is opened the same way, including the ones that replace
+	// a dead one: same address, same auth, same autostart — which is what
+	// brings back a hub that exited rather than merely blipped. The feed has to
+	// exist before the connection does, because it becomes the client's ordered
+	// frame handler and that only takes effect installed ahead of the receive
+	// loop.
+	dialHub := func(ctx context.Context) (hubstart.HubRuntime, *hubFrameFeed, error) {
+		frames := newHubFrameFeed()
+		config := hubConfig
+		config.ObserveFrames = frames.Observe
+		runtime, err := startHubClient(ctx, config)
+		if err != nil {
+			return hubstart.HubRuntime{}, nil, err
+		}
+		frames.SetTransportCloser(runtime.Client.Close)
+		return runtime, frames, nil
+	}
+	runtime, frames, err := dialHub(ctx)
 	if err != nil {
 		_, _ = fmt.Fprint(standardError, hubstart.StartupErrorScreen(err))
 		return 1
@@ -99,6 +118,11 @@ func run() int {
 	defer resetTerminalBg()
 
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
+	m.frames = frames
+	m.dialHub = func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
+		replacement, frames, err := dialHub(ctx)
+		return replacement.Client, frames, err
+	}
 	var programOpts []tea.ProgramOption
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())

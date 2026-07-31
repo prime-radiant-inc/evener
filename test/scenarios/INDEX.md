@@ -36,9 +36,6 @@ the area they exercise.
   starts a dormant session: `input: []` on the wire, no turn, no
   error (kata `ytpa`; replaces the old `spawn-empty-prompt-blocked.md`,
   kata `xj9j`).
-- `spawn-picker-enter-noop.md` — pressing Enter inside the model
-  picker search selects first match and prevents form submit (kata
-  `t13x`).
 
 ## Session workspace
 
@@ -307,15 +304,15 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   secret.
 - `sidecar-stuckness-read-file-error.md` - stuckness observer wakes
   only on `read_file` errors and reports a missing-input alert.
-- `sidecar-test-triage-output-match.md` - test triage observer wakes
-  on an output signature and reads the watched job through the grant.
-- `sidecar-progress-digest-output-match.md` - progress concierge
-  summarizes a meaningful milestone instead of heartbeat noise.
+- `sidecar-test-triage-shell-frame.md` - test triage observer reads a
+  failure signature out of an `assistant.tool` watch frame; pins that a
+  parent-source observer gets event payloads, never a cross-session
+  read (renamed from `sidecar-test-triage-output-match.md`, kata
+  `f9gn`).
 - `sidecar-handoff-packager-job-notification.md` - handoff sidecar
   packages a completed delegate result from a `job.notification`
-  frame.
-- `sidecar-runbook-capture-output-match.md` - runbook scribe captures
-  a successful operational resolution from job output.
+  frame, and pins the observer read boundary: no cross-session read
+  grant, and no `job_read_output` tool at all.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a

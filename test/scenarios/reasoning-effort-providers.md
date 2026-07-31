@@ -1,8 +1,12 @@
 # reasoning-effort-providers: reasoning effort works end-to-end on Kimi and Anthropic
 
 **What this covers**: the kimi-effort branch — `llm.ClampReasoningEffort`
-(commit 2a6cb30a), the Anthropic forced-`tool_choice`-under-thinking downgrade
-(e13b2b3d), and the `max_tokens` > thinking-budget reconciliation (158774ac).
+(`llm/types.go:670`), the Anthropic forced-`tool_choice`-under-thinking
+downgrade (`llm/providers/anthropic/request.go:175-186`), and the
+`max_tokens` > thinking-budget reconciliation (`:188-198`). (The three
+commit hashes this card used to cite resolve to nothing in this repo's
+history — the branch was squashed or rebased away. The code pointers above
+are the durable form.)
 The symptom that started it: `Kimi error (status=400): Unsupported value:
 'reasoning_effort' does not support 'xhigh'`. If reasoning effort regresses on
 an Anthropic-family provider, this catches it.

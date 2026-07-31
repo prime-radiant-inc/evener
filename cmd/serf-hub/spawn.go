@@ -335,7 +335,7 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	return entry, nil
 }
 
-// WaitOption configures WaitForRendezvous.
+// WaitOption configures waitForRendezvousOrExit.
 type WaitOption func(*waitConfig)
 
 type waitConfig struct {
@@ -347,34 +347,6 @@ type waitConfig struct {
 // entry from a previously-crashed daemon.
 func WithStartedAfter(t time.Time) WaitOption {
 	return func(c *waitConfig) { c.startedAfter = t }
-}
-
-// WaitForRendezvous polls runDir for a rendezvous Entry whose PID matches.
-// Returns when found, or when ctx is canceled.
-func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...WaitOption) (rendezvous.Entry, error) {
-	cfg := waitConfig{}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		entries, _ := rendezvous.List(runDir)
-		for _, e := range entries {
-			if e.PID != pid {
-				continue
-			}
-			if !cfg.startedAfter.IsZero() && !e.StartedAt.After(cfg.startedAfter) {
-				continue
-			}
-			return e, nil
-		}
-		select {
-		case <-ctx.Done():
-			return rendezvous.Entry{}, errRendezvousTimeout
-		case <-ticker.C:
-		}
-	}
 }
 
 // ResumeDaemon launches `serf serve --resume <sessionID>` and waits for
@@ -443,22 +415,51 @@ func (b *tailBuffer) String() string {
 }
 
 // errRendezvousTimeout is the rendezvous wait running out of time, as opposed
-// to the child dying first. Those are the only two ways the wait fails, the
-// operator's next move differs for each, and a caller that wants to say which
-// one happened must not have to re-read the message to find out.
+// to the child dying first or the caller walking away. Those are the only
+// three ways the wait fails, the operator's next move differs for each, and a
+// caller that wants to say which one happened must not have to re-read the
+// message to find out.
 var errRendezvousTimeout = errors.New("timeout waiting for rendezvous")
+
+// errRendezvousCanceled is the caller abandoning the launch before the daemon
+// registered. The wait runs under the caller's context on both hub paths — the
+// REST resume passes r.Context(), the RPC one the websocket connection's ctx —
+// so a browser that navigates away, a dropped connection, or a keepalive that
+// gives up ends the wait without the spawn timeout having elapsed (kata 0c3g).
+//
+// The text keeps "rendezvous" so a canceled launch stays inside
+// diagnostic.HubFailureKeywords: it is still a hub failure whose honest
+// recovery is to reconnect and re-issue, not a Serf fault with a session log
+// to go read.
+var errRendezvousCanceled = errors.New("request canceled before rendezvous")
+
+// rendezvousWaitError says which way a done rendezvous-wait context ended.
+// ctx.Err() separates the two outright, so nothing has to be inferred from
+// timing: Canceled is the caller walking away, DeadlineExceeded is time
+// genuinely running out — the spawn timeout a launch layers on, or a deadline
+// the caller brought with it.
+func rendezvousWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return errRendezvousCanceled
+	}
+	return errRendezvousTimeout
+}
 
 // launchFailurePrefix labels a launch failure by what actually stopped it. A
 // daemon that fails validation and exits in milliseconds is not a timeout, and
-// calling it one sends an operator triaging the crash after a slow machine, a
-// hung provider, or a too-short SpawnTimeout — none of which are involved
-// (kata 42ck). Only the wait genuinely running out of time keeps the timeout
-// label.
+// neither is a caller who stopped waiting; calling either one a timeout sends
+// an operator triaging it after a slow machine, a hung provider, or a
+// too-short SpawnTimeout — none of which are involved (katas 42ck, 0c3g).
+// Only the wait genuinely running out of time keeps the timeout label.
 func launchFailurePrefix(action string, err error) string {
-	if errors.Is(err, errRendezvousTimeout) {
+	switch {
+	case errors.Is(err, errRendezvousTimeout):
 		return action + " timed out"
+	case errors.Is(err, errRendezvousCanceled):
+		return action + " canceled"
+	default:
+		return action + " failed"
 	}
-	return action + " failed"
 }
 
 func launchFailureError(prefix string, err error, stderr string) error {
@@ -709,6 +710,34 @@ func envToMap(env []string) map[string]string {
 	return out
 }
 
+// launchCheckWaitError says which way a launch-check that never produced a
+// verdict was stopped. Its context is done for two unrelated reasons — the
+// serfLaunchCheckTimeout budget elapsed, or the caller went away — and only the
+// first is a timeout. Calling the second one sends an operator triaging it
+// after a slow machine or a hung `serf launch-check`, when nothing was slow and
+// nobody is waiting for the answer any more (kata zg02).
+//
+// The launch-check runs ahead of the rendezvous wait and carries its own
+// budget, so this is the first place a mid-launch cancellation lands: the hub
+// runs it under the caller's context on every path that reaches it, and both
+// hub paths hand it a live request context — r.Context() on the REST resume,
+// the websocket connection's ctx on the RPC one.
+//
+// ctx.Err() separates the two outright, the same way rendezvousWaitError does
+// for the wait that follows: Canceled is the caller walking away,
+// DeadlineExceeded is time genuinely running out — the hub's own budget, or a
+// deadline the caller brought with it.
+//
+// Both stay an appwire.HubLaunchError, the discriminator the web client and the
+// TUI notice panel read to headline the failure as a session that would not
+// start. The label changes; the family of failure does not.
+func launchCheckWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return appwire.HubLaunchError("serf launch-check canceled")
+	}
+	return appwire.HubLaunchError("serf launch-check timed out")
+}
+
 func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, env []string) error {
 	if serfBinary == "" {
 		serfBinary = "serf"
@@ -723,7 +752,7 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
-		return appwire.HubLaunchError("serf launch-check timed out")
+		return launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
@@ -754,7 +783,7 @@ func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []s
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
-		return appwire.ModelListResponse{}, appwire.HubLaunchError("serf launch-check timed out")
+		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
 	}
 	if err != nil {
 		msg := strings.TrimSpace(redactEnvSecrets(string(out), env))
@@ -817,6 +846,14 @@ func isSensitiveEnvKey(key string) bool {
 		strings.Contains(key, "CREDENTIAL")
 }
 
+// waitForRendezvousOrExit polls runDir for a rendezvous Entry whose PID
+// matches, returning when one appears, when the launched child exits first, or
+// when ctx ends. It is the only rendezvous wait: a second, exported copy of
+// this loop with no exited arm and no possible production caller was deleted,
+// having twice drifted from this one (kata waf1).
+//
+// A nil exited channel never fires in the select below, which is how a caller
+// with no child process to watch waits on the rendezvous file alone.
 func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited <-chan error, opts ...WaitOption) (rendezvous.Entry, error) {
 	cfg := waitConfig{}
 	for _, o := range opts {
@@ -837,7 +874,7 @@ func waitForRendezvousOrExit(ctx context.Context, runDir string, pid int, exited
 		}
 		select {
 		case <-ctx.Done():
-			return rendezvous.Entry{}, errRendezvousTimeout
+			return rendezvous.Entry{}, rendezvousWaitError(ctx)
 		case err := <-exited:
 			if err != nil {
 				return rendezvous.Entry{}, fmt.Errorf("process exited before rendezvous: %w", err)

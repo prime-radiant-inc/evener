@@ -18,25 +18,30 @@ dashboard ↔ session transitions described in the action bars.
 - At least one live or recent session visible on the dashboard. If
   empty, spawn one first via `~/go/bin/serf spawn ...` or accept that
   the leaf-enter step is skipped.
-- No leftover tmux session named `serf-test` (the scenario kills it
-  first to be safe: `tmux kill-session -t serf-test 2>/dev/null`).
+- The tmux session name is derived from the driving shell's pid
+  (`TMUX_SESSION`, set in step 1), so a second agent running this card
+  at the same time cannot drive or kill this one's pane. Nothing to
+  clear out first — the name is new every run.
 
 ## Steps
 
-Use `tmux send-keys -t serf-test KEY ...` to drive input and
-`tmux capture-pane -t serf-test -p` to read the visible pane.
+Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
+`tmux capture-pane -t "$TMUX_SESSION" -p` to read the visible pane.
 
 1. **Launch in tmux**:
    ```
-   tmux new-session -d -s serf-test -x 200 -y 50 \
+   TMUX_SESSION="serf-nav-$$"
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
-   tmux capture-pane -t serf-test -p
+   tmux capture-pane -t "$TMUX_SESSION" -p
    ```
    Confirm the first line shows `serf live` and the hub URL + `N live`
    counter. A row marked `> ▾ ●` or `> ▸ ●` indicates a project header;
-   `└─` and `├─` mark leaf sessions. Footer reads:
-   `up/down select  enter open/toggle  n new  / palette  ctrl+o dashboard  q quit`.
+   session rows sit under it as a flat state-bar + status-dot + label,
+   with no tree-connector glyphs (see step 5). Footer reads:
+   `↑↓ select  enter open  n new  / filter  ctrl+o dashboard  q quit`
+   (`dashboardFooter`, `cmd/serf-tui/hub_dashboard_view.go:410-420`).
 
 2. **Dashboard arrow navigation**: send `Down Down` (or `j j`); recapture
    and confirm the `>` selection marker moved two rows.
@@ -48,19 +53,29 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 
 4. **Dashboard command palette**:
    ```
-   tmux send-keys -t serf-test "/"
-   tmux send-keys -t serf-test -l "tmp"
+   tmux send-keys -t "$TMUX_SESSION" "/"
+   tmux send-keys -t "$TMUX_SESSION" -l "tmp"
    ```
    Pane shows a bordered overlay titled `Command palette` with
    `Filter: tmp` and a filtered row list. Footer of the overlay reads
    `type filter  up/down navigate  enter select  esc close`. Press
    `Escape`; overlay disappears.
 
-5. **Enter a live session**: with selection on a leaf row
-   (`└─ ● idle …` or `├─ ● idle …`), press `Enter`. The composer view
-   replaces the dashboard. Confirm the footer changes to:
-   `enter: send  esc: browse  ctrl+p: palette  ctrl+o: dashboard  /help`
-   and a `message` label sits above a prompt with cursor (`> █`).
+5. **Enter a live session**: with selection on a session row, press
+   `Enter`. Session rows are a flat colored state-bar + status-dot +
+   label — they carry **no** `└─`/`├─` tree connectors, and
+   `TestSessionRowsHaveNoTreeConnectors`
+   (`cmd/serf-tui/dashboard_rows_test.go:36-48`) fails the build if any
+   reappear, so a literal grep for those glyphs is a false failure. The
+   composer view replaces the dashboard. Confirm the footer changes to:
+   `enter send  shift+enter newline  ⌘P palette  esc browse  /help`
+   (`composerFooterHints`' compose arm,
+   `cmd/serf-tui/composer_render.go:376-382` — key and action joined by a
+   space, not a colon, and ⌘-glyphs not `ctrl+`), above a prompt with
+   cursor (`> █`). There is **no** `message` label: default compose mode
+   deliberately sets none (`composer_panel.go:175-178`, "an extra
+   'message' line is redundant chrome") — the chip strip carries the
+   context instead.
 
 6. **Browse mode**: press `Esc`. Footer changes to
    `esc/i/q: compose  ctrl+o: dashboard`. The selected message row gets a
@@ -86,7 +101,7 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 10. **`q` exit from dashboard**: relaunch (step 1). Press `q`. The
     tmux session ends.
 
-11. **Cleanup**: `tmux kill-session -t serf-test 2>/dev/null`.
+11. **Cleanup**: `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null`.
 
 ## Expected
 
@@ -100,6 +115,8 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 - Step 4: filter narrows the rows in real time; `Esc` returns to the
   unfiltered dashboard.
 - Step 5: composer renders with cursor visible; footer hint updates.
+  Do not assert a `message` label or tree-connector glyphs — both were
+  deliberately removed and are pinned removed by unit tests.
 - Step 6: browse-mode footer and compose-mode footer are distinct.
 - Step 7: palette overlay lists at least `/help` and `/dashboard`;
   capability-gated entries show their gate reason inline.
@@ -115,7 +132,7 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 
 ## Cleanup
 
-- `tmux kill-session -t serf-test 2>/dev/null` (idempotent).
+- `tmux kill-session -t "$TMUX_SESSION" 2>/dev/null` (idempotent).
 
 ## Sharp edges
 
@@ -126,7 +143,8 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
   in practice; 300 ms is the comfortable margin.
 - **Enter on a project header toggles, doesn't open.** Project
   rows (`▾ ●` / `▸ ●`) treat Enter as "toggle expansion." Only
-  leaves (`└─`, `├─`) open a session. So the canonical
+  session rows open a session, and they carry no distinguishing
+  connector glyph to select on. So the canonical
   arrow-down-arrow-down-Enter recipe is brittle: count the rows
   carefully or use the filter palette to land on the right row.
 - **Double-Ctrl+C window is 1 s.** `hubCtrlCQuitWindow = time.Second`

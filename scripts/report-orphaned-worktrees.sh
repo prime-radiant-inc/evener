@@ -63,7 +63,12 @@ for arg in "$@"; do
 	case "$arg" in
 	--paths-only) PATHS_ONLY=1 ;;
 	-h | --help)
-		sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
+		# Everything from the shebang to the first non-comment line. The
+		# hardcoded range this replaces stopped at line 29 of a header that had
+		# grown to 58, so --help cut off before the by-hand review recipe —
+		# which is the one thing this script's own output sends readers here
+		# for.
+		awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
 		exit 0
 		;;
 	*)

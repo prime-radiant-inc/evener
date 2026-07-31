@@ -92,8 +92,11 @@ Turn 1:
   Falsification: J2 absent from either list, or present with a phantom
   status outside the canonical five.
 - Every entry carries the documented row fields: `job_id`, `type`,
-  `status`, `reason`, `started_at`, `output_bytes`; J4's row also has
-  `transcript_ref` and `resumable` (line 678).
+  `status`, `reason`, `started_at`, `total_bytes`; J4's row also has
+  `transcript_ref` and `resumable` (line 678). The byte counter on a
+  `job_list` row is `total_bytes` (`agent/session_tools_jobs.go:1349`) —
+  `output_bytes` is the `<job-notification>` attribute and a `job_status`
+  field, and asserting it here would fail on a working build.
 
 Turn 2:
 

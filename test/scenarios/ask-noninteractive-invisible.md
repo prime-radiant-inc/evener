@@ -5,7 +5,7 @@ registration-seam gate: `registerAskTool` never runs when `cfg.NonInteractive` i
 tool is unregistered (and therefore unadvertised to the provider) rather than present-but-
 blocked. Exercises both named surfaces: a hub-spawned `non_interactive:true` session (the
 same `SessionConfig.NonInteractive` flag `serve --non-interactive` sets — confirmed by
-`cmd/serf-hub/web_spawn.go:116` threading the spawn request's `non_interactive` straight into
+`cmd/serf-hub/web_spawn.go:89` threading the spawn request's `non_interactive` straight into
 the daemon's launch overrides) and the one-shot `serf <prompt>` CLI, which hardcodes
 `NonInteractive: true` unconditionally (`cmd/serf/main.go`/`run.go` — no flag needed or
 available to turn it off).

@@ -38,6 +38,7 @@ func runRegisteredCoverageSuite(t *testing.T) {
 		{"ClientSendError", TestClientRequestSendErrorClearsPending},
 		{"ClientWireError", TestClientRequestSurfacesWireError},
 		{"ClientWrappers", TestClientRequestWrappersRoundTrip},
+		{"ClientRequestIDObserver", TestClientRequestIDObserverNamesTheCallersResponseFrame},
 		{"ClientRoutes", TestClientRoutesResponsesAndNotifications},
 		{"ClientUpgrade", TestClientUpgradeRoundTrip},
 		{"ClientWithoutPinger", TestClientWithoutPingerHasNoKeepalive},

@@ -21,15 +21,32 @@ command and the header chip are wired to it.
 
 ## Pre-state
 
-- Fresh binaries + a test hub on a free port (see
-  `web-goal-set-and-complete.md` Pre-state / `docs/agentic-testing.md`):
+- Fresh binaries and a hub on a kernel-assigned port, both under one
+  `mktemp` run directory — never a fixed `/tmp/serf-hub-test` a second
+  concurrent build would overwrite mid-run (kata `k2rx`), never a port a
+  human picked (kata `68fm`). Same recipe as `docs/agentic-testing.md`'s
+  Setup checklist:
   ```bash
-  go build -o /tmp/serf-hub-test ./cmd/serf-hub
-  go build -o /tmp/serf-test     ./cmd/serf
-  go build -o /tmp/serf-tui-test ./cmd/serf-tui
-  /tmp/serf-hub-test -addr 127.0.0.1:9185 -serf /tmp/serf-test &
-  sleep 2
+  run=$(mktemp -d -t serf-e2e-goaltui-XXXXXX)
+  go build -o "$run/serf-hub" ./cmd/serf-hub
+  go build -o "$run/serf"     ./cmd/serf
+  go build -o "$run/serf-tui" ./cmd/serf-tui
+  "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+  HUBPID=$!
+  for i in $(seq 1 50); do
+    PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
+    [ -n "$PORT" ] && break
+    kill -0 "$HUBPID" 2>/dev/null || { echo "hub exited before listening:" >&2; cat "$run/hub.log" >&2; exit 1; }
+    sleep 0.1
+  done
+  [ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
   ```
+- Credentials: this card inherits `web-goal-set-and-complete.md`'s
+  arrangement, including its documented OAuth-footgun exception and the
+  flock pre-check that goes with it — read that card's Pre-state before
+  starting, since a hub sharing Jesse's `$HOME` cannot start at all while
+  his real one holds the lock, and the read-back loop above will report
+  that as "hub exited before listening".
 - OpenAI usable; `openai/gpt-5.4-mini` is enough for goal turns.
 
 ## Steps
@@ -37,10 +54,10 @@ command and the header chip are wired to it.
 1. **Start the TUI in tmux** at a fixed size with `--debug` (plain-text
    capture, stderr to a log):
    ```bash
-   tmpdir=$(mktemp -d -t serf-e2e-goaltui-XXXXX)
-   tmux kill-session -t serf-goal 2>/dev/null
-   tmux new-session -d -s serf-goal -x 200 -y 50 \
-     "/tmp/serf-tui-test --hub-addr 127.0.0.1:9185 --debug 2>/tmp/goaltui-stderr.log"
+   tmpdir=$(mktemp -d -t serf-e2e-goaltui-work-XXXXX)
+   TMUX_SESSION="serf-goal-$(basename "$tmpdir")"
+   tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
+     "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/goaltui-stderr.log"
    sleep 2
    ```
 
@@ -50,16 +67,16 @@ command and the header chip are wired to it.
    (`Say hello and stop.`). Wait for the spawn turn to reach idle:
    ```bash
    for i in $(seq 1 40); do
-     tmux capture-pane -t serf-goal -p | grep -qiE "state[: ]+idle|idle" && break; sleep 1
+     tmux capture-pane -t "$TMUX_SESSION" -p | grep -qiE "state[: ]+idle|idle" && break; sleep 1
    done
    ```
 
 3. **Set a two-step goal** that forces at least one continuation. In the
    composer, type the command literally (`-l`) and submit:
    ```bash
-   tmux send-keys -t serf-goal -l "/goal Create a file seed.txt containing the number 7, then create double.txt containing that number doubled (14). Verify both files, then mark the goal complete."
+   tmux send-keys -t "$TMUX_SESSION" -l "/goal Create a file seed.txt containing the number 7, then create double.txt containing that number doubled (14). Verify both files, then mark the goal complete."
    sleep 0.5
-   tmux send-keys -t serf-goal Enter
+   tmux send-keys -t "$TMUX_SESSION" Enter
    ```
    **Expected:** the composer accepts the command; the agent starts a
    turn. Within a few seconds the header shows a `goal` chip. Falsify: if
@@ -70,9 +87,9 @@ command and the header chip are wired to it.
 4. **Confirm the goal state via `/goal status`** (the always-visible
    assertion — see the chip caveat in step 5):
    ```bash
-   tmux send-keys -t serf-goal -l "/goal status"; sleep 0.3; tmux send-keys -t serf-goal Enter
+   tmux send-keys -t "$TMUX_SESSION" -l "/goal status"; sleep 0.3; tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 1
-   tmux capture-pane -t serf-goal -p | grep -iE "Goal: (active|complete|blocked)"
+   tmux capture-pane -t "$TMUX_SESSION" -p | grep -iE "Goal: (active|complete|blocked)"
    ```
    **Expected:** a transcript line `Goal: <status> <iterations>` (e.g.
    `Goal: active 1` mid-run, `Goal: complete 0` after). This reads the same
@@ -85,8 +102,8 @@ command and the header chip are wired to it.
    footer (`harness … model …`, a *different* strip with no goal) — not the
    chip. Scroll the body to the top first:
    ```bash
-   tmux send-keys -t serf-goal PageUp; tmux send-keys -t serf-goal PageUp; sleep 0.5
-   tmux capture-pane -t serf-goal -p | grep -nE "src .*serf .*goal (active|complete|blocked) [0-9]"
+   tmux send-keys -t "$TMUX_SESSION" PageUp; tmux send-keys -t "$TMUX_SESSION" PageUp; sleep 0.5
+   tmux capture-pane -t "$TMUX_SESSION" -p | grep -nE "src .*serf .*goal (active|complete|blocked) [0-9]"
    ```
    **Expected:** a line like
    `src serf · model … · dir … · ctx … · goal complete 0`. Falsify: if
@@ -97,7 +114,7 @@ command and the header chip are wired to it.
 6. **Wait for completion** and verify the result on disk + the chip:
    ```bash
    for i in $(seq 1 120); do
-     tmux capture-pane -t serf-goal -p | grep -qiE "goal +complete" && { echo "complete i=$i"; break; }
+     tmux capture-pane -t "$TMUX_SESSION" -p | grep -qiE "goal +complete" && { echo "complete i=$i"; break; }
      sleep 2
    done
    cat "$tmpdir/seed.txt" "$tmpdir/double.txt" 2>/dev/null
@@ -111,9 +128,10 @@ command and the header chip are wired to it.
 ## Cleanup
 
 ```bash
-tmux kill-session -t serf-goal 2>/dev/null
-rm -rf /tmp/serf-e2e-goaltui-*
-pkill -f serf-hub-test   # only if you started the test hub
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+kill "$HUBPID" 2>/dev/null   # by pid: `pkill -f serf-hub` would take out
+                             # another agent's hub too (docs/agentic-testing.md)
+rm -rf "$run" "$tmpdir"
 ```
 
 ## Sharp edges

@@ -14,11 +14,18 @@ default markdown read stopped announcing its window.
 
 ## Pre-state
 
-- A built serf binary. Build if absent:
+- One run directory holding the binary and this run's state, so two
+  agents running this card at once share nothing:
   ```bash
-  cd /Users/jesse/prime-radiant/toil-suite/serf
-  go build -o /tmp/serf ./cmd/serf
+  run=$(mktemp -d -t serf-e2e-catalog-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  export XDG_STATE_HOME="$run/state"
   ```
+  The exported state home keeps every session this card writes out of
+  Jesse's real `~/.local/state/serf/projects` while preserving the
+  `<state-home>/serf/projects/<project-id>/sessions/` layout the bucket
+  lookup depends on (`agent.RuntimeDirWithStateHome`). Keep it exported
+  for BOTH runs — A and B must resolve the same bucket.
 - Repo creds exported into the child's environment. The `.env` is bare
   `KEY=value` (no `export`), so plain `. .env` sets shell vars but does
   NOT pass them to the serf child — you MUST use `set -a`:
@@ -44,7 +51,7 @@ default markdown read stopped announcing its window.
 2. **Session A — do a small, identifiable piece of work.** Give it a
    distinctive artifact so the catalog title / content is recognizable:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Create a file named tide_table.py in the current directory that prints the single line 'high tide at noon' when run with python3. Run it to confirm the output, then report what you did."
    ```
    Wait for it to exit 0. Confirm the artifact landed:
@@ -56,7 +63,7 @@ default markdown read stopped announcing its window.
    ask a fresh serf run to use the transcript tools (it has no prior
    knowledge of A's ref — it must discover it):
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Use find_session_transcripts with no arguments to list recent sessions in this project. Identify the earlier session that created a tide table script (by its title and approx_turns). Then call read_session_transcript on that session's transcript_ref using the default markdown format. From the rendered conversation, report: (a) the exact filename that session created, (b) the exact line the script prints, and (c) quote the window header line that read_session_transcript printed at the top of its output."
    ```
 
@@ -92,13 +99,11 @@ default markdown read stopped announcing its window.
 
 ## Cleanup
 
-```bash
-rm -rf "$proj"
-```
+The project dir, the binary, and this run's whole state root:
 
-Session metadata under `~/.local/state/serf/projects/<project-id>/`
-lingers but is harmless. To purge: find the bucket for `$proj` and
-delete its `sessions/` entries.
+```bash
+rm -rf "$proj" "$run"
+```
 
 ## Sharp edges
 

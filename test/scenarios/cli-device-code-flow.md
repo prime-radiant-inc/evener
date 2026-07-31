@@ -4,7 +4,8 @@
 (`RequestDeviceCode → PollDeviceAuth → ExchangeDeviceCode → SaveAuth`)
 against the real OpenAI servers (`auth.openai.com`). Sibling coverage:
 `auth-device-autodetect.md` (mode-selection table), `device_test.go`
-(protocol shape, mocked), kata `xd51` (concurrent-login detection).
+(protocol shape, mocked), kata `24p1` (concurrent-login detection —
+see `auth-device-poll-concurrent.md`).
 
 The scenario is split into **Part A** (fully scriptable, no browser
 needed) and **Part B** (requires either a human or an AI agent with
@@ -115,8 +116,10 @@ unset XDG_STATE_HOME
 - **Missing `auth_mode=device auth_mode_reason=forced`**: the mode-selection table
   regressed. Cross-check with `auth-device-autodetect.md`.
 - **Missing `device_code_url=https://auth.openai.com/codex/device`**:
-  either the constant changed (check
-  `internal/auth/openai/device.go:20`) or the device endpoint moved.
+  either a constant changed (`deviceVerificationPath`,
+  `auth/openai/device.go:22`, joined onto `IssuerBaseURL`,
+  `auth/openai/config.go:15`, at `device.go:159`) or the device
+  endpoint moved.
 - **`device_code=` line missing or malformed**: the
   `RequestDeviceCode` call failed silently, or `oaitest`-style framing
   leaked. The code format is `[A-Z0-9]{4}-[A-Z0-9]{5}` today.
@@ -189,7 +192,7 @@ This deletes the test-only auth record. The user's real
 ### Part B — Expected (falsification)
 
 - CLI prints `concurrent_login=detected` on stdout: a previous login
-  on this account beat this one. Not a regression — kata `xd51`
+  on this account beat this one. Not a regression — kata `24p1`
   surface. Treat as success if existing auth is valid.
 - CLI exits with a 4xx-ish error after authorization: token exchange
   regressed. Check `ExchangeDeviceCode` against OpenAI's current

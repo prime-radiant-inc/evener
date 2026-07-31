@@ -123,7 +123,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		// one's state (kata xx1p).
 		if m.client != nil {
 			if ref, ok := m.currentRef(); ok {
-				cmd = resyncHubSession(m.client, ref)
+				cmd = resyncHubSession(m.frames, m.client, ref)
 			}
 		}
 	case appwire.NotifySerfThreadModelRetry:

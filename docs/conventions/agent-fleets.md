@@ -216,6 +216,54 @@ gone costs disk; the other direction costs a running agent its
 workspace. `scripts/disk-reclaim-selftest.sh` carries a scenario per
 hole — run it after touching the classifier.
 
+**Expect `--worktrees` to free nothing, and do not treat that as a bug
+in the classifier.** Every kata agent writes
+`.superpowers/<kata>-report.md` into its worktree, and that file is
+git-ignored work the script keeps by design. So a merged worktree is
+normally *also* a kept one: measured at the disk floor on 2026-07-30, all
+8 merged worktrees were held this way and the removable share was 0
+bytes. The pressure this creates is the danger — the remedy on offer does
+nothing, and the obvious next move is to loosen the classifier, which is
+how the deletion incident already happened twice.
+
+That zero is not a gap needing a new mechanism — kata worktrees have a
+disposal path, and it is the CONTROLLER'S RETIREMENT PASS, not
+`--worktrees`. After central gates go green the controller reads the
+report, verifies the branch is clean and landed (both facts), and removes
+worktree and branch by hand; the report goes with it, having been read.
+Sixteen worktrees retired that way in one night with zero friction. The
+report living inside the worktree is what makes the ratchet CORRECT for
+everything else: a worktree nobody retired is abandoned work, and its
+report is the only record of what that work was. Do not move reports out
+of worktrees to "fix" the yield, and do not treat `--worktrees` as the
+kata-cleanup tool — it is a background net for the other classes.
+
+So the levers have to be honest about what they can do. `--check` is a
+bare `df` on every test invocation and cannot measure, so it names the
+tools that can rather than promising a yield. The report sizes
+**removable, kept and unregistered separately**, because one total for
+the worktrees directory reads as the amount `--worktrees` would free —
+8.3G, when the answer was zero.
+
+**Most of the reclaimable disk is not in registered worktrees.** Two
+pockets are larger and neither is removed by any script here, because for
+both of them git's own "is this safe" check is unavailable:
+
+- `scripts/report-tmp-debris.sh` — per-session scratch under `/tmp`,
+  measured at 10.0G across 120 entries on the same volume as the
+  checkout. Scratch checkouts at ~270M each, stray per-session build
+  caches, chrome profiles, dumps. A scratch checkout can hold a
+  never-pushed experiment, so review each one; the bulk sweep needs
+  authorization.
+- `scripts/report-orphaned-worktrees.sh` — ~1.6G of pre-rename checkouts
+  `git worktree list` has no record of (kata smw0).
+
+**Do not `du` the build cache from the report.** It lives on an external
+volume by design, where emptying it cannot move this checkout's floor,
+and sizing it costs 32.6s of every run to answer a question nobody asked.
+`df` of its volume is the fact that matters. Same rule as the levers:
+measure what you can act on.
+
 ## Model tiering
 
 Use the cheapest model that does the job. Decompose for tier: many small

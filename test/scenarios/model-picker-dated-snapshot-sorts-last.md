@@ -1,8 +1,8 @@
 # model-picker-dated-snapshot-sorts-last: bare family id before its dated snapshot, within a provider
 
-**What this covers**: Track B Tasks 4 (`sortModelEntriesDatedLast` /
-`isDatedSnapshotModelID`, `cmd/serf-hub/web_spawn.go:193-242`) and 11
-(TUI `modelPickerItems`, `cmd/serf-tui/hub_commands.go:452-465`) —
+**What this covers**: Track B Tasks 4 (`sortModelEntriesDatedLast`,
+`cmd/serf-hub/web_spawn.go:226`, over `isDatedSnapshotModelID`, `:197`)
+and 11 (TUI `modelPickerItems`, `cmd/serf-tui/hub_commands.go:469-482`) —
 within one provider's group, a bare model id (e.g. `claude-opus-4-6`)
 must render before its dated snapshot (`claude-opus-4-6-20251101`),
 regardless of the order the live listing returned them in.
@@ -47,9 +47,10 @@ list.
    Within each provider run, every id matching `-\d{8}(-v\d+)?$`
    (`datedSnapshotSuffix`, `web_spawn.go:193`) must come after every id
    in that run that doesn't. Providers themselves sort ascending
-   (`sortModelEntriesDatedLast`, `:226-242`).
+   (`sortModelEntriesDatedLast`, `:226-241`).
 2. Same check through the TUI's own path: `modelPickerItems` applies the
-   identical predicate (`hub_commands.go:452-465`).
+   identical predicate over `buildModelPickerItems`'s unordered output
+   (`hub_commands.go:469-482`, the sort at `:471-480`).
 
 ### Browser (does the rendered list preserve it)
 
@@ -131,9 +132,9 @@ Investigated and ruled out:
   including `qwen/qwen3.5-plus-20260420` which *does* match the 8-digit
   dated regex) was ruled out one layer further upstream:
   `launchCheckModelVisible`
-  (`cmd/serf/internal/launchcheck/launchcheck.go:274-290`) filters every
+  (`cmd/serf/internal/launchcheck/launchcheck.go:274-291`) filters every
   `openrouter`-tagged model to ones with an exact embedded-catalog match
-  AND `SupportsTools` (`:285-288`) — none of the real openrouter ids
+  AND `SupportsTools` (`:286-288`) — none of the real openrouter ids
   (including the qwen dated pair) satisfy that filter, so they never
   reach the picker at all regardless of this track's own code.
 
@@ -150,6 +151,13 @@ build, via:
 - `TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`
   (`cmd/serf-tui/hub_model_picker_items_test.go:59-70`) — the same
   assertion for the TUI's `modelPickerItems`.
+
+Both are still the fallback when no dated pair is reachable:
+
+```bash
+go test ./cmd/serf-hub/ -run TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast
+go test ./cmd/serf-tui/ -run TestModelPickerItems_SortsDatedSnapshotLastWithinProvider
+```
 
 Step 1 above is the part of that gap the rewrite closes: it needs a
 provider that *enumerates* a dated pair, not one whose rows a browser
@@ -201,7 +209,7 @@ remove your `$run` dir. Nothing is spawned by this card.
 - Don't confuse "dated" with "has a date-shaped substring anywhere" —
   the regex is anchored to the *end* of the id (`-\d{8}(-v\d+)?$`,
   `web_spawn.go:193`), applied to the segment after the last `/`
-  (`:197-203`). That is why Ollama's `:latest`/`:tag` suffix defeats it,
+  (`:197-202`). That is why Ollama's `:latest`/`:tag` suffix defeats it,
   and why OpenRouter's `-02-15`-style partial dates (5 digits, not 8)
   are correctly treated as non-dated by the same rule that correctly
   flags `-20260420` as dated.

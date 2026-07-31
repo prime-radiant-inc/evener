@@ -71,7 +71,7 @@ longer on it".
    {"error":"serf launch-check failed: fork/exec /nonexistent/path/to/serf-binary-xyz: no such file or directory","code":-32014,"serf_error_info":"hubLaunch"}
    ```
    Caught in `HubSpawner.Spawn` → `validateSerfLaunchContract`
-   (`cmd/serf-hub/spawn.go:712-735`, message at `:733`), which execs
+   (`cmd/serf-hub/spawn.go:741-774`, message at `:762`), which execs
    `<serf-binary> launch-check --protocol <v> --json` before ever
    attempting the real daemon spawn. The Go `exec` error (`fork/exec
    ...: no such file or directory`) surfaces verbatim inside the
@@ -88,7 +88,7 @@ status appropriate to the failure kind — 400 for caller input errors via
 `appwire.CodeInvalidParams` (`-32602`), 503 for launch/environment-side
 failures via `appwire.CodeUnavailable` (`-32014`), both in
 `appwire/errors.go:7,10`. The mapping is `writeSpawnError`
-(`cmd/serf-hub/web_spawn.go:104-121`) → `writeAPIWireError`
+(`cmd/serf-hub/web_spawn.go:104-116`) → `writeAPIWireError`
 (`cmd/serf-hub/web_api.go:89-100`), with the `serf_error_info` string
 lifted off the wire error's data by `serfErrorInfoFromData`
 (`web_api.go:127-137`; the values are `appwire.ErrorInvalidParams` /
@@ -120,11 +120,11 @@ response). Neither was observed.
   hatch matching the no-config branch's `credentials.SourceNone` case.
   Commit `1b717fe72` added one: the branch now returns nil for any
   instance whose *behavior tag* declares auth mode `none`
-  (`cmd/serf-hub/spawn.go:567-573`, `envvars.RequiresNoCredential`,
+  (`cmd/serf-hub/spawn.go:569-574`, `envvars.RequiresNoCredential`,
   `envvars/providers.go:65-68`; ollama's `AuthModes: []string{"none"}`
-  at `envvars/providers.go:155-160`), and the rule is pinned by
+  at `envvars/providers.go:155-161`), and the rule is pinned by
   `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
-  (`cmd/serf-hub/spawn_test.go:1243`), which also checks that the
+  (`cmd/serf-hub/spawn_test.go:1437`), which also checks that the
   bypass keys off the type and not the instance *name*. The old
   workaround for isolating test (c) — `mv providers.toml
   providers.toml.bak` after the fake hub's first launch, or seeding a
@@ -134,7 +134,7 @@ response). Neither was observed.
   card's known ground.
 - `validateSerfLaunchModel` **fails open** when the harness binary
   can't even be executed to enumerate models
-  (`cmd/serf-hub/app_models.go:105-107`, `//nolint:nilerr // fail
+  (`cmd/serf-hub/app_models.go:106-108`, `//nolint:nilerr // fail
   open`) — so a missing-binary hub does NOT reject at the model-check
   stage; the real, correct rejection happens one step later inside
   `HubSpawner.Spawn`'s own `validateSerfLaunchContract` call. Both

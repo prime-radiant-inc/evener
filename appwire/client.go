@@ -13,14 +13,14 @@ import (
 
 var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 
-// notificationBufferCap sizes the Notifications() channel. Overflow is a
+// NotificationBufferCap sizes the Notifications() channel. Overflow is a
 // deliberate loud failure (the connection is torn down rather than silently
 // dropping or buffering without bound), so the capacity must hold any single
 // legitimate burst even while the consumer waits for a scheduling slice: a
 // codex initial-turn replay is ~160 messages, and request paths that never
 // consume notifications (short-lived withClient calls) ride entirely on this
 // buffer.
-const notificationBufferCap = 4096
+const NotificationBufferCap = 4096
 
 type Client struct {
 	transport     Transport
@@ -44,7 +44,7 @@ func NewClient(transport Transport) *Client {
 	c := &Client{
 		transport:     transport,
 		pending:       map[string]pendingRequest{},
-		notifications: make(chan Notification, notificationBufferCap),
+		notifications: make(chan Notification, NotificationBufferCap),
 	}
 	c.nextID.Store(1)
 	return c
@@ -122,6 +122,25 @@ func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
 	c.orderedFrames = handler
 }
 
+type requestIDObserverKey struct{}
+
+// WithRequestIDObserver returns a context that reports the id appwire mints for
+// each request issued with it, before that request frame is sent. An
+// ordered-frame handler sees every response the connection carries, so on a
+// connection with concurrent requests the id is what tells a caller's own cut
+// apart from the rest of them.
+func WithRequestIDObserver(ctx context.Context, observe func(ID)) context.Context {
+	if observe == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDObserverKey{}, observe)
+}
+
+func requestIDObserverFrom(ctx context.Context) func(ID) {
+	observe, _ := ctx.Value(requestIDObserverKey{}).(func(ID))
+	return observe
+}
+
 // runClientKeepalive pings the peer every interval and closes the transport if
 // a ping goes unanswered within timeout. Closing unblocks the read loop's Recv,
 // which fails pending requests and closes the notifications channel — so a
@@ -171,6 +190,9 @@ func (c *Client) SetPendingCoordinator(pc PendingCoordinator) {
 
 func (c *Client) request(ctx context.Context, method string, params any, out any) error {
 	id := NewIntID(c.nextID.Add(1) - 1)
+	if observe := requestIDObserverFrom(ctx); observe != nil {
+		observe(id)
+	}
 	ch := make(chan Message, 1)
 
 	c.pendingMu.Lock()

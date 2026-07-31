@@ -8,7 +8,7 @@ client (no prior notification). Exercises `/effort`
 `effort` part (`hub_session_view.go:51-52`'s `addPart`), and — for the web half of
 the criterion — the status strip's `ReasoningEffortControl`
 (`panes/session/chrome/StatusRow.tsx:109-165`) plus the `⌘K`
-"Set reasoning effort" palette command (`shell/palette/commands.ts:393-425`).
+"Set reasoning effort" palette command (`shell/palette/commands.ts:392-429`).
 
 **Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. The web
@@ -56,9 +56,11 @@ handle, and the effort control is no longer read-only — see Sharp edges.
      return {
        port: location.port,                       // page-identity check, always
        path: location.pathname,                   // /s/local:<SID>
+       control: !!document.querySelector('[data-testid="status-row-effort"]'),
        readout: document.querySelector('[data-testid="status-row-effort-value"]')?.textContent,
        selectValue: sel?.value,
        options: sel ? Array.from(sel.options, (o) => o.value) : null,
+       // ModelSwitch.tsx:137
        model: document.querySelector('[data-testid="model-switch-value"]')?.textContent,
      };
    })()
@@ -136,9 +138,11 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   it is actually reading.
 - **The control renders nothing at all when there are no levels**
   (`StatusRow.tsx:126`). On a non-reasoning model, step 5's `eval` returns
-  `readout: undefined` and `selectValue: undefined` — that is the correct
-  answer, not a failed query. Check `supportsReasoning` on the wire before
-  calling a missing control a regression.
+  `control: false` with `readout`/`selectValue` `undefined` — that is the
+  correct answer, not a failed query. The wrapper
+  `[data-testid="status-row-effort"]` (`:132`) is the hook to assert that
+  absence against. Check `supportsReasoning` on the wire before calling a
+  missing control a regression.
 - `supportsReasoning` is a plain boolean in the web model (coerced from the
   wire's optional field, `protocol/reducer.ts`), so the old "undefined vs
   false" distinction the TUI half warned about does not exist on the web

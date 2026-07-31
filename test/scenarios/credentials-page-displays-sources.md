@@ -29,17 +29,22 @@ badges.
 
 1. Open `/credentials` in a browser tab.
 2. Read the row content for each provider.
-3. Confirm OpenAI shows `Configured via OAuth — <email>` (NOT
+3. Confirm OpenAI shows `Configured via OAuth (<email>)` (NOT
    "Configured via environment variable", even if `$OPENAI_API_KEY`
-   is set — that's `f824379`).
+   is set — that's `f824379`). The email is parenthesised, not
+   em-dashed (`panes/settings/sections/credentials/credentialLabels.ts:32`);
+   with no stored email the row reads bare `Configured via OAuth`.
 4. Confirm at least one env-only provider (anthropic, google) shows
    `Configured via environment variable`.
 5. For an env+file dual provider (set up by intentionally placing
    a stored file alongside the env var — see Sharp edges), confirm
    BOTH layers render with explicit `effective` and `shadowed`
    badges.
-6. Click `Set API key` on any provider. Confirm an inline editor
-   opens with a password input. Click `Cancel` (don't actually save).
+6. Click `Set key` on any provider without a stored key (the same
+   button reads `Replace key` where one is already stored —
+   `credentials/InstanceRow.tsx:96-98`). Confirm a dialog titled
+   `Set API key for <instance>` opens with a password input. Click
+   `Cancel` (don't actually save).
 7. For OpenAI, click `Refresh OAuth`. Confirm a redirect URL is
    opened (or the popup blocker hint appears) — DO NOT complete the
    flow unless you want to re-auth.
@@ -47,21 +52,21 @@ badges.
 ## Expected
 
 - The page renders without errors. No `[ERROR]` banner in nav.
-- OpenAI row: `Configured via OAuth — jesse@primeradiant.com` (or
-  the test account's email). Action buttons: `Set API key`,
+- OpenAI row: `Configured via OAuth (jesse@primeradiant.com)` (or
+  the test account's email). Action buttons: `Set key`/`Replace key`,
   `Refresh OAuth`, `Clear`.
 - Env-only rows: `Configured via environment variable`. Action
-  buttons: `Set API key` only (no Clear; the env var isn't owned).
+  buttons: `Set key` only (no Clear; the env var isn't owned).
 - Unconfigured rows (kimi, glm, etc): `Not configured`. Action
-  button: `Set API key`.
+  button: `Set key`.
 - `ollama` row: `No credentials required`. No action buttons.
 - Falsification: OpenAI shows env-source while a valid stored OAuth
   record exists; or any provider shows wrong source label.
 
 ## Cleanup
 
-- If you opened a "Set API key" editor, cancel out so subsequent
-  scenarios see a clean page.
+- If you opened a `Set API key for <instance>` dialog, cancel out so
+  subsequent scenarios see a clean page.
 - If you set up the dual-layer case in Sharp edges, restore the
   backup made in Pre-state over the real file (`mv
   ~/.serf/credentials.toml.bak-<ts> ~/.serf/credentials.toml`) rather
@@ -84,9 +89,11 @@ badges.
   in Jesse's real credentials store.
 - Per `credentials.toml` is mode 0600; the UI never displays stored
   values. Verifying the file's perms is a separate scenario.
-- The `Set API key` editor's password input has `autocomplete=off`
-  so browser password managers don't auto-fill. If you see them
-  trying, that's a regression.
+- The `Set API key for <instance>` dialog's key field is a plain
+  `type="password"` `Input` with no `autocomplete` attribute
+  (`credentials/instanceDialogs.tsx:242-249`). A password manager
+  offering to fill or save it is expected, not a regression — don't
+  score it as one, and don't let it save the value.
 - "Refresh OAuth" for OpenAI restarts the OAuth flow. On a headless
   Linux host you'll get the device-code variant — confirm in CLI
   via `./serf openai status` afterward.

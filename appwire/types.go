@@ -1345,6 +1345,14 @@ type ThreadStatusChangedParams struct {
 	// state-gate its capabilities (the Codex bridge) omits it, and a client
 	// that cleared its set on absence would strip a session of every action
 	// its hydrate legitimately advertised.
+	//
+	// A CLOSE frame is the one status a daemon does not fill in: what a thread
+	// can still be asked to do once its daemon is gone is the hub's answer, not
+	// the departing daemon's. The hub stamps that frame as it relays it
+	// (cmd/serf-hub/app_relay.go's stampClosedThreadCapabilities), so a close
+	// still arrives carrying a set — the same one the next thread/read returns.
+	// A client that read the daemon's own all-false set there would lose the
+	// follow-up composer for a session the hub would happily resume (kata pk2d).
 	Capabilities *ThreadCapabilities `json:"capabilities,omitempty"`
 }
 

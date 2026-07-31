@@ -80,6 +80,21 @@ else
 	bad "--paths-only output unexpected: $paths_out"
 fi
 
+# The report ends by telling the reader to run --help for the by-hand review
+# recipe. A hardcoded line range had it stopping at line 29 of a 58-line
+# header, so the recipe it points at was never printed and nothing failed.
+help_out=$(bash "$script" --help 2>&1)
+if echo "$help_out" | grep -q "^Usage:" && echo "$help_out" | grep -q 'git --git-dir='; then
+	ok "--help prints through to the by-hand review recipe the report points at"
+else
+	bad "--help is truncated before the review recipe: $help_out"
+fi
+if echo "$help_out" | grep -q "^set -uo pipefail"; then
+	bad "--help ran past the header into the script body: $help_out"
+else
+	ok "--help stops at the end of the header"
+fi
+
 (cd "$repo" && git worktree remove -f ".claude/worktrees/healthy" 2>/dev/null)
 
 echo

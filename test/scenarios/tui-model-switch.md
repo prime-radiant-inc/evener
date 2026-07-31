@@ -3,11 +3,12 @@
 **What this covers**: spec Acceptance criteria 5 (transcript shows the
 switch marker after reload) and part of criterion 6 (both surfaces display
 the current model for a cold-attached client) via the TUI path. Exercises
-`/model` (`cmd/serf-tui/hub_command_registry.go`), the `(active)` tag fix in
+`/model` (`cmd/serf-tui/hub_command_registry.go:321-346`), the `(active)` tag fix in
 the picker (item ids `provider/model` normalized against bare
 `detail.Model`), the live header refresh from `thread/model/changed`
-(`hub_session_view.go:53`'s `model` part), and the dashboard row Model
-column (`hub_dashboard_view.go:348`).
+(`hub_session_view.go:51`'s `model` part), and the dashboard row Model
+cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
+`:503-504`).
 
 ## Pre-state
 
@@ -35,7 +36,10 @@ column (`hub_dashboard_view.go:348`).
 
 - Step 2: exactly one row is tagged `(active)` and it is model A's — the
   fixed normalization comparing `provider/model` ids consistently
-  (`model_picker.go:180,190`), not the pre-fix bug where `activeModel` never
+  (`modelIDMatchesActive`,
+  `cmd/serf-tui/internal/tuipick/model_picker.go:171,207-218` — the picker
+  moved into the `tuipick` subpackage), not the pre-fix bug where
+  `activeModel` never
   matched because item ids were `provider/model` while `detail.Model` was
   bare.
 - Step 4: header `model` part updates live to model B, driven by
@@ -64,7 +68,10 @@ column (`hub_dashboard_view.go:348`).
 
 - The marker text is exact: `"Switched model: %s/%s → %s/%s"` built from
   `oldProfile.ID()/oldProfile.Model()` and `nextProfile.ID()/nextProfile.Model()`
-  (`agent/session.go:775`) — assert the literal string, not a paraphrase.
+  (`buildModelSwitchMarkerText`, `agent/session.go:900-901`; `:775` is
+  `SetModel`'s doc comment, 125 lines above) — assert that literal first
+  line, not a paraphrase. The marker may carry further `Warning:` lines
+  (`:902-908`), so match the first line rather than the whole entry.
 - Step 6's "cold attach" must be a genuinely fresh client path (new
   `thread/read`/subscribe), not a resumed in-memory picker state — restart
   serf-tui or navigate away and back if detach/reattach doesn't force a

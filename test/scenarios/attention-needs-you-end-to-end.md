@@ -29,9 +29,9 @@ used to say:
   `button[data-chip="model"]` / `.chip-picker-search` are gone with the vanilla frontend
   (`660376f78`); the spawn pane's live hooks are `[data-testid="spawn-prompt-card"]` /
   `[data-testid="spawn-submit"]` over an ARIA combobox model picker
-  (`panes/spawn/Spawn.tsx:514,558`). Driving it is `spawn-picker-enter-noop.md`'s and
-  `spawn-stale-model-cleared.md`'s job; this card spawns over REST so its own assertions
-  stay about attention.
+  (`panes/spawn/Spawn.tsx:514,558`). Driving it is
+  `spawn-stale-model-cleared.md`'s and `spawn-empty-prompt-starts-dormant.md`'s job;
+  this card spawns over REST so its own assertions stay about attention.
 
 Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) needs Chrome.
 

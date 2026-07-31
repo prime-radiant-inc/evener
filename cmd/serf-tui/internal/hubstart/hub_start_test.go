@@ -346,7 +346,7 @@ func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 
-	_, err := dialHubRPC(context.Background(), addr, srv.Client())
+	_, err := dialHubRPC(context.Background(), addr, srv.Client(), nil)
 	if err == nil {
 		t.Fatal("dialHubRPC accepted a mismatched protocol version")
 	}

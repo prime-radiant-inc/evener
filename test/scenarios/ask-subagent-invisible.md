@@ -64,13 +64,16 @@ delegation-only tools for a coordinator.
    attempt to drive this through a live `delegate` call: the shipped `delegate` tool schema
    (`agent/internal/tool/definitions.go` `DefDelegate`) sets `"additionalProperties": false`
    and its property list is exactly `task, agent_type, model, reasoning_effort, max_wait_ms,
-   delegation_allowance, watch_parent, isolation, result_schema` — there is no `grant_tools`
-   property, and `delegateTool`'s Go handler (`agent/session_tools_jobs.go`) never reads one
-   from `args`. The one live caller of the `grantTools []string` parameter,
-   `createDelegate` (`agent/job_delegate.go:227`), hard-codes `nil` for it on every call. The
-   protected-grant rejection (`ask_user is root-only and cannot be granted to subagents`,
-   `agent/subagents.go:498`) is real and load-bearing, but today it is exercised only by
-   calling `Session.spawnAgent`/`prepareSubagentRun` directly at the Go level — which is
+   delegation_allowance, watch_parent, isolation, sandbox, sandbox_net, result_schema`
+   (`definitions.go:126-158`) — there is no `grant_tools` property, and `delegateTool`'s Go
+   handler (`agent/session_tools_jobs.go`) never reads one from `args`. The one live call
+   that could pass the `grantTools []string` parameter,
+   `prepareSubagentRunWithModelSelection` at `agent/job_delegate.go:362-365`, hard-codes
+   `nil` for it. The protected-grant rejection (`ask_user is root-only and cannot be granted
+   to subagents`, `agent/subagents.go:545`, off the `protectedGrantTools` gate list at
+   `:193-201`) is real and load-bearing, but today it is exercised only by
+   calling `Session.spawnAgent`/`prepareSubagentRun` (`agent/subagents.go:360,392` — neither
+   has a non-test caller) directly at the Go level — which is
    exactly what `agent/subagents_test.go`'s `TestGrantToolsCannotRegrantAskUser` and
    `TestGrantToolsAskUserAliasNeverSilentlyGranted` do. Run those as the check for this part
    instead of inventing a live step that would silently no-op:

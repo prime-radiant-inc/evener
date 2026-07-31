@@ -19,6 +19,14 @@
 // real frame sequence a resumed session produces and asserts the controls
 // follow it. Absent capabilities still mean "no update" (the Codex bridge
 // state-gates nothing and sends none), which is its own case below.
+//
+// The close frame is the same defect at the other end of a session's life
+// (kata pk2d) and the last cases here are its own: a daemon cannot describe
+// what the thread it is leaving can still be asked to do, so the HUB stamps
+// that frame on the way past (cmd/serf-hub/app_relay.go's
+// stampClosedThreadCapabilities). Without it a session that shut down mid-turn
+// keeps send=false, and an ended composer is a follow-up card gated on exactly
+// that bit — so the whole composer disappears.
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -267,4 +275,62 @@ test("a status change with no capabilities leaves the advertised set alone", asy
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
   expect(submitButton().disabled).toBe(false);
+});
+
+// Kata pk2d, the close frame's own case. A session watched MID-TURN holds the
+// set cut for that turn — send:false, because the hub gates Send on "no turn in
+// flight" — and then the session shuts down. "closed" is an ENDED status, and
+// an ended composer is a follow-up card gated on capabilities.send, so a set
+// that means "a turn is running" gets read as "this thread cannot be written
+// to" and the whole composer unmounts: no card, no textarea, no Send, until the
+// page is reloaded.
+//
+// A reload heals it because the daemon is gone by then and the read is answered
+// by the HUB from the past index, where a cold thread advertises Send (it
+// resumes the session on the next message). That is the set the hub now stamps
+// onto the close frame it relays, so what the client holds after a close is
+// already what the reload would have fetched.
+test("a session that shuts down mid-turn keeps a way to reply", async () => {
+  const fake = await mountComposer("active", daemonCapabilities(true));
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: `thr_${REF}`,
+        ref: REF,
+        turnId: "turn_5",
+        turn: { id: "turn_5", status: "interrupted", itemsView: "" },
+      },
+    });
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "closed" }, capabilities: COLD_CAPABILITIES },
+    });
+  });
+
+  const model = threadsStore.getState().threads.get(REF);
+  expect({ status: model?.status.type, send: model?.capabilities.send }).toEqual({ status: "closed", send: true });
+  expect(screen.queryByTestId("composer-input-card")).not.toBeNull();
+  expect(screen.queryByRole("textbox", { name: /^message$/i })).not.toBeNull();
+});
+
+// The follow-up a resumable ended session can actually be sent: the card is
+// only half the affordance if its Send stays grey. Steer and Stop stay gone —
+// there is no turn to act on — which is the set saying the right thing in both
+// directions rather than a latch that turns everything on.
+test("the follow-up to a session that ended mid-turn can be sent", async () => {
+  const fake = await mountComposer("active", daemonCapabilities(true));
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "closed" }, capabilities: COLD_CAPABILITIES },
+    });
+  });
+  await type("one more thing");
+
+  expect(submitButton().disabled).toBe(false);
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
 });

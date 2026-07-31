@@ -197,6 +197,32 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	return live, nil
 }
 
+// pastThreadCapabilities is what the hub can carry out for a thread with no
+// daemon behind it: the resume-and-retry session mutations (compact, clear,
+// change model, shutdown) plus the always-available ones (send, fork, goal,
+// rename), all of them landing once qp94's auto-resume runs. Steer, Interrupt
+// and Queue stay false — they gate on an active turn a cold thread has none of,
+// so the hub deliberately does not resume for them (kata xr4x trues this up to
+// qp94's wiring).
+//
+// It is the hub's answer to "what can still be done with this thread", which is
+// why the relay hands the same set to a client at the moment a session closes
+// (stampClosedThreadCapabilities) rather than leaving it to read a set the
+// departing daemon cut for a turn that is over. One definition, so the pushed
+// set and the read that follows it cannot drift.
+func pastThreadCapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{
+		Send:         true,
+		ForkFromTurn: true,
+		Compact:      true,
+		Clear:        false,
+		ChangeModel:  true,
+		Shutdown:     true,
+		Goal:         true,
+		Rename:       true,
+	}
+}
+
 func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
@@ -253,31 +279,15 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		CWD:           cwd,
 		Source:        "local",
 		Serf: appwire.SerfThread{
-			Ref:       ref,
-			ParentRef: parentRef,
-			Kind:      kind,
-			Profile:   entry.Meta.ProfileID,
-			Tasks:     persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
-			// A past/exited thread advertises exactly the actions the hub can
-			// carry out for it once qp94's auto-resume runs: the resume-and-retry
-			// session mutations (compact, clear, change model, shutdown) plus the
-			// always-available ones (send, fork, goal, rename). Steer, Interrupt,
-			// and Queue stay false — they gate on an active turn a cold exited
-			// session has none of, so the hub deliberately does not resume for
-			// them (kata xr4x trues this up to qp94's wiring).
-			Capabilities: appwire.ThreadCapabilities{
-				Send:         true,
-				ForkFromTurn: true,
-				Compact:      true,
-				Clear:        false,
-				ChangeModel:  true,
-				Shutdown:     true,
-				Goal:         true,
-				Rename:       true,
-			},
-			WorkMillis: entry.Meta.WorkMillis,
-			Usage:      cumulativeUsage,
-			Cost:       appwire.EstimateCost(entry.Meta.Model, cumulativeUsage),
+			Ref:          ref,
+			ParentRef:    parentRef,
+			Kind:         kind,
+			Profile:      entry.Meta.ProfileID,
+			Tasks:        persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
+			Capabilities: pastThreadCapabilities(),
+			WorkMillis:   entry.Meta.WorkMillis,
+			Usage:        cumulativeUsage,
+			Cost:         appwire.EstimateCost(entry.Meta.Model, cumulativeUsage),
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},

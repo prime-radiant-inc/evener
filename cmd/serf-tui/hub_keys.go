@@ -166,7 +166,7 @@ func (m hubModel) activateDashboardRow(rows []hubRow) (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		return m, nil
 	}
-	return m, fetchHubSession(m.client, row.ref)
+	return m, fetchHubSession(m.frames, m.client, row.ref)
 }
 
 func (m *hubModel) enterHubFilter() {
@@ -213,7 +213,7 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.client == nil {
 			return m, nil
 		}
-		return m, fetchHubSession(m.client, entry.Ref)
+		return m, fetchHubSession(m.frames, m.client, entry.Ref)
 	default:
 		return m, cmd
 	}

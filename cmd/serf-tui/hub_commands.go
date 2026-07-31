@@ -31,6 +31,13 @@ type hubSessionMsg struct {
 	expectedState        string
 	expectedRefreshToken int
 	err                  error
+	// beforeCut carries the frames the connection delivered ahead of this
+	// read's response, and capture holds the ones it delivered after. The
+	// response is an exact cut, so the two go on opposite sides of the
+	// snapshot: beforeCut is folded first, capture is released once the
+	// snapshot is applied.
+	beforeCut []appwire.Notification
+	capture   *hubReadCapture
 }
 
 type hubNotificationMsg struct {
@@ -166,12 +173,15 @@ func fetchHubTree(client *appwire.Client) tea.Cmd {
 	}
 }
 
-func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
-	return fetchHubSessionRead(client, ref, "", 0, true, true)
+func fetchHubSession(feed *hubFrameFeed, client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return fetchHubSessionRead(feed, client, ref, "", 0, true, true)
 }
 
+// fetchHubSessionExpectingStateToken takes no cut: a status refresh keeps the
+// transcript it found, so no frame can be lost under a snapshot that replaces
+// it.
 func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int) tea.Cmd {
-	return fetchHubSessionRead(client, ref, expectedState, expectedRefreshToken, false, false)
+	return fetchHubSessionRead(nil, client, ref, expectedState, expectedRefreshToken, false, false)
 }
 
 // resyncHubSession re-reads the viewed thread after serf/thread/resync, so the
@@ -180,17 +190,24 @@ func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref,
 // also carries the subagent rail's child-transcript subscriptions, and nothing
 // on the resync path re-issues them, so replacing them would leave every
 // watched child's activity dead until the user re-entered the session.
-func resyncHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
-	return fetchHubSessionRead(client, ref, "", 0, true, false)
+func resyncHubSession(feed *hubFrameFeed, client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return fetchHubSessionRead(feed, client, ref, "", 0, true, false)
 }
 
-func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int, subscribe bool, replaceSubscription bool) tea.Cmd {
+// fetchHubSessionRead issues thread/read. A feed makes the read a cut: the
+// connection's frames are held around it and handed back on the side of the
+// snapshot the source committed them on (kata 0vk2). Callers whose response
+// does not replace the transcript pass none.
+func fetchHubSessionRead(feed *hubFrameFeed, client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int, subscribe bool, replaceSubscription bool) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})
+		capture := feed.BeginCapture()
+		ctx := appwire.WithRequestIDObserver(context.Background(), capture.CutOn)
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})
 		if err != nil {
+			capture.Abandon()
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: transcript.MessagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
+		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: transcript.MessagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
 	}
 }
 
@@ -746,9 +763,9 @@ func sendHubAside(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	}
 }
 
-func waitHubNotification(client *appwire.Client) tea.Cmd {
+func waitHubNotification(feed *hubFrameFeed) tea.Cmd {
 	return func() tea.Msg {
-		notification, ok := <-client.Notifications()
+		notification, ok := <-feed.Notifications()
 		return hubNotificationMsg{notification: notification, ok: ok}
 	}
 }
