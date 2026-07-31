@@ -11,6 +11,8 @@ use (
 	./llm
 )
 
+replace primeradiant.com/serf v0.0.0 => .
+
 replace primeradiant.com/serf/auth v0.0.0 => ./auth
 
 replace primeradiant.com/serf/auth v0.1.0 => ./auth
