@@ -287,6 +287,29 @@ func TestProjectTurnSteeringCarriesDirectAppendKindOnReload(t *testing.T) {
 	}
 }
 
+// TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage pins the reload half of
+// the live projector's lazy agent-message materialization (kata yjyn): a round
+// that answered with tool calls alone -- empty text part included -- must
+// re-project to tool items only, so a reloaded transcript carries the same items
+// the live envelope did.
+func TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage(t *testing.T) {
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: ""},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: []byte(`{"path":"README.md"}`),
+			}},
+		}},
+	}, map[string]string{}, nil, nil)
+
+	if len(items) != 1 || items[0].Type != "commandExecution" {
+		t.Fatalf("items=%+v, want only the tool call", items)
+	}
+}
+
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := map[string]string{}
 	start := ProjectTurn("turn_1", 1, schema.Turn{

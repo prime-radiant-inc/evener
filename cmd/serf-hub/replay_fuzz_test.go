@@ -23,6 +23,9 @@ var replayFuzzSeeds = []string{
 	`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"thinking","thinking":{"text":"reasoning"}},{"kind":"redacted_thinking","thinking":{"redacted":true}},{"kind":"text","text":"answer"},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:00Z"}}`,
 	// Assistant turn: web_search with provider raw payload + communicate tool_call.
 	`{"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"web_search","web_search":{"query":"serf","raw":{"content":[{"type":"web_search_result","url":"https://x","title":"X"}]}}},{"kind":"tool_call","tool_call":{"id":"c2","name":"communicate","arguments":{"message":"hi there"}}}]},"timestamp":"2026-06-01T10:00:01Z"}}`,
+	// Assistant turn that answered with a tool call alone: the empty text part
+	// the provider returned alongside it must render on neither side.
+	`{"kind":"entry","seq":8,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":""},{"kind":"tool_call","tool_call":{"id":"c3","name":"read_file","arguments":{"path":"README.md"}}}]},"timestamp":"2026-06-01T10:00:07Z"}}`,
 	// Tool results turn.
 	`{"kind":"entry","seq":3,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"output","is_error":false,"tool_state":{"k":"v"}}}]},"timestamp":"2026-06-01T10:00:02Z"}}`,
 	// User turn with an inline image + audio + document attachment.
@@ -162,10 +165,13 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 		for _, p := range turn.Message.Content {
 			switch p.Kind {
 			case llm.ContentText:
-				if p.Text != "" {
-					add(events.AssistantTextStartData{})
-					add(events.AssistantTextEndData{Text: p.Text})
-				}
+				// Emitted even when the text is empty, because that is what the
+				// live path really does: a round answering with tool calls alone
+				// still runs the text lifecycle, since ASSISTANT_TEXT_END carries
+				// the round's usage. Reload renders nothing for such a part, so
+				// this is exactly where an empty live agent message would diverge.
+				add(events.AssistantTextStartData{})
+				add(events.AssistantTextEndData{Text: p.Text})
 			case llm.ContentThinking:
 				if p.Thinking != nil && p.Thinking.Text != "" {
 					add(events.ReasoningSummaryDeltaData{Delta: p.Thinking.Text})
@@ -360,6 +366,8 @@ func normalizeMetamorphicImages(images []appwire.InputItem) []appwire.InputItem 
 // can carry them and routes the fuzzer into the renderable text fields.
 func FuzzHubReplayLiveVsReloadStructured(f *testing.F) {
 	f.Add(byte(0), byte(0xff), "answer", "reasoning", "serf query", "shell", "ls -la")
+	// The same assistant turn with nothing to say: tool calls only.
+	f.Add(byte(0), byte(0xff), "", "reasoning", "serf query", "shell", "ls -la")
 	f.Add(byte(1), byte(0xff), "look", "", "", "", "")
 	f.Add(byte(2), byte(1), "tool output", "", "", "", "")
 	f.Add(byte(2), byte(7), "tool output with images", "", "", "", "")

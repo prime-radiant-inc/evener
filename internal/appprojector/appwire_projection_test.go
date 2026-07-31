@@ -20,15 +20,17 @@ func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
 	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "gpt-5"}})
 	out := projector.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "hi"}})
 
-	if len(out) != 1 {
+	// The first delta both opens the agent message and carries the text -- the
+	// item is materialized lazily, so item/started rides along here.
+	if len(out) != 2 {
 		t.Fatalf("notifications=%+v", out)
 	}
-	if out[0].Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("method=%q", out[0].Method)
+	if out[1].Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("method=%q", out[1].Method)
 	}
-	params, ok := out[0].Params.(appwire.AgentMessageDeltaParams)
+	params, ok := out[1].Params.(appwire.AgentMessageDeltaParams)
 	if !ok {
-		t.Fatalf("params=%T", out[0].Params)
+		t.Fatalf("params=%T", out[1].Params)
 	}
 	if params.ThreadID != "th_1" || params.Ref != "local:th_1" || params.TurnID == "" || params.ItemID == "" || params.Delta != "hi" {
 		t.Fatalf("params=%+v", params)
@@ -2269,7 +2271,10 @@ func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
 	p := NewAppEventProjector("th_1", "local:th_1")
 	p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"}})
 
-	startOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{}})
+	p.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{}})
+	// The first delta is what opens the item (lazy materialization), so that is
+	// where the discarded item's id comes from.
+	startOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "partial"}})
 	startedItem := ""
 	for _, n := range startOut {
 		if n.Method == appwire.NotifyItemStarted {
@@ -2279,9 +2284,8 @@ func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
 		}
 	}
 	if startedItem == "" {
-		t.Fatalf("assistant start did not open an item: %+v", startOut)
+		t.Fatalf("assistant delta did not open an item: %+v", startOut)
 	}
-	p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "partial"}})
 
 	resetOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextReset, SessionID: "th_1", Data: events.AssistantTextResetData{}})
 	var resetParams *appwire.AgentMessageResetParams

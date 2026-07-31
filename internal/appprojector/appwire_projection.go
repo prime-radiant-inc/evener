@@ -305,31 +305,40 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		p.ensureTurn()
-		p.assistantItem = p.nextItemID("assistant")
+		// The agent message is materialized lazily -- with the first delta, or
+		// at ASSISTANT_TEXT_END when the round's whole text arrives there. Every
+		// round that answers with tool calls alone emits this same lifecycle
+		// (ASSISTANT_TEXT_END carries the round's usage and finish reason), and
+		// an empty agent message must not reach the envelope for it.
+		p.assistantItem = ""
 		p.assistantText = ""
 		p.reasoningItem = ""
-		return []AppNotification{p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			TurnID:   p.activeTurnID,
-			Item: appwire.ThreadItem{
-				Type:   "agentMessage",
-				ID:     p.assistantItem,
-				TurnID: p.activeTurnID,
-				Status: appwire.TurnStatusInProgress,
-			},
-		})}
+		return nil
 	case events.EventAssistantTextDelta:
-		p.ensureAssistantItem()
+		created := p.ensureAssistantItem()
 		data := eventData[events.AssistantTextDeltaData](event.Data)
 		p.assistantText += data.Delta
-		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		var out []AppNotification
+		if created {
+			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				Item: appwire.ThreadItem{
+					Type:   "agentMessage",
+					ID:     p.assistantItem,
+					TurnID: p.activeTurnID,
+					Status: appwire.TurnStatusInProgress,
+				},
+			}))
+		}
+		return append(out, p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			ItemID:   p.assistantItem,
 			Delta:    data.Delta,
-		})}
+		}))
 	case events.EventReasoningSummaryDelta:
 		data := eventData[events.ReasoningSummaryDeltaData](event.Data)
 		created := p.ensureReasoningItem()
@@ -358,7 +367,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return out
 	case events.EventAssistantTextEnd:
 		p.skillCandidate = skillActivationCandidate{}
-		p.ensureAssistantItem()
+		p.ensureTurn()
 		data := eventData[events.AssistantTextEndData](event.Data)
 		p.activeTurnUsage = p.activeTurnUsage.Add(data.Usage)
 		if data.Model != "" {
@@ -368,6 +377,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if text == "" {
 			text = p.assistantText
 		}
+		// A round with nothing to say -- tool calls only -- ends the text
+		// lifecycle without ever materializing an item. Its usage, accumulated
+		// above, is the whole effect it has on the envelope.
+		if p.assistantItem == "" && strings.TrimSpace(text) == "" {
+			p.assistantText = ""
+			return nil
+		}
+		p.ensureAssistantItem()
 		item := appwire.ThreadItem{
 			Type:   "agentMessage",
 			ID:     p.assistantItem,
@@ -1596,11 +1613,17 @@ func (p *AppEventProjector) ensureTurn() {
 	}
 }
 
-func (p *AppEventProjector) ensureAssistantItem() {
+// ensureAssistantItem makes sure an agent-message item exists for the active
+// turn, returning true when it had to create one (so the caller emits a single
+// item/started ahead of the first delta -- consumers key a delta by an item id
+// they have already seen).
+func (p *AppEventProjector) ensureAssistantItem() bool {
 	p.ensureTurn()
 	if p.assistantItem == "" {
 		p.assistantItem = p.nextItemID("assistant")
+		return true
 	}
+	return false
 }
 
 // ensureReasoningItem makes sure an in-progress reasoning item exists for the
