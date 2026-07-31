@@ -58,9 +58,10 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 //     which every facet sample passes through because the envelope source
 //     resolves the live session per call. Anyone auditing from here alone will
 //     not see it.
-//   - Inside agent/ and its subsystems: Session.mu, jobstore.Store.mu,
-//     jobstore.OutputStore.mu, jobManager.mu, the task store's, the goal
-//     store's, transcript.Writer.mu, the MCP connection's, and the sync.Once
+//   - Inside agent/ and its subsystems: Session.mu, jobManager.mu,
+//     jobstore.Store.mu, jobstore.OutputStore.mu, the task store's, the goal
+//     store's, transcript.Writer.mu, contextmgr.Manager.mu, tool.Registry.mu,
+//     clientMutationStore.stateMu, the MCP connection's, and the sync.Once
 //     guards around the lazily built stores.
 //
 // One correction worth keeping, because it is the kind of detail that makes an
@@ -69,14 +70,39 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // BEFORE taking jm.mu (agent/jobs.go). An earlier version of this comment named
 // the lock that does not do the I/O.
 //
-// Nothing enforces any of this. `go vet` cannot see it, and no fixture reaches
-// it: the default suite's scripted provider never fills the buffer, so a
-// violation is silent until production. The cheapest real enforcement is not a
-// full audit but a single owner-tracked mutex — wrap Session.mu and assert at
-// sendEvent's blocking branch, which covers both violation classes found so far;
-// sasha-s/go-deadlock is a build-tagged drop-in if wider coverage is ever
-// wanted. Until then this comment and the per-site regression tests are the
-// whole of the net.
+// `go vet` cannot see any of this and no fixture reaches it: the default
+// suite's scripted provider never fills the buffer. What DOES catch a violation
+// is the emit path itself, and that was audited rather than assumed (kata
+// cb1k). Intersect the two sets — the locks this consumer takes inside agent/,
+// and the locks agent code can hold across an emit — and exactly two survive:
+// Session.mu and jobManager.mu. The emit path re-acquires BOTH (emit →
+// activeCausalProvenance → Session.mu; emitWithProvenance →
+// jobManager.onSessionEvent → jobManager.mu), so on non-reentrant mutexes a
+// violation self-deadlocks on its first execution rather than wedging in
+// production. Every other lock reachable from here either lives in a package
+// that cannot call back into agent (jobstore, transcript, task, goal,
+// contextmgr, tool, mcp) or is held only over straight-line code that emits
+// nothing. agent/session_emit_lock_guard_test.go pins those two guards, which
+// are incidental to what emit and onSessionEvent are actually for and would
+// otherwise be deleted by a plausible refactor without a single test failing.
+//
+// So the recommendation that used to close this comment — wrap Session.mu in an
+// owner-tracked mutex and assert at sendEvent's blocking branch — is RETRACTED.
+// It buys nothing: emit-under-Session.mu is already an immediate self-deadlock
+// by construction, and the assert would sit in a branch no test reaches.
+//
+// What is NOT closed is the other direction, and it is where the next incident
+// comes from. Four locks are held across live emits TODAY —
+// Session.queueEventsMu (agent/session_client_mutation_queue.go's
+// reflectDurableInputQueue, agent/session_queue.go's popSteeringHead),
+// queuePersistMu (persistQueuesSnapshot), responseSideEffectsMu
+// (agent/session_tools.go's TOOL_CALL_END and its output-delta chunk loop, the
+// highest-volume emit in the system) and subagent.mu (agent/job_delegate.go).
+// They are safe only because THIS consumer does not take them, which is a
+// property of cmd/serf's liveThreadEnvelopeSource, not of anything in agent.
+// Adding an envelope facet that samples session state under any of those four
+// wedges the daemon on the next large tool output, and nothing anywhere would
+// say so first.
 func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.SessionEvent)) {
 	if observer != nil {
 		observer(ev)
