@@ -353,6 +353,65 @@ test("item/completed inserts an item that had no preceding item/started", () => 
   expect(item.text).toBe("Hi there");
 });
 
+// transcriptEntryIndex is the item's 1-based position in the parent
+// transcript's entry list (appwire.ThreadItem.TranscriptEntryIndex), and it is
+// the ONLY field that names a fork divergence position: thread/fork's
+// sourceTurnId is read as that index, while a LIVE turn id is numbered off a
+// different counter entirely. The model must therefore carry it through
+// verbatim rather than leaving renderers to reach for turnId.
+test("wire items carry transcriptEntryIndex into the model - it is what thread/fork's divergence position is read from", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_2",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_2",
+          transcriptEntryIndex: 5,
+          text: "second task",
+          status: "completed",
+        },
+      },
+    },
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).transcriptEntryIndex).toBe(5);
+
+  // Absent on the wire stays absent in the model: a missing index means "this
+  // entry has no persisted transcript position", never entry 0.
+  const hydrated = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+            items: [{ id: "item_a", turnId: "turn_1", type: "userMessage", text: "hello" }],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(itemAt(turnAt(hydrated, 0), 0).transcriptEntryIndex).toBeUndefined();
+});
+
 test("agentMessage/reset discards the in-flight item", () => {
   let model = testHydrate();
   model = applyNotification(

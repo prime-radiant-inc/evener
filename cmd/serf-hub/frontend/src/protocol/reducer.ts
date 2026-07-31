@@ -103,6 +103,11 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  // Set only when the wire carried one (like clientMutationId below, and
+  // unlike the always-copied fields above): an absent transcriptEntryIndex
+  // means the item has no persisted transcript position at all, which a fork
+  // affordance must be able to tell apart from a real index.
+  if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
   if (item.type === "reasoning" && item.text) {
     model.reasoningSummaries = [[item.text]];
