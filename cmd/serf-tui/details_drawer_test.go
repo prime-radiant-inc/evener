@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func TestDetailsDrawerHasSectionLabels(t *testing.T) {
@@ -94,6 +97,51 @@ func TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent(t *testing.T) {
 	}
 	if strings.Contains(plain, "Tokens:") {
 		t.Errorf("details drawer should omit Tokens: line when absent:\n%s", plain)
+	}
+}
+
+// TestDetailsDrawerBandsContextPressure verifies the drawer's Context line
+// escalates at the same thresholds as the session header's meta strip: the
+// drawer's own ghost tone below warnThreshold, StateWarning from 0.75,
+// StateError from compactThreshold's 0.95. A source that reports pressure but
+// no window gives no ratio to band on and stays ghost.
+func TestDetailsDrawerBandsContextPressure(t *testing.T) {
+	withTestColorProfile(t)
+	th := tuitheme.ActiveTheme()
+
+	const fullWindow = 200000
+	cases := []struct {
+		name     string
+		used     int
+		window   int
+		pressure float64
+		want     lipgloss.Color
+	}{
+		{name: "below-warn-stays-ghost", used: 148000, window: fullWindow, pressure: 0.74, want: th.TextGhost},
+		{name: "at-warn-renders-amber", used: 150000, window: fullWindow, pressure: 0.75, want: th.StateWarning},
+		{name: "below-compact-stays-amber", used: 188000, window: fullWindow, pressure: 0.94, want: th.StateWarning},
+		{name: "at-compact-renders-red", used: 190000, window: fullWindow, pressure: 0.95, want: th.StateError},
+		{name: "no-window-stays-ghost", pressure: 0.98, want: th.TextGhost},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := hubSessionDetail{
+				Title:           "Pressured",
+				SourceLabel:     "serf",
+				ContextUsed:     tc.used,
+				ContextWindow:   tc.window,
+				ContextPressure: tc.pressure,
+			}
+			got := detailsDrawer{Detail: detail}.View()
+			value := fmt.Sprintf("%.0f%% used", tc.pressure*100)
+			if plain := ansiPattern.ReplaceAllString(got, ""); !strings.Contains(plain, "Context:  "+value) {
+				t.Fatalf("case renders no Context line, so it proves nothing about banding:\n%s", plain)
+			}
+			want := lipgloss.NewStyle().Foreground(tc.want).Render(value)
+			if !strings.Contains(got, want) {
+				t.Errorf("context value %q not rendered in %s:\n%q", value, tc.want, got)
+			}
+		})
 	}
 }
 

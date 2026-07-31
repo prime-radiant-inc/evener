@@ -59,8 +59,14 @@ func (d detailsDrawer) View() string {
 	if detail.TurnCount > 0 {
 		fmt.Fprintf(&b, "Turns:    %s\n", ghostText(strconv.Itoa(detail.TurnCount)))
 	}
+	// Context escalates off the same bands as the session header's ctx cell, so
+	// both live surfaces tell the reader the same story about a filling window.
+	// The band reads used/window where the number reads ContextPressure; both
+	// come off one contextmgr estimate over one window, so they cannot disagree.
 	if detail.ContextPressure > 0 {
-		fmt.Fprintf(&b, "Context:  %s\n", ghostText(fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)))
+		pressure := fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)
+		band := contextPressureColor(detail, tuitheme.ActiveTheme().TextGhost)
+		fmt.Fprintf(&b, "Context:  %s\n", lipgloss.NewStyle().Foreground(band).Render(pressure))
 	}
 	if detail.WorkMillis > 0 {
 		fmt.Fprintf(&b, "Work:     %s\n", ghostText(formatWorkMillis(detail.WorkMillis)))

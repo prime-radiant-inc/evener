@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // FuzzWidgetPrograms is a deterministic replay corpus for the root TUI's
@@ -215,7 +216,8 @@ func exerciseStatusFormatting() {
 		{},
 	} {
 		_ = formatContextFragment(detail)
-		_ = contextPressureColor(detail)
+		_ = contextPressureColor(detail, tuitheme.ActiveTheme().Text)
+		_ = contextPressureColor(detail, tuitheme.ActiveTheme().TextGhost)
 	}
 	_ = formatTokens(500)
 	_ = formatTokens(1500)
