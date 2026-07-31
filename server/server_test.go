@@ -1435,8 +1435,8 @@ func TestHandleAppJobsListNilFunc(t *testing.T) {
 func TestHandleAppJobsList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobsFunc(func() any {
-		return []agent.JobSummary{{JobID: "job_1", Type: "shell", Status: "running", Description: "make build", StartedAt: "2026-07-31T12:00:00Z"}}
+	srv.SetJobsFunc(func() (any, error) {
+		return []agent.JobSummary{{JobID: "job_1", Type: "shell", Status: "running", Description: "make build", StartedAt: "2026-07-31T12:00:00Z"}}, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1461,6 +1461,30 @@ func TestHandleAppJobsList(t *testing.T) {
 	}
 	if jobs[0].JobID != "job_1" {
 		t.Errorf("job id: got %q, want job_1", jobs[0].JobID)
+	}
+}
+
+// A jobs source that cannot read its store answers the wire with a failure,
+// not with the empty list a job-less session answers: "no jobs ran" and "I
+// can't tell you what ran" must not arrive as the same response.
+func TestHandleAppJobsListSourceError(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobsFunc(func() (any, error) {
+		return nil, errors.New("jobstore: parse event line 3: unexpected end of JSON input")
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v (%+v), want an error response", resp.Kind(), resp.Response)
+	}
+	if !strings.Contains(resp.Error.Error.Message, "parse event line 3") {
+		t.Errorf("error message: %+v", resp.Error.Error)
 	}
 }
 

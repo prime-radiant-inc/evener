@@ -28,7 +28,7 @@
 // does NOT re-fire on jobsUpdatedAt - the next collapse/expand re-mounts and
 // refetches; keeping the tail static while open avoids text jumping under
 // the reader.
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
@@ -94,6 +94,19 @@ export const STATUS_TONE: Record<JobStatus, ChipTone> = {
   exhausted: "danger",
 };
 
+// A Map, not an object lookup: a wire status of "constructor" would answer
+// off Object.prototype and hand Chip something that is not a tone at all.
+const TONE_BY_STATUS = new Map<string, ChipTone>(Object.entries(STATUS_TONE));
+
+// The tone for whatever status the wire actually sent (jobData.ts: JobRow.
+// status is the wire's string, never narrowed to JobStatus). A status this
+// bundle doesn't know comes from a newer daemon: it is not known to be alive
+// and not known to have failed, so it recedes neutral rather than borrowing
+// either signal. The row still renders, labelled with the wire's own word.
+export function statusTone(status: string): ChipTone {
+  return TONE_BY_STATUS.get(status) ?? "neutral";
+}
+
 // The one name this panel's failure goes by - TasksPanel's LOAD_FAILURE
 // convention: toast and inline state are built from this and the same
 // discriminator, so the panel never says two different things about one
@@ -126,9 +139,18 @@ function jobDisclosureId(sessionRef: string, jobId: string): string {
 // sub-second convention is the wrong one here). undefined when either
 // timestamp is unparseable: show no clock rather than a garbage one.
 function jobDuration(row: JobRow, now: number): string | undefined {
+  // A real job start is a positive Unix-epoch-ms wall-clock time. Go's zero
+  // time reaches the wire as "0001-01-01T00:00:00Z" (a record folded without
+  // a start timestamp), which parses fine and would clock two millennia onto
+  // the row - statusFormat.ts's totalWorkMillis rejects its own anchor on
+  // exactly this test, for exactly this reason.
   const started = Date.parse(row.startedAt);
-  if (!Number.isFinite(started)) return undefined;
-  const end = row.status === "running" || !row.endedAt ? now : Date.parse(row.endedAt);
+  if (!Number.isFinite(started) || started <= 0) return undefined;
+  // Only a running job's clock ticks against `now`. A settled status is the
+  // wire's own word that the job is over, so it beats a missing endedAt: the
+  // duration is then unknowable, and an unknowable duration shows no clock
+  // rather than an elapsed time that climbs forever on a finished job.
+  const end = row.status === "running" ? now : Date.parse(row.endedAt ?? "");
   if (!Number.isFinite(end)) return undefined;
   return formatWorkDuration(end - started);
 }
@@ -195,11 +217,19 @@ function JobOutputTailView({ sessionRef, jobId }: { sessionRef: string; jobId: s
     );
   }
   if (!output) return <p data-testid="job-output-loading">Loading output…</p>;
+  // The caption is in BYTES. tail.length is UTF-16 code units, which
+  // under-counts every non-BMP character and mis-counts every non-ASCII one.
+  // totalBytes and retainedStart are both byte offsets the daemon measured
+  // over the file itself (agent/jobs_panel.go's jobOutputTailFrom sets
+  // retainedStart = totalBytes - len(tail) in Go bytes), so their difference
+  // is exactly how many bytes this tail carries. Clamped at 0 against a
+  // payload whose offsets disagree.
+  const retainedBytes = Math.max(0, output.totalBytes - output.retainedStart);
   return (
     <div data-testid="job-output">
       {output.truncated && (
         <p className={CLASS.outputCaption}>
-          Showing last {output.tail.length} of {output.totalBytes} bytes
+          Showing last {retainedBytes} of {output.totalBytes} bytes
         </p>
       )}
       <pre className={CLASS.outputTail}>{output.tail}</pre>
@@ -262,7 +292,7 @@ function JobRowView({ row, sessionRef, now }: { row: JobRow; sessionRef: string;
   const duration = jobDuration(row, now);
   const summary = (
     <>
-      <Chip tone={STATUS_TONE[row.status]}>{row.status}</Chip>
+      <Chip tone={statusTone(row.status)}>{row.status}</Chip>
       <span aria-hidden="true">{TYPE_GLYPH[row.type] ?? "•"}</span>
       <span className={CLASS.description}>{row.description}</span>
       {duration && <span className={CLASS.state}>{duration}</span>}
@@ -298,17 +328,35 @@ export const JobsPanel = forwardRef<JobsPanelHandle, JobsPanelProps>(function Jo
   const [daemonGone, setDaemonGone] = useState(false);
   // Bumped by Try again. The only fetch trigger a reader controls.
   const [reloads, setReloads] = useState(0);
+  // model.jobsUpdatedAt as of the last fetch this panel issued. undefined
+  // until the first one, which is how a closed panel tells a real push apart
+  // from any other re-render that re-runs this effect (closing it, most of
+  // all).
+  const fetchedBump = useRef<number | null | undefined>(undefined);
 
   // Re-fetches on every open, on every Try again, and again whenever
-  // model.jobsUpdatedAt changes while still open (a live job lifecycle push
-  // while the user is looking) - see this file's own header comment.
+  // model.jobsUpdatedAt changes (a live job lifecycle push) - see this
+  // file's own header comment.
   // `toasts` is deliberately not a dependency: useToasts() returns a fresh
   // wrapper object every render (see widgets/toast/index.tsx), so depending
   // on it would refire this effect on every unrelated re-render;
   // toasts.push itself is a stable, module-level function underneath.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
+  // `hideTrigger` is deliberately not one either: it is read only by the
+  // guard below, which every later run re-reads from that run's own props,
+  // so collapsing the chrome cannot go unnoticed - it just doesn't cost a
+  // fetch of its own.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render, hideTrigger only gates the guard (see above)
   useEffect(() => {
-    if (!open) return;
+    // A closed panel still chases a push, because the trigger's running
+    // count is then the only thing on screen and it must not keep claiming a
+    // job is running after the push that says it finished. Only a push,
+    // though - a bump this panel has not fetched for yet - and only once a
+    // first fetch has given the trigger a count worth keeping honest. With
+    // the trigger hidden there is no count on screen at all.
+    if (!open && (hideTrigger || fetchedBump.current === undefined || fetchedBump.current === model.jobsUpdatedAt)) {
+      return;
+    }
+    fetchedBump.current = model.jobsUpdatedAt;
     let cancelled = false;
     setError(null);
     setUnsupported(false);
@@ -343,7 +391,11 @@ export const JobsPanel = forwardRef<JobsPanelHandle, JobsPanelProps>(function Jo
         // did resolve put there stays on screen under the stale notice.
         const failure = loadFailure(err);
         setError(failure);
-        toasts.push("error", failure.sentence);
+        // Only a fetch the reader can see is worth interrupting them over.
+        // A background refresh keeping the trigger's badge honest (see the
+        // effect's guard above) fails silently; the badge simply holds its
+        // last known count until a later fetch lands.
+        if (open) toasts.push("error", failure.sentence);
       });
     return () => {
       cancelled = true;
@@ -392,7 +444,12 @@ export const JobsPanel = forwardRef<JobsPanelHandle, JobsPanelProps>(function Jo
       <>
         {daemonGone && (
           <div className={CLASS.stale} data-testid="jobs-daemon-gone">
-            <p className={CLASS.staleMessage}>This session's daemon has exited.</p>
+            {/* role=alert: same case as the stale notice below - this lands
+                under a reader already looking at the list, with nothing on
+                screen leading up to it, and it is terminal. */}
+            <p role="alert" className={CLASS.staleMessage}>
+              This session's daemon has exited.
+            </p>
             <p className={CLASS.staleHint}>Showing the last list that loaded. It won't update again.</p>
           </div>
         )}

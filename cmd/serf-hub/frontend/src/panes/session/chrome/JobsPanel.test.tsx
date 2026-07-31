@@ -1,5 +1,6 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
@@ -10,7 +11,7 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { JobsPanel } from "./JobsPanel";
+import { JobsPanel, type JobsPanelHandle, statusTone } from "./JobsPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -115,6 +116,78 @@ const TWO_RUNNING_DATA = [
     description: "review diff",
     background: true,
     startedAt: "2026-07-31T12:04:40Z",
+    outputBytes: 0,
+    hasOutput: false,
+  },
+];
+
+// TWO_RUNNING_DATA one push later: job_3 has finished, so the badge that
+// counted it is now a job behind.
+const ONE_STILL_RUNNING_DATA = [
+  {
+    jobId: "job_3",
+    type: "shell",
+    status: "completed",
+    description: "build",
+    background: true,
+    startedAt: "2026-07-31T12:04:30Z",
+    endedAt: "2026-07-31T12:04:50Z",
+    exitCode: 0,
+    outputBytes: 0,
+    hasOutput: false,
+  },
+  {
+    jobId: "job_4",
+    type: "delegate",
+    status: "running",
+    description: "review diff",
+    background: true,
+    startedAt: "2026-07-31T12:04:40Z",
+    outputBytes: 0,
+    hasOutput: false,
+  },
+];
+
+// A status no version of this bundle has heard of - JobSummary.Status is a
+// plain Go string, so a newer daemon can send one.
+const UNKNOWN_STATUS_DATA = [
+  {
+    jobId: "job_7",
+    type: "shell",
+    status: "quarantined",
+    description: "held for review",
+    background: false,
+    startedAt: "2026-07-31T12:04:00Z",
+    outputBytes: 0,
+    hasOutput: false,
+  },
+];
+
+// Go's zero time, which is what agent/jobs_panel.go formats when a record
+// folded without a start timestamp: year 1, not a job two millennia old.
+const ZERO_START_DATA = [
+  {
+    jobId: "job_6",
+    type: "shell",
+    status: "running",
+    description: "orphan",
+    background: true,
+    startedAt: "0001-01-01T00:00:00Z",
+    outputBytes: 0,
+    hasOutput: false,
+  },
+];
+
+// A job the wire says is settled but carries no endedAt - the shape a fold
+// produces when the finishing event never recorded a timestamp.
+const SETTLED_NO_END_DATA = [
+  {
+    jobId: "job_5",
+    type: "shell",
+    status: "completed",
+    description: "run tests",
+    background: true,
+    startedAt: "2026-07-31T12:00:00Z",
     outputBytes: 0,
     hasOutput: false,
   },
@@ -443,4 +516,184 @@ test("the trigger label shows the running count after a fetch with running jobs"
   await screen.findAllByTestId("job-row");
 
   expect(screen.getByRole("button", { name: "Jobs ●2" })).toBeTruthy();
+});
+
+// 16. The terminal daemon-gone notice arrives under a reader already looking
+// at a list, with nothing on screen leading up to it - the same case the
+// stale-refetch notice announces, so it announces too.
+test("a daemonGone refetch keeps the rows under a role=alert terminal notice", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(
+    fake,
+    JOBS_DATA,
+    new WireError("thread not found: thr_a", -32014, { serfErrorInfo: "sessionUnavailable" }),
+  );
+
+  await openThenPush(fake);
+
+  const gone = await screen.findByTestId("jobs-daemon-gone");
+  expect(gone.querySelector("[role='alert']")?.textContent).toContain("This session's daemon has exited.");
+  expect(screen.getAllByTestId("job-row")).toHaveLength(2);
+});
+
+// 17. A settled status is the wire's own word that the job is over, so it
+// beats a missing endedAt: the row shows no clock rather than an elapsed
+// time that keeps climbing on every tick.
+test("a settled job with no endedAt shows no clock instead of ticking forever", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: SETTLED_NO_END_DATA }));
+
+  const { rerender } = render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  const row = (await screen.findAllByTestId("job-row"))[0];
+  const atNow = row?.textContent;
+  expect(atNow).not.toMatch(/\d+[smh]/);
+
+  rerender(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW + 3_600_000} />);
+  expect(row?.textContent).toBe(atNow);
+});
+
+// 18. The caption is in BYTES, and the daemon's own byte offsets are the only
+// honest source for them: this tail is a single 4-byte UTF-8 emoji, which JS
+// measures as 2 UTF-16 code units.
+test("the truncated caption counts the daemon's bytes, not JS string length", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+  fake.on("serf/jobs/output", () => ({ data: { tail: "😀", totalBytes: 10, retainedStart: 6, truncated: true } }));
+
+  render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  await user.click(await screen.findByText("run tests"));
+
+  expect(await screen.findByText(/showing last 4 of 10 bytes/i)).toBeTruthy();
+});
+
+// 19. The badge must not keep claiming a job is running after the push that
+// says it finished. The push is the signal, the list is the evidence: once
+// the reader has opened the panel once, a push re-fetches even while the
+// panel is closed, and the badge follows the fetch.
+test("a push after the first open refreshes the badge while the panel is closed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/jobs/list", () => {
+    calls += 1;
+    return { data: calls === 1 ? TWO_RUNNING_DATA : ONE_STILL_RUNNING_DATA };
+  });
+
+  const panel = (bump: number) => <JobsPanel sessionRef="ref_a" model={testModel({ jobsUpdatedAt: bump })} now={NOW} />;
+  const { rerender } = render(panel(1));
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  await screen.findAllByTestId("job-row");
+  expect(screen.getByRole("button", { name: "Jobs ●2" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  rerender(panel(2));
+
+  expect(await screen.findByRole("button", { name: "Jobs ●1" })).toBeTruthy();
+  expect(fake.calls.filter((c) => c.method === "serf/jobs/list")).toHaveLength(2);
+});
+
+// 20. A refresh the reader never asked for and cannot see must not interrupt
+// them: the badge just stays at its last known count until the next fetch
+// lands.
+test("a background refresh failure while the panel is closed pushes no toast", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/jobs/list", () => {
+    calls += 1;
+    if (calls === 2) throw new Error("jobs boom");
+    return { data: TWO_RUNNING_DATA };
+  });
+
+  const panel = (bump: number) => (
+    <>
+      <JobsPanel sessionRef="ref_a" model={testModel({ jobsUpdatedAt: bump })} now={NOW} />
+      <Toast />
+    </>
+  );
+  const { rerender } = render(panel(1));
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  await screen.findAllByTestId("job-row");
+  await user.click(screen.getByRole("button", { name: "Close" }));
+
+  rerender(panel(2));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/jobs/list")).toHaveLength(2));
+
+  // Re-opening fetches a third time and succeeds; a toast pushed by the
+  // failed background refresh would still be on screen underneath it (a
+  // toast outlives a retry - see the first-fetch-failure test above).
+  await user.click(screen.getByRole("button", { name: "Jobs ●2" }));
+  await screen.findAllByTestId("job-row");
+  expect(screen.queryByText(/couldn.t load jobs/i)).toBeNull();
+});
+
+// 21. SessionChrome's collapsed layout hides the trigger and opens the panel
+// from a menu instead. With no badge rendered there is nothing for a closed
+// panel to keep honest, so a push costs no round trip.
+test("a push while closed and the trigger hidden does not refresh in the background", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: TWO_RUNNING_DATA }));
+
+  const handle = createRef<JobsPanelHandle>();
+  const panel = (bump: number) => (
+    <JobsPanel ref={handle} sessionRef="ref_a" model={testModel({ jobsUpdatedAt: bump })} now={NOW} hideTrigger />
+  );
+  const { rerender } = render(panel(1));
+  act(() => handle.current?.open());
+  await screen.findAllByTestId("job-row");
+  expect(fake.calls.filter((c) => c.method === "serf/jobs/list")).toHaveLength(1);
+
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  rerender(panel(2));
+
+  expect(fake.calls.filter((c) => c.method === "serf/jobs/list")).toHaveLength(1);
+});
+
+// 22. A zero startedAt is the wire's "no start timestamp", not a start in
+// the year 1 - clocking it would put two millennia on the row. Same call
+// statusFormat.ts's totalWorkMillis makes about its own anchor.
+test("a zero-time startedAt shows no clock rather than a two-millennia one", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: ZERO_START_DATA }));
+
+  render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+
+  const row = (await screen.findAllByTestId("job-row"))[0];
+  expect(row?.textContent).toContain("orphan");
+  expect(row?.textContent).not.toMatch(/\d+[smh]/);
+});
+
+// 23. A status this bundle doesn't know is not known to be alive and not
+// known to have failed, so it recedes neutral rather than borrowing either
+// signal. "constructor" is in here because a bare object lookup would answer
+// it off Object.prototype.
+test("pins the chip tone for a status outside the known set: neutral, never alive or danger", () => {
+  expect(statusTone("running")).toBe("alive");
+  expect(statusTone("failed")).toBe("danger");
+  expect(statusTone("quarantined")).toBe("neutral");
+  expect(statusTone("constructor")).toBe("neutral");
+});
+
+// 24. The row itself is never hidden by an unrecognised status: a job that
+// really ran stays in the list, labelled with the wire's own word for it.
+test("a row with an unknown status still renders, labelled with the wire's own status", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/jobs/list", () => ({ data: UNKNOWN_STATUS_DATA }));
+
+  render(<JobsPanel sessionRef="ref_a" model={testModel()} now={NOW} />);
+  await user.click(screen.getByRole("button", { name: "Jobs" }));
+
+  const rows = await screen.findAllByTestId("job-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain("quarantined");
+  expect(rows[0]?.textContent).toContain("held for review");
 });

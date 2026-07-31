@@ -45,7 +45,7 @@ type residualServeServer struct {
 	name           func(string)
 	effort         func(string)
 	tasks          func() any
-	jobs           func() any
+	jobs           func() (any, error)
 	jobOutput      func(string, int64) (any, bool, error)
 	clear          func(context.Context) error
 	shutdown       func()
@@ -82,12 +82,12 @@ func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, i
 func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 }
-func (s *residualServeServer) RefreshThreadEnvelope()                     {}
-func (s *residualServeServer) SetModelFunc(f func(string) error)          { s.model = f }
-func (s *residualServeServer) SetNameFunc(f func(string))                 { s.name = f }
-func (s *residualServeServer) SetReasoningEffortFunc(f func(string))      { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)                  { s.tasks = f }
-func (s *residualServeServer) SetJobsFunc(f func() any)                   { s.jobs = f }
+func (s *residualServeServer) RefreshThreadEnvelope()                {}
+func (s *residualServeServer) SetModelFunc(f func(string) error)     { s.model = f }
+func (s *residualServeServer) SetNameFunc(f func(string))            { s.name = f }
+func (s *residualServeServer) SetReasoningEffortFunc(f func(string)) { s.effort = f }
+func (s *residualServeServer) SetTasksFunc(f func() any)             { s.tasks = f }
+func (s *residualServeServer) SetJobsFunc(f func() (any, error))     { s.jobs = f }
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64) (any, bool, error)) {
 	s.jobOutput = f
 }
@@ -125,7 +125,7 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	s.name("renamed")
 	s.effort("low")
 	_ = s.tasks()
-	_ = s.jobs()
+	_, _ = s.jobs()
 	_, _, _ = s.jobOutput("job_1", 1024)
 }
 

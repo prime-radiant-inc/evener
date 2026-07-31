@@ -87,16 +87,23 @@ func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
 
 // JobSummaries is the live-daemon serf/jobs/list payload: every job in the
 // session's durable store, in append order. A nil jobManager (a session that
-// never started job infrastructure) yields an empty, non-nil slice.
-func (s *Session) JobSummaries() []JobSummary {
+// never started job infrastructure) yields an empty, non-nil slice, so the
+// wire carries [] rather than null.
+//
+// A store that cannot be read is an ERROR, never an empty list. "No jobs
+// ran" and "I can't tell you what ran" are different answers, and only one
+// of them is reassuring; a corrupt jobs.jsonl reported as the first would
+// reach the panel as "No jobs yet". LoadSessionJobList, the past-session
+// reader for this same payload, has always surfaced it.
+func (s *Session) JobSummaries() ([]JobSummary, error) {
 	if s == nil || s.jobManager == nil {
-		return []JobSummary{}
+		return []JobSummary{}, nil
 	}
 	ordered, err := s.jobManager.store.LoadOrdered()
 	if err != nil {
-		return []JobSummary{}
+		return nil, err
 	}
-	return summarizeJobRecords(ordered)
+	return summarizeJobRecords(ordered), nil
 }
 
 // JobOutputTail is the live-daemon serf/jobs/output payload. found=false
