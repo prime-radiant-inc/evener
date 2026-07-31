@@ -8,6 +8,7 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { STATUS_TONE, TasksPanel } from "./TasksPanel";
 
@@ -74,6 +75,11 @@ beforeEach(() => {
   // toast an earlier test pushed is still on screen when a later test asserts
   // a message is ABSENT, and the matcher finds the stale one.
   resetToastStoreForTests();
+  // Row disclosure open/closed state lives in the shared disclosureStore
+  // (module-level, survives cleanup()) - same reset every transcript
+  // disclosure test performs, so an earlier test's expanded row can't leak
+  // into a later test that expects to start collapsed.
+  resetDisclosureStoreForTests();
 });
 
 afterEach(() => {
@@ -161,6 +167,110 @@ test("renders every fetched task as a row, in the SAME order the wire returned t
     expect.stringContaining("Wire up session actions"),
     expect.stringContaining("Gate green"),
   ]);
+});
+
+// --- row disclosure: expand a task row to see its full details -------------
+// TaskRow already carries every field the daemon's Task struct exposes to
+// the frontend (taskData.ts's own comment: created_at/updated_at/
+// completed_at/insert are deliberately dropped, matching the legacy
+// sidebar's buildTaskDetailList - kata rb74's own comment records that
+// gap). "Full details" here means every field TaskRow actually carries.
+
+const RICH_TASK = {
+  id: 5,
+  type: "implement",
+  description: "Wire up expand/collapse",
+  prompt: "Follow the transcript's existing disclosure idiom.",
+  status: "in_progress",
+  depends_on: [1, 3],
+  reasoning_effort: "high",
+  notes: ["started", "blocked on #1"],
+};
+
+test("a task row starts collapsed; clicking its summary expands it to show the full detail fields", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  const summary = await screen.findByText("Wire up expand/collapse");
+
+  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+
+  await user.click(summary);
+
+  expect(screen.getByTestId("task-detail-status").textContent).toContain("in_progress");
+  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
+  expect(screen.getByTestId("task-detail-depends-on").textContent).toContain("#1, #3");
+  expect(screen.getByTestId("task-detail-reasoning").textContent).toContain("high");
+  expect(screen.getByText("Follow the transcript's existing disclosure idiom.")).toBeTruthy();
+  expect(screen.getByText("started")).toBeTruthy();
+  expect(screen.getByText("blocked on #1")).toBeTruthy();
+});
+
+test("clicking an expanded row's summary again collapses it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  const summary = await screen.findByText("Wire up expand/collapse");
+  await user.click(summary);
+  expect(screen.getByTestId("task-detail-status")).toBeTruthy();
+
+  await user.click(summary);
+
+  expect(screen.queryByTestId("task-detail-status")).toBeNull();
+});
+
+test("a task with none of the optional fields still shows status and type, omitting depends-on/reasoning/prompt/notes entirely", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  // TASKS_DATA's first row: status "done", type "implement", prompt "",
+  // no dependsOn/notes/reasoningEffort.
+  await user.click(await screen.findByText("Wire up the status row"));
+
+  expect(screen.getByTestId("task-detail-status").textContent).toContain("done");
+  expect(screen.getByTestId("task-detail-type").textContent).toContain("implement");
+  expect(screen.queryByTestId("task-detail-depends-on")).toBeNull();
+  expect(screen.queryByTestId("task-detail-reasoning")).toBeNull();
+  expect(screen.queryByTestId("task-detail-prompt")).toBeNull();
+  expect(screen.queryByTestId("task-detail-notes")).toBeNull();
+});
+
+test("each row's expand state is independent - opening one row leaves its siblings collapsed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByText("Wire up the status row"));
+
+  expect(screen.getAllByTestId("task-detail-status")).toHaveLength(1);
+});
+
+test("the expanded row is a real native disclosure (<details open>), not just conditionally-rendered markup", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [RICH_TASK] }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await screen.findByText("Wire up expand/collapse");
+
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+
+  await user.click(screen.getByText("Wire up expand/collapse"));
+
+  expect(details.open).toBe(true);
 });
 
 test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive legacy empty-state copy", async () => {

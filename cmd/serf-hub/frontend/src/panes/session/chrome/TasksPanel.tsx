@@ -67,11 +67,12 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
+import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
 import styles from "./taskspanel.module.css";
@@ -99,11 +100,16 @@ export interface TasksPanelHandle {
 const CLASS = {
   state: requireClass(styles.state, "taskspanel.module.css", "state"),
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
-  row: requireClass(styles.row, "taskspanel.module.css", "row"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
   staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
   staleHint: requireClass(styles.staleHint, "taskspanel.module.css", "staleHint"),
+  detailList: requireClass(styles.detailList, "taskspanel.module.css", "detailList"),
+  detailRow: requireClass(styles.detailRow, "taskspanel.module.css", "detailRow"),
+  detailLabel: requireClass(styles.detailLabel, "taskspanel.module.css", "detailLabel"),
+  detailValue: requireClass(styles.detailValue, "taskspanel.module.css", "detailValue"),
+  detailPrompt: requireClass(styles.detailPrompt, "taskspanel.module.css", "detailPrompt"),
+  notesList: requireClass(styles.notesList, "taskspanel.module.css", "notesList"),
 };
 
 // Mirrors the legacy sidebar/inline task-row grammar (cmd/serf-hub/assets/
@@ -207,11 +213,107 @@ function isThreadNotFound(err: unknown): boolean {
   );
 }
 
-function TaskRowView({ task }: { task: TaskRow }) {
+// Scopes a task row's disclosure state to this session: task ids restart at
+// 1 in every session (agent/task/task_store.go mints them per session), but
+// widgets/disclosure's store is one page-lifetime singleton shared by every
+// open TasksPanel - without the session in the key, expanding task #1 in one
+// session would show task #1 already expanded the next time a DIFFERENT
+// session's panel opens. Mirrors subagentModuleStore.ts's itemScopeKey (same
+// NUL-separator idiom); no "" fallback is needed here since TasksPanelProps'
+// sessionRef is never optional.
+function taskDisclosureId(sessionRef: string, taskId: number): string {
+  return `${sessionRef}\0${taskId}`;
+}
+
+// One label/value row in a task's detail list - the same grammar
+// DetailsPanel.tsx's own DetailRow uses (the sibling Sheet's convention for
+// "a labeled list of one entity's facts"): caption label above a mono
+// value, omitted by the caller entirely when the field has nothing to show
+// rather than rendered empty.
+function TaskDetailField({ label, testId, children }: { label: string; testId: string; children: ReactNode }) {
   return (
-    <li className={CLASS.row} data-testid="task-row">
+    <div className={CLASS.detailRow} data-testid={testId}>
+      <dt className={CLASS.detailLabel}>{label}</dt>
+      <dd className={CLASS.detailValue}>{children}</dd>
+    </div>
+  );
+}
+
+// The task's full details, revealed by TaskRowView's disclosure. status and
+// type are always present on the wire so always render; the rest are
+// omitted when absent (DetailsPanel's own rule) rather than shown empty - a
+// freshly appended task with no dependents, no reasoning override and no
+// notes yet is common, not malformed.
+//
+// insert/created_at/updated_at/completed_at are real wire fields
+// (agent/task/task_store.go) that never reach TaskRow at all (taskData.ts's
+// own comment) - "full details" here means every field TaskRow carries, not
+// literally everything the daemon knows about the task. Recorded as a gap
+// on kata rb74 rather than invented here.
+function TaskDetails({ task }: { task: TaskRow }) {
+  const dependsOn = task.dependsOn ?? [];
+  const notes = task.notes ?? [];
+  const hasPrompt = task.prompt.trim() !== "";
+  return (
+    <dl className={CLASS.detailList}>
+      <TaskDetailField label="status" testId="task-detail-status">
+        {task.status}
+      </TaskDetailField>
+      <TaskDetailField label="type" testId="task-detail-type">
+        {task.type}
+      </TaskDetailField>
+      {dependsOn.length > 0 && (
+        <TaskDetailField label="depends on" testId="task-detail-depends-on">
+          {dependsOn.map((id) => `#${id}`).join(", ")}
+        </TaskDetailField>
+      )}
+      {task.reasoningEffort && (
+        <TaskDetailField label="reasoning" testId="task-detail-reasoning">
+          {task.reasoningEffort}
+        </TaskDetailField>
+      )}
+      {hasPrompt && (
+        <TaskDetailField label="prompt" testId="task-detail-prompt">
+          <pre className={CLASS.detailPrompt}>{task.prompt}</pre>
+        </TaskDetailField>
+      )}
+      {notes.length > 0 && (
+        <TaskDetailField label="notes" testId="task-detail-notes">
+          <ol className={CLASS.notesList}>
+            {notes.map((note, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: notes only ever append over a task's life (agent/task/task_store.go's update handling) - position is stable identity, same reasoning as ThinkBlock.tsx's summaryIndex
+              <li key={i}>{note}</li>
+            ))}
+          </ol>
+        </TaskDetailField>
+      )}
+    </dl>
+  );
+}
+
+// TaskRowView wraps the row's existing glyph+description line as a
+// widgets/disclosure summary - the same store-backed disclosure primitive
+// the design spec named as "the natural home" for every disclosure in this
+// app (docs/superpowers/specs/2026-07-23-webui-ux-round2-design.md §6), and
+// the transcript's ThinkBlock/SteeringItem/SystemNoticeItem already use the
+// same idiom by hand. Reusing the component directly - rather than a fourth
+// hand-rolled copy - is deliberate: no other call site does yet, so this is
+// its first real consumer.
+function TaskRowView({ task, sessionRef }: { task: TaskRow; sessionRef: string }) {
+  const summary = (
+    <>
       <Chip tone={STATUS_TONE[task.status]}>{STATUS_GLYPH[task.status]}</Chip>
       <span className={CLASS.description}>{task.description}</span>
+    </>
+  );
+  return (
+    // No className here: Disclosure's own .summary/.body already lay out
+    // the full row width - this <li> exists only to keep the <ul>'s
+    // children real <li>s, the list semantics screen readers rely on.
+    <li data-testid="task-row">
+      <Disclosure id={taskDisclosureId(sessionRef, task.id)} summary={summary}>
+        <TaskDetails task={task} />
+      </Disclosure>
     </li>
   );
 }
@@ -365,7 +467,7 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
         ) : (
           <ul className={CLASS.list}>
             {rows.map((row) => (
-              <TaskRowView key={row.id} task={row} />
+              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} />
             ))}
           </ul>
         )}
