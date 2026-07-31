@@ -46,6 +46,22 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSelection()
 		return m, nil
 	case hubSessionMsg:
+		// The read's response is an exact cut on the wire, and this snapshot
+		// replaces the transcript. Release the frames the connection delivered
+		// AFTER it so they are folded on top of the snapshot rather than under
+		// it: a release only enqueues, so bubbletea cannot hand them back
+		// before this Update returns. The frames delivered ahead of the
+		// response go under it, here — the snapshot carries their transcript
+		// records, but not a further resync, an escalation, or a hub-wide
+		// panel refresh (kata 0vk2).
+		//
+		// Only a read that replaces the transcript takes a capture, so the
+		// early returns below are all reached with nothing held.
+		msg.capture.Release()
+		var preCut []tea.Cmd
+		for _, notification := range msg.beforeCut {
+			preCut = append(preCut, m.applyHubNotification(notification))
+		}
 		if msg.err != nil {
 			if msg.expectedState != "" && (m.mode != hubModeSession || msg.ref == "" || m.detail.Ref != msg.ref || msg.expectedRefreshToken != m.statusRefreshToken) {
 				return m, nil
@@ -82,7 +98,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.sessionDetailsRequested = false
 			m.session.refreshViewport()
-			return m, nil
+			return m, tea.Batch(preCut...)
 		}
 		m.clearNoticesByCategory("action-unavailable")
 		m.clearPendingAttachments(true)
@@ -122,13 +138,19 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Subscribe to any already-running subagent children so the rail shows
 		// their live activity on session entry, not just for new spawns.
 		subscribeChildren := m.subscribeNewChildren()
-		return m, subscribeChildren
+		return m, tea.Batch(append(preCut, subscribeChildren)...)
 	case hubNotificationMsg:
 		if !msg.ok {
-			return m, nil
+			// Evaluated before the return: the call mutates m, and the model
+			// operand's read is not ordered against it.
+			lost := m.hubConnectionLost()
+			return m, lost
 		}
 		cmd := m.applyHubNotification(msg.notification)
-		return m, tea.Batch(cmd, waitHubNotification(m.client))
+		return m, tea.Batch(cmd, waitHubNotification(m.frames))
+	case hubReconnectMsg:
+		reconnected := m.applyHubReconnect(msg)
+		return m, reconnected
 	case pendingpkg.PendingRegisteredMsg:
 		if msg.Entry.Ref != "" && !m.matchesAsyncSessionRef(msg.Entry.Ref) {
 			return m, nil
@@ -356,7 +378,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Clear returned invalid ref: " + msg.resp.Ref)
 			return m, nil
 		}
-		return m, fetchHubSession(m.client, ref)
+		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubGoalMsg:
 		if msg.err != nil {
 			m.recordSessionError("Goal failed: " + msg.err.Error())
@@ -392,7 +414,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Fork returned invalid ref: " + msg.resp.Ref)
 			return m, nil
 		}
-		return m, fetchHubSession(m.client, ref)
+		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubSpawnMsg:
 		m.spawnSubmitting = false
 		if msg.err != nil {
@@ -412,7 +434,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("spawn returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
-		return m, fetchHubSession(m.client, ref)
+		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubModelsMsg:
 		if msg.err != nil {
 			if m.mode == hubModeSpawn {

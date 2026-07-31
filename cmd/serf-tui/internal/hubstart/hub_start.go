@@ -44,6 +44,12 @@ type HubStartConfig struct {
 	DialHub             func(context.Context, HubAddress, *http.Client) (*appwire.Client, error)
 	StartLocalHub       func(HubStartRequest) error
 	CheckHubEnvironment func(context.Context, HubAddress, *http.Client, string) error
+
+	// ObserveFrames, when set, becomes the dialed client's ordered frame
+	// handler. It has to be installed before the receive loop starts, which is
+	// why the caller hands it in rather than attaching it to the returned
+	// client.
+	ObserveFrames func(appwire.Message, error)
 }
 
 type HubRuntime struct {
@@ -299,7 +305,9 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 		cfg.HealthTimeout = 5 * time.Second
 	}
 	if cfg.DialHub == nil {
-		cfg.DialHub = dialHubRPC
+		cfg.DialHub = func(ctx context.Context, addr HubAddress, httpClient *http.Client) (*appwire.Client, error) {
+			return dialHubRPC(ctx, addr, httpClient, cfg.ObserveFrames)
+		}
 	}
 	if cfg.CheckHubEnvironment == nil {
 		cfg.CheckHubEnvironment = checkHubEnvironment
@@ -390,12 +398,15 @@ func waitForHubHealth(ctx context.Context, addr HubAddress, httpClient *http.Cli
 	}
 }
 
-func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client) (*appwire.Client, error) {
+func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client, observeFrames func(appwire.Message, error)) (*appwire.Client, error) {
 	transport, err := appwire.DialWebSocket(ctx, hubRPCURL(addr), httpClient)
 	if err != nil {
 		return nil, err
 	}
 	client := appwire.NewClient(transport)
+	if observeFrames != nil {
+		client.SetOrderedFrameHandler(observeFrames)
+	}
 	client.Start(context.WithoutCancel(ctx))
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo: appwire.ClientInfo{Name: "serf-tui", Version: "tui"},

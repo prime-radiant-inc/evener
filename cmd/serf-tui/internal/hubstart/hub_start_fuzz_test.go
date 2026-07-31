@@ -206,7 +206,7 @@ func fuzzStartHubEdges(t *testing.T) {
 
 func fuzzTransportEdges(t *testing.T) {
 	t.Helper()
-	_, _ = dialHubRPC(context.Background(), HubAddress{BaseURL: "http://127.0.0.1:0"}, &http.Client{})
+	_, _ = dialHubRPC(context.Background(), HubAddress{BaseURL: "http://127.0.0.1:0"}, &http.Client{}, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -215,7 +215,7 @@ func fuzzTransportEdges(t *testing.T) {
 		_, _, _ = conn.Read(r.Context())
 		_ = conn.Close(websocket.StatusInternalError, "stop")
 	}))
-	_, _ = dialHubRPC(context.Background(), HubAddress{BaseURL: srv.URL}, srv.Client())
+	_, _ = dialHubRPC(context.Background(), HubAddress{BaseURL: srv.URL}, srv.Client(), nil)
 	srv.Close()
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -266,7 +266,7 @@ func fuzzDialHubRPC(t *testing.T, protocol string) {
 	srv := fakeHubServer(t, protocol)
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
-	client, err := dialHubRPC(context.Background(), addr, srv.Client())
+	client, err := dialHubRPC(context.Background(), addr, srv.Client(), nil)
 	// v2 requires an exact protocol match (appwire.Client.Initialize), so every
 	// other value — including an absent one, which is what an old hub sends —
 	// must be refused rather than treated as "unknown, probably fine".
