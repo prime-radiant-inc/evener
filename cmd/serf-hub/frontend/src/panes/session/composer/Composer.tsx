@@ -638,8 +638,12 @@ export function Composer({ ref }: ComposerProps) {
       textareaRef.current?.focus();
       return;
     }
-    if (route === "steer" && !activeTurnId) {
-      toasts.push("error", "Steer failed: no active turn");
+    // Both routes steer the ACTIVE turn; without one the daemon rejects them
+    // ("no active turn to steer"). Drain needs this guard as much as steer:
+    // unguarded, a Steer-click routing to drain (non-empty queue or staged
+    // attachments) minted a durable intent the hub rejects forever (kata wr3s).
+    if ((route === "steer" || route === "drain") && !activeTurnId) {
+      toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
       return;
     }
     void submitAction(route);

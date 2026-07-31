@@ -964,6 +964,37 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
+// The drain route has the same doomed-without-a-turn shape as steer — the hub
+// rejects an empty expectedTurnId before forwarding — but the handler only
+// guarded the steer branch, so a Steer-click that routed to drain (non-empty
+// queue, or staged attachments) minted a durable poison intent instead of a
+// toast. That is the exact first stuck message of the kata-wr3s incident.
+test("Shift+Enter routing to drain with no active turn id toasts rather than minting a doomed drain", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0, depth: 1, preview: ["queued follow-up"] }, // non-empty queue → drain route
+    }, // no activeTurnId
+  });
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "hi");
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+});
+
 test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });

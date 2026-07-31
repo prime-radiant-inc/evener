@@ -2796,8 +2796,14 @@ describe("useThreadsStore.drainAsSteer", () => {
     });
   });
 
+  // The fixture needs the active turn its sibling establishes: this test is
+  // about the empty-composer INPUT shape, and its earlier pin of
+  // expectedTurnId "" blessed exactly the payload the hub rejects before
+  // forwarding — the poison intent kata wr3s exists for. Draining without an
+  // active turn is refused at mint time now (test below).
   test("sends an empty input array when the composer was empty (draining the queue alone)", async () => {
     const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
     await threadsStore.getState().drainAsSteer("ref_a", "");
@@ -2807,8 +2813,8 @@ describe("useThreadsStore.drainAsSteer", () => {
     expect(call?.params).toEqual({
       ref: "ref_a",
       clientMutationId: expect.any(String),
-      expectedTurnId: "",
-      expectedQueueRevision: 0,
+      expectedTurnId: "turn_1",
+      expectedQueueRevision: 7,
       input: [],
     });
   });
@@ -4738,6 +4744,23 @@ describe("retry-safe mutation outbox integration", () => {
     read.resolve(readResponse("ref_a"));
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
     expect(fake.calls.map((call) => call.method)).toEqual(["thread/read", "turn/queue"]);
+  });
+
+  // turn/drainAsSteer requires an active turn by wire contract (the hub and
+  // the daemon both reject an empty expectedTurnId, and the daemon's legacy
+  // path errors "drain: no active turn to steer"). Minting a durable intent
+  // that violates the contract at birth creates a poison head: every dispatch
+  // bounces off the hub's InvalidParams (which names no clientMutationId) and
+  // the record parks the thread's FIFO forever (kata wr3s). Refuse at mint
+  // time, before anything durable exists.
+  test("drain with no active turn is refused at mint time, never durably queued", async () => {
+    connectFakeClient();
+
+    await expect(threadsStore.getState().drainAsSteer("ref_a", "steer this")).rejects.toThrow(/active turn/i);
+
+    const storage = new MutationOutboxIndexedDB();
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    storage.close();
   });
 
   // A blockedUnknown record parks until its outcome is provable. The

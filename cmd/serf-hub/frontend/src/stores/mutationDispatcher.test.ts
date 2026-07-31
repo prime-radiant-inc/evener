@@ -260,6 +260,56 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(second.clientMutationId)).toMatchObject({ state: "submitting" });
   });
 
+  // The hub validates request shape BEFORE forwarding, and its rejection
+  // (appwire.InvalidParams) carries no clientMutationId — attribution comes
+  // from the request call itself. An invalid-params/invalid-request code means
+  // the server refused the payload without executing it, so an identical retry
+  // can never succeed: retaining "submitting" turns one malformed intent at
+  // the FIFO head into a permanently parked thread (kata wr3s, the live
+  // "Draining chip never sends" incident). Terminal path: recovery, text
+  // preserved, FIFO advances.
+  test("an unattributable invalid-params rejection is terminal: head to recovery, FIFO advances", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "deterministic-invalid", ["mutation-a", "mutation-b"]);
+    const first = await outbox.enqueueIntent(queueIntent("ref-a", "poison drain"));
+    const second = await outbox.enqueueIntent(queueIntent("ref-a", "parked behind it"));
+    const changes: string[][] = [];
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      if (params.clientMutationId === first.clientMutationId) {
+        throw new WireError("expectedTurnId is required", -32602, { serfErrorInfo: "invalidParams" });
+      }
+      return { receipt: receipt(params.clientMutationId) };
+    });
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (refs) => changes.push(refs),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(first.clientMutationId)).toBeUndefined();
+    expect(await outbox.getRecovery(first.clientMutationId)).toMatchObject({ recoveryKind: "rejected" });
+    expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
+    expect(changes.flat()).toContain("ref-a");
+  });
+
+  test("an unattributable rejection with a non-deterministic code still retains submitting", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "ambiguous-error", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "ambiguous"));
+    const client = new FakeClient();
+    client.on("turn/queue", () => {
+      throw new WireError("relay hiccup", -32011, { serfErrorInfo: "unavailable" });
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "submitting" });
+    expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
+  });
+
   // The daemon's own contract for a blocked-unknown outcome is "retry must
   // remain blocked until persistence recovers" (NormalizeClientMutationError).
   // The authoritative thread read is how recovery is proven: an id absent from
