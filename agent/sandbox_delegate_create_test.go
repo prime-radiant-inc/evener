@@ -262,6 +262,42 @@ func TestSandboxPromptLine(t *testing.T) {
 	}
 }
 
+// TestSandboxPromptLineIncludesScratchDir: kata g8q6 — once EnableSandbox has
+// provisioned a real kernel wrapper (Wrapper != nil), the environment section
+// must also tell the model where its scratch directory is. The model's file
+// tools have no other way to discover it: a spawned shell command learns it
+// through $TMPDIR/$SERF_SCRATCH_DIR (agent/sandbox/env_floor.go), but the model's
+// own write_file/read_file calls never see process environment variables.
+// sbxSetParentMode (used by TestSandboxPromptLine above) deliberately builds an
+// env with no Wrapper "so a createDelegate floor test can run under a concrete
+// parent box" — this test instead exercises the real EnableSandbox path so a
+// Wrapper (and its real, on-disk scratch dir) exists.
+func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
+	root := t.TempDir()
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, root)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	local := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(local.Cleanup)
+	if err := local.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+
+	got := sandboxPromptLine(local)
+	if !strings.Contains(got, "workspace-write (network on) — fixed for this session") {
+		t.Fatalf("sandbox prompt line lost the mode/network text: %q", got)
+	}
+	scratch := local.Wrapper.SessionTmp()
+	if scratch == "" {
+		t.Fatal("EnableSandbox must provision a session scratch dir")
+	}
+	if !strings.Contains(got, scratch) {
+		t.Fatalf("sandbox prompt line must name the scratch directory so the model can find it: got %q, want it to contain %q", got, scratch)
+	}
+}
+
 // TestCreateDelegate_ResultEchoesSandboxBox: an enforced delegate echoes its box
 // (mode + network) in the delegate result so the parent can verify the child's
 // actual confinement; an unsandboxed delegate omits the key.

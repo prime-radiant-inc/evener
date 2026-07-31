@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,46 @@ func TestEnableSandboxProvisionsSeatbeltBackend(t *testing.T) {
 	}
 	if env.Sandbox == nil || env.Wrapper == nil {
 		t.Errorf("a provisioned seatbelt env must have both Sandbox and Wrapper set, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
+	}
+}
+
+// TestEnableSandboxFileToolsReachOwnScratch is the kata g8q6 regression: the
+// model's own file tools (write_file, read_file, …) must be able to use the SAME
+// per-session scratch directory a spawned shell command reaches via
+// $TMPDIR/$SERF_SCRATCH_DIR, in every enforced mode. Before this fix,
+// EnableSandbox provisioned the scratch dir for the kernel-wrapped
+// spawned-process layer only (env_floor.go, bwrap.go, seatbelt.go all thread it
+// through separately) — the in-process file-tool layer's ResolvedPolicy.FileTool
+// never carried it, so a model that wrote there (rather than guessing a literal,
+// always-denied "/tmp/...") was denied too.
+func TestEnableSandboxFileToolsReachOwnScratch(t *testing.T) {
+	for _, mode := range []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			home := t.TempDir()
+			worktree := filepath.Join(home, "project")
+			if err := os.MkdirAll(worktree, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+			rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode}, host, worktree)
+			if err != nil {
+				t.Fatalf("Resolve(%v): %v", mode, err)
+			}
+			env := NewLocalExecutionEnvironment(worktree)
+			t.Cleanup(env.Cleanup)
+			if err := env.EnableSandbox(&rp); err != nil {
+				t.Fatalf("EnableSandbox(%v): %v", mode, err)
+			}
+
+			target := filepath.Join(env.Wrapper.SessionTmp(), "scratch.txt")
+			if _, err := env.WriteFile(target, "hello scratch\n"); err != nil {
+				t.Fatalf("%v: write_file into the session's own scratch dir should succeed: %v", mode, err)
+			}
+			got, err := env.ReadFile(target, nil, nil)
+			if err != nil || !strings.Contains(got, "hello scratch") {
+				t.Fatalf("%v: read_file of the just-written scratch file failed: got %q err %v", mode, got, err)
+			}
+		})
 	}
 }
 
@@ -132,8 +173,13 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if second == nil || second == first {
 			t.Errorf("EnableSandbox must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
 		}
-		if second != nil && second.policy != rp2 {
-			t.Error("rebuilt sandboxFS must reflect the new policy")
+		// Not a pointer-identity check against rp2: sandbox() folds the concrete
+		// scratch dir into its OWN copy of the policy (WithSessionScratch), so the
+		// rebuilt sandboxFS legitimately carries a policy value distinct from rp2 —
+		// what must hold is that it reflects lane B (the new policy), not lane A
+		// (the stale one).
+		if second != nil && second.policy.Git.WorktreeRoot != rp2.Git.WorktreeRoot {
+			t.Errorf("rebuilt sandboxFS must reflect the new policy: worktree = %q, want %q", second.policy.Git.WorktreeRoot, rp2.Git.WorktreeRoot)
 		}
 	})
 

@@ -126,7 +126,12 @@ type LocalExecutionEnvironment struct {
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
 // the environment is unsandboxed (a nil policy or off mode) — in which case every
 // file tool keeps its byte-identical afero/os path. The sandboxFS is built once
-// and cached; it is only ever constructed for an enforced policy.
+// and cached; it is only ever constructed for an enforced policy. It folds in the
+// concrete per-session scratch directory (sessionScratchPath) so the file tools
+// reach the SAME scratch dir a spawned shell command gets via $TMPDIR —
+// regardless of which policy-replacement path built it (EnableSandbox,
+// WithWorkingDirectory's re-root, UseControlPolicy), since they all funnel
+// through this single lazy builder.
 func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	if e.Sandbox == nil || !e.Sandbox.Enforced() {
 		return nil
@@ -134,10 +139,23 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
 	if e.sbfs == nil {
-		e.sbfs = newSandboxFS(e.Sandbox)
+		e.sbfs = newSandboxFS(e.Sandbox, e.sessionScratchPath())
 		e.sbfs.grant = e.sandboxGrant
 	}
 	return e.sbfs
+}
+
+// sessionScratchPath returns the concrete per-session scratch directory this
+// env's kernel wrapper already grants spawned processes via $TMPDIR /
+// $SERF_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when unsandboxed. It
+// reads through Wrapper rather than ownedSessionTmp because a re-rooted clone
+// (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper without
+// owning it (ownedSessionTmp is nil there — see its doc comment).
+func (e *LocalExecutionEnvironment) sessionScratchPath() string {
+	if e.Wrapper == nil {
+		return ""
+	}
+	return e.Wrapper.SessionTmp()
 }
 
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool

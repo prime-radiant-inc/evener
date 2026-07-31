@@ -94,7 +94,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if err != nil {
 		t.Fatalf("resolve edge policy: %v", err)
 	}
-	s := newSandboxFS(&policy)
+	s := newSandboxFS(&policy, "")
 	defer s.close()
 	trace := securePathEdgeTrace{}
 
@@ -258,7 +258,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 
 	missingRootPolicy := policy
 	missingRootPolicy.FileTool.WriteRoots = []string{missingRoot}
-	missingRootFS := newSandboxFS(&missingRootPolicy)
+	missingRootFS := newSandboxFS(&missingRootPolicy, "")
 	if err := missingRootFS.mkdirAll("edge", filepath.Join(missingRoot, "child")); err == nil {
 		missingRootFS.close()
 		t.Fatal("mkdirAll missing root unexpectedly succeeded")

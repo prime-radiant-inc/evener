@@ -209,7 +209,7 @@ func TestGrant_DoesNotOverrideGitProtection(t *testing.T) {
 		FileTool: sandbox.AccessScope{Read: sandbox.ReadAnywhere, WriteRoots: []string{worktree}},
 		Git:      sandbox.GitLayout{ProtectedPaths: []string{protected}},
 	}
-	s := newSandboxFS(rp)
+	s := newSandboxFS(rp, "")
 	t.Cleanup(s.close)
 
 	// Even granted, a git-protected surface stays write-denied — the grant widens
@@ -237,7 +237,7 @@ func TestGrant_DoesNotOverrideMasking(t *testing.T) {
 		FileTool:    sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}},
 		MaskedPaths: []string{masked},
 	}
-	s := newSandboxFS(rp)
+	s := newSandboxFS(rp, "")
 	t.Cleanup(s.close)
 
 	// Even granted, a masked (credential) path stays denied — the grant widens
