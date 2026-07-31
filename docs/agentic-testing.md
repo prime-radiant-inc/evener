@@ -286,10 +286,43 @@ and a silently-not-shut-down session, which then poisons the next run's
 **There is no REST route for steer, queue, or drain-as-steer at all.**
 Those three live only on the AppWire WebSocket as `turn/steer`,
 `turn/queue`, and `turn/drainAsSteer` (`appwire/types.go:24,26-27`), so
-a scenario that needs them has to drive the composer in a browser — see
-"Driving the web UI" below. `capabilities.steer`/`capabilities.queue` on
-the detail object still report whether the daemon *would* accept them,
-which is enough for a gating-only assertion without a browser.
+a scenario that needs the *user-visible* behaviour has to drive the
+composer in a browser — see "Driving the web UI" below.
+`capabilities.steer`/`capabilities.queue` on the detail object still
+report whether the daemon *would* accept them, which is enough for a
+gating-only assertion without a browser. For the wire contract itself,
+dial the socket directly:
+
+### Driving AppWire directly (the browser-free lever)
+
+`ws://127.0.0.1:$PORT/rpc`, `Authorization: Bearer $TOKEN`, then
+`initialize` before anything else. This is how a card asserts a
+daemon-side contract — windowed reads, CAS preconditions, refusal
+messages — exactly, without a browser or a bundle.
+
+**Frames carry no `jsonrpc` field.** This is the one footgun, and it is
+expensive because of how it fails: `Message.UnmarshalJSON` rejects the
+frame outright (`"jsonrpc field is not part of AppWire"`,
+`appwire/jsonrpc.go:164-166`), `Recv` returns the error, and the receive
+loop closes the socket. What you observe is a connection that drops the
+moment you send — which reads as a network or auth problem, not as a
+malformed request. Send:
+
+```json
+{"id": 1, "method": "initialize",
+ "params": {"protocolVersion": "serf-appwire-v2",
+            "clientInfo": {"name": "scenario", "version": "0"},
+            "capabilities": {"experimentalApi": false}}}
+```
+
+Notifications for other threads arrive interleaved with your responses,
+so match on `id` rather than reading the next frame and hoping.
+
+A session to aim a gating assertion at costs nothing and needs no
+provider credential: spawn with an empty `prompt` and the daemon launches
+without running a turn — a *dormant* session, which reports `state:"idle"`
+like any other quiet session and is only distinguishable by the `dormant`
+field (`hubapi/types.go:115-119`). No completion request is ever made.
 
 ## Auditing sidecar scenarios
 

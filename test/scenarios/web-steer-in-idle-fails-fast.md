@@ -67,7 +67,14 @@ HUB=http://127.0.0.1:$PORT
 
    Both need `clientMutationId` set to a fresh unique value. The request
    shape is `appwire.TurnSteerParams`; the method constant is
-   `MethodTurnSteer = "turn/steer"` (`appwire/types.go:24`).
+   `MethodTurnSteer = "turn/steer"` (`appwire/types.go:24`). Send frames as
+   `{"id":N,"method":…,"params":…}` with **no `jsonrpc` field** — see Sharp
+   edges.
+
+   An idle session to aim this at costs nothing: spawn with an empty
+   `prompt` and the daemon launches without running a turn (a dormant
+   session, which reports `state:"idle"` — `hubapi/types.go:115-119`), so no
+   provider credential is needed and no completion request is ever made.
 
 ### Part B — the composer's refusal (browser)
 
@@ -121,15 +128,21 @@ HUB=http://127.0.0.1:$PORT
   capability gate regressed, and the refusals below become the only thing
   standing between a stale click and a bogus steer.
 - **Step 2 (daemon, exact)**: the omitted-`expectedTurnId` request is
-  rejected with `InvalidParams` and the message `expectedTurnId is required`
-  — refused twice on the way down, once by the hub
-  (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
+  rejected with `InvalidParams` (code `-32602`) and the exact message
+  `expectedTurnId is required` — refused twice on the way down, once by the
+  hub (`cmd/serf-hub/app_rpc.go:381-383`) and once by the daemon
   (`server/appwire_runtime.go:597-599`). The stale-`expectedTurnId` request
-  is rejected with `Conflict` and the message `turn is not active`
-  (`agent/session_client_mutation_queue.go:325-328`, inside the atomic
-  client-mutation step, so it never half-applies). Falsify: either request
+  is rejected with `Conflict` (code `-32013`) and a message *containing*
+  `turn is not active` (`agent/session_client_mutation_queue.go:325-328`,
+  inside the atomic client-mutation step, so it never half-applies).
+  Match on the substring: the observed message is prefixed with the method,
+  `appwire turn/steer: turn is not active`. Falsify: either request
   succeeds, or hangs, or returns a generic internal error — a steer was
   accepted, or swallowed, against a session with no turn to steer.
+
+  Verified live 2026-07-31 against a hub built from this branch, on an
+  isolated `$HOME` and a kernel-assigned port, with `fake429` as the only
+  provider: both codes and both messages are exactly as above.
 - **Steps 3-4 (composer)**: no `[data-testid="composer-steer"]` button
   exists; the toast region contains `Steer failed: no active turn`
   (`Composer.tsx:641-643`); the composer text is **unchanged** (nothing was
@@ -154,6 +167,12 @@ rm -rf "$tmpdir"
 - **Part A is the exact half and needs no browser.** Run it alone if Chrome
   is unavailable; it pins both refusal messages verbatim. Part B pins the
   human-visible half, which no unit test can speak for.
+- **AppWire frames carry no `jsonrpc` field.** Sending the JSON-RPC 2.0
+  envelope every other tool defaults to gets the frame rejected outright
+  (`"jsonrpc field is not part of AppWire"`,
+  `appwire/jsonrpc.go:164-166`) and the server closes the socket — which
+  looks like a connection problem, not a malformed request. Frames are
+  `{"id":N,"method":"…","params":{…}}`.
 - **Shift+Enter is only the Steer chord while `enterToSend` is off** — with
   the `serf.prefs.enterToSend` preference on, Shift+Enter inserts a literal
   newline instead, to avoid doubling up on that preference's own

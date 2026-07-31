@@ -52,6 +52,8 @@ checklist in `docs/agentic-testing.md`; never touch a real hub):
    Param and response field names are `appwire/types.go:768-801`:
    `ThreadReadParams.TurnLimit` → `ThreadReadResponse.OlderCursor` →
    `ThreadTurnsListParams.Cursor/Limit` → `ThreadTurnsListResponse.Data/NextCursor`.
+   Send frames as `{"id":N,"method":…,"params":…}` with **no `jsonrpc`
+   field** — see Sharp edges.
 
 2. **Browser cold load**: navigate to `/auth?token=$TOKEN&next=/s/local:<id>`.
    Assert on the paging row rather than on a turn count (see Sharp edges —
@@ -131,6 +133,12 @@ programs and the `$run` scratch dir. Leave any real hub untouched.
   `window.SerfRenderer` and nothing else global; `model.olderCursor` lives in
   the zustand store. Check the cursor values at the transport level (step 1)
   and use the row's presence/absence as the browser-side proxy.
+- **AppWire frames carry no `jsonrpc` field.** Sending the JSON-RPC 2.0
+  envelope every other tool defaults to gets the frame rejected outright
+  (`"jsonrpc field is not part of AppWire"`,
+  `appwire/jsonrpc.go:164-166`) and the server closes the socket — which
+  looks like a connection problem, not a malformed request. Frames are
+  `{"id":N,"method":"…","params":{…}}`.
 - Past sessions lazy-load their rail rows, so a collapsed `bigproj` project
   shows no session row until expanded — navigate to `/s/local:<id>` directly
   instead of clicking. Note the ref form: a bare `/s/<id>` renders
