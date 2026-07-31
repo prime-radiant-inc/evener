@@ -855,3 +855,56 @@ func TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn(t *testing.T) 
 			turn.ID, len(turn.Items), want)
 	}
 }
+
+// TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique (kata rk09)
+// carries the same invariant across a restart.
+//
+// A reserved id is PERSISTED: apptranscript keeps a persisted entry's
+// StableTurnID in preference to its entry-index number, so the id a reply was
+// reserved under is the id it keeps forever. Sharing the entry-index namespace
+// therefore does not just merge the live turn — it seeds two turns under one
+// id, which is the turn-id-uniqueness invariant the browser reducer logs.
+func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-5.5"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	// Five exchanges: the last user input is transcript entry 9, but it is only
+	// the third client mutation, so its reservation is numbered 3.
+	reserved := appwire.ClientMutationTurnID(3)
+	for i := range 5 {
+		user := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("in-%d", i)))
+		if i == 4 {
+			user.ClientMutationID = "reply-1"
+			user.StableTurnID = reserved
+		}
+		if err := tw.Append(user); err != nil {
+			t.Fatalf("append user: %v", err)
+		}
+		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
+			t.Fatalf("append assistant: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{})
+	installTranscriptIdentity(t, srv, "th_1", path)
+	seeded := srv.appAllTurns("th_1")
+
+	occurrences := map[string]int{}
+	for _, turn := range seeded {
+		occurrences[turn.ID]++
+	}
+	for id, n := range occurrences {
+		if n > 1 {
+			t.Fatalf("seeded turn id %q appears %d times in %v — the reserved id %q is also an entry-index id",
+				id, n, turnIDs(seeded), reserved)
+		}
+	}
+	if occurrences[reserved] != 1 {
+		t.Fatalf("seeded turns %v do not carry the persisted reserved id %q", turnIDs(seeded), reserved)
+	}
+}
