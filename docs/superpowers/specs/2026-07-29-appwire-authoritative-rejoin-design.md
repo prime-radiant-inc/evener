@@ -454,12 +454,15 @@ What remains, precisely:
   this work moved off the read path — and commits under `s.mu`. It runs
   concurrently from the bridge goroutine and from all eight mutation handlers,
   so sample(A) → sample(B) → commit(B) → commit(A) leaves A's older value
-  installed. Bounded, not permanent: the next event that touches the facet
-  corrects it and `TURN_ENDED` re-samples every one. A live subscriber is
-  unaffected, because the notification stream carries the truth. The exposure is
-  a cold `thread/read` landing inside the window and reading a stale queue depth
-  or goal. Closing it needs a per-facet sequence number, which is not worth it
-  here.
+  installed. Bounded, not permanent for most facets: the next event that
+  touches the facet corrects it, and `TURN_ENDED` re-samples every one
+  regardless. `facetGoal` is the exception — `goal/set` emits no event at all
+  (`server/thread_envelope.go`'s own comment on the table), so a lost update to
+  it has no "next event" to depend on and heals only on the next `TURN_ENDED`.
+  A live subscriber is unaffected, because the notification stream carries the
+  truth. The exposure is a cold `thread/read` landing inside the window and
+  reading a stale queue depth or goal. Closing it needs a per-facet sequence
+  number, which is not worth it here.
 - **Nothing enforces the rule that an emitter holds no lock the consumer takes.**
   Losslessness turns "emit under a lock" from a dropped event into a deadlock,
   for every lock reachable from the bridge. Three call sites were found and
