@@ -37,6 +37,19 @@ type composerContext struct {
 // connection status and, when in queue/fork/awaiting mode, a state-colored
 // mode chip. The whole line is painted as a solid SurfaceSecondary band.
 //
+// Degradation order (kata wqyx): the working-dir path is static context the
+// user already knows, so it is the first thing to shrink — via
+// AbbreviatePath's own budget parameter — and the first thing dropped
+// outright once shrinking no longer helps. The right side is live state (is
+// the hub reachable, is a model call being retried, what mode is the
+// composer in) and matters more at narrow widths, so it keeps its full size
+// until the dir has already been dropped and the row still doesn't fit;
+// only then does it degrade, in priority order: connection health, then the
+// retry chip (kata e79v: it exists specifically to explain a hung-looking
+// session), then the mode chip, then the hub address — static context
+// repeated every render, and the first thing dropped. See renderChipStatus
+// and fitRightContent for the mechanics.
+//
 // Every inner styled span explicitly sets Background(SurfaceSecondary) so
 // the band's bg paints through cleanly: nested lipgloss spans emit ANSI
 // resets at their boundaries, and unstyled join glue (separators, gap
@@ -50,8 +63,12 @@ func renderComposerChipStrip(ctx composerContext) string {
 	text := lipgloss.NewStyle().Background(bg).Foreground(th.Text)
 	ghost := lipgloss.NewStyle().Background(bg).Foreground(th.TextGhost)
 	bgOnly := lipgloss.NewStyle().Background(bg)
+	sep := ghost.Render(" · ")
+	sepW := lipgloss.Width(sep)
 
-	// Left side: harness/model/branch/dir
+	// Left side: harness/model/branch. The working directory is handled
+	// separately below, once the right side's ideal size is known, so it
+	// can be given whatever budget is left rather than a flat cap.
 	leftParts := []string{}
 	add := func(key, value string) {
 		if value == "" {
@@ -62,17 +79,16 @@ func renderComposerChipStrip(ctx composerContext) string {
 	add("harness", ctx.Harness)
 	add("model", composeProviderModel(ctx.Provider, ctx.Model))
 	add("branch", ctx.Branch)
-	if ctx.WorkingDir != "" {
-		leftParts = append(leftParts, dim.Render(modeldisplay.AbbreviatePath(ctx.WorkingDir, 32)))
-	}
-	sep := ghost.Render(" · ")
-	leftContent := strings.Join(leftParts, sep)
+	leftFixed := strings.Join(leftParts, sep)
 
-	// Right side: status + optional mode chip
+	// Right side: status + optional mode chip, built at full size — this is
+	// what the working-dir budget below is computed against, and what
+	// renders whenever it fits.
 	rightParts := []string{}
-	if status := renderChipStatus(ctx, th); status != "" {
+	if status := renderChipStatus(ctx, th, 0); status != "" {
 		rightParts = append(rightParts, status)
 	}
+	modeFrag := ""
 	if ctx.Mode != "" {
 		modeColor := th.Accent
 		switch {
@@ -85,8 +101,8 @@ func renderComposerChipStrip(ctx composerContext) string {
 		}
 		// Build a mode chip inline with the band bg (instead of using
 		// the shared tuiprim.StatusBadge, which has no band bg).
-		mode := lipgloss.NewStyle().Background(bg).Foreground(modeColor).Bold(true).Render("● " + strings.ToUpper(ctx.Mode))
-		rightParts = append(rightParts, mode)
+		modeFrag = lipgloss.NewStyle().Background(bg).Foreground(modeColor).Bold(true).Render("● " + strings.ToUpper(ctx.Mode))
+		rightParts = append(rightParts, modeFrag)
 	}
 	rightContent := strings.Join(rightParts, bgOnly.Render("  "))
 
@@ -102,8 +118,36 @@ func renderComposerChipStrip(ctx composerContext) string {
 		Padding(0, 1)
 
 	inner := max(width-2, 1)
-	leftW := lipgloss.Width(leftContent)
 	rightW := lipgloss.Width(rightContent)
+
+	// Working-dir chip: shrink into whatever room is left after the fixed
+	// left chips and the full right side, capped at composerWorkingDirMaxWidth
+	// (a display ceiling, not just a narrow-width fallback — the chip never
+	// grew past this even before kata wqyx). Below composerWorkingDirMinWidth
+	// the abbreviation is too mangled to be worth showing, so the chip is
+	// dropped rather than rendered as a near-empty "…" fragment.
+	leftContent := leftFixed
+	if ctx.WorkingDir != "" {
+		fixedW := lipgloss.Width(leftFixed)
+		dirSepW := 0
+		if fixedW > 0 {
+			dirSepW = sepW
+		}
+		budget := inner - fixedW - dirSepW - rightW - 1
+		if budget > composerWorkingDirMaxWidth {
+			budget = composerWorkingDirMaxWidth
+		}
+		if budget >= composerWorkingDirMinWidth {
+			dirChip := dim.Render(modeldisplay.AbbreviatePath(ctx.WorkingDir, budget))
+			if fixedW > 0 {
+				leftContent = leftFixed + sep + dirChip
+			} else {
+				leftContent = dirChip
+			}
+		}
+	}
+
+	leftW := lipgloss.Width(leftContent)
 	if leftW+rightW+1 > inner {
 		// Chip-strip fragments are ANSI-styled (each span declares the band
 		// bg explicitly to survive the parent's reset boundaries). Use
@@ -115,19 +159,83 @@ func renderComposerChipStrip(ctx composerContext) string {
 			return band.Render(leftContent)
 		}
 		room := inner - leftW - 1
-		rightContent = ansi.Truncate(rightContent, room, "…")
+		rightContent = fitRightContent(ctx, th, modeFrag, room)
 		return band.Render(leftContent + bgOnly.Render(" ") + rightContent)
 	}
 	gap := inner - leftW - rightW
 	return band.Render(leftContent + bgOnly.Render(strings.Repeat(" ", gap)) + rightContent)
 }
 
-// renderChipStatus produces the right-side connection/provider fragment
-// of the composer chip strip. Returns "" when there is no connection
-// context to surface. All inner spans declare Background(SurfaceSecondary)
-// so the parent chip-strip band's bg paints through without ANSI-reset
-// gaps between fragments.
-func renderChipStatus(ctx composerContext, th tuitheme.Theme) string {
+// composerWorkingDirMaxWidth caps the working-dir chip's AbbreviatePath
+// budget even when the row has room to spare; composerWorkingDirMinWidth is
+// the floor below which the abbreviation is too mangled to be worth
+// showing, so the chip is dropped instead of rendering a near-empty "…".
+const (
+	composerWorkingDirMaxWidth = 32
+	composerWorkingDirMinWidth = 12
+)
+
+// fitRightContent rebuilds the chip strip's right side within room columns
+// for the case where even a working-dir-less left side leaves no space for
+// the full right side (kata wqyx). The mode chip is short and must survive
+// whenever the row is wide enough to show anything at all, so its full
+// width is reserved first; renderChipStatus shrinks connection health and
+// the retry chip into whatever remains. If even the mode chip alone doesn't
+// fit, this falls back to a blind tail-truncate of the full content — the
+// pre-fix behavior, kept only for widths too narrow for prioritization to
+// matter.
+func fitRightContent(ctx composerContext, th tuitheme.Theme, modeFrag string, room int) string {
+	bg := th.SurfaceSecondary
+	gap := lipgloss.NewStyle().Background(bg).Render("  ")
+	gapW := lipgloss.Width(gap)
+
+	fullStatus := renderChipStatus(ctx, th, 0)
+	modeW := lipgloss.Width(modeFrag)
+	reservedGap := 0
+	if fullStatus != "" && modeFrag != "" {
+		reservedGap = gapW
+	}
+	if statusBudget := room - modeW - reservedGap; statusBudget > 0 {
+		status := renderChipStatus(ctx, th, statusBudget)
+		if status != "" && modeFrag != "" {
+			return status + gap + modeFrag
+		}
+		if status != "" {
+			return status
+		}
+		if modeFrag != "" {
+			return modeFrag
+		}
+	}
+	if modeFrag != "" && room >= modeW {
+		return modeFrag
+	}
+	full := modeFrag
+	if fullStatus != "" {
+		full = fullStatus
+		if modeFrag != "" {
+			full += gap + modeFrag
+		}
+	}
+	return ansi.Truncate(full, room, "…")
+}
+
+// renderChipStatus produces the right-side connection/retry/hub-address
+// fragment of the composer chip strip, in priority order: connection
+// health, then the pending model-call retry, then the hub address. Returns
+// "" when there is no connection context to surface. All inner spans
+// declare Background(SurfaceSecondary) so the parent chip-strip band's bg
+// paints through without ANSI-reset gaps between fragments.
+//
+// budget caps the rendered width; <= 0 means unlimited, which is what the
+// chip strip uses once it already knows the full-size content fits. When
+// budget is positive and tight (kata wqyx): the hub address is dropped
+// first — it's static context repeated every render — then the retry chip
+// is truncated with an ellipsis so its cause ("rate limited") stays legible
+// even when the attempt count and wait don't fit; connection health is
+// truncated only as an absolute last resort, since callers generally leave
+// it room.
+func renderChipStatus(ctx composerContext, th tuitheme.Theme, budget int) string {
 	if ctx.HubAddr == "" && !ctx.Connected && ctx.Provider == "" {
 		return ""
 	}
@@ -135,8 +243,9 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme) string {
 	dim := lipgloss.NewStyle().Background(bg).Foreground(th.TextDim)
 	ghost := lipgloss.NewStyle().Background(bg).Foreground(th.TextGhost)
 	bgOnly := lipgloss.NewStyle().Background(bg)
+	sep := ghost.Render(" · ")
+	sepW := lipgloss.Width(sep)
 
-	var fragments []string
 	healthClr := th.StateAwaiting
 	healthLabel := "disconnected"
 	if ctx.Connected {
@@ -145,17 +254,46 @@ func renderChipStatus(ctx composerContext, th tuitheme.Theme) string {
 	}
 	health := lipgloss.NewStyle().Background(bg).Foreground(healthClr).Bold(true).Render("●") +
 		bgOnly.Render(" ") + dim.Render(healthLabel)
-	fragments = append(fragments, health)
-	// Ahead of the hub address: while a model call is being retried, that is the
-	// most actionable thing on the line, and the address is static context.
+
+	unlimited := budget <= 0
+	if !unlimited && lipgloss.Width(health) > budget {
+		return ansi.Truncate(health, budget, "…")
+	}
+	result := health
+	remaining := budget - lipgloss.Width(health)
+
+	// Ahead of the hub address: while a model call is being retried, that is
+	// the most actionable thing on the line, and the address is static
+	// context. Truncated with an ellipsis rather than dropped outright when
+	// tight, so its cause stays legible even when the count/wait don't fit.
 	if ctx.Retry != "" {
-		fragments = append(fragments, lipgloss.NewStyle().Background(bg).Foreground(th.StateWarning).Render(ctx.Retry))
+		retry := lipgloss.NewStyle().Background(bg).Foreground(th.StateWarning).Render(ctx.Retry)
+		if unlimited {
+			result += sep + retry
+		} else if remaining > sepW {
+			retryBudget := remaining - sepW
+			if lipgloss.Width(retry) > retryBudget {
+				retry = ansi.Truncate(retry, retryBudget, "…")
+			}
+			result += sep + retry
+			remaining -= sepW + lipgloss.Width(retry)
+		}
 	}
+
+	// Hub address: static context repeated every render, so it's the
+	// lowest-priority fragment here — the first dropped when budget is
+	// tight, and (unlike retry) shown whole or not at all: a partially
+	// truncated address isn't useful.
 	if ctx.HubAddr != "" {
-		fragments = append(fragments, dim.Render(ctx.HubAddr))
+		addr := dim.Render(ctx.HubAddr)
+		if unlimited {
+			result += sep + addr
+		} else if remaining > sepW+lipgloss.Width(addr) {
+			result += sep + addr
+		}
 	}
-	sep := ghost.Render(" · ")
-	return strings.Join(fragments, sep)
+
+	return result
 }
 
 // composerRetryChip renders a pending model-call retry for the chip strip:
