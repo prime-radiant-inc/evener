@@ -541,6 +541,17 @@ premise is the ancestor-`output_match` ruling, which this design does not touch.
 
 ## Open decisions for Jesse
 
+**Ruled by Jesse, 2026-07-31** (walkthrough; details on kata eqs0):
+1 = extend `read_transcript` (as recommended). 2 = `job_status` stays
+denied; fix the error text (as recommended). 3 = never revoked (as
+recommended). 4 = delete the unreachable mint (as recommended).
+5 = **skip self-grants at the mint** (against the accept-for-now
+recommendation): with never-revoked grants, accepted junk rows would be
+permanent, and the table should hold only rows that confer real access —
+condition `finished job's DelegateID == receiver session id`, two-case
+test. 6 = take both: close the descendant gap in the same seam. The
+original decision texts below are kept for the reasoning.
+
 **1. Tool surface.** Recommend extending `read_transcript`'s `job:` path.
 The rejected alternatives are re-registering `job_read_output` unconditionally
 (a), registering it only for grant-holding sessions (b), a new tool (c), or
