@@ -2,8 +2,12 @@ package agent
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
 // readJobTranscriptFor spends the model-facing job:<job_id> read for one
@@ -138,6 +142,77 @@ func TestReadTranscriptChainFallsThroughWalkToGrantThenError(t *testing.T) {
 	if _, err := readJobTranscriptFor(t, fx.observer, ungranted.JobID); err == nil || err.Error() != errJobNotFound(ungranted.JobID).Error() {
 		t.Fatalf("ungranted read error = %v, want %q", err, errJobNotFound(ungranted.JobID).Error())
 	}
+}
+
+// TestReadTranscriptRendersDelegateJobAsDelegate: the jobs named in a
+// job.notification frame are usually delegate jobs, and a delegate has no
+// command, reports prose rather than a process log, and carries a
+// structured_result. Rendering that under a "# Shell Job" heading with a
+// missing command line would be a lie in the model's evidence stream.
+func TestReadTranscriptRendersDelegateJobAsDelegate(t *testing.T) {
+	t.Parallel()
+	jm := newWalkJobManager(t, "OWNER")
+	t.Cleanup(func() { _ = jm.store.Close() })
+	const report = "reviewed 3 files; no blocking findings\n"
+	jobID := seedTerminalDelegateJob(t, jm, report, map[string]any{"verdict": "clean"})
+
+	envelope, err := readJobTranscriptFor(t, &Session{id: "OWNER", jobManager: jm, subagents: newSubagentManager(nil, 0)}, jobID)
+	if err != nil {
+		t.Fatalf("delegate read_transcript: %v", err)
+	}
+	if strings.Contains(envelope.Content, "Shell Job") {
+		t.Fatalf("content = %q, want a delegate heading", envelope.Content)
+	}
+	for _, want := range []string{
+		"# Delegate Job " + jobID,
+		"- status: completed",
+		"- task: audit the diff",
+		report,
+		`structured_result (valid=true): {"verdict":"clean"}`,
+	} {
+		if !strings.Contains(envelope.Content, want) {
+			t.Fatalf("content = %q, want it to contain %q", envelope.Content, want)
+		}
+	}
+}
+
+// seedTerminalDelegateJob writes one completed delegate job — report bytes on
+// disk, structured result in the durable record — straight into a store,
+// without a provider or a live child runtime.
+func seedTerminalDelegateJob(t *testing.T, jm *jobManager, report string, structured map[string]any) string {
+	t.Helper()
+	jobID := jobstore.NewJobID()
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	output, err := jobstore.OpenOutputNoSync(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("open delegate output: %v", err)
+	}
+	if _, err := output.Append([]byte(report)); err != nil {
+		_ = output.Close()
+		t.Fatalf("append delegate report: %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("close delegate output: %v", err)
+	}
+	started := jm.now()
+	ended := started.Add(time.Second)
+	valid := true
+	if err := jm.appendEvent(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobDelegate,
+		Task: "audit the diff", OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID,
+		DelegateID: "dlg_auditor", TranscriptRef: encodeRef("", "child_"+jobID),
+		StartedAt: &started, OutputPath: outputPath,
+	}); err != nil {
+		t.Fatalf("append delegate start: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID, Status: jobstore.StatusCompleted,
+		Reason: "completed", EndedAt: &ended, OutputBytes: int64(len(report)),
+		StructuredResult: structured, StructuredResultValid: &valid, TerminalGen: "term_" + jobID,
+	}); err != nil {
+		t.Fatalf("append delegate finish: %v", err)
+	}
+	return jobID
 }
 
 // newDepthTwoJobTree builds root -> coord -> worker with single-hop forwarding
