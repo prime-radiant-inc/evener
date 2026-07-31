@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
   resetSubagentModuleStoreForTests,
   turnScopeKey,
@@ -2767,6 +2768,40 @@ describe("useThreadsStore.send", () => {
       ],
     });
   });
+});
+
+// kata 1gm2: a record born from a real submit used to reach recovery carrying
+// only the translated prose, so the restored composer showed sentences where
+// its tile anchors belonged and removing a tile stripped nothing. Nothing here
+// is hand-seeded: the record is the one send() actually wrote.
+test("a submitted record recovers into a composer draft with its marker anchors intact", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+
+  await threadsStore.getState().send("ref_a", "look [image 3] then [image 1]", [
+    { marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" },
+    { marker: 3, mediaType: "image/png", data: "BAUG", name: "third.png" },
+  ]);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const submitted = (await storage.listOutbox("ref_a"))[0];
+  expect(submitted).toBeDefined();
+  if (!submitted) return;
+  expect((submitted.payload as { input: { text?: string }[] }).input[0]?.text).toBe(
+    "look (attached image 3: third.png) then (attached image 1: first.png)",
+  );
+
+  const recovered = await storage.transferToRecovery(submitted.clientMutationId, "rejected");
+  expect(recovered).toBeDefined();
+  if (!recovered) return;
+  const draft = recoveryComposerDraft(recovered);
+
+  expect(draft.text).toBe("look [image 3] then [image 1]");
+  expect(draft.attachments.map((attachment) => [attachment.marker, attachment.name])).toEqual([
+    [1, "first.png"],
+    [3, "third.png"],
+  ]);
 });
 
 test("recovery resend rebuilds queue CAS values from the current thread", async () => {

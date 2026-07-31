@@ -45,6 +45,7 @@ async function seedPending(method: PendingMethod, text: string, ref = "ref_a", a
     payload: { ref, input },
     attachments: (attachments ?? []).map((attachment, index) => ({
       presentationId: `presentation_${index}`,
+      marker: attachment.marker,
       name: attachment.name ?? "attachment",
       mediaType: attachment.mediaType,
       blob: new Blob(),

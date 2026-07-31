@@ -482,6 +482,7 @@ export async function updateRecoveryMutation(
     clientMutationId,
     buildInput(text, attachments),
     durableAttachments(attachments),
+    text,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -686,6 +687,7 @@ function attachmentBlob(attachment: InputAttachment): Blob {
 function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
   return (attachments ?? []).map((attachment) => ({
     presentationId: createSecureUUID(),
+    marker: attachment.marker,
     name: attachment.name ?? "attachment",
     mediaType: attachment.mediaType,
     blob: attachmentBlob(attachment),
@@ -700,14 +702,15 @@ function composerMutationIntent(
 ): MutationIntent {
   const model = threadsStore.getState().threads.get(ref);
   // Translated HERE, not inside buildInput: this is the submit boundary. The
-  // other buildInput caller (updateRecoveryMutation) persists a composer DRAFT
-  // that recoveryComposerDraft reads back into the textarea, where the raw
-  // "[image N]" markers are still the chips' anchors and must survive.
+  // untranslated text rides along as composerText so a record that fails and
+  // lands in recovery can be restored into a composer with its marker anchors
+  // intact - the tiles remove those anchors, and prose is not one.
   const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
     attachments: durableAttachments(attachments),
+    composerText: text,
   };
   if (route === "send") {
     return {

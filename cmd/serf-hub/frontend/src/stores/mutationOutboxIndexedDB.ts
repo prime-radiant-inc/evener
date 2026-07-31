@@ -289,6 +289,7 @@ export class MutationOutboxIndexedDB {
     clientMutationId: string,
     input: InputItem[],
     attachments?: MutationAttachment[],
+    composerText?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -302,6 +303,7 @@ export class MutationOutboxIndexedDB {
             ? { ...record.optimisticDisplay, input }
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
+        composerText: composerText ?? record.composerText,
       };
       await requestResult(store.put(next));
       return next;

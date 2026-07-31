@@ -101,6 +101,7 @@ describe("MutationOutboxIndexedDB", () => {
       attachments: [
         {
           presentationId: "attachment-before-reload",
+          marker: 1,
           name: "proof.png",
           mediaType: "image/png",
           blob: png,
@@ -311,12 +312,14 @@ describe("MutationOutboxIndexedDB", () => {
     });
     const oldAttachment = {
       presentationId: "old-presentation",
+      marker: 1,
       name: "old.png",
       mediaType: "image/png",
       blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
     };
     const newAttachment = {
       presentationId: "new-presentation",
+      marker: 2,
       name: "new.png",
       mediaType: "image/png",
       blob: new Blob([new Uint8Array([9, 8, 7])], { type: "image/png" }),
@@ -432,6 +435,7 @@ describe("MutationOutboxIndexedDB", () => {
       attachments: [
         {
           presentationId: "old-presentation",
+          marker: 1,
           name: "proof.png",
           mediaType: "image/png",
           blob: new Blob([new Uint8Array([1, 3, 5, 7])], { type: "image/png" }),

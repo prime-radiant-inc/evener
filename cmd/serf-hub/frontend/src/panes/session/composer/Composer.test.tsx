@@ -184,9 +184,14 @@ async function seedRejectedRecovery(storage: MutationOutboxIndexedDB, ref: strin
   return recovered;
 }
 
+// Shaped exactly as composerMutationIntent writes a real submit: the payload
+// text is the PROSE the marker was translated to at the submit boundary, and
+// the untranslated composer text rides alongside it. Seeding raw markers into
+// the payload instead would let this fixture pass on a projection that only
+// ever reads the payload back.
 async function seedRejectedRecoveryWithAttachment(storage: MutationOutboxIndexedDB, ref: string) {
   const input = [
-    { type: "text" as const, text: "edit me [image 1]" },
+    { type: "text" as const, text: "edit me (attached image 1: proof.png)" },
     { type: "image" as const, mediaType: "image/png", data: "AQID", name: "proof.png" },
   ];
   const outbox = await storage.enqueueIntent({
@@ -197,12 +202,14 @@ async function seedRejectedRecoveryWithAttachment(storage: MutationOutboxIndexed
     attachments: [
       {
         presentationId: "presentation-1",
+        marker: 1,
         name: "proof.png",
         mediaType: "image/png",
         blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
       },
     ],
     optimisticDisplay: { method: "turn/start", input },
+    composerText: "edit me [image 1]",
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed attachment recovery");
