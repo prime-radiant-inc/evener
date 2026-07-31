@@ -14,6 +14,7 @@
 //	serf-doctor mutations  <selector>
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
+//	serf-doctor turnids    (no selector — sweeps every session under the state root)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id>. Common flags:
 // --state-dir <path> (overrides SERF_STATE_DIR / XDG default) and --json.
@@ -60,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdWatches(rest, stdout, stderr)
 	case "tree":
 		return cmdTree(rest, stdout, stderr)
+	case "turnids":
+		return cmdTurnIDs(rest, stdout, stderr)
 	case "plugins":
 		return cmdPlugins(rest, stdout, stderr)
 	case "-h", "--help", "help":
@@ -89,6 +92,7 @@ SUBCOMMANDS:
   mutations   client-mutation store: the journal of every client mutation the daemon accepted or rejected, plus the durable input queue
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
   tree        parent ↔ delegate/observer session tree across buckets
+  turnids     sweep every session for reserved turn ids minted inside the transcript's entry-index namespace (no selector — the whole state root is the question)
   plugins     plugin-store health check: registry/disk drift, marketplace health, component validity, auto-upgrade sanity (no selector — see "serf-doctor plugins -h")
 
 SELECTOR:
@@ -348,6 +352,35 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, res)
 	}
 	return writeText(stdout, doctor.RenderTree(res))
+}
+
+// cmdTurnIDs sweeps every session under the state root for reserved turn ids
+// minted inside the transcript's entry-index namespace — the pre-namespace
+// shape that makes one id name two turns after a reseed.
+//
+// Like plugins it is not session-scoped, and unlike plugins a selector in that
+// position is a plausible mistake (every other session subcommand takes one
+// there), so a stray argument is refused rather than silently swept past.
+func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("turnids", stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if code := writef(stderr, "serf-doctor turnids: takes no selector; it sweeps every session under the state root (got %q)\n", fs.Arg(0)); code != 0 {
+			return code
+		}
+		return 2
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	scan, err := doctor.ScanTurnIDs(base)
+	if err != nil {
+		return fail(stderr, "turnids", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, scan)
+	}
+	return writeText(stdout, doctor.RenderTurnIDScan(scan))
 }
 
 // cmdPlugins runs the plugin-store health check (internal/plugins.Doctor,
