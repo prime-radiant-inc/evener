@@ -36,6 +36,7 @@ var notifyMethods = []string{
 	appwire.NotifySerfMarketplaceUpdated,
 	appwire.NotifySerfPluginUpdated,
 	appwire.NotifySerfSandboxEscalationRequested,
+	appwire.NotifySerfThreadResync,
 }
 
 // FuzzApplyHubNotification drives the serf-tui hub's real notification-decode

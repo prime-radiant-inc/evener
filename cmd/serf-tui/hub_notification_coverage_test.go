@@ -21,8 +21,6 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyThreadNameChanged,
 	// Tasks render from fetchHubTasks, not from the push.
 	appwire.NotifySerfTaskUpdated,
-	// Resync is handled by re-reading the thread, not by a transcript fold.
-	appwire.NotifySerfThreadResync,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
 	// prompt it already cleared locally when the user answered.
 	appwire.NotifySerfSandboxEscalationResolved,
