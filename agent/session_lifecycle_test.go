@@ -14,6 +14,8 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/llm"
 )
 
@@ -208,6 +210,239 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly 1 SESSION_END event, got %d", count)
+	}
+}
+
+// TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus covers kata
+// hen0: kata r6y9 already made a genuine (non-cancelled) turn failure correct
+// the session's own State() to idle, but processInputKindWithProvenance's
+// genuine-failure fall-through emitted no EventSessionEnd to carry that
+// correction onto the event stream — unlike every other terminal boundary in
+// the loop (the cancellation branch right above it, and the successful-settle
+// tail), which each emit one. A live subscriber saw turn/completed(Failed)
+// and then silence; its belief that a turn was still running leaked until it
+// left and re-entered the session.
+func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 429, "hen0-marker rate limited", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected genuine provider failure")
+	}
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	var found *events.SessionEndData
+	for _, ev := range *eventsPtr {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "turn_failed" {
+			found = &d
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a SESSION_END with Reason=turn_failed restoring status, got events=%+v", *eventsPtr)
+	}
+	if found.State != string(SessionIdle) {
+		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, SessionIdle)
+	}
+	if found.Interrupted {
+		t.Fatalf("genuine failure incorrectly marked Interrupted=true: %+v", *found)
+	}
+}
+
+// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus is the
+// end-to-end kata hen0 repro: it feeds the session's real events through the
+// real appwire projector, exactly as server.RecordAppEvent does for a live
+// subscriber, and asserts a thread/status/changed(idle) notification follows
+// turn/completed(Failed) — without re-reading the thread. It also pins that
+// the specific failure text lands on turn/completed unaltered (Jesse,
+// 2026-07-30): the new status notification carries no message of its own, so
+// there is nothing to bury or duplicate it with.
+func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	const marker = "hen0-marker: rate limited, retry later"
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 429, marker, nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected genuine provider failure")
+	}
+	// Close so doneCh signals the collector has drained every buffered event
+	// (the established race-free pattern in this file); the projector below
+	// sees Close()'s own session_closed SESSION_END too, harmless since it
+	// projects a "closed" status, not "idle".
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	evs := append([]events.SessionEvent{}, (*eventsPtr)...)
+	mu.Unlock()
+
+	projector := appprojector.NewAppEventProjector(sess.ID(), "local:"+sess.ID())
+	var notifications []appprojector.AppNotification
+	for _, ev := range evs {
+		notifications = append(notifications, projector.Project(ev)...)
+	}
+
+	turnCompletedIdx := -1
+	for i, n := range notifications {
+		if n.Method != appwire.NotifyTurnCompleted {
+			continue
+		}
+		params, ok := n.Params.(map[string]any)
+		if !ok {
+			continue
+		}
+		turn, ok := params["turn"].(appwire.Turn)
+		if !ok || turn.Status != appwire.TurnStatusFailed {
+			continue
+		}
+		turnCompletedIdx = i
+		if turn.Error == nil || !strings.Contains(turn.Error.Message, marker) {
+			t.Fatalf("turn/completed error message=%+v, want it to contain the unaltered marker %q", turn.Error, marker)
+		}
+	}
+	if turnCompletedIdx == -1 {
+		t.Fatalf("no failed turn/completed notification in stream: %+v", notifications)
+	}
+
+	// Exactly one idle status notification follows the failure, immediately
+	// adjacent to it (EventTurnEnded, the only event between them, is a
+	// projector no-op once the turn is already closed). Filtering on Type ==
+	// idle (not just presence) excludes the later "closed" status change
+	// Close() legitimately produces further down the same stream.
+	idleAfterFailure := 0
+	for i, n := range notifications {
+		if i <= turnCompletedIdx || n.Method != appwire.NotifyThreadStatusChanged {
+			continue
+		}
+		params, ok := n.Params.(appwire.ThreadStatusChangedParams)
+		if ok && params.Status.Type == appwire.ThreadStatusIdle {
+			idleAfterFailure++
+		}
+	}
+	if idleAfterFailure != 1 {
+		t.Fatalf("expected exactly 1 idle status notification after the failed turn, got %d: %+v", idleAfterFailure, notifications)
+	}
+	next := notifications[turnCompletedIdx+1]
+	if next.Method != appwire.NotifyThreadStatusChanged {
+		t.Fatalf("notification immediately after turn/completed(Failed)=%q, want %q: %+v", next.Method, appwire.NotifyThreadStatusChanged, notifications)
+	}
+	statusParams, ok := next.Params.(appwire.ThreadStatusChangedParams)
+	if !ok || statusParams.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("status immediately after failure=%+v, want idle", next.Params)
+	}
+}
+
+// TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd guards hazard #1
+// (kata hen0): a per-turn interrupt (modeled on cmd/serf/serve.go's POST
+// /interrupt — the outer context stays alive, only the turn context is
+// cancelled) already emits its own EventSessionEnd(Reason=interrupted). The
+// genuine-failure fix added by this kata sits in the same tail every
+// error return falls through to, so it must NOT also fire for a cancelled
+// turn — the sessionEndEmitted gate it reuses is what prevents that.
+func TestSession_InterruptedTurnStillEmitsExactlyOneSessionEnd(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	blocked := make(chan struct{})
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	// Per-turn cancel modeled on cmd/serf/serve.go: outer ctx stays alive,
+	// only the turn ctx is cancelled (same pattern as
+	// TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd).
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer outerCancel()
+	turnCtx, cancelTurn := context.WithCancel(outerCtx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(turnCtx, "hello", nil)
+		done <- err
+	}()
+
+	<-blocked
+	cancelTurn()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after per-turn cancel")
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after per-turn cancel: got %q want %q (session must stay alive)", got, SessionIdle)
+	}
+
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	interrupted := 0
+	genuineFailure := 0
+	for _, ev := range *eventsPtr {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		d, ok := ev.Data.(events.SessionEndData)
+		if !ok {
+			continue
+		}
+		switch d.Reason {
+		case "interrupted":
+			interrupted++
+		case "turn_failed":
+			genuineFailure++
+		}
+	}
+	if interrupted != 1 {
+		t.Fatalf("expected exactly 1 interrupted SESSION_END, got %d: %+v", interrupted, *eventsPtr)
+	}
+	if genuineFailure != 0 {
+		t.Fatalf("cancellation path also fired the genuine-failure SESSION_END (double emission): %d", genuineFailure)
 	}
 }
 
