@@ -26,6 +26,7 @@ import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import { threadsStore } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { isDormantTranscript } from "../transcriptVisibility";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
 
 export interface UseTranscriptScrollOptions {
@@ -189,7 +190,20 @@ export function useTranscriptScroll({
   // comment for why itemCount/firstTurnId alone can't reach a bare-stamp
   // turn failure).
   const failedTurns = failedTurnCount(model);
-  const hasContent = turnsLength > 0;
+  // NOT turnsLength > 0 (kata cmjb): a real serf session's transcript
+  // always carries at least the synthetic prelude turn (isDormantTranscript's
+  // own comment), so turnsLength is already 1 - and this would already be
+  // true - before the VirtualList this hook depends on has ever mounted;
+  // Session.tsx renders EmptyTranscript, not the real transcript, for that
+  // exact state. A dormant session's turns.length going 1 -> 2 (the prelude
+  // gains its first real turn) would then leave hasContent unchanged, so the
+  // mount effect below would silently never re-run at the one render where
+  // VirtualList actually appears - initializedRef stuck false, no
+  // scroll-to-bottom, no scroll listener, no stick-to-bottom, for the rest
+  // of the pane's mounted life. isDormantTranscript mirrors Session.tsx's
+  // own render condition exactly, so this flips at the SAME transition
+  // VirtualList actually mounts at.
+  const hasContent = !isDormantTranscript(model?.turns ?? []);
   // Also kept in refs for the scroll listener/jumpToBottom, which are not
   // re-created on every render (see the effects below).
   const itemCountRef = useRef(itemCount);

@@ -3,7 +3,9 @@
 import { expect, test } from "vitest";
 import type { ItemModel } from "../../../protocol/model";
 import {
+  isDormantTranscript,
   isItemVisible,
+  SYSTEM_PRELUDE_TURN_ID,
   SYSTEM_PROMPT_ITEM_ID,
   type TranscriptVisibilityPrefs,
   visibleItems,
@@ -164,4 +166,26 @@ test("Round timings does not govern the other toggles' items, or theirs it", () 
   expect(isItemVisible(timings, prefs({ hookExitsAll: true, promptLoaded: true }))).toBe(false);
   expect(isItemVisible(hook(0), prefs({ roundTimings: true }))).toBe(false);
   expect(isItemVisible(item({ eventKind: "system_prompt" }), prefs({ roundTimings: true }))).toBe(false);
+});
+
+// --- isDormantTranscript (kata bz2z / cmjb) ---------------------------------
+
+test("zero turns is dormant", () => {
+  expect(isDormantTranscript([])).toBe(true);
+});
+
+test("a single prelude turn (the synthetic system-prompt turn) is dormant", () => {
+  expect(isDormantTranscript([{ id: SYSTEM_PRELUDE_TURN_ID }])).toBe(true);
+});
+
+test("a single real turn (not the prelude id) is NOT dormant", () => {
+  expect(isDormantTranscript([{ id: "turn_1" }])).toBe(false);
+});
+
+test("the prelude turn alongside a real turn is NOT dormant - a real conversation exists", () => {
+  expect(isDormantTranscript([{ id: SYSTEM_PRELUDE_TURN_ID }, { id: "turn_1" }])).toBe(false);
+});
+
+test("multiple real turns with no prelude at all is NOT dormant", () => {
+  expect(isDormantTranscript([{ id: "turn_1" }, { id: "turn_2" }])).toBe(false);
 });

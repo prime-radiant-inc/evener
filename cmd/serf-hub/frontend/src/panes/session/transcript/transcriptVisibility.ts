@@ -36,6 +36,34 @@ export const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
 // renderer to reach.
 export const SYSTEM_PRELUDE_TURN_ID = "turn_system";
 
+// model.turns is never actually empty for a real serf session:
+// apptranscript.go's PreludeTurn (and, live, appprojector's bundled
+// SESSION_START announcements) always synthesize one turn - the prelude
+// above - from the session's system prompt, which agent/session_config
+// guarantees is never blank. Left unhandled, that made Session.tsx's own
+// EmptyTranscript unreachable for any real dormant session (kata bz2z): the
+// transcript branch rendered instead, with nothing in it to show but that
+// one collapsed "System prompt · Nk chars" disclosure - real information,
+// but not a conversation, and not the invitation to start one. A
+// transcript whose only turn is the prelude counts as empty for exactly
+// the reason zero turns does: nothing has happened here yet that a user
+// would call content. The instant a real turn joins it, the prelude turn
+// stops being the WHOLE transcript and renders exactly as it always has -
+// the scaffold, then the conversation.
+//
+// Exported (not Session.tsx-local) so useTranscriptScroll.ts can key its
+// own "has the real, scrollable transcript actually mounted" signal off
+// the SAME definition Session.tsx's render branch uses, rather than a
+// second, independently-drifting approximation - turns.length > 0 alone
+// agrees with this everywhere EXCEPT a dormant session's first real turn
+// arriving (turns.length goes 1 -> 2, both "content" under that cruder
+// check), which is exactly the gap that left the mount effect never
+// re-running for that transition and the scroll/follow machinery stuck
+// uninitialized for the rest of the pane's life (kata cmjb).
+export function isDormantTranscript(turns: readonly { id: string }[]): boolean {
+  return turns.length === 0 || (turns.length === 1 && turns[0]?.id === SYSTEM_PRELUDE_TURN_ID);
+}
+
 // A hook's own process exit status arrives as ThreadItem.exitCode on the
 // hook_completed item (populated by internal/appprojector from
 // events.HookEndData.ExitCode). Absent - not zero - when the projecting

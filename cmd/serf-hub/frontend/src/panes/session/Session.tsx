@@ -11,11 +11,16 @@
 // the ONLY part of this pane that grows/shrinks with content - composer and
 // status row sit in the `footer` slot instead, which PaneScaffold pins
 // outside the scroll region (flex:none, always after body), so they never
-// scroll out of view regardless of transcript length. PendingChips travels
-// with the composer (it's contextually "chips beside the composer", per its
-// own doc comment) and shares its 76rem measure so the input aligns with the
-// transcript's own content column; SessionChrome (the status row) stays
-// full-width beneath, reading like a status bar.
+// scroll out of view regardless of transcript length. LivenessLine lives
+// here too now (kata x47h): FlowOverlay's `top` slot is a non-reserved
+// absolute overlay floating over the scrollable transcript, so the one
+// thing every liveness message needs - never landing on top of transcript
+// text - is exactly what that slot cannot promise. The footer's flex:none
+// layout can. PendingChips travels with the composer (it's contextually
+// "chips beside the composer", per its own doc comment) and shares its
+// 76rem measure so the input aligns with the transcript's own content
+// column; SessionChrome (the status row) stays full-width beneath, reading
+// like a status bar.
 import { useEffect, useMemo, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
@@ -29,7 +34,7 @@ import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
 import { TurnBlock } from "./transcript/TurnBlock";
-import { SYSTEM_PRELUDE_TURN_ID } from "./transcript/transcriptVisibility";
+import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
 // every tool descriptor (T3) the moment the pane module loads, so the
@@ -76,24 +81,6 @@ function EmptyTranscript({ active }: { active: boolean }) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
   }
   return <EmptyState title="Send the first message" hint="This session hasn't started yet." />;
-}
-
-// model.turns is never actually empty for a real serf session:
-// apptranscript.go's PreludeTurn (and, live, appprojector's bundled
-// SESSION_START announcements) always synthesize one turn - the shared,
-// well-known SYSTEM_PRELUDE_TURN_ID - from the session's system prompt,
-// which agent/session_config guarantees is never blank. Left unhandled,
-// that made EmptyTranscript above unreachable for any real dormant session
-// (kata bz2z): the transcript branch below rendered instead, with nothing
-// in it to show but that one collapsed "System prompt · Nk chars"
-// disclosure - real information, but not a conversation, and not the
-// invitation to start one. A transcript whose only turn is the prelude
-// counts as empty for exactly the reason zero turns does: nothing has
-// happened here yet that a user would call content. The instant a real
-// turn joins it, the prelude turn stops being the WHOLE transcript and
-// renders exactly as it always has - the scaffold, then the conversation.
-function isDormantTranscript(turns: readonly { id: string }[]): boolean {
-  return turns.length === 0 || (turns.length === 1 && turns[0]?.id === SYSTEM_PRELUDE_TURN_ID);
 }
 
 // A reasonable average-turn guess for VirtualList's `dynamic` mode to
@@ -206,19 +193,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     <div className={styles.transcript}>
       <FlowOverlay
         top={
-          <>
-            {model.olderCursor && (
-              <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
-            )}
-            <LivenessLine
-              lastFrameAt={model.lastFrameAt}
-              now={now}
-              active={model.status.type === "active"}
-              sessionRef={ref}
-              turnId={model.activeTurnId}
-              retry={model.modelRetry}
-            />
-          </>
+          model.olderCursor && (
+            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+          )
         }
         pill={
           <NewContentPill
@@ -265,6 +242,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       footer={
         <div className={styles.footer}>
           <div className={styles.measure}>
+            <LivenessLine
+              lastFrameAt={model.lastFrameAt}
+              now={now}
+              active={model.status.type === "active"}
+              sessionRef={ref}
+              turnId={model.activeTurnId}
+              retry={model.modelRetry}
+            />
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>

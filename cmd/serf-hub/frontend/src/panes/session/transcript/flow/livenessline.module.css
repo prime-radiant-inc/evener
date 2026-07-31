@@ -1,5 +1,9 @@
+/* No padding of its own (kata x47h moved this out of FlowOverlay's
+ * unpadded floating overlay into the footer's .measure column) - Composer's
+ * and PendingChips' own CSS already document the same "no padding of its
+ * own" convention for that footer group: the footer slot supplies the
+ * pane's edge padding and .measure's own gap spaces siblings apart. */
 .line {
-  padding: var(--space-1) var(--space-3);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }

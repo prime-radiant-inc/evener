@@ -218,7 +218,11 @@ test("describeLiveness: past the stall threshold a retry reports both facts, nev
   });
 });
 
-test("describeLiveness: a retry under the quiet threshold stays invisible, like every other wait", () => {
+// A FIRST retry (attempt 1) specifically - not "every retry" - stays gated
+// behind the ordinary 20s quiet clock. See the kata gw2c block below: from
+// attempt 2 onward a retry bypasses this gate entirely, so this test's own
+// invisibility depends on attempt being 1, not just on being under 20s.
+test("describeLiveness: a first retry (attempt 1) under the quiet threshold stays invisible", () => {
   const retry = { attempt: 1, maxAttempts: 11, delayMs: 1_000, errorClass: "rate_limit", statusCode: 429 };
   expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
 });
@@ -228,5 +232,47 @@ test("describeLiveness: a retry pre-empts the subagent wait — it is the more s
   expect(describeLiveness(30_000, true, 2, retry)).toEqual({
     level: "retrying",
     text: "Rate limited — retry 3 of 11, next in 8s",
+  });
+});
+
+// kata gw2c: the retry branch above shared the SAME 20s quiet clock as
+// ordinary silence, so the faster a provider fails, the less likely the
+// user was to ever see why - a fast retry storm (Retry-After: 2, 11
+// attempts, ~22s total budget) burned almost its whole budget invisibly,
+// flashing the explanation for its last ~2 seconds before the turn failed.
+// The retry is KNOWN information the daemon reported, not an inference
+// from absence, so it should not share silence's clock at all past the
+// point the original no-flicker reasoning stops applying.
+//
+// Chosen trigger (recorded on the kata before implementing): retry.attempt
+// >= 2 bypasses the 20s gate; attempt 1 stays fully gated (test above).
+// attempt is already reported on every serf/thread/modelRetry notification
+// (reducer.ts), so this needs no new wire field, no accumulator, and no
+// new clock - describeLiveness stays a pure function of its existing four
+// inputs. It also preserves the ORIGINAL reason the gate existed on this
+// branch at all: a retry that never gets past attempt 1 (resolves or gives
+// up on its first try) never bypasses the gate, so it can never flicker.
+test("describeLiveness: a fast retry storm's second attempt becomes visible immediately, without waiting for the 20s quiet threshold", () => {
+  const retry = { attempt: 2, maxAttempts: 11, delayMs: 2_000, errorClass: "rate_limit" };
+  expect(describeLiveness(3_000, true, 0, retry)).toEqual({
+    level: "retrying",
+    text: "Rate limited — retry 2 of 11, next in 2s",
+  });
+});
+
+test("describeLiveness: a single sub-second retry (attempt 1) still does not flicker into view under the quiet threshold", () => {
+  const retry = { attempt: 1, maxAttempts: 11, delayMs: 500, errorClass: "rate_limit" };
+  expect(describeLiveness(600, true, 0, retry)).toEqual({ level: "none", text: null });
+});
+
+// Proves the trigger is attempt count, not delay duration or elapsed gap: a
+// 46s per-attempt delay (the sustained/legacy-incident cadence, median 46s
+// per rejection) still becomes visible the instant attempt 2 arrives, well
+// under the 20s gap that would previously have hidden it.
+test("describeLiveness: a sustained-cadence retry (long per-attempt delay) also becomes visible on its second attempt, before the quiet threshold", () => {
+  const retry = { attempt: 2, maxAttempts: 11, delayMs: 46_000, errorClass: "rate_limit" };
+  expect(describeLiveness(3_000, true, 0, retry)).toEqual({
+    level: "retrying",
+    text: "Rate limited — retry 2 of 11, next in 46s",
   });
 });
