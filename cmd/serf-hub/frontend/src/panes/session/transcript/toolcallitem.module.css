@@ -168,6 +168,14 @@ summary.row:focus-visible {
  * full. */
 .clamped {
   display: flex;
+  /* Center, not the default stretch: the trailing affordance (the 28px "Open
+   * beside" IconButton) is the line's tallest item, and under stretch the
+   * head/tail text spans fill that height with their text top-aligned while
+   * the button sits align-self:center - measured 4.5px of downward offset
+   * between the icon's center and the text's center. Centering every item
+   * puts the text and the button on one axis; with no trailing control the
+   * items are all one text line and centering is invisible. */
+  align-items: center;
   overflow: hidden;
   white-space: nowrap;
 }
