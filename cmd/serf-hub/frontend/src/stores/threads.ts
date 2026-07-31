@@ -31,6 +31,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "../protocol/types.gen";
+import { translateAttachmentMarkers } from "./attachmentMarkers";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
@@ -657,7 +658,9 @@ export function appendFrameTime(times: number[], now: number): number[] {
 // array: an optional leading text item (queueText allows empty/whitespace-
 // only text when attachments are present - parity finding §B, "image-only
 // queue entries are valid" - so this only omits the text item, never
-// rejects the call), then one image item per attachment.
+// rejects the call), then one image item per attachment. The text arrives
+// verbatim: any new SUBMIT path through here owes it the same
+// translateAttachmentMarkers pass composerMutationIntent applies.
 function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
@@ -688,7 +691,11 @@ function composerMutationIntent(
   attachments?: InputAttachment[],
 ): MutationIntent {
   const model = threadsStore.getState().threads.get(ref);
-  const input = buildInput(text, attachments);
+  // Translated HERE, not inside buildInput: this is the submit boundary. The
+  // other buildInput caller (updateRecoveryMutation) persists a composer DRAFT
+  // that recoveryComposerDraft reads back into the textarea, where the raw
+  // "[image N]" markers are still the chips' anchors and must survive.
+  const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
