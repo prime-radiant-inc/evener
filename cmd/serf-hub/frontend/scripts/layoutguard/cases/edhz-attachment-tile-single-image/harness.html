@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>edhz layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    padding: 16px;
+  }
+</style>
+</head>
+<body>
+<!-- AttachmentTile.tsx's markup verbatim, in both of its states, against the
+     REAL composer.module.css class names. global.css is loaded too because
+     its box-sizing:border-box decides whether the tile's 80px includes its
+     own border - the difference between an 80px and an 82px measurement.
+     The image is an 8x4 two-colour PNG, and both of those choices are load
+     bearing. NOT SQUARE: an <img> without a height still gets one from its
+     intrinsic aspect ratio, so a square source makes .imageThumbnail's
+     height:100% (and object-fit:cover with it) redundant and unfalsifiable -
+     deleting the declaration left this case green until the fixture was
+     changed. Two colours: an overlap is then unmistakable to a human reading
+     a screenshot of this same file, rather than inferred from geometry. -->
+
+<div class="attachments">
+  <div class="imageTile" id="settled-tile">
+    <button type="button" class="imageOpenButton" id="settled-open" aria-label="View shot.png">
+      <img class="imageThumbnail" id="settled-thumb" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAIAAAA8r+mnAAAAFUlEQVR4nGP4z/AfK2LAKYFDHLcEAGSoP8FHDbrlAAAAAElFTkSuQmCC" alt="">
+    </button>
+    <div class="dimensionsOverlay" id="settled-dims">8×4</div>
+    <button type="button" class="removeImageButton" id="settled-remove" aria-label="Remove shot.png">
+      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <div class="imageTile" id="pending-tile">
+    <div class="imagePending" id="pending-slot" role="img" aria-label="shot.png (still processing)"></div>
+    <button type="button" class="removeImageButton" id="pending-remove" aria-label="Remove shot.png">
+      <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (id) => {
+    const el = document.getElementById(id);
+    const r = el.getBoundingClientRect();
+    return { id, left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  // The tile clips its own overflow, so its BORDER box is what a child is
+  // allowed to stay inside, and its CONTENT box (border widths subtracted) is
+  // what the image is expected to fill exactly.
+  const content = (id) => {
+    const el = document.getElementById(id);
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return {
+      left: r.left + Number.parseFloat(s.borderLeftWidth),
+      top: r.top + Number.parseFloat(s.borderTopWidth),
+      right: r.right - Number.parseFloat(s.borderRightWidth),
+      bottom: r.bottom - Number.parseFloat(s.borderBottomWidth),
+    };
+  };
+  return {
+    settled: {
+      tile: box("settled-tile"),
+      tileContent: content("settled-tile"),
+      children: ["settled-open", "settled-dims", "settled-remove"].map(box),
+      image: box("settled-thumb"),
+      overflow: getComputedStyle(document.getElementById("settled-tile")).overflow,
+    },
+    pending: {
+      tile: box("pending-tile"),
+      tileContent: content("pending-tile"),
+      children: ["pending-slot", "pending-remove"].map(box),
+      image: box("pending-slot"),
+    },
+  };
+};
+</script>
+</body>
+</html>

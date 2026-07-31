@@ -35,19 +35,9 @@ import { openPalette } from "../../../shell/palette/paletteController";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
-import {
-  Button,
-  Chip,
-  chordLabel,
-  Dropzone,
-  IconButton,
-  PromptCard,
-  Textarea,
-  Tooltip,
-  useToasts,
-} from "../../../widgets";
+import { Button, chordLabel, Dropzone, IconButton, PromptCard, Textarea, Tooltip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { ImageGallery } from "../transcript/flow/ImageGallery";
+import { AttachmentTile } from "./AttachmentTile";
 import { AskDock, useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
@@ -71,21 +61,9 @@ export interface ComposerProps {
 
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
-  chips: requireClass(styles.chips, "composer.module.css", "chips"),
+  attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
-  imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
-  imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
-  dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
-  removeImageButton: requireClass(styles.removeImageButton, "composer.module.css", "removeImageButton"),
 };
-
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
   return items.flatMap((item) =>
@@ -765,49 +743,14 @@ export function Composer({ ref }: ComposerProps) {
         busy={busyAction !== null}
         onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
       />
+      {/* Staged attachments. One rendering for every state, so nothing here
+          swaps element types under a user mid-gesture - AttachmentTile.tsx's
+          own header comment has the mechanism and the bug it closed. */}
       {hasAttachments && (
-        <div className={CLASS.chips} hidden={askPending} inert={askPending}>
-          {attachments.items.map((item) => {
-            const isImage =
-              item.mediaType.startsWith("image/") &&
-              item.data &&
-              typeof item.width === "number" &&
-              typeof item.height === "number";
-
-            if (isImage) {
-              const imageUrl = `data:${item.mediaType};base64,${item.data}`;
-              return (
-                <div key={item.marker} className={CLASS.imageTile}>
-                  <ImageGallery images={[{ src: imageUrl }]} />
-                  <img className={CLASS.imageThumbnail} src={imageUrl} alt={item.name} />
-                  {item.width !== undefined && item.height !== undefined && (
-                    <div className={CLASS.dimensionsOverlay}>
-                      {item.width}×{item.height}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className={CLASS.removeImageButton}
-                    aria-label={`Remove ${item.name}`}
-                    onClick={() => attachments.removeItem(item.marker)}
-                  >
-                    <RemoveIcon />
-                  </button>
-                </div>
-              );
-            }
-
-            return (
-              <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
-                {/* A single template-literal string, not several sibling
-                    expressions: Chip's own removeLabelFor only folds children
-                    into the remove button's accessible name ("Remove <text>")
-                    when children is unambiguously a string - multiple child
-                    nodes would silently fall back to a bare "Remove". */}
-                {`${item.name}${typeof item.width === "number" && typeof item.height === "number" ? ` (${item.width}×${item.height})` : ""}`}
-              </Chip>
-            );
-          })}
+        <div className={CLASS.attachments} hidden={askPending} inert={askPending}>
+          {attachments.items.map((item) => (
+            <AttachmentTile key={item.marker} item={item} onRemove={() => attachments.removeItem(item.marker)} />
+          ))}
         </div>
       )}
       {(!ended || showFollowUpCard) && (

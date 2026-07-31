@@ -20,7 +20,10 @@
 //   node scripts/layoutguard/run.mjs p6g8-formrow-overlap   # run one case
 //
 // ADDING A CASE: make a directory under cases/<name>/ with:
-//   - case.json    { "cssFiles": [...paths relative to frontend/src] }
+//   - case.json    { "cssFiles": [...paths relative to frontend/src] }, plus
+//                  an optional "forcePseudoStates":
+//                  [{ "selector": ".x", "pseudoClasses": ["hover"] }] for a
+//                  state no page script can reach (see cdp.mjs's own doc)
 //   - harness.html a hand-authored DOM fragment reproducing the real
 //                  component's markup/classnames (link tags for tokens.css
 //                  and resolved.css - both are generated fresh at run time,
@@ -66,7 +69,11 @@ async function runCase(caseDir) {
     const harnessPath = path.join(workDir, "harness.html");
     writeFileSync(harnessPath, harnessSrc);
 
-    const measurement = await evalInFreshChrome(`file://${harnessPath}`, "window.measure()");
+    const measurement = await evalInFreshChrome(
+      `file://${harnessPath}`,
+      "window.measure()",
+      caseJson.forcePseudoStates ?? [],
+    );
     const result = assert(measurement);
     return { name, description: caseJson.description, measurement, ...result };
   } finally {

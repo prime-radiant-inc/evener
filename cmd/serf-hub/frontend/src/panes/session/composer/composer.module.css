@@ -7,7 +7,7 @@
   gap: var(--space-2);
 }
 
-.chips {
+.attachments {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -16,23 +16,23 @@
 /* Same author-vs-UA cascade hole as promptcard's .card[hidden] (see that
  * file's comment): display:flex here outranks the UA [hidden] display:none,
  * so the askPending hide (Composer.tsx) must be re-asserted explicitly. */
-.chips[hidden] {
+.attachments[hidden] {
   display: none;
 }
 
+/* One box for a staged attachment in every state - see AttachmentTile.tsx's
+ * header comment. It holds exactly one image-sized child, which fills it, so
+ * it lays that child out directly rather than centring a stack: two stacked
+ * children in a centred column both overflowed this box and clipped into a
+ * visible seam across it (kata edhz, measured at y=78 inside an 80px tile). */
 .imageTile {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
   width: 80px;
   height: 80px;
   border: 1px solid var(--edge);
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface-2);
-  cursor: pointer;
   transition: border-color var(--motion-duration-overlay);
 }
 
@@ -40,10 +40,50 @@
   border-color: var(--accent);
 }
 
+/* The whole thumbnail is the control that opens the lightbox, so nothing
+ * inside the tile looks clickable without being clickable. */
+.imageOpenButton {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* Inset, because the tile clips its own overflow: an outset ring on a child
+ * that fills the tile would be clipped away entirely. */
+.imageOpenButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .imageThumbnail {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* The slot the thumbnail will fill, at exactly the thumbnail's size so the
+ * tile doesn't resize when the decode lands. Static, never a shimmer: an
+ * animated placeholder claims progress this UI cannot actually report
+ * (widgets/skeleton's own honest-liveness rule, same reasoning). */
+.imagePending {
+  width: 100%;
+  height: 100%;
+  background: var(--surface-1);
+}
+
+.lightboxImage {
+  display: block;
+  max-width: 100%;
+  /* Dialog's size="large" already caps the panel at almost the full
+   * viewport; this leaves room for its header chrome, matching what
+   * imagegallery.module.css's own lightbox image does. */
+  max-height: 85vh;
+  margin: 0 auto;
 }
 
 .dimensionsOverlay {
@@ -59,10 +99,13 @@
   font-family: var(--font-mono);
 }
 
+/* Inside the tile, not straddling its corner: the tile clips its own
+ * overflow, so a button hung at top/right -8px lost its outer corner to
+ * that clip - measured at 21x21 of a 28x28 control actually painted. */
 .removeImageButton {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: var(--space-1);
+  right: var(--space-1);
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -80,6 +123,18 @@
 
 .imageTile:hover .removeImageButton {
   opacity: 1;
+}
+
+/* Hover is not the only way to reach this control: a keyboard user tabs to
+ * it, and an opacity:0 button under focus is a control you cannot see you
+ * are standing on (kata hk8v). Focus reveals it exactly the way hover does,
+ * and draws the same ring chip.module.css's own .remove:focus-visible draws.
+ * jsdom evaluates no cascade, so the guard for this is a layoutguard case
+ * (scripts/layoutguard/cases/hk8v-remove-button-focus-visible). */
+.removeImageButton:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .removeImageButton:hover {

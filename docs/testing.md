@@ -112,6 +112,33 @@ real regression in code committed minutes earlier. A guard is only worth its
 run time once it has been mutation-tested: break the thing on purpose and
 confirm it fails, naming the right element.
 
+Three more things about writing a layoutguard case, each learned by watching a
+case pass when it should not have (katas hk8v, edhz):
+
+- **A state a page script cannot reach needs `CSS.forcePseudoState`.** There is
+  no way to synthesize a trusted hover, and a programmatic `.focus()` does
+  **not** match `:focus-visible` — measured, the element stayed unmatched at
+  opacity 0. A case declares `forcePseudoStates` in its `case.json` and the
+  runner pins them before measuring. This proves the *cascade* applies the rule;
+  whether Chrome's own heuristic calls a given focus "visible" is Chrome's
+  contract, not ours. Put each state on its own copy of the markup in one
+  harness so a single measurement covers all of them with a resting control.
+- **Switch transitions off in the harness.** `getComputedStyle` reads the value
+  at that instant, so a measure taken right after a state changes reads the
+  *start* of a 120ms opacity ramp, not where the cascade settles. Waiting for
+  `transitionend` instead hangs forever in exactly the regression the case
+  exists to catch — no rule, so no transition, so no event.
+- **A fixture can make a declaration unfalsifiable.** An `<img>` with no height
+  still gets one from its intrinsic aspect ratio, so a *square* test image makes
+  `height: 100%` redundant: deleting the declaration left the case green. The
+  fixture is now 8x4. Include `styles/global.css` in any case that measures
+  boxes — `box-sizing: border-box` lives there, and it is the difference between
+  an 80px and an 82px tile.
+
+Geometry also cannot see `object-fit`: dropping `object-fit: cover` leaves every
+box identical and only changes how pixels are scaled inside the image box. Say
+so in the case rather than letting a pass imply coverage it does not have.
+
 ## A Single `tmux capture-pane` Can Lie
 
 `tmux capture-pane` returns tmux's OWN terminal-grid state, not a snapshot of
