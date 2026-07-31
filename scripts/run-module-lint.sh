@@ -6,8 +6,8 @@ set -uo pipefail
 # through here and none of them can end silently. The leading category is the
 # vocabulary a human or a log scraper reads the failure by: setup for a run that
 # never got as far as a module, not-checked for an unusable linter, findings for
-# real lint output, results-lost for scratch space that went away, interrupted
-# for a signal.
+# real lint output, results-lost for checks whose verdicts did not survive the
+# run, interrupted for a signal.
 fail_lint() {
 	printf 'FAIL lint (%s)\n' "$1"
 	exit "$2"
