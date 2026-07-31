@@ -40,7 +40,9 @@ for arg in "$@"; do
 	case "$arg" in
 	--paths-only) PATHS_ONLY=1 ;;
 	-h | --help)
-		sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+		# Everything from the shebang to the first non-comment line, rather
+		# than a hardcoded range that truncates the first time the header grows.
+		awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
 		exit 0
 		;;
 	*)

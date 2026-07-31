@@ -10,28 +10,41 @@
 # errors — four test failures were once root-caused to transient exhaustion
 # after being investigated as flakes. Recovery has needed a human each time.
 #
-# The three consumers, re-measured 2026-07-25 (the fleet had grown since the
-# first pass the same day - these numbers move; re-run the report, don't trust
-# either set):
-#   go build cache      10-13G (largest by far, fully regenerable; a single
-#                        `go test -c` of the biggest package alone grew it by
-#                        ~1G from a warm cache - that is the real burn rate,
-#                        not a one-time cost)
-#   git worktrees       3.6G   (~80-90MB per fresh checkout, up to ~260MB with
-#                        build artifacts; 22 registered)
+# These numbers move a lot. Re-run the report; do not trust any set of them,
+# including this one (2026-07-30, at 3G free of 228G):
+#   go build cache      111G, on an EXTERNAL volume by design
+#                        (scripts/setup-gocache.sh). Fully regenerable, still
+#                        the fastest-growing thing here - one `go test -c` of
+#                        the biggest package adds ~1G from warm - but while it
+#                        lives off this volume, emptying it cannot move this
+#                        volume's floor at all, and the report says so instead
+#                        of spending 32.6s measuring it.
+#   /tmp scratch        10.0G across 120 `serf*` entries, SAME volume as the
+#                        checkout: per-session scratch checkouts (~270M each),
+#                        stray per-session build caches, chrome profiles, DOM
+#                        dumps, logs. The biggest reclaimable pocket there has
+#                        been, and nothing here deletes it.
+#                        See scripts/report-tmp-debris.sh.
+#   git worktrees       8.3G across 77 checkouts - of which 6.7G is live agent
+#                        work this script keeps, 1.6G is unregistered (below),
+#                        and the removable share was ZERO.
 #   frontend node_modules     one real install, symlinked from the rest
-# Free space on the Data volume at measurement time: ~12-17G of 228G (92-94%
-# used) - i.e. the whole floor most of this script cares about is smaller than
-# ONE fresh package's build-cache growth, multiplied by however many agents in
-# the fleet touch different code at once.
 #
-# A fourth consumer this script does NOT see or touch: ~40 checkouts under
-# .claude/worktrees (~1.6G) whose `.git` file points at this repo's OLD path
-# from before a directory rename, so `git worktree list` here has no record of
-# them at all - `git worktree remove`/`prune` can't reach what it doesn't know
-# about. Real, but small next to the build cache, and removing them needs a
-# human to confirm they're truly abandoned rather than someone's stashed work
-# on an old checkout of this same repo. See the filed follow-up kata.
+# That zero is the shape to remember, not the number: every merged worktree
+# held its agent's `.superpowers/<kata>-report.md`, so every one was correctly
+# classified as merged and correctly kept as holding ignored work. A fleet that
+# writes reports into its worktrees will keep producing that result, so the
+# report gives the removable share its own measured line rather than letting a
+# whole-directory total imply a yield (kata td3g).
+#
+# Two consumers this script reports but never removes, because for both of them
+# git's own "is it safe" check is unavailable:
+#   - ~42 checkouts under .claude/worktrees (~1.6G) whose `.git` file points at
+#     this repo's OLD path from before a directory rename, so `git worktree
+#     list` has no record of them and prune/remove cannot reach them (kata
+#     smw0). scripts/report-orphaned-worktrees.sh inspects them.
+#   - the /tmp scratch above (kata gmpr). scripts/report-tmp-debris.sh.
+# Both need a human: a scratch checkout can hold a never-pushed experiment.
 #
 # Usage:
 #   scripts/disk-reclaim.sh                 # report only, changes nothing
@@ -87,7 +100,10 @@ while [ $# -gt 0 ]; do
 		}
 		;;
 	-h | --help)
-		sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
+		# Everything from the shebang to the first non-comment line. A
+		# hardcoded range silently truncates --help mid-sentence the first
+		# time the header grows, which is exactly what it had done here.
+		awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
 		exit 0
 		;;
 	*)
@@ -171,20 +187,43 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	min_kb=$((min_gb * 1024 * 1024))
 	if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
 		avail_gb=$((avail_kb / 1024 / 1024))
-		cache_line=""
 		# --cache only helps THIS volume's floor if GOCACHE is actually on it;
-		# once moved off (the default now), emptying it does nothing here.
+		# once moved off (the default now), emptying it does nothing here. The
+		# same is true of --all, which is only "--cache and --worktrees" — an
+		# unconditional "--all # both" pointed at a lever the line above it had
+		# just deliberately declined to name (kata td3g).
+		cache_lines=""
 		if [ -n "${gocache_dev:-}" ] && [ "$gocache_dev" = "${repo_dev:-}" ]; then
-			cache_line="  scripts/disk-reclaim.sh --cache       # empty the Go build cache (fully regenerable, ~2-3min cold rebuild)
+			cache_lines="  scripts/disk-reclaim.sh --cache       # empty the Go build cache (regenerable, ~2-3min cold rebuild)
+  scripts/disk-reclaim.sh --all         # both of the above
 "
 		fi
+		# Everything this message says about yield has to be something a bare
+		# df can substantiate, which is nothing: --check runs on every test
+		# invocation across the fleet and cannot afford to measure (kata 98x9).
+		# So it names what CAN measure rather than promising an outcome. It used
+		# to send the reader straight to --worktrees, and on the night this was
+		# written that was worth exactly 0 bytes — every merged worktree held an
+		# agent's report — while 10.0G of /tmp scratch and 1.6G of unregistered
+		# checkouts sat unnamed on the same volume (kata td3g).
 		cat >&2 <<-MSG
 			disk-reclaim: only ${avail_gb}G free on $repo_root (floor is ${min_gb}G) — kata 98x9.
 			Left alone this shows up as an unrelated-looking failure instead of this message:
 			"link: mapping output file failed: no space left on device", a t.TempDir() setup
-			failure, or a jobstore open error. Free some space, then re-run:
-			${cache_line}  scripts/disk-reclaim.sh --worktrees   # remove worktrees already merged into HEAD
-			  scripts/disk-reclaim.sh --all         # both
+			failure, or a jobstore open error.
+
+			--check is a bare df, so it does not know what is reclaimable. Measure first;
+			none of these delete anything:
+			  scripts/disk-reclaim.sh               # each worktree class, sized, and how
+			                                        # much of it is removable right now
+			  scripts/report-orphaned-worktrees.sh  # checkouts git has no record of
+			  scripts/report-tmp-debris.sh          # per-session scratch under /tmp
+			Then reclaim what the report actually found:
+			${cache_lines}  scripts/disk-reclaim.sh --worktrees   # remove MERGED worktrees. Mid-fleet this
+			                                        # routinely frees 0: live worktrees are kept,
+			                                        # and a merged one holding an agent's
+			                                        # .superpowers report is kept too.
+			The two report-only classes above need a human; nothing here deletes them for you.
 			Override the floor for this run only: SERF_DISK_MIN_FREE_GB=<N> (default 5).
 		MSG
 		exit 1
@@ -212,9 +251,23 @@ free_report() { df -h "$repo_root" | awk 'NR==2 {print $4 " free of " $2 " (" $5
 
 echo "disk-reclaim: $(free_report)"
 
+# Whether the build cache is worth measuring is the same question as whether
+# --cache is worth offering: only a cache on THIS volume can move THIS floor.
+# Sizing one that cannot is 32.6s per report on the real machine (111G, ~2M
+# inodes, on an external volume by design — scripts/setup-gocache.sh), spent to
+# print a number that answers no question the report is asking. `df` of its
+# volume is the fact that does matter about an off-volume cache, and is free.
 gocache=$(go env GOCACHE 2>/dev/null)
 if [ -n "$gocache" ] && [ -d "$gocache" ]; then
-	echo "  go build cache   $(du -sh "$gocache" 2>/dev/null | cut -f1)	$gocache"
+	gocache_dev=$(df -P "$gocache" 2>/dev/null | awk 'NR==2 {print $1}')
+	repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
+	if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
+		echo "  go build cache   $(du -sh "$gocache" 2>/dev/null | cut -f1)	$gocache"
+		echo "                   on this volume, so --cache frees exactly that here"
+	else
+		echo "  go build cache   $gocache"
+		echo "                   on another volume ($(df -h "$gocache" 2>/dev/null | awk 'NR==2 {print $4}') free there), so --cache cannot move this floor"
+	fi
 fi
 
 # Classify every registered worktree as merged-into-$INTO or not. Only the
@@ -318,6 +371,11 @@ classify_worktree() {
 	fi
 }
 wt_path="" wt_branch=""
+# Every path git knows about, newline-delimited (bash 3.2 on macOS has no
+# associative arrays). Anything under the worktrees directory that is NOT in
+# here is a checkout git has no record of - kata smw0's ~1.6G of pre-rename
+# orphans - and no amount of `git worktree prune` will reach it.
+registered_paths=""
 while IFS= read -r line; do
 	case "$line" in
 	"worktree "*)
@@ -330,6 +388,8 @@ while IFS= read -r line; do
 		;;
 	"detached") wt_branch="" ;;
 	"")
+		[ -z "$wt_path" ] || registered_paths="$registered_paths$wt_path
+"
 		classify_worktree "$wt_path" "$wt_branch"
 		wt_path=""
 		wt_branch=""
@@ -381,8 +441,75 @@ worktree_ignored_work() {
 	done < <(git --no-optional-locks -C "$path" status --porcelain -unormal --ignored -z 2>/dev/null)
 }
 
-wt_size=$(du -sh "$worktrees_dir" 2>/dev/null | cut -f1)
-echo "  worktrees        ${wt_size:-0}	${#merged[@]} merged into ${INTO:0:12}, ${#unmerged[@]} unmerged"
+# One number for the whole worktrees directory is what this used to print, and
+# it read as the amount --worktrees could free. On the real machine that number
+# was 8.3G and the true answer was ZERO: every merged worktree held an agent's
+# `.superpowers/<kata>-report.md`, which this script keeps by design (kata
+# datr), so every one of them was reported as merged and kept as held. Sending
+# someone at the disk floor to run a lever worth nothing is how the classifier
+# gets loosened and the deletion incident happens a third time (kata td3g).
+#
+# So size the classes the reader actually has to choose between, and let
+# "removable" mean removable: merged AND not already known to be kept. It is
+# still an upper bound - the dirty/in-use refusal cannot be predicted without
+# attempting the removal - hence "at most". Same `du` walk as the single number
+# it replaces, split three ways.
+sum_kb() { # `du -sk` over the given paths, summed; 0 for none
+	[ "$#" -gt 0 ] || {
+		echo 0
+		return
+	}
+	du -sk "$@" 2>/dev/null | awk '{s+=$1} END {print s+0}'
+}
+human_kb() {
+	awk -v kb="$1" 'BEGIN { printf (kb>=1048576) ? "%.1fG" : (kb>=1024) ? "%.0fM" : "%dK", (kb>=1048576) ? kb/1048576 : (kb>=1024) ? kb/1024 : kb }'
+}
+
+removable_paths=()
+kept_paths=()
+held_ignored=0
+for entry in "${merged[@]:-}"; do
+	[ -n "$entry" ] || continue
+	wt=${entry%%	*}
+	# Read-only, and the same probe the removal path re-runs before it deletes
+	# anything. Reporting a worktree as removable when this already says it is
+	# not is the overstatement this whole block exists to stop.
+	if [ -n "$(worktree_ignored_work "$wt")" ]; then
+		kept_paths+=("$wt")
+		held_ignored=$((held_ignored + 1))
+	else
+		removable_paths+=("$wt")
+	fi
+done
+for entry in "${unmerged[@]:-}"; do
+	[ -n "$entry" ] || continue
+	kept_paths+=("${entry%%	*}")
+done
+
+unregistered_paths=()
+if [ -d "$worktrees_dir" ]; then
+	while IFS= read -r child; do
+		[ -n "$child" ] || continue
+		grep -Fxq "$child" <<<"$registered_paths" && continue
+		unregistered_paths+=("$child")
+	done < <(find "$worktrees_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+fi
+
+removable_h=$(human_kb "$(sum_kb "${removable_paths[@]:-}")")
+echo "  worktrees        registered checkouts, by what you can do about them:"
+printf '    %-14s %-8s %s\n' "removable" "$removable_h" \
+	"${#removable_paths[@]} of ${#merged[@]} merged into ${INTO:0:12}; at most what --worktrees frees"
+kept_why="${#unmerged[@]} unmerged"
+[ "$held_ignored" -gt 0 ] && kept_why="$kept_why, $held_ignored merged but holding ignored work"
+printf '    %-14s %-8s %s\n' "kept" \
+	"$(human_kb "$(sum_kb "${kept_paths[@]:-}")")" \
+	"$kept_why"
+if [ "${#unregistered_paths[@]}" -gt 0 ]; then
+	printf '    %-14s %-8s %s\n' "unregistered" \
+		"$(human_kb "$(sum_kb "${unregistered_paths[@]:-}")")" \
+		"${#unregistered_paths[@]} dir$([ "${#unregistered_paths[@]}" = 1 ] || echo s) git has no record of; scripts/report-orphaned-worktrees.sh"
+fi
+echo "  not sized here   per-session scratch under /tmp; scripts/report-tmp-debris.sh"
 
 # A real node_modules directory inside a worktree is a symptom worth naming: the
 # fleet shares ONE install by symlink, and `npm ci` deletes its target before
@@ -396,8 +523,16 @@ done < <(find "$worktrees_dir" -maxdepth 4 -name node_modules -not -path '*/node
 
 if [ "$RECLAIM_CACHE" = 0 ] && [ "$RECLAIM_WORKTREES" = 0 ]; then
 	echo
-	echo "Report only. Re-run with --cache, --worktrees, or --all to reclaim."
-	[ "${#unmerged[@]}" -gt 0 ] && echo "Unmerged worktrees are never removed; ${#unmerged[@]} would be kept."
+	# Same rule as the floor message: name a lever only where it can do
+	# something. "Re-run with --cache, --worktrees, or --all" advertised, in
+	# one breath, a cache on a volume this run had just said it cannot help and
+	# a worktree sweep this run had just measured at zero.
+	echo "Report only; nothing above was changed."
+	echo "  --worktrees would free at most $removable_h of that, and keeps the rest."
+	if [ -n "${gocache_dev:-}" ] && [ "$gocache_dev" = "${repo_dev:-}" ]; then
+		echo "  --cache would free the build cache sized above; --all does both."
+	fi
+	echo "The unregistered and /tmp classes are removed by nobody but you."
 	exit 0
 fi
 

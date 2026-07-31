@@ -61,7 +61,9 @@ run_disk_reclaim() (
 # --- scenario 1: an unstarted branch (no commits of its own) is not "merged" ---
 (cd "$repo" && git worktree add -q -b unstarted "$wt_dir/unstarted" main)
 out="$(run_disk_reclaim --into main)"
-if echo "$out" | grep -qE '0 merged into [^,]+, 1 unmerged'; then
+# Same claim the single-line report made before the classes were split out:
+# zero merged, and the unstarted branch is the one entry, on the kept side.
+if echo "$out" | grep -qE '0 of 0 merged into ' && echo "$out" | grep -qE '^ +kept +[0-9.]+[KMGTP] +1 unmerged$'; then
 	ok "unstarted branch counted as the sole unmerged entry (not merged)"
 else
 	bad "unexpected merged/unmerged counts for an unstarted branch: $out"
@@ -297,8 +299,12 @@ chmod 755 "$locked_vol"
 
 # --- scenario 12: --check warns (but does not fail) when GOCACHE is reachable
 # but back on the same volume as the checkout ---
+# SERF_DISK_MIN_FREE_GB=0 pins the floor: this scenario asserts exit 0, and
+# without the pin it asserts the machine happens to have 5G free as well. It
+# does not always — this failed for real on a night the repo volume was down to
+# 2G, which is exactly when the rest of this script matters most.
 samevol_gocache="$work/samevol-gocache"
-if GOCACHE="$samevol_gocache" run_disk_reclaim --check >"$work/gocache-samevol.out" 2>&1; then
+if GOCACHE="$samevol_gocache" SERF_DISK_MIN_FREE_GB=0 run_disk_reclaim --check >"$work/gocache-samevol.out" 2>&1; then
 	if grep -q "setup-gocache.sh" "$work/gocache-samevol.out"; then
 		ok "--check warns (exit 0) when GOCACHE shares the checkout's volume"
 	else
@@ -306,6 +312,197 @@ if GOCACHE="$samevol_gocache" run_disk_reclaim --check >"$work/gocache-samevol.o
 	fi
 else
 	bad "--check with a reachable (same-volume) GOCACHE exited non-zero"
+fi
+
+# --- scenarios 13-15 use their own repo, laid out the way the real one is ---
+# The fixture above puts its worktrees in "$repo/wt", but the script sizes
+# "$main_root/.claude/worktrees" — so nothing above this line has ever
+# exercised the sizing code at all. These scenarios need a known population in
+# the real location, and a population that does not drift as scenarios are
+# added above.
+repo2="$work/repo2"
+wt2="$repo2/.claude/worktrees"
+mkdir -p "$wt2"
+(
+	cd "$repo2" &&
+		git init -q &&
+		git config user.email t@t &&
+		git config user.name t &&
+		git symbolic-ref HEAD refs/heads/main &&
+		echo one >file &&
+		printf '.superpowers/\nnode_modules/\n' >.gitignore &&
+		git add file .gitignore &&
+		git commit -qm init
+) || {
+	echo "FAIL: could not set up the second throwaway repo" >&2
+	exit 1
+}
+run_in_repo2() (
+	cd "$repo2" && bash "$script" "$@"
+)
+add_merged_wt2() { # name -> a worktree whose branch has landed in main
+	(cd "$repo2" && git worktree add -q -b "$1" "$wt2/$1" main)
+	(cd "$wt2/$1" && echo payload >"f-$1" && git add "f-$1" && git commit -qm "$1 change")
+	(cd "$repo2" && git merge --no-ff -q -m "merge $1" "$1")
+}
+add_merged_wt2 merged-free
+add_merged_wt2 merged-held
+# merged-held is merged AND holds an agent's report, so --worktrees keeps it.
+# The 8M payload is what makes the size assertions below sharp: counted in the
+# wrong bucket it shows up as megabytes, and no rounding can hide that.
+mkdir -p "$wt2/merged-held/.superpowers"
+dd if=/dev/zero of="$wt2/merged-held/.superpowers/report.md" bs=1024 count=8192 2>/dev/null
+(cd "$repo2" && git worktree add -q -b live-branch "$wt2/live-branch" main)
+(cd "$wt2/live-branch" && echo live >f-live && git add f-live && git commit -qm "live change")
+# A plain directory git has no record of: kata smw0's shape, and 1.6G of the
+# real machine's worktree directory.
+mkdir -p "$wt2/unregistered-dir"
+echo payload >"$wt2/unregistered-dir/some-file"
+
+out="$(run_in_repo2 --into main)"
+
+# --- scenario 13: the report sizes each worktree class separately ---
+# The single `du -sh` this replaced read as "what --worktrees could free". On
+# the real machine that number was 8.3G and the true answer was zero: every
+# merged worktree held an agent's .superpowers report. A number that overstates
+# the yield is the failure this kata exists to remove, so "removable" must
+# exclude what the script already knows it will keep.
+if echo "$out" | grep -qE '^ +removable +[0-9.]+K.*1 of 2 merged'; then
+	ok "removable is sized on its own, in K: the 8M ignored-work worktree is excluded"
+else
+	bad "removable line missing, miscounted, or sized in M (held worktree counted): $out"
+fi
+if echo "$out" | grep -qE '^ +kept +[0-9.]+M.*1 unmerged, 1 merged but holding ignored work'; then
+	ok "kept carries the held megabytes and names why each worktree is kept"
+else
+	bad "kept line missing or did not account for the held worktree: $out"
+fi
+if echo "$out" | grep -qE '^ +unregistered +[0-9.]+K.*1 dir'; then
+	ok "directories git has no record of are counted and sized as their own class"
+else
+	bad "unregistered class missing from the report: $out"
+fi
+if echo "$out" | grep -q "report-orphaned-worktrees.sh"; then
+	ok "the unregistered class names the tool that can inspect it"
+else
+	bad "unregistered class named no tool: $out"
+fi
+if echo "$out" | grep -q "report-tmp-debris.sh"; then
+	ok "the report names the /tmp scratch class it does not measure"
+else
+	bad "the report did not name the /tmp scratch class: $out"
+fi
+for name in merged-free merged-held live-branch unregistered-dir; do
+	if [ -d "$wt2/$name" ]; then
+		ok "report-only run leaves $name alone"
+	else
+		bad "report-only run REMOVED $name"
+	fi
+done
+# The footer had the floor message's bug too: "Re-run with --cache,
+# --worktrees, or --all" named a cache the same run had just called unreachable
+# and a sweep it had just measured. GOCACHE is the absent path exported at the
+# top of this file, so neither cache lever can do anything here.
+if echo "$out" | grep -qE 'would free at most [0-9.]+[KMGTP]'; then
+	ok "the footer states the measured upper bound on what --worktrees frees"
+else
+	bad "the footer did not state what --worktrees would free: $out"
+fi
+if echo "$out" | grep -qE '\-\-(cache|all)\b'; then
+	bad "the footer offers --cache or --all with no reachable cache to empty: $out"
+else
+	ok "the footer offers no cache lever when there is no cache it can help with"
+fi
+
+# --- scenario 14: the report says whether emptying the cache can move THIS
+# floor, and only pays for a du when it can ---
+# `du` of the real machine's 111G build cache is 32.6s per run, on a volume
+# where emptying it provably cannot move this checkout's floor. The off-volume
+# branch cannot be built portably (it needs a second device), so it is verified
+# against the real repo by timing; the branch below is the one a fixture can
+# reach, and it is the one that must still pay for the number.
+samevol_cache="$work/samevol-report-cache"
+mkdir -p "$samevol_cache"
+dd if=/dev/zero of="$samevol_cache/blob" bs=1024 count=256 2>/dev/null
+cache_out="$(GOCACHE="$samevol_cache" run_in_repo2 --into main)"
+if echo "$cache_out" | grep -qF "$samevol_cache"; then
+	ok "the report names the build cache path"
+else
+	bad "the report did not name the build cache path: $cache_out"
+fi
+# Anchored on the label, not just "a size somewhere on the line": mktemp's
+# random suffix can itself contain a digit followed by K/M/G, and matching that
+# would be a green with no behaviour behind it.
+if echo "$cache_out" | grep -qE 'go build cache +[0-9.]+[KMGTP]'; then
+	ok "a cache on this volume is sized: that size is what --cache would free here"
+else
+	bad "a cache on this checkout's own volume was not sized: $cache_out"
+fi
+if echo "$cache_out" | grep -qi "this volume"; then
+	ok "the report states that emptying the cache can move this floor"
+else
+	bad "the report did not say whether --cache can move this floor: $cache_out"
+fi
+if echo "$cache_out" | grep -qE '\-\-cache would free'; then
+	ok "the footer offers --cache when the cache IS on this volume"
+else
+	bad "the cache lever was suppressed in the footer even though it can help: $cache_out"
+fi
+
+# --- scenario 15: the floor message offers only levers it can substantiate ---
+# The message fires on every test run below the floor and is the whole remedy
+# the next person gets. Measured on the real machine at 3G free: it named
+# --worktrees, worth exactly 0 bytes, while 10.0G of /tmp scratch and 1.6G of
+# unregistered checkouts went unnamed. --check is a bare df by design and
+# cannot measure, so it must point at what can.
+floor_out=$(SERF_SKIP_GOCACHE_CHECK=1 SERF_DISK_MIN_FREE_GB=999999999 run_disk_reclaim --check 2>&1)
+for tool in "scripts/disk-reclaim.sh" "scripts/report-orphaned-worktrees.sh" "scripts/report-tmp-debris.sh"; do
+	if echo "$floor_out" | grep -qF "$tool"; then
+		ok "the floor message points at $tool"
+	else
+		bad "the floor message never mentions $tool: $floor_out"
+	fi
+done
+if echo "$floor_out" | grep -qiE '(routinely|often|usually) (frees )?(0|nothing|zero)'; then
+	ok "--worktrees is offered with its real mid-fleet yield, not as a sure remedy"
+else
+	bad "--worktrees is still offered as though it will free something: $floor_out"
+fi
+# Guard: none of the above should be satisfiable by a message that stopped
+# saying how bad the situation is.
+if echo "$floor_out" | grep -qE 'free.*floor is'; then
+	ok "the floor message still states the free space and the floor"
+else
+	bad "the floor message lost its numbers: $floor_out"
+fi
+# `--all` means "cache and worktrees". When the cache lever is suppressed —
+# because emptying it cannot move this floor — an unconditional "--all # both"
+# points at a lever the same message deliberately declined to name.
+if echo "$floor_out" | grep -qE 'disk-reclaim\.sh --(cache|all)\b'; then
+	bad "--cache or --all offered when the cache cannot move this floor: $floor_out"
+else
+	ok "neither --cache nor --all is offered when the cache cannot move this floor"
+fi
+cache_floor_out=$(GOCACHE="$samevol_cache" SERF_DISK_MIN_FREE_GB=999999999 run_disk_reclaim --check 2>&1)
+if echo "$cache_floor_out" | grep -qE 'disk-reclaim\.sh --cache\b' && echo "$cache_floor_out" | grep -qE 'disk-reclaim\.sh --all\b'; then
+	ok "both --cache and --all are offered when the cache IS on this volume"
+else
+	bad "the cache lever was suppressed even though it can move this floor: $cache_floor_out"
+fi
+
+# --- scenario 16: --help prints the whole header, not a stale line range ---
+# It printed lines 2-64 of a header that had grown to 77, so --help stopped
+# mid-sentence and dropped the Safety paragraph entirely. Nothing failed; the
+# documentation just quietly went missing.
+if help_out=$(run_disk_reclaim --help 2>&1) && echo "$help_out" | grep -q "^Usage:" && echo "$help_out" | grep -q "^Safety:"; then
+	ok "--help prints the header through to its last paragraph"
+else
+	bad "--help is truncated or failed: $help_out"
+fi
+if echo "$help_out" | grep -q "^set -uo pipefail"; then
+	bad "--help ran past the header into the script body: $help_out"
+else
+	ok "--help stops at the end of the header"
 fi
 
 echo

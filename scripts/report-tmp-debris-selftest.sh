@@ -158,6 +158,15 @@ else
 	bad "run outside a git repository exited non-zero: $outside_out"
 fi
 
+# --help prints the header by scanning for its end rather than by a hardcoded
+# line range, which goes stale silently the first time the header grows.
+help_out=$(bash "$script" --help 2>&1)
+if echo "$help_out" | grep -q "^Usage:" && ! echo "$help_out" | grep -q "^set -uo pipefail"; then
+	ok "--help prints the whole header and stops at the script body"
+else
+	bad "--help is truncated or overran the header: $help_out"
+fi
+
 echo
 echo "$checks checks, $fails failed"
 [ "$fails" -eq 0 ]
