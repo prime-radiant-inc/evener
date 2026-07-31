@@ -477,6 +477,34 @@ func (s *LocalDaemonSource) ListTasks(ctx context.Context, params appwire.TaskLi
 	return out, err
 }
 
+func (s *LocalDaemonSource) ListJobs(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.JobsListResponse{}, err
+	}
+	var out appwire.JobsListResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.JobsList(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
+func (s *LocalDaemonSource) JobOutput(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.JobsOutputResponse{}, err
+	}
+	var out appwire.JobsOutputResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.JobOutput(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
 	key := relaySessionKey(s.sourceID, params.Ref, params.ThreadID)
 	s.relayMu.Lock()

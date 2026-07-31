@@ -267,6 +267,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.serf.tasks ?? null,
+    jobsUpdatedAt: null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
     capabilities: thread.serf.capabilities,
@@ -707,6 +708,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "serf/task/updated": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, tasks: { total: n.params.total, done: n.params.done }, lastFrameAt: now };
+    }
+
+    case "serf/job/updated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
     }
 
     case "serf/thread/name/changed": {

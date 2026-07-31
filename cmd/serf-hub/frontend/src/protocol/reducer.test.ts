@@ -2598,6 +2598,32 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
   ).toEqual({ total: 0, done: 0 });
 });
 
+test("serf/job/updated bumps jobsUpdatedAt for the targeted thread", () => {
+  let model = testHydrate();
+  expect(model.jobsUpdatedAt).toBeNull();
+  model = applyNotification(
+    model,
+    { method: "serf/job/updated", params: { threadId: "thr_t", ref: "ref_t", jobId: "job_1", status: "running" } },
+    2000,
+  );
+  expect(model.jobsUpdatedAt).toBe(2000);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test("serf/job/updated for another thread leaves the model untouched", () => {
+  const model = testHydrate();
+  expect(
+    applyNotification(
+      model,
+      {
+        method: "serf/job/updated",
+        params: { threadId: "not_thr_t", ref: "not_ref_t", jobId: "job_1", status: "running" },
+      },
+      2000,
+    ),
+  ).toBe(model);
+});
+
 // Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
 // activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
 // from thread.serf (appwire/types.go's SerfThread, lines 223-274). None of

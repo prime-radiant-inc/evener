@@ -88,6 +88,8 @@ type serveServer interface {
 	SetReasoningEffortFunc(func(string))
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
 	SetTasksFunc(func() any)
+	SetJobsFunc(func() any)
+	SetJobOutputFunc(func(string, int64) (any, bool, error))
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
@@ -826,6 +828,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
+	srv.SetJobsFunc(func() any { return getSession().JobSummaries() })
+	srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
+		return getSession().JobOutputTail(jobID, maxBytes)
+	})
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
 		currentMu.RLock()

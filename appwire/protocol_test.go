@@ -149,3 +149,24 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 		}
 	}
 }
+
+// TestJobsCatalogEntries pins the jobs-panel wire entries so the protocol
+// catalog can't drift from the method constants.
+func TestJobsCatalogEntries(t *testing.T) {
+	methods := map[string]bool{}
+	for _, e := range Methods {
+		methods[e.Name] = true
+	}
+	for _, m := range []string{MethodSerfJobsList, MethodSerfJobsOutput} {
+		if !methods[m] {
+			t.Errorf("request catalog missing %s", m)
+		}
+	}
+	notifs := map[string]bool{}
+	for _, e := range Notifications {
+		notifs[e.Name] = true
+	}
+	if !notifs[NotifySerfJobUpdated] {
+		t.Errorf("notification catalog missing %s", NotifySerfJobUpdated)
+	}
+}

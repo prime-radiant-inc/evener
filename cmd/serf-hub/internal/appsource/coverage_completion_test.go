@@ -46,6 +46,12 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 		return appwire.TaskListResponse{}, nil
 	})
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+		return appwire.JobsListResponse{}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsOutput, func(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+		return appwire.JobsOutputResponse{}, nil
+	})
 	server := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
 	t.Cleanup(server.Close)
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(server.URL, "http"), SourceID: "local", ThreadID: "thread", SessionID: "session"}
@@ -102,6 +108,12 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := source.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -230,6 +242,8 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		"goal":      func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
 		"clear":     func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
 		"tasks":     func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
+		"jobs":      func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
+		"jobOutput": func() error { _, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"}); return err },
 		"subscribe": func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
 	}
 	for name, call := range calls {

@@ -743,6 +743,12 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfTasksList, func(ctx context.Context, params appwire.TaskListParams) (appwire.TaskListResponse, error) {
 		return hubTasksList(ctx, cfg, sources, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsList, func(ctx context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+		return hubJobsList(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+		return hubJobsOutput(ctx, cfg, sources, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)
 	})

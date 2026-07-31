@@ -641,6 +641,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     turns: [],
     queue: null,
     tasks: null,
+    jobsUpdatedAt: null,
     lastFrameAt: 0,
     capabilities: NO_CAPABILITIES,
     goal: null,

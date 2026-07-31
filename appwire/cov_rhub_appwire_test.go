@@ -186,6 +186,26 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"JobsList", MethodSerfJobsList, JobsListResponse{Data: []string{"j1"}}, func(ctx context.Context, c *Client) error {
+			out, err := c.JobsList(ctx, JobsListParams{Ref: "local:th"})
+			if err != nil {
+				return err
+			}
+			if out.Data == nil {
+				return errors.New("JobsList decode mismatch")
+			}
+			return nil
+		}},
+		{"JobOutput", MethodSerfJobsOutput, JobsOutputResponse{Data: "tail-bytes"}, func(ctx context.Context, c *Client) error {
+			out, err := c.JobOutput(ctx, JobsOutputParams{Ref: "local:th", JobID: "j1", MaxBytes: 4096})
+			if err != nil {
+				return err
+			}
+			if out.Data == nil {
+				return errors.New("JobOutput decode mismatch")
+			}
+			return nil
+		}},
 		{"ProjectsRecent", MethodSerfProjectsRecent, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
 			if err != nil {

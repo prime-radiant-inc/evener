@@ -229,6 +229,8 @@ type Server struct {
 	reasoningEffortFunc           func(string)
 	listModelsFunc                func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn                       func() any
+	jobsFn                        func() any
+	jobOutputFn                   func(jobID string, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                  func()
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
@@ -547,6 +549,22 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseIte
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
 	s.tasksFn = fn
+	s.mu.Unlock()
+}
+
+// SetJobsFunc sets the function backing serf/jobs/list. The function should
+// return a JSON-serializable slice (typically []agent.JobSummary).
+func (s *Server) SetJobsFunc(fn func() any) {
+	s.mu.Lock()
+	s.jobsFn = fn
+	s.mu.Unlock()
+}
+
+// SetJobOutputFunc sets the function backing serf/jobs/output. found=false
+// maps to an invalid-params wire error (the caller guessed a job id).
+func (s *Server) SetJobOutputFunc(fn func(jobID string, maxBytes int64) (data any, found bool, err error)) {
+	s.mu.Lock()
+	s.jobOutputFn = fn
 	s.mu.Unlock()
 }
 

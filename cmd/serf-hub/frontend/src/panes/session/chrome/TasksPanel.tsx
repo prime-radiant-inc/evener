@@ -28,7 +28,8 @@
 // went wrong at the transport level. A thread with no live local daemon
 // behind it (a one-shot CLI session that already exited, or one never
 // resumed) rejects ListTasks the same way its ref lookup fails: "thread not
-// found" (isThreadNotFound, below). Whether that folds into an empty list or
+// found" (isThreadNotFound, sessionErrors.ts - shared with JobsPanel).
+// Whether that folds into an empty list or
 // a distinct terminal state depends on model.tasks: null means the frontend
 // truly has no way to distinguish "never had tasks" from "can't currently
 // ask", so it renders the same "No tasks yet" a real `[]` response would.
@@ -68,12 +69,13 @@
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
 import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
-import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
+import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
 import styles from "./taskspanel.module.css";
 
@@ -178,39 +180,6 @@ function loadFailure(err: unknown): LoadFailure {
   const sentence = sessionActionError(LOAD_FAILURE, err);
   const detail = errorText(err).trim();
   return detail ? { headline, detail, sentence } : { headline, sentence };
-}
-
-function isActionUnavailable(err: unknown): boolean {
-  return err instanceof WireError && err.serfErrorInfo === "actionUnavailable";
-}
-
-// A local-source thread with no live daemon behind it (a one-shot CLI
-// session that already exited, or one never resumed) rejects ListTasks with
-// appwire.SessionUnavailable("thread not found: " + threadID) - the ONLY
-// call site that prefixes a sessionUnavailable message this way
-// (cmd/serf-hub/internal/appsource/local_daemon.go:551, entryForRef finding
-// no matching rendezvous entry). A live daemon that's merely unreachable
-// for a moment (connection reset, broken pipe, i/o timeout) is ALSO
-// sessionUnavailable, but as "local/codex daemon unavailable: ..."
-// (local_daemon.go:438-501, codex_source.go:522-591) - that must still
-// surface as a real error, so this checks the message prefix too, not just
-// the serfErrorInfo code.
-//
-// This is also why the daemonGone terminal state below never offers Try
-// again: the hub's own serf/tasks/list handler (app_tasks.go's hubTasksList)
-// already falls back to a persisted past-index read before this error ever
-// reaches the wire, so a rejection actually shaped like this means the hub
-// found NEITHER a live daemon NOR a past-index record for the thread. That
-// is also exactly the condition withSessionResume's hubKnowsRef gate checks
-// before attempting any resume (app_session_resume.go) - so nothing on
-// either end of the wire can bring this session back. Retrying would fail
-// identically forever.
-function isThreadNotFound(err: unknown): boolean {
-  return (
-    err instanceof WireError &&
-    err.serfErrorInfo === "sessionUnavailable" &&
-    err.message.startsWith("thread not found: ")
-  );
 }
 
 // Scopes a task row's disclosure state to this session: task ids restart at

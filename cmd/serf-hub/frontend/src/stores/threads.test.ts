@@ -3174,6 +3174,66 @@ describe("useThreadsStore.listTasks", () => {
   });
 });
 
+describe("useThreadsStore.listJobs / jobOutput", () => {
+  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are
+  // both `any` in appwire/types.go; the real JSON is agent/jobs_panel.go's
+  // JobSummary / JobOutputTail structs. These fixtures mirror their real
+  // JSON field names verbatim.
+  const JOBS_DATA = [
+    {
+      jobId: "job_1",
+      type: "shell",
+      status: "completed",
+      description: "run tests",
+      command: "go test ./...",
+      background: true,
+      startedAt: "2026-07-31T12:00:00Z",
+      endedAt: "2026-07-31T12:01:00Z",
+      exitCode: 0,
+      outputBytes: 123,
+      hasOutput: true,
+    },
+    {
+      jobId: "job_2",
+      type: "delegate",
+      status: "running",
+      description: "scout",
+      background: true,
+      startedAt: "2026-07-31T12:05:00Z",
+      outputBytes: 0,
+      hasOutput: false,
+    },
+  ];
+  const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
+
+  test("listJobs sends serf/jobs/list with {ref} and returns the raw data field", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+
+    const result = await threadsStore.getState().listJobs("ref_a");
+
+    const call = fake.calls.find((c) => c.method === "serf/jobs/list");
+    expect(call?.params).toEqual({ ref: "ref_a" });
+    expect(result).toEqual(JOBS_DATA);
+  });
+
+  test("jobOutput sends serf/jobs/output with {ref, jobId} and returns the raw data field", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/output", () => ({ data: OUTPUT_DATA }));
+
+    const result = await threadsStore.getState().jobOutput("ref_a", "job_1");
+
+    const call = fake.calls.find((c) => c.method === "serf/jobs/output");
+    expect(call?.params).toEqual({ ref: "ref_a", jobId: "job_1" });
+    expect(result).toEqual(OUTPUT_DATA);
+  });
+
+  test("both throw when no client has been connected yet", async () => {
+    await expect(threadsStore.getState().listJobs("ref_a")).rejects.toThrow(/no client connected/i);
+    await expect(threadsStore.getState().jobOutput("ref_a", "job_1")).rejects.toThrow(/no client connected/i);
+  });
+});
+
 describe("useThreadsStore.resolveEscalation", () => {
   function threadWithEscalation(ref: string, escalationId: string): ThreadReadResponse {
     return readResponse(ref, {

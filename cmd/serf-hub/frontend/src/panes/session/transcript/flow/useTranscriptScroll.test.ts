@@ -46,6 +46,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     turns,
     queue: null,
     tasks: null,
+    jobsUpdatedAt: null,
     pendingEscalations: [],
     lastFrameAt: 0,
     capabilities: NO_CAPABILITIES,

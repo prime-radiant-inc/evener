@@ -26,6 +26,11 @@ import (
 
 var errJobManagerClosing = errors.New("job manager is closing")
 
+// errJobNotFoundSentinel is wrapped by every errJobNotFound value so
+// programmatic callers (the jobs-panel readers) can detect a not-found
+// lookup with errors.Is instead of matching the model-facing message text.
+var errJobNotFoundSentinel = errors.New("job not found")
+
 const maxPersistedStructuredResultJSONBytes = 1024 * 1024
 
 const (
@@ -964,8 +969,22 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 // foreground command whose output rode inline and kept no durable job — in both
 // cases job_list shows the ids that actually exist.
 func errJobNotFound(jobID string) error {
-	return fmt.Errorf("job %q not found — use job_list to see this session's jobs", jobID)
+	return &jobNotFoundError{jobID: jobID}
 }
+
+// jobNotFoundError keeps the model-facing message text byte-identical to the
+// historical fmt.Errorf string while wrapping errJobNotFoundSentinel for
+// errors.Is callers.
+type jobNotFoundError struct{ jobID string }
+
+func (e *jobNotFoundError) Error() string {
+	return fmt.Sprintf("job %q not found — use job_list to see this session's jobs", e.jobID)
+}
+
+func (e *jobNotFoundError) Unwrap() error { return errJobNotFoundSentinel }
+
+// isJobNotFoundErr reports whether err is (or wraps) an errJobNotFound value.
+func isJobNotFoundErr(err error) bool { return errors.Is(err, errJobNotFoundSentinel) }
 
 func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
 	jm.mu.Lock()

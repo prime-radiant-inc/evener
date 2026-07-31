@@ -141,6 +141,8 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 		{"assistant_delta", TestAppEventProjectorProjectsAssistantDelta},
 		{"user_input_index", TestAppEventProjectorCarriesUserInputTranscriptEntryIndex},
 		{"task_updated", TestProject_TaskUpdated},
+		{"job_started_updated", TestProject_JobStartedUpdated},
+		{"job_finished_updated", TestProject_JobFinishedUpdated},
 		{"sandbox_escalation", TestProject_SandboxEscalationRequested},
 		{"sandbox_transcript", TestProject_SandboxEscalationNotInTranscript},
 		{"turn_started_at", TestAppEventProjectorTurnStartedCarriesStartedAt},

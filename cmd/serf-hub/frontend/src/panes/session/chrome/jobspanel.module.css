@@ -1,0 +1,118 @@
+/* JobsPanel's class set copies taskspanel.module.css's verbatim (the two
+ * panels share the Sheet's row/notice/detail grammar), plus outputTail and
+ * outputCaption for the retained output tail. */
+
+.state {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.description {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+/* A refresh that failed with the previous list still on screen. Not an error
+ * state and not coloured like one: the list below is intact and merely out of
+ * date (taskspanel.module.css's .stale comment carries the full reasoning,
+ * including why the attention family is off limits here). */
+.stale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--edge);
+}
+
+.staleMessage {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+/* --ink-mid, never --ink-low: this line is the one that tells the reader the
+ * list under it is stale. */
+.staleHint {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+/* A job row's full-detail <dl>, revealed by its disclosure. Label/value
+ * grammar matches DetailsPanel's own dl - see taskspanel.module.css's
+ * .detailList comment. */
+.detailList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.detailRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detailLabel {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.detailValue {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+/* The full command/task text - taskspanel.module.css's .detailPrompt
+ * comment covers why font/size/color are restated rather than inherited
+ * (the UA `pre` rule beats an ancestor's font-family). */
+.detailPrompt {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The retained output tail. Same mono token restatement as .detailPrompt,
+ * but pre-wrap stays OFF: output lines are preformatted and arbitrarily
+ * long, so the tail scrolls horizontally instead of reflowing under the
+ * reader. */
+.outputTail {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* The truncation caption sits under the detail list and above the tail;
+ * caption size/tone tokens, same as .detailLabel. */
+.outputCaption {
+  margin: var(--space-3) 0 var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}

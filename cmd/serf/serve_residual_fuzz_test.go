@@ -45,6 +45,8 @@ type residualServeServer struct {
 	name           func(string)
 	effort         func(string)
 	tasks          func() any
+	jobs           func() any
+	jobOutput      func(string, int64) (any, bool, error)
 	clear          func(context.Context) error
 	shutdown       func()
 }
@@ -85,6 +87,10 @@ func (s *residualServeServer) SetModelFunc(f func(string) error)          { s.mo
 func (s *residualServeServer) SetNameFunc(f func(string))                 { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string))      { s.effort = f }
 func (s *residualServeServer) SetTasksFunc(f func() any)                  { s.tasks = f }
+func (s *residualServeServer) SetJobsFunc(f func() any)                   { s.jobs = f }
+func (s *residualServeServer) SetJobOutputFunc(f func(string, int64) (any, bool, error)) {
+	s.jobOutput = f
+}
 func (s *residualServeServer) SetClearFunc(f func(context.Context) error) { s.clear = f }
 func (s *residualServeServer) SetShutdownFunc(f func())                   { s.shutdown = f }
 

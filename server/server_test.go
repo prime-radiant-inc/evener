@@ -1410,6 +1410,142 @@ func TestServerAppWireTasksList(t *testing.T) {
 	}
 }
 
+func TestHandleAppJobsListNilFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
+	}
+	out, ok := resp.Response.Result.(appwire.JobsListResponse)
+	if !ok {
+		t.Fatalf("serf/jobs/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	if out.Data != nil {
+		t.Errorf("data: got %+v, want nil", out.Data)
+	}
+}
+
+func TestHandleAppJobsList(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobsFunc(func() any {
+		return []agent.JobSummary{{JobID: "job_1", Type: "shell", Status: "running", Description: "make build", StartedAt: "2026-07-31T12:00:00Z"}}
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
+	}
+	out, ok := resp.Response.Result.(appwire.JobsListResponse)
+	if !ok {
+		t.Fatalf("serf/jobs/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	jobs, ok := out.Data.([]agent.JobSummary)
+	if !ok {
+		t.Fatalf("jobs data type=%T, want []agent.JobSummary", out.Data)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs data: got %d jobs, want 1", len(jobs))
+	}
+	if jobs[0].JobID != "job_1" {
+		t.Errorf("job id: got %q, want job_1", jobs[0].JobID)
+	}
+}
+
+func TestHandleAppJobsOutputNilFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1"}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeUnavailable {
+		t.Errorf("error code: got %d, want %d", resp.Error.Error.Code, appwire.CodeUnavailable)
+	}
+	data, ok := resp.Error.Error.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("error data type=%T, want appwire.ErrorData", resp.Error.Error.Data)
+	}
+	if data.SerfErrorInfo != appwire.ErrorActionUnavailable {
+		t.Errorf("serfErrorInfo: got %q, want actionUnavailable", data.SerfErrorInfo)
+	}
+}
+
+func TestHandleAppJobsOutputNotFound(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobOutputFunc(func(string, int64) (any, bool, error) { return nil, false, nil })
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_missing"}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Errorf("error code: got %d, want %d", resp.Error.Error.Code, appwire.CodeInvalidParams)
+	}
+	if !strings.Contains(resp.Error.Error.Message, "job_missing") {
+		t.Errorf("error message %q does not carry the job id", resp.Error.Error.Message)
+	}
+}
+
+func TestHandleAppJobsOutput(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
+		if jobID != "job_1" {
+			t.Errorf("jobID = %q, want job_1", jobID)
+		}
+		if maxBytes != 99 {
+			t.Errorf("maxBytes = %d, want 99", maxBytes)
+		}
+		return agent.JobOutputTail{Tail: "hi", TotalBytes: 2}, true, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsOutput, appwire.JobsOutputParams{JobID: "job_1", MaxBytes: 99}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
+	}
+	out, ok := resp.Response.Result.(appwire.JobsOutputResponse)
+	if !ok {
+		t.Fatalf("serf/jobs/output result=%T (%+v)", resp.Response.Result, resp)
+	}
+	tail, ok := out.Data.(agent.JobOutputTail)
+	if !ok {
+		t.Fatalf("output data type=%T, want agent.JobOutputTail", out.Data)
+	}
+	if tail.Tail != "hi" {
+		t.Errorf("tail: got %q, want hi", tail.Tail)
+	}
+}
+
 func TestServerAppWireModelList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

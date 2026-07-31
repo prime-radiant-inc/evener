@@ -109,6 +109,8 @@ no router (reserved).
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
+| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Lists the session's jobs (shell and delegate). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `serf/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `serf/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
@@ -187,6 +189,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `serf/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
+| `serf/job/updated` | `JobUpdatedParams` | A job's lifecycle state changed (started or finished). |
 | `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
 | `serf/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `serf/tree/changed` | `EmptyParams` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
@@ -480,6 +483,46 @@ _(no fields)_
 | `turnId` | `string` |  |  |
 | `item` | `appwire.ThreadItem` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
+
+
+### `JobUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `jobId` | `string` |  |  |
+| `status` | `string` |  |  |
+
+
+### `JobsListParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` | yes |  |
+
+
+### `JobsListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `interface {}` |  |  |
+
+
+### `JobsOutputParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` | yes |  |
+| `jobId` | `string` |  |  |
+| `maxBytes` | `int64` | yes |  |
+
+
+### `JobsOutputResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `interface {}` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`
