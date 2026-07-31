@@ -99,6 +99,67 @@ test("a whitespace-only prompt with an attachment sends an image-only input (no 
   });
 });
 
+// kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
+// haiku read one as a file path and called read_file("[image 1]") instead of
+// looking at the vision block it was sitting next to. The composer keeps the
+// marker as its chip anchor; the wire gets prose.
+test("translates the prompt's [image N] markers to prose at send (kata 6nmz)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, {
+    cwd: "/tmp/p",
+    prompt: "[image 1]Describe the attached image",
+    attachments: [{ mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
+  });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [
+      { type: "text", text: "(attached image 1: shot.png)Describe the attached image" },
+      { type: "image", mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" },
+    ],
+  });
+});
+
+test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, {
+    cwd: "/tmp/p",
+    prompt: "look: [image 1]",
+    attachments: [{ mediaType: "image/png", data: "QkFTRTY0" }],
+  });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [
+      { type: "text", text: "look: (attached image 1)" },
+      { type: "image", mediaType: "image/png", data: "QkFTRTY0" },
+    ],
+  });
+});
+
+test("a marker-less prompt reaches the wire byte-identical, untrimmed (kata 6nmz / floor §1.12)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, {
+    cwd: "/tmp/p",
+    prompt: "  keep\n  every\n  byte  ",
+    attachments: [{ mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" }],
+  });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [
+      { type: "text", text: "  keep\n  every\n  byte  " },
+      { type: "image", mediaType: "image/png", data: "QkFTRTY0", name: "shot.png" },
+    ],
+  });
+});
+
 test("merges the access mode into launchOverrides.sandbox (floor §1.8)", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/start", () => startResponse("local:r"));

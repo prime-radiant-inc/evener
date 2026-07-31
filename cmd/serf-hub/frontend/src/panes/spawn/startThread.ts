@@ -5,12 +5,13 @@
 // launchOverrides, the schema engine, sticky defaults).
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { InputItem, LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
+import { translateAttachmentMarkers } from "../../stores/attachmentMarkers";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 
 export interface SpawnRequest {
   cwd: string; // required (ThreadStartParams.cwd)
-  prompt: string; // RAW, untrimmed - floor §1.12
+  prompt: string; // RAW, untrimmed - floor §1.12 (bar the marker translation startThread applies)
   attachments?: InputAttachment[];
   harness?: string;
   modelProvider?: string; // serf-model harness: "<provider>/<model>" split -> provider half
@@ -35,7 +36,9 @@ export interface SpawnResult {
 // 304-312; unexported there, mirrored locally per PIN-C): an optional leading
 // RAW text item (kept only when non-empty after trim, but sent UNTRIMMED -
 // floor §1.12), then one image item per attachment (image-only submits are
-// valid).
+// valid). Its caller applies the one transformation the wire text gets, the
+// "[image N]" marker translation - shared with the store's own submit path
+// rather than mirrored, since a mirror of THAT would silently drift.
 function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
@@ -56,7 +59,8 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
 // SessionActionsMenu.tsx resp.thread.serf.ref for fork children). Stripping
 // here would open a dead-on-arrival session pane.
 export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
-  const params: ThreadStartParams = { cwd: req.cwd, input: buildInput(req.prompt, req.attachments) };
+  const prompt = translateAttachmentMarkers(req.prompt, req.attachments);
+  const params: ThreadStartParams = { cwd: req.cwd, input: buildInput(prompt, req.attachments) };
   if (req.harness) params.harness = req.harness;
   if (req.modelProvider) params.modelProvider = req.modelProvider;
   if (req.model) params.model = req.model;

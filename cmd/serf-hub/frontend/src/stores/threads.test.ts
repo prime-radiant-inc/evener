@@ -2663,6 +2663,79 @@ describe("useThreadsStore.send", () => {
       input: [{ type: "text", text: "hello" }],
     });
   });
+
+  // kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
+  // haiku read one as a file path and called read_file("[image 1]") instead of
+  // looking at the vision block it was sitting next to. The composer keeps the
+  // marker as its chip anchor; the wire gets prose.
+  test("translates the composer's [image N] markers to prose on the wire (kata 6nmz)", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "[image 1]Describe the attached image", [
+        { mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "(attached image 1: pic.png)Describe the attached image" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+  });
+
+  test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore.getState().send("ref_a", "look: [image 1]", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "look: (attached image 1)" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
+  test("a marker-less text reaches the wire byte-identical, untrimmed (kata 6nmz / floor §1.12)", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "  keep\n  every\n  byte  ", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "  keep\n  every\n  byte  " },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+  });
 });
 
 test("recovery resend rebuilds queue CAS values from the current thread", async () => {
