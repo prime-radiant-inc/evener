@@ -133,7 +133,10 @@
   font-size: var(--font-size-ui);
 }
 
-.chips {
+/* The staged-attachment row. Holds AttachmentTiles, which carry their own
+ * 80x80 box from composer.module.css - this only wraps them, exactly as the
+ * composer's own .attachments row does. */
+.attachments {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);

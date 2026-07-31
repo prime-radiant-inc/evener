@@ -1,5 +1,14 @@
-// AttachmentTile: one staged composer attachment, from the moment it is
-// pasted to the moment it is sent.
+// AttachmentTile: one staged attachment, from the moment it is pasted to the
+// moment it is sent.
+//
+// TWO SURFACES, ONE TILE (kata kbg7). The session composer and the spawn
+// pane both stage images through attachments/useAttachments, so both render
+// this - staging an image is one act and looks like one thing either way.
+// It stays here, next to the pipeline it draws, rather than moving to
+// widgets/: it is typed on PendingAttachment, a composer-domain shape, and a
+// widget that imported a pane's type would point the dependency backwards.
+// panes/spawn already reaches into this directory for AttachIcon, the
+// clipboard reader and the hook itself; this is the fourth of the same kind.
 //
 // ONE SHAPE FOR BOTH STATES (kata 39xe). A staged attachment is a tile
 // whether or not its PNG re-encode has landed: an empty slot while it is
