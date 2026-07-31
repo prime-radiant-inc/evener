@@ -332,6 +332,21 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
+  // A route this shell has parsed but not yet placed: pendingSessionRef is
+  // what openRouteAsPane leaves behind while a session deep link waits for
+  // /api/tree, and it is cleared by the same call that finally places the
+  // pane - so it covers the whole wait, including the one commit AFTER the
+  // tree lands (the route effect below runs after its children's effects, so
+  // the tree arriving is not yet the route being placed). Read here, below
+  // the render-phase open, rather than beside the other route derivations
+  // above, so it accounts for whatever that call just decided.
+  //
+  // The mobile host is told because it publishes the focused pane's URL, and
+  // would otherwise overwrite the deep link with its own fallback pane's "/"
+  // mid-wait (kata bbsv). Desktop needs nothing: DockHost never writes to the
+  // address bar, so a deferred route simply sits there until it can be placed.
+  const routeDeferred = route?.type === "session" && pendingSessionRef.current !== null;
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanes is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
@@ -373,7 +388,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
           {route === null ? (
             <NotFound />
           ) : isMobile ? (
-            <StackHost railSlot={<RailHost />} />
+            <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
           ) : (
             // fallback={null}: DockHost's own boot sequence (handleReady)
             // already produces the very first meaningful paint (a routed

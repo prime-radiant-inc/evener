@@ -521,6 +521,34 @@ test("back navigation updates the URL to match the pane it returns to", async ()
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
+// kata bbsv. AppShell needs /api/tree before it can place a /s/{ref} deep
+// link, and no fetch resolves inside the first commit - so the shell spends a
+// beat with the route parsed and unplaced, which the fallback below fills with
+// welcome. Publishing welcome's "/" then would throw away the deep link the
+// shell is still working on, so routeDeferred suspends the sync for the wait.
+test("a deferred route keeps the address bar - the fallback pane does not publish over it", async () => {
+  window.history.pushState({}, "", "/s/local%3Aref_deferred");
+
+  render(<StackHost routeDeferred />);
+  await screen.findByText("No session open"); // the fallback pane is up and focused
+
+  expect(window.location.pathname).toBe("/s/local%3Aref_deferred");
+});
+
+// The other half of the same contract: once the route is placed (routeDeferred
+// back to false), the pane that landed publishes its own URL as usual.
+test("the sync resumes on the pane that lands once the route is no longer deferred", async () => {
+  window.history.pushState({}, "", "/s/local%3Aref_deferred");
+  const { rerender } = render(<StackHost routeDeferred />);
+  await screen.findByText("No session open");
+
+  workspaceStore.getState().openPane("session", { ref: "local:ref_placed" });
+  rerender(<StackHost />);
+
+  await screen.findByRole("heading", { name: "local:ref_placed" });
+  expect(window.location.pathname).toBe("/s/local%3Aref_placed");
+});
+
 test("mounting already at the focused pane's own URL does not dispatch a redundant popstate", async () => {
   // The pane's OWN url, i.e. exactly what paneToURL emits - percent-encoded,
   // since a ref carries a ":" that does not survive a path segment raw.
