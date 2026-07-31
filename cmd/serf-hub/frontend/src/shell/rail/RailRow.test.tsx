@@ -97,13 +97,12 @@ describe("cadenceStateFor", () => {
   });
 });
 
-// The signal gutter (§ the dot earns its space): a row only shows a Cadence
+// The signal dot (§ the dot earns its space): a row only shows a Cadence
 // dot for a state that TELLS you something - working, waiting on you, failed. A
-// quiet row leaves the gutter empty, which beside a grey age already reads as
-// "nothing happening here" - a sidebar full of identical grey dots just trains
-// the eye to ignore the one dot that matters. The gutter itself is
-// unconditional so a title's x-position never moves as a session changes
-// state (and so row width never depends on state).
+// quiet row shows no dot and, since the 2026-07-31 sidebar-density pass, holds
+// no space for one either: the old always-reserved 6px gutter is gone, so a
+// title's x-position now shifts one slot between quiet and signal rows -
+// deliberate, matching how state already moves row height via the gloss line.
 describe("signal gutter", () => {
   test.each([
     ["active", "Working"],
@@ -117,12 +116,12 @@ describe("signal gutter", () => {
     expect(within(gutter).getByRole("img", { name: label })).toBeTruthy();
   });
 
-  test.each(["ended", "idle", "notLoaded", ""] as const)("state %s shows no dot at all", (state) => {
+  test.each(["ended", "idle", "notLoaded", ""] as const)("state %s shows no dot and holds no slot", (state) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    // ...but the gutter still occupies the row, so an ended row's title
-    // lines up with a working row's and neither row is wider than the other.
-    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    // ...and the gutter itself is gone too - no space held for a dot that
+    // is not there (the pre-density-pass behavior reserved it).
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
   test("a project row's rollup state follows the same rule", () => {
@@ -135,13 +134,13 @@ describe("signal gutter", () => {
       <RailRow node={projectRailNode(apiProject({ rollup_state: "ended" }))} info={info()} actions={actions()} />,
     );
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
-  test("a project row with no rollup state at all shows no dot", () => {
+  test("a project row with no rollup state at all shows no dot and holds no slot", () => {
     render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
-    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 });
 
@@ -237,9 +236,9 @@ describe("inactive-subagent fold row", () => {
     expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
   });
 
-  test("carries no cadence dot", () => {
+  test("carries no cadence dot and no signal slot", () => {
     render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-signal").textContent).toBe("");
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
   test("toggles on click, the way its chevron does", async () => {
@@ -294,11 +293,13 @@ describe("session row", () => {
   });
 
   // Same leading structure, same order, whether or not a row has children -
-  // which is what makes one title x-position hold across a mixed tree.
+  // which is what makes one title x-position hold across a mixed tree. The
+  // signal slot participates only when there is a dot (state "active" here);
+  // a quiet row's text column follows the chevron gutter directly.
   test.each([true, false])(
     "the leading slots are chevron-gutter then signal-gutter (hasChildren %s)",
     (hasChildren) => {
-      render(<RailRow node={sessionRailNode(apiNode())} info={info({ hasChildren })} actions={actions()} />);
+      render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info({ hasChildren })} actions={actions()} />);
       const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
       const signal = screen.getByTestId("rail-row-signal");
       const row = chevronGutter.parentElement;
@@ -306,6 +307,15 @@ describe("session row", () => {
       expect([...(row?.children ?? [])].slice(0, 2)).toEqual([chevronGutter, signal]);
     },
   );
+
+  test("a quiet row holds no signal slot between the chevron gutter and the text", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ state: "idle" }))} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
+    const row = chevronGutter.parentElement;
+    expect(row).toBeTruthy();
+    expect(row?.children[1]?.textContent).toContain("Fix flaky test");
+  });
 
   test("shows a favorite star when the session is favorited, hides it otherwise", () => {
     const { rerender } = render(

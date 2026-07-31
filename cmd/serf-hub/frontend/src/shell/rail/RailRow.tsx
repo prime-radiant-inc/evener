@@ -1,9 +1,9 @@
 // RailRow is the Tree widget's renderRow implementation for the sidebar:
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
-// two leading gutters (a chevron gutter, filled only on a branch row, and a
-// signal gutter holding a Cadence dot for the states worth spotting - see
-// SIGNAL_STATES and RowGutter), a text column, a favorite star /
+// a reserved chevron gutter (filled only on a branch row), a signal dot
+// rendered only for the states worth spotting (SIGNAL_STATES - no slot is
+// held when there is no dot, see Signal), a text column, a favorite star /
 // attention Badge as applicable, a right-aligned relative timestamp (session
 // rows only, when there's no Badge to show instead), and an actions Menu
 // overlaid on that timestamp. Pure presentation: every mutation goes back
@@ -179,13 +179,13 @@ const ACTIVITY_FAMILY_CLASS: Partial<Record<CadenceState, string>> = {
   failed: CLASS.activityDanger,
 };
 
-// RowGutter is a leading fixed-width slot on a row: ALWAYS rendered, empty
-// whenever this row has nothing to put in it. Both of the row's leading slots
-// are one of these - the chevron gutter and the signal gutter - because both
-// are conditionally FILLED, and a slot that disappears when empty moves every
-// title after it. Reserving the width unconditionally is what makes one
-// x-position hold for every title in the list, at every nesting depth,
-// regardless of whether a row has children or what state it is in.
+// RowGutter is a leading slot on a row. The CHEVRON gutter is always
+// rendered, empty whenever this row has nothing to put in it: it is
+// conditionally FILLED, and a slot that disappears when empty moves every
+// title after it. Reserving the chevron width unconditionally is what makes
+// one x-position hold for every title in the list, at every nesting depth,
+// regardless of whether a row has children. (The signal slot is different -
+// it renders only when it has a dot, by explicit request: see Signal.)
 function RowGutter({ className, testId, children }: { className: string; testId: string; children?: ReactNode }) {
   return (
     <span data-testid={testId} className={className}>
@@ -194,12 +194,19 @@ function RowGutter({ className, testId, children }: { className: string; testId:
   );
 }
 
-// The row's leading signal slot, shared by session and project rows.
+// The row's leading signal dot, shared by session and project rows. Renders
+// ONLY for a signal state - working / needs-you / failed - and holds no
+// space otherwise: the 2026-07-31 sidebar-density pass ended the old
+// always-reserved 6px slot, so a quiet row's title now starts one slot
+// further left than a signal row's (state already moves the row's height via
+// the gloss line; letting it move the title's x too is the density trade the
+// reserved slot used to prevent, made deliberately).
 function Signal({ wireState }: { wireState: string }) {
   const state = cadenceStateFor(wireState);
+  if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      {SIGNAL_STATES.has(state) && <Cadence state={state} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />}
+      <Cadence state={state} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
     </RowGutter>
   );
 }
@@ -608,18 +615,16 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 }
 
 // The "Inactive subagents (N)" disclosure (parity-m3-sidebar-tree.md §3).
-// Built from the same gutters every other row uses, so its title sits on the
-// one x-position the whole list shares - but both gutters are empty of
-// content: the chevron comes from ChevronGutter as usual, and the signal slot
-// stays blank because a group of finished sessions has no state to report.
-// No actions menu either: it stands for rows rather than being one, and the
-// rows it hides carry their own.
+// Built from the same chevron gutter every other row uses, so its title sits
+// where a childless row's title sits - and no signal slot at all, matching
+// Signal's own render-only-when-dotted contract (a group of finished
+// sessions has no state to report). No actions menu either: it stands for
+// rows rather than being one, and the rows it hides carry their own.
 function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
   const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
   return (
     <span className={CLASS.row}>
       <ChevronGutter info={info} />
-      <RowGutter className={CLASS.signal} testId="rail-row-signal" />
       {/* Same mouse-only shortcut for the toggle the chevron already offers,
           and the same a11y reasoning as SessionRow's own label: this text is
           the treeitem's accessible name, so it can't be aria-hidden. */}
@@ -633,15 +638,15 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
 }
 
 // The "+N older" note for rows the server capped away (hubcore's
-// maxSidebarSessionsPerTier). Sits in the chevron/signal gutters like every
-// other row so it lines up with the list it belongs to. Project overflow rows
-// activate a bounded fetch for the capped-away tier rows; synthetic child
-// overflow remains an honest non-actionable count.
+// maxSidebarSessionsPerTier). Reserves the chevron gutter like every other
+// row so it lines up with the list it belongs to; no signal slot (Signal's
+// contract: no dot, no space). Project overflow rows activate a bounded
+// fetch for the capped-away tier rows; synthetic child overflow remains an
+// honest non-actionable count.
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
   return (
     <span className={CLASS.row}>
       <RowGutter className={CLASS.chevron} testId="rail-row-chevron-gutter" />
-      <RowGutter className={CLASS.signal} testId="rail-row-signal" />
       {/* The treeitem's Enter handler is the keyboard path; this click makes
           the visible affordance usable with a mouse as well. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
