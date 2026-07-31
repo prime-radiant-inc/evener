@@ -3515,7 +3515,7 @@ func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := readJobTranscript(&toolDeps{jobManager: jm}, "job:"+jobID, "", formatMarkdown)
+	result, err := readJobTranscript(&toolDeps{jobRead: sessionJobRead(&Session{jobManager: jm})}, "job:"+jobID, "", formatMarkdown)
 	if err != nil {
 		t.Fatal(err)
 	}

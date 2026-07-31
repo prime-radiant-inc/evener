@@ -95,7 +95,7 @@ func trteJobRequestFailures(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	t.Cleanup(func() { _ = jm.close() })
-	deps := &toolDeps{jobManager: jm}
+	deps := &toolDeps{jobRead: sessionJobRead(&Session{id: "session", jobManager: jm})}
 
 	for _, tc := range []struct {
 		deps              *toolDeps

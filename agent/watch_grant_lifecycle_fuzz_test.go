@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 )
@@ -124,18 +125,21 @@ func FuzzWatchGrantLifecycleProgram(f *testing.F) {
 			t.Fatalf("cross-project worker resolved = (%q, %v)", got, found)
 		}
 
+		workerFinished := events.JobFinishedData{JobID: workerJobID, JobType: "delegate", Status: "completed", DelegateID: "dlg_worker"}
 		cfg, err := newWatchConfig(watchArgs{
-			Target: workerJobID,
+			Target: runtimeMessageAliasCaller,
+			Events: []string{"job.notification"},
 			Send:   &watchSendArgs{To: "dlg_grant_extra", Message: "observe"},
 		}, jm.now())
 		if err != nil {
 			t.Fatalf("new grant watch config: %v", err)
 		}
-		if err := jm.mintWatchCreateReadGrant(cfg); err != nil {
-			t.Fatalf("mint create grant: %v", err)
+		if got := jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", workerFinished); got != workerJobID {
+			t.Fatalf("mint returned %q, want the granted job %q", got, workerJobID)
 		}
-		jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", workerJobID)
-		jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", workerJobID)
+		if got := jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", &workerFinished); got != workerJobID {
+			t.Fatalf("deduped mint returned %q, want the still-held grant %q", got, workerJobID)
+		}
 		grants := loadGrantTable(t, jm)
 		if !grants["child_job_grant_extra"][workerJobID] {
 			t.Fatalf("grant table missing observer/job pair: %+v", grants)
@@ -143,33 +147,53 @@ func FuzzWatchGrantLifecycleProgram(f *testing.F) {
 		if got := watchGrantEventCount(t, jm, "child_job_grant_extra", workerJobID); got != 1 {
 			t.Fatalf("duplicate grant events = %d, want 1", got)
 		}
-		jm.mintWatchSendReadGrant(cfg, runtimeMessageAliasCaller, workerJobID)
-		jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", runtimeMessageAliasCaller)
+		// Caller delivery grants nothing, and a payload that names no job grants
+		// nothing whatever the send target is.
+		jm.mintWatchSendReadGrant(cfg, runtimeMessageAliasCaller, workerFinished)
+		jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", events.CommunicateData{Message: workerJobID})
+		jm.mintWatchSendReadGrant(cfg, "dlg_grant_extra", (*events.JobFinishedData)(nil))
 		if got := watchGrantEventCount(t, jm, "child_job_grant_extra", workerJobID); got != 1 {
 			t.Fatalf("non-grantable send changed grant event count to %d", got)
 		}
 
 		receiverCfg, err := newWatchConfig(watchArgs{
-			Target:            "*",
+			Target:            runtimeMessageAliasCaller,
+			Events:            []string{"job.notification"},
 			ReceiverSessionID: observer,
 			Send:              &watchSendArgs{To: "dlg_missing", Message: "direct receiver"},
 		}, jm.now())
 		if err != nil {
 			t.Fatalf("new direct receiver config: %v", err)
 		}
-		jm.mintWatchSendReadGrant(receiverCfg, "dlg_missing", workerJobID)
+		jm.mintWatchSendReadGrant(receiverCfg, "dlg_missing", workerFinished)
 		if !loadGrantTable(t, jm)[observer][workerJobID] || receiverCfg.grantsMinted == nil {
 			t.Fatalf("receiver-keyed grant did not mint: grants=%+v cfg=%+v", loadGrantTable(t, jm), receiverCfg.grantsMinted)
 		}
+		// The receiver's own delegate job confers nothing, so it is skipped at
+		// the mint rather than accepted as a permanent junk row (spec §5.1).
+		selfCfg, err := newWatchConfig(watchArgs{
+			Target:             runtimeMessageAliasCaller,
+			Events:             []string{"job.notification"},
+			ReceiverSessionID:  observer,
+			ReceiverDelegateID: "dlg_self",
+		}, jm.now())
+		if err != nil {
+			t.Fatalf("new self-grant config: %v", err)
+		}
+		jm.mintWatchSendReadGrant(selfCfg, "dlg_self", events.JobFinishedData{JobID: "job_self_round", DelegateID: "dlg_self"})
+		if loadGrantTable(t, jm)[observer]["job_self_round"] || selfCfg.grantsMinted != nil {
+			t.Fatalf("self-grant minted: grants=%+v cfg=%+v", loadGrantTable(t, jm), selfCfg.grantsMinted)
+		}
 
 		unresolvedCfg, err := newWatchConfig(watchArgs{
-			Target: "*",
+			Target: runtimeMessageAliasCaller,
+			Events: []string{"job.notification"},
 			Send:   &watchSendArgs{To: "dlg_missing", Message: "missing receiver"},
 		}, jm.now())
 		if err != nil {
 			t.Fatalf("new unresolved receiver config: %v", err)
 		}
-		jm.mintWatchSendReadGrant(unresolvedCfg, "dlg_missing", workerJobID)
+		jm.mintWatchSendReadGrant(unresolvedCfg, "dlg_missing", workerFinished)
 		if unresolvedCfg.grantsMinted != nil {
 			t.Fatalf("unresolved receiver marked grants minted: %+v", unresolvedCfg.grantsMinted)
 		}
@@ -185,14 +209,17 @@ func FuzzWatchGrantLifecycleProgram(f *testing.F) {
 			return originalAppend(event)
 		}
 		failureCfg, err := newWatchConfig(watchArgs{
-			Target:            "*",
+			Target:            runtimeMessageAliasCaller,
+			Events:            []string{"job.notification"},
 			ReceiverSessionID: "failed-" + observer,
 			Send:              &watchSendArgs{To: "dlg_grant_extra", Message: "failure"},
 		}, jm.now())
 		if err != nil {
 			t.Fatalf("new failure config: %v", err)
 		}
-		jm.mintWatchSendReadGrant(failureCfg, "dlg_grant_extra", workerJobID)
+		if got := jm.mintWatchSendReadGrant(failureCfg, "dlg_grant_extra", workerFinished); got != "" {
+			t.Fatalf("failed mint reported grant %q, want none", got)
+		}
 		jm.appendEvent = originalAppend
 		if failureCfg.grantsMinted != nil {
 			t.Fatalf("failed grant poisoned dedup set: %+v", failureCfg.grantsMinted)
@@ -200,7 +227,7 @@ func FuzzWatchGrantLifecycleProgram(f *testing.F) {
 		if len(notifications) != 1 || !strings.Contains(notifications[0].Reason, grantFailure.Error()) {
 			t.Fatalf("grant failure notifications = %+v", notifications)
 		}
-		jm.mintWatchSendReadGrant(failureCfg, "dlg_grant_extra", workerJobID)
+		jm.mintWatchSendReadGrant(failureCfg, "dlg_grant_extra", workerFinished)
 		if !loadGrantTable(t, jm)["failed-"+observer][workerJobID] {
 			t.Fatalf("grant did not recover after append failure: %+v", loadGrantTable(t, jm))
 		}

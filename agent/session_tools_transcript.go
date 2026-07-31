@@ -373,7 +373,7 @@ func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptA
 
 func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error) {
 	_ = rangeArg
-	if deps == nil || deps.jobManager == nil {
+	if deps == nil || deps.jobRead == nil {
 		return nil, errors.New("job transcript unavailable: job manager is not available")
 	}
 	if format == "" {
@@ -386,11 +386,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 	if jobID == "" {
 		return nil, errors.New("invalid_request: job transcript_ref must be job:<job_id>")
 	}
-	rec, err := findJobRecord(deps.jobManager, jobID)
-	if err != nil {
-		return nil, err
-	}
-	content, total, dropped, truncated, err := deps.jobManager.readJobWindow(jobID, maxJobOutputRetentionBytes, false)
+	snap, err := deps.jobRead(jobID, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -398,15 +394,66 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 		TranscriptRef: ref,
 		Format:        formatMarkdown,
 		ContentType:   "text/markdown",
-		Content:       renderShellJobTranscript(rec, content, total, dropped),
+		Content:       renderJobTranscript(snap.Record, snap.Content, snap.TotalBytes, snap.DroppedBytes),
 		Meta: readMarkdownMeta{
 			TurnsTotal:    1,
 			Range:         "shell-log",
 			TurnsRendered: 1,
-			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
+			Truncated:     snap.Truncated || snap.DroppedBytes > 0 || snap.TotalBytes > int64(len([]byte(snap.Content))),
 		},
 	}
 	return boundReadMarkdownEnvelopeWithHint(envelope, jobTranscriptTruncationNotice)
+}
+
+// renderJobTranscript renders one job:<job_id> read. A delegate's retained
+// output is its final report, it has no command, and it may carry a
+// structured_result, so it gets its own heading; everything else is a shell
+// job's process log.
+func renderJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
+	if rec != nil && rec.Type == jobstore.JobDelegate {
+		return renderDelegateJobTranscript(rec, output, total, dropped)
+	}
+	return renderShellJobTranscript(rec, output, total, dropped)
+}
+
+// renderDelegateJobTranscript renders a delegate job's report. The
+// structured_result is appended as JSON with its validity flag, matching the
+// shape job_read_output's footer uses, so the two evidence surfaces read the
+// same. It deliberately omits the delegate's transcript_ref: session refs are
+// not access-controlled, so naming one here would hand a granted reader the
+// whole child conversation (spec non-goal 4).
+func renderDelegateJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Delegate Job %s\n\n", rec.JobID)
+	if rec.Status != "" {
+		fmt.Fprintf(&b, "- status: %s\n", rec.Status)
+	}
+	if rec.Reason != "" {
+		fmt.Fprintf(&b, "- reason: %s\n", rec.Reason)
+	}
+	if task := strings.TrimSpace(rec.Task); task != "" {
+		fmt.Fprintf(&b, "- task: %s\n", strings.ReplaceAll(task, "\n", " "))
+	}
+	fmt.Fprintf(&b, "- total_bytes: %d\n", total)
+	if dropped > 0 {
+		fmt.Fprintf(&b, "- dropped_bytes: %d\n", dropped)
+	}
+	b.WriteString("\n```text\n")
+	b.WriteString(output)
+	if output != "" && !strings.HasSuffix(output, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("```\n")
+	if rec.StructuredResult != nil {
+		if encoded, err := json.Marshal(rec.StructuredResult); err == nil {
+			valid := rec.StructuredResultValid != nil && *rec.StructuredResultValid
+			fmt.Fprintf(&b, "\nstructured_result (valid=%v): %s\n", valid, encoded)
+		}
+	}
+	if reason := strings.TrimSpace(rec.StructuredResultReason); reason != "" {
+		fmt.Fprintf(&b, "structured_result_reason: %s\n", reason)
+	}
+	return b.String()
 }
 
 func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {

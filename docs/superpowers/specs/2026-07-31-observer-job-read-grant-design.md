@@ -2,6 +2,28 @@
 
 Kata: eqs0. Blocks: fd8n.
 
+**Status: implemented** on `wip/kata-eqs0`, all six rulings, per
+`docs/superpowers/plans/2026-07-31-observer-job-read-grant.md`. Two corrections
+to this document's own text, found while implementing:
+
+- Ruling 5's condition is stated here as "the finished job's `DelegateID` is the
+  receiver's own", summarized in the ruling block as "`DelegateID` equals the
+  receiver session id". `events.JobFinishedData.DelegateID` is a `dlg_` handle
+  and `receiverSessionID` is a session id, so those can never be equal. The
+  implemented condition is `DelegateID == watchConfig.receiverDelegateID` —
+  the same handle in the same watched session's namespace, and stable across
+  observer resume, which is the property the session-keyed grant exists for.
+- "Terminal-only" is stated here as a property of the `job.notification`
+  payload, which is right, but the doc leaves the impression that the existing
+  per-fire mint already had it. It did not: the per-fire mint keyed on the
+  watch's *resolved watched identity*, so a concrete-job watch could grant on a
+  running job. Rulings 4 and 5 therefore landed as one commit — deleting the
+  create mint and making the per-fire mint payload-derived are two halves of the
+  same seam, and no green commit exists between them.
+
+`docs/job-control.md`, `docs/agentic-testing.md`, and `test/scenarios/` are
+untouched; they are kata fd8n's sweep.
+
 ## Problem
 
 An observer sidecar woken by a watch frame can act only on what the frame

@@ -221,12 +221,15 @@ func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
 	if got == nil || got.LatestJobID == observer.JobID {
 		t.Fatalf("observer delegate = %+v, want resumed under same delegate_id", got)
 	}
+	// An output_match fire mints no read grant (spec §5.1: grants come from a
+	// job.notification payload). The grant-across-resume property this test used
+	// to ride on lives in TestGrantSurvivesObserverResumeUnderNewJobID.
 	grants, err := s.jobManager.store.LoadGrants()
 	if err != nil {
 		t.Fatalf("LoadGrants: %v", err)
 	}
-	if !grants[got.ChildSessionID][shellOut.JobID] {
-		t.Fatalf("grants = %+v, want observer child session grant to watched job", grants)
+	if len(grants) != 0 {
+		t.Fatalf("grants = %+v, want none from an output_match fire", grants)
 	}
 }
 
