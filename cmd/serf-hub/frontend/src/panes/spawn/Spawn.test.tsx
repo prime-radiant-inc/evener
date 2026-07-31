@@ -681,6 +681,48 @@ test("aborts with the validator message for a non-fixable working dir, then a co
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
 });
 
+// kata xkp2: filed as "the Spawn button is enabled but a click with the
+// working directory left at its placeholder does nothing - no session, no
+// toast, no dialog, no request reaches the daemon". Investigated with a
+// serf/path/validate response that mirrors the real daemon EXACTLY for an
+// empty path: fspaths.ValidateLaunchPath rejects an empty (or all-
+// whitespace) path unconditionally, before it even looks at `kind`
+// (cmd/serf-hub/internal/fspaths/app_paths.go:150-154), with the literal
+// string "path is required" - one of preflightDir's own NON_FIXABLE_REASONS.
+// Given that real response, the click above aborts exactly like the
+// non-fixable case one test up: visibly, via a toast, with zero thread/start
+// calls. No silent path was found (see the kata comment for the full
+// writeup) - this is coverage for a state nothing exercised before: every
+// other spawn test either sets a working directory first, or leans on
+// readyClient()'s validate stub, which (unlike the real daemon) answers
+// "valid" for any path including "".
+test("kata xkp2: Spawn with the working directory left at its placeholder aborts visibly, not silently", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    // path: "" is the real wire shape too - ValidateLaunchPath's early
+    // return leaves the Go struct's Path field at its zero value.
+    f.on("serf/path/validate", () => ({ path: "", valid: false, error: "path is required" }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "say hello");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  // The state the kata's DOM readout recorded: enabled, no aria-disabled,
+  // the working-directory control still showing its placeholder.
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-disabled")).toBeNull();
+  expectWorkingDir("Working directory");
+
+  await user.click(button);
+
+  expect(await screen.findByText("path is required")).toBeTruthy();
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(window.location.pathname).toBe("/");
+  // Released, not stuck disabled/"Spawning…" (kata 61v2's own failure class).
+  expect(button.disabled).toBe(false);
+});
+
 // --- kata xgk8: Model's "(default)" must not claim an answer the daemon --
 // --- will refuse -----------------------------------------------------------
 //
