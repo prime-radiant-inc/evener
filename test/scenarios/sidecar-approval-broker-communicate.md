@@ -99,7 +99,8 @@ go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$SID" --count job_list
 go run ./cmd/serf-doctor transcript "$SID" --count job_read_output
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Cleanup

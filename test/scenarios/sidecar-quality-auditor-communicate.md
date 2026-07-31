@@ -61,7 +61,8 @@ go run ./cmd/serf-doctor watches "$SID"
 go run ./cmd/serf-doctor tree "$SID" --observers
 go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
-go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # expect 0
 ```
 
 ## Sharp edges
