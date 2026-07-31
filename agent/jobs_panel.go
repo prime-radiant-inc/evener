@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/appwire"
 )
 
 // isOutputNotExistErr reports whether err means the job's output file does
@@ -15,35 +16,14 @@ import (
 // paths need errors.Is.)
 func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
 
-// JobSummary is the UI wire projection of one jobstore.JobRecord — the
-// shape serf/jobs/list returns and the webui jobs panel renders. Internal
-// fields (provenance, restore descriptors, transcript refs, working dir,
-// notify state) deliberately stay out.
-type JobSummary struct {
-	JobID       string `json:"jobId"`
-	Type        string `json:"type"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
-	Description string `json:"description"`
-	Command     string `json:"command,omitempty"`
-	Task        string `json:"task,omitempty"`
-	Background  bool   `json:"background"`
-	StartedAt   string `json:"startedAt"`
-	EndedAt     string `json:"endedAt,omitempty"`
-	ExitCode    *int   `json:"exitCode,omitempty"`
-	OutputBytes int64  `json:"outputBytes"`
-	HasOutput   bool   `json:"hasOutput"`
-}
-
-// JobOutputTail is the serf/jobs/output payload: the last bytes of a job's
-// durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes".
-type JobOutputTail struct {
-	Tail          string `json:"tail"`
-	TotalBytes    int64  `json:"totalBytes"`
-	RetainedStart int64  `json:"retainedStart"`
-	Truncated     bool   `json:"truncated"`
-}
+// JobSummary and JobOutputTail are wire payloads, so their definitions live
+// in appwire beside the serf/jobs/list and serf/jobs/output shapes (and
+// under that package's camelCase tag carve-out). The aliases keep this
+// package's producers named in domain terms.
+type (
+	JobSummary    = appwire.JobSummary
+	JobOutputTail = appwire.JobOutputTail
+)
 
 const (
 	jobOutputTailDefaultBytes = 4096
@@ -60,10 +40,10 @@ func clampJobTailBytes(maxBytes int64) int64 {
 	return maxBytes
 }
 
-// SummarizeJobRecord projects one record. Description is the first non-empty
+// summarizeJobRecord projects one record. Description is the first non-empty
 // of Description, Command, Task. HasOutput means a tail read is worth
 // attempting: an output path is recorded or bytes were counted.
-func SummarizeJobRecord(rec *jobstore.JobRecord) JobSummary {
+func summarizeJobRecord(rec *jobstore.JobRecord) JobSummary {
 	if rec == nil {
 		return JobSummary{}
 	}
@@ -100,7 +80,7 @@ func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
 		if rec == nil {
 			continue
 		}
-		out = append(out, SummarizeJobRecord(rec))
+		out = append(out, summarizeJobRecord(rec))
 	}
 	return out
 }
@@ -140,10 +120,7 @@ func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bo
 }
 
 func jobOutputTailFrom(content string, total int64, truncated bool) JobOutputTail {
-	retainedStart := total - int64(len(content))
-	if retainedStart < 0 {
-		retainedStart = 0
-	}
+	retainedStart := max(total-int64(len(content)), 0)
 	return JobOutputTail{Tail: content, TotalBytes: total, RetainedStart: retainedStart, Truncated: truncated}
 }
 

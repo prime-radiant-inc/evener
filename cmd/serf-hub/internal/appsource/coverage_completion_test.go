@@ -234,16 +234,19 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 			_, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedTurnID: "test-turn", ExpectedQueueRevision: 0, Ref: ref})
 			return err
 		},
-		"compact":   func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
-		"shutdown":  func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
-		"model":     func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
-		"effort":    func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
-		"name":      func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
-		"goal":      func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
-		"clear":     func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
-		"tasks":     func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
-		"jobs":      func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
-		"jobOutput": func() error { _, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"}); return err },
+		"compact":  func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
+		"shutdown": func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
+		"model":    func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
+		"effort":   func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
+		"name":     func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
+		"goal":     func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },
+		"clear":    func() error { _, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: ref}); return err },
+		"tasks":    func() error { _, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: ref}); return err },
+		"jobs":     func() error { _, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: ref}); return err },
+		"jobOutput": func() error {
+			_, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_1"})
+			return err
+		},
 		"subscribe": func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
 	}
 	for name, call := range calls {

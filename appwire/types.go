@@ -29,8 +29,8 @@ const (
 	MethodTurnCancelQueued          = "turn/cancelQueued"
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
-	MethodSerfJobsList               = "serf/jobs/list"
-	MethodSerfJobsOutput             = "serf/jobs/output"
+	MethodSerfJobsList              = "serf/jobs/list"
+	MethodSerfJobsOutput            = "serf/jobs/output"
 	MethodSerfThreadNameSet         = "serf/thread/name/set"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
@@ -1162,6 +1162,38 @@ type JobsListParams struct {
 
 type JobsListResponse struct {
 	Data any `json:"data"`
+}
+
+// JobSummary is the UI wire projection of one job record — the shape
+// serf/jobs/list returns and the webui jobs panel renders. Internal fields
+// (provenance, restore descriptors, transcript refs, working dir, notify
+// state) deliberately stay out. The agent package produces it
+// (agent.JobSummary is an alias); it lives here because it is a wire
+// payload, and wire payloads carry this package's camelCase tag convention.
+type JobSummary struct {
+	JobID       string `json:"jobId"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	Description string `json:"description"`
+	Command     string `json:"command,omitempty"`
+	Task        string `json:"task,omitempty"`
+	Background  bool   `json:"background"`
+	StartedAt   string `json:"startedAt"`
+	EndedAt     string `json:"endedAt,omitempty"`
+	ExitCode    *int   `json:"exitCode,omitempty"`
+	OutputBytes int64  `json:"outputBytes"`
+	HasOutput   bool   `json:"hasOutput"`
+}
+
+// JobOutputTail is the serf/jobs/output payload: the last bytes of a job's
+// durable output plus the bookkeeping a client needs to say "showing last N
+// of M bytes".
+type JobOutputTail struct {
+	Tail          string `json:"tail"`
+	TotalBytes    int64  `json:"totalBytes"`
+	RetainedStart int64  `json:"retainedStart"`
+	Truncated     bool   `json:"truncated"`
 }
 
 // JobsOutputParams reads a byte tail of one job's durable output. MaxBytes

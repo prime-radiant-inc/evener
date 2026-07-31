@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,7 +290,7 @@ func TestHubJobsOutputPastUnknownJob(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("err = %v, want InvalidParams for a job id the persisted store has never heard of", err)
 	}
-	if want := fmt.Sprintf("job not found: %s", "job_nope"); wire.Message != want {
+	if want := "job not found: " + "job_nope"; wire.Message != want {
 		t.Fatalf("err message = %q, want %q", wire.Message, want)
 	}
 }

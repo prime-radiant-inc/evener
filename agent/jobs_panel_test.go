@@ -25,7 +25,7 @@ func TestSummarizeJobRecordShell(t *testing.T) {
 		OutputBytes: 123,
 		OutputPath:  "/tmp/out.log",
 	}
-	got := SummarizeJobRecord(rec)
+	got := summarizeJobRecord(rec)
 	if got.JobID != "job_1" || got.Type != "shell" || got.Status != "completed" {
 		t.Errorf("identity fields: %+v", got)
 	}
@@ -45,11 +45,11 @@ func TestSummarizeJobRecordShell(t *testing.T) {
 
 func TestSummarizeJobRecordDescriptionFallback(t *testing.T) {
 	rec := &jobstore.JobRecord{JobID: "job_2", Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, Task: "scout the repo"}
-	if got := SummarizeJobRecord(rec); got.Description != "scout the repo" {
+	if got := summarizeJobRecord(rec); got.Description != "scout the repo" {
 		t.Errorf("description should fall back to Task, got %q", got.Description)
 	}
 	rec2 := &jobstore.JobRecord{JobID: "job_3", Type: jobstore.JobShell, Status: jobstore.StatusRunning, Command: "make build"}
-	if got := SummarizeJobRecord(rec2); got.Description != "make build" {
+	if got := summarizeJobRecord(rec2); got.Description != "make build" {
 		t.Errorf("description should fall back to Command, got %q", got.Description)
 	}
 }
