@@ -39,10 +39,11 @@ function altFor(index: number, total: number): string {
 // The one label left once url/path/name have already been spent resolving
 // src (see this file's top comment): name is the most recognizable to a
 // reader, path the next most, source - an OutputImage-only, coarse
-// provenance tag ("written-file", "shell-path", "tool-result") - the last
-// resort rather than no caption at all. Mockup 20 held a caption constant
-// across all four multi-image alternatives it explored; undefined here means
-// none of the three survived, so the caller renders no caption line at all.
+// provenance tag ("written-file", "read-file", "shell-path", "tool-result") -
+// the last resort rather than no caption at all. Mockup 20 held a caption
+// constant across all four multi-image alternatives it explored; undefined
+// here means none of the three survived, so the caller renders no caption
+// line at all.
 function captionFor(image: ItemImage): string | undefined {
   return image.name ?? image.path ?? image.source;
 }

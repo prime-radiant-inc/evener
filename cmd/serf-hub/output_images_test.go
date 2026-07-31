@@ -142,6 +142,20 @@ func TestOutputImagesForToolCallEditFileStructuredWrite(t *testing.T) {
 	}
 }
 
+func TestOutputImagesForToolCallReadFileStructuredRead(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "screenshot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "read_file", `{"file_path":"screenshot.png"}`,
+		"[image: png, 12 bytes, base64 data follows]")
+	if len(imgs) != 1 || imgs[0].Source != "read-file" || imgs[0].Path != "screenshot.png" || imgs[0].URL == "" {
+		t.Fatalf("outputImagesForToolCall read_file=%+v, want one read-file screenshot.png descriptor", imgs)
+	}
+}
+
 func TestOutputImagesForToolCallApplyPatchOutputPath(t *testing.T) {
 	cwd := t.TempDir()
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
@@ -194,6 +208,23 @@ func TestEnrichThreadFileBackedOutputImagesIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestAppendOutputImagesUniqueDedupesBySHAAcrossDifferentURLs covers the
+// interaction read_file's file-backed descriptor (source "read-file", URL
+// via /doc/image) creates with the pre-existing tool-result descriptor a past
+// thread read already attaches for the exact same call (source "tool-result",
+// URL via the sha-addressed /s/.../images/ route, app_threadread.go's
+// projectReplayOutputImages) - same underlying bytes, same sha, two different
+// URLs. outputImageDescriptorKey must treat that as one image, not two.
+func TestAppendOutputImagesUniqueDedupesBySHAAcrossDifferentURLs(t *testing.T) {
+	existing := []appwire.OutputImage{{Source: "tool-result", SHA: "abc123", URL: "/s/01DOC/images/abc123"}}
+	extra := []appwire.OutputImage{{Source: "read-file", SHA: "abc123", URL: "/doc/image?session=01DOC&path=shot.png"}}
+
+	got := appendOutputImagesUnique(existing, extra)
+	if len(got) != 1 {
+		t.Fatalf("appendOutputImagesUnique(matching SHA, different URLs)=%+v, want deduped to one entry", got)
+	}
+}
+
 func TestOutputImagesForToolCallRejectsUnsafeAbsoluteOutsidePath(t *testing.T) {
 	cwd := t.TempDir()
 	outside := filepath.Join(filepath.Dir(cwd), "outside.png")
@@ -216,6 +247,44 @@ func TestOutputImagesForToolCallOmitsMissingAndNonImageCandidates(t *testing.T) 
 	imgs := outputImagesForToolCall("01DOC", cwd, "shell", `{}`, "created missing.png\ncreated notes.png\n")
 	if len(imgs) != 0 {
 		t.Fatalf("outputImagesForToolCall returned invalid candidates: %+v", imgs)
+	}
+}
+
+// TestEnrichThreadFileBackedOutputImagesDoesNotDuplicateAnAlreadyProjectedReadFileImage
+// simulates the real past-thread-read pipeline order (app_threadread.go's
+// pastEntryLatestTurns already ran projectReplayOutputImages before
+// reconcileAndEnrichPastThread's enrichThreadFileBackedOutputImages runs):
+// a read_file item that already carries a tool-result-sourced OutputImage
+// for the file it read must not gain a second, file-backed entry for the
+// same bytes.
+func TestEnrichThreadFileBackedOutputImagesDoesNotDuplicateAnAlreadyProjectedReadFileImage(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sha := outputImageSHA(png)
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{
+			Type:          "commandExecution",
+			ToolName:      "read_file",
+			ArgumentsJSON: `{"file_path":"shot.png"}`,
+			Output:        "[image: png, 12 bytes, base64 data follows]",
+			Status:        appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{
+				Source: "tool-result", MediaType: "image/png", Size: int64(len(png)),
+				SHA: sha, URL: "/s/01DOC/images/" + sha,
+			}},
+		}}}},
+	}
+
+	got := enrichThreadFileBackedOutputImages(thread)
+	imgs := got.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 {
+		t.Fatalf("OutputImages=%+v, want the pre-existing tool-result entry left alone, not duplicated", imgs)
 	}
 }
 
