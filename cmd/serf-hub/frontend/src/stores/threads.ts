@@ -905,8 +905,12 @@ function transferPendingHydration(previous: PendingThreadHydration | undefined, 
   // Notifications are ordered events: equal payloads can be distinct
   // streaming chunks. The array copy transfers the existing buffer once
   // without inventing payload identity or changing event multiplicity.
+  //
+  // Routing is NOT transferred: `next` keeps the identity it seeded from the
+  // current published model, and re-seeds it from its own snapshot at the
+  // response cut. A superseded pending is not an authority on what this ref
+  // names - its id can predate a clear that rebound the ref (kata 5p1c).
   next.notifications = [...previous.notifications];
-  next.routing = { ...previous.routing };
 }
 
 function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): void {
