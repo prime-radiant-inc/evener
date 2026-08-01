@@ -404,10 +404,15 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 }
 
 // The trim is a launch-time act and has to stay one. A daemon's log is the
-// account of the incident it is in the middle of; trimming it while that
-// daemon writes would cut the evidence out from under the crash being
-// investigated. Anything this run says survives however far past the cap it
-// goes — only the launch that opened the file gets to drop anything.
+// account of the incident it is in the middle of, so trimming it while that
+// daemon writes cuts the evidence out from under the crash being investigated
+// — and a trim that replaces the file also strands the descriptor the daemon
+// is holding, so everything it says afterwards goes nowhere at all.
+//
+// This runs the production handle lifecycle: the hub opens the log, the child
+// inherits a descriptor of its own, and the hub drops its own the moment the
+// child is started (SpawnDaemon, ResumeDaemon) while the daemon writes on past
+// the cap. Every byte this run wrote has to be in the file.
 func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 	t.Parallel()
 	runDir := filepath.Join(t.TempDir(), "run")
@@ -419,19 +424,24 @@ func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDaemonLog: %v", err)
 	}
-	defer dlog.close()
+	child, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("inherit child descriptor: %v", err)
+	}
+	defer func() { _ = child.Close() }()
 
 	first := "[serve] this run's first word\n"
-	if _, err := dlog.file.WriteString(first); err != nil {
+	if _, err := child.WriteString(first); err != nil {
 		t.Fatalf("write first: %v", err)
 	}
 	// Well past the cap, as a daemon in trouble would.
 	shout := strings.Repeat("[serve] retrying\n", 2*daemonLogRetainedBytes/len("[serve] retrying\n"))
-	if _, err := dlog.file.WriteString(shout); err != nil {
+	if _, err := child.WriteString(shout); err != nil {
 		t.Fatalf("write shout: %v", err)
 	}
+	dlog.close()
 	last := "[serve] this run's dying words\n"
-	if _, err := dlog.file.WriteString(last); err != nil {
+	if _, err := child.WriteString(last); err != nil {
 		t.Fatalf("write last: %v", err)
 	}
 
