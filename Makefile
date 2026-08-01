@@ -149,14 +149,15 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # real worktrees, real `go test`) is heavy and unmeasured.
 SELFTEST_SCRIPTS := run-module-lint run-module-tests disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
-# selftest hangs off `make test` because a script selftest is a test, and NOT
-# off `make lint` because run-module-lint-selftest.sh drives a fixture
-# `make lint` of its own — putting the selftests there would have that fixture
-# reach back for scripts it does not have. Quiet on success like every other
+# selftest hangs off `make test` because a script selftest is a test. The runner
+# starts this wave after protected wave one. It stays off `make lint` because
+# run-module-lint-selftest.sh drives a fixture `make lint` of its own — putting
+# the selftests there would have that fixture reach back for scripts it does not
+# have. Quiet on success like every other
 # gate here; a failing suite's whole log is replayed. The scripts are mostly
 # waiting on other work rather than CPU-bound (the original seven measured
 # 31-76s wall on a fleet-loaded box but only ~15s CPU), so the wave costs the
-# machine little even though it runs before the Go waves start. The six fuzz
+# machine little while it overlaps the later streams. The six fuzz
 # selftests are fixture-contained (seam-driven stubs, mktemp worlds) and never
 # touch this repo, so they are safe in the same wave.
 selftest:
@@ -181,8 +182,8 @@ selftest:
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-test: selftest
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+test:
+	@MODULES="$(GO_MODULES)" SELFTEST=1 MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
