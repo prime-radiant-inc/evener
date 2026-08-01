@@ -161,21 +161,37 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 }
 
 type outputArtifactCreation struct {
-	fs    afero.Fs
-	paths []string
+	fs        afero.Fs
+	artifacts []createdOutputArtifact
+}
+
+type createdOutputArtifact struct {
+	path string
+	info os.FileInfo
 }
 
 func (c *outputArtifactCreation) openFile(path string, flags int, perm os.FileMode) (afero.File, error) {
 	f, err := c.fs.OpenFile(path, flags, perm)
-	if err == nil {
-		c.paths = append(c.paths, path)
+	if err != nil {
+		return nil, err
 	}
-	return f, err
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat created output artifact %s: %w", path, err)
+	}
+	c.artifacts = append(c.artifacts, createdOutputArtifact{path: path, info: info})
+	return f, nil
 }
 
 func (c *outputArtifactCreation) removeAll() {
-	for i := len(c.paths) - 1; i >= 0; i-- {
-		_ = c.fs.Remove(c.paths[i])
+	for i := len(c.artifacts) - 1; i >= 0; i-- {
+		artifact := c.artifacts[i]
+		current, err := lstatOutputArtifact(c.fs, artifact.path)
+		if err != nil || !os.SameFile(artifact.info, current) {
+			continue
+		}
+		_ = c.fs.Remove(artifact.path)
 	}
 }
 
@@ -199,11 +215,15 @@ func refuseExistingOutputArtifacts(fs afero.Fs, path string, artifacts []string)
 }
 
 func lstatOutputArtifact(fs afero.Fs, path string) (os.FileInfo, error) {
-	if lstater, ok := fs.(afero.Lstater); ok {
-		info, _, err := lstater.LstatIfPossible(path)
-		return info, err
+	lstater, ok := fs.(afero.Lstater)
+	if !ok {
+		return nil, fmt.Errorf("jobstore: non-following lookup unavailable for %s", path)
 	}
-	return fs.Stat(path)
+	info, usedLstat, err := lstater.LstatIfPossible(path)
+	if !usedLstat {
+		return nil, fmt.Errorf("jobstore: non-following lookup unavailable for %s", path)
+	}
+	return info, err
 }
 
 func outputArtifactPaths(path string) []string {
