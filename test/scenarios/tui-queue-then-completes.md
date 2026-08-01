@@ -90,22 +90,22 @@ visible pane.
    The composer clears. Above the composer, a `queued (1)`
    section appears with the first line of the queued message
    truncated and prefixed `1. After the essay, also list the…`.
-   This is the local preview tracked in
-   `cmd/serf-tui/hub_model.go:hubModel.sessionQueue` plus the
-   `renderQueuePreview` rendering. The turn underway is
-   unaffected; the daemon stashed the message via `turn/queue`.
+   This is the authoritative preview from `thread/queueChanged`, stored in
+   `hubModel.sessionQueue` and rendered by `renderQueuePreview`. The turn
+   underway is unaffected; the daemon stashed the message via `turn/queue`.
 
-7. **Confirm the daemon's queue is non-empty via REST**:
+7. **Compare the preview to the authoritative appwire snapshot**:
    ```
    SID=$(tmux capture-pane -t "$TMUX_SESSION" -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
-   curl -s -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
-     "$HUB/api/sessions/local:$SID" | \
-     python3 -c "import json,sys; d=json.load(sys.stdin); print('state=',d.get('state'))"
    ```
-   `state= active`. (Queue depth is not yet surfaced by the
-   appwire layer — see sharp edges; the TUI preview is the
-   user-visible truth.)
+   Dial `ws://127.0.0.1:$PORT/rpc` with
+   `Authorization: Bearer $(cat "$HOME/.serf/auth-token")`, initialize, then
+   call `thread/read` for `local:$SID` and inspect `thread.serf.queue`. Its
+   `depth` is `1` and its first `preview` entry is the same
+   first-line-truncated text displayed above the TUI composer. The legacy
+   REST session endpoint may still report `state=active`, but it is not the
+   queue authority for this card.
 
 8. **Wait for the original turn to wrap and the queued message
    to run automatically**:
@@ -113,11 +113,8 @@ visible pane.
    sleep 12
    tmux capture-pane -t "$TMUX_SESSION" -p
    ```
-   The queue preview disappears (`queued (...)` row is gone)
-   the moment the original turn completes — the TUI pops the
-   head on `turn/completed` in
-   `cmd/serf-tui/hub_model.go:applyHubNotification` so the
-   preview matches the daemon's pop. A new processing turn
+   The queue preview disappears (`queued (...)` row is gone) when
+   `thread/queueChanged` carries the daemon's post-pop queue state. A new processing turn
    `turn_2` immediately starts for the queued line and the
    composer flips back to `queue` while the second turn runs.
    Eventually the file listing appears as a `communicate`
@@ -158,16 +155,21 @@ visible pane.
   the composer clears, and the `queued (1)` preview block appears
   above the composer. Falsification: the line shows up in the
   transcript as a new turn immediately (means Enter still routed
-  through `turn/start` or `turn/steer`); the local queue
-  preview never appears (means `appendSessionQueue` regressed or
-  the appwire call failed silently).
+  through `turn/start` or `turn/steer`); the queue
+  preview never appears (means the authoritative
+  `thread/queueChanged` update did not reach or apply in the TUI).
+- Step 7: the TUI's `queued (1)` text equals
+  `thread.serf.queue.preview[0]` and its displayed count equals
+  `thread.serf.queue.depth`. Falsification: the snapshot and TUI differ
+  (means the TUI is mirroring stale local state or failed to apply the
+  authoritative queue update).
 - Step 8: when `turn_1` completes the queue preview is dropped
   and `turn_2` starts automatically with the queued message as
   its USER_INPUT. Falsification: the queue preview persists
   after `turn_1` ends but no new turn begins (means the daemon's
   pop-on-completion loop in `agent/session.go:ProcessInput`
-  regressed). Or: the preview disappears but the new turn never
-  starts (means appwire's `MethodTurnQueue` accepted the message
+  regressed, or its `thread/queueChanged` update did not arrive). Or: the
+  preview disappears but the new turn never starts (means appwire's `MethodTurnQueue` accepted the message
   but the daemon's inputQueue never delivered it to ProcessInput
   — file a regression with the test from
   `agent/session_test.go`).
@@ -183,23 +185,17 @@ visible pane.
 
 ## Sharp edges
 
-- **The queue preview is TUI-local, not authoritative.** The
-  appwire layer (`appwire/types.go`) does not yet
-  surface queue depth or preview text — Phase 2a only landed the
-  `Capabilities.Queue` bit. The TUI mirrors what *it* enqueued
-  in the current process via `hubModel.sessionQueue` and
-  reconciles by popping the head on each `turn/completed`
-  notification. The mirror is correct for a single TUI session;
-  if a second client enqueues to the same session, or if the TUI
-  is restarted mid-turn, the preview won't reflect those entries
-  until the appwire layer carries depth+preview. That's a
-  follow-on kata (see "Deferred work").
-- **Pop-on-completed assumes clean completion.** The TUI drops
-  the head only when `params.Turn.Status` is *not* `failed`. A
-  failed turn doesn't drain the daemon's queue either (see
-  `agent/session.go` ProcessInput error path); the queue
-  preview correctly stays put so the user can decide whether to
-  retry or `/clear`.
+- **The queue preview is authoritative.** `appwire.QueueState` carries
+  queue depth and first-line-truncated preview text on both the
+  `thread/read` snapshot and `thread/queueChanged`. The TUI replaces its
+  preview from those values rather than appending local enqueue actions, so
+  another client, reconnect, or TUI restart converges on the daemon's queue.
+- **Pop-on-completed assumes clean completion.** The daemon drains
+  the head only when it emits the corresponding
+  `thread/queueChanged`. A failed turn doesn't drain the daemon's queue
+  either (see `agent/session.go` ProcessInput error path); the authoritative
+  preview correctly stays put so the user can decide whether to retry or
+  `/clear`.
 - **Empty-trim still applies.** Enter on a blank composer
   remains a no-op (`strings.TrimSpace(text) == ""` guard in the
   Enter handler), so the queue preview can't get spammed with
