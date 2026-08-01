@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-serffuzz lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race vet lint lint-naming lint-serffuzz lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -121,11 +121,41 @@ MEMCAP := scripts/run-capped.sh
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
+# SELFTEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin the
+# behaviour of serf's own tooling. Each is offline, deterministic and works only
+# in throwaway fixtures, and each is the ONLY thing that pins its script's
+# contract — run-module-lint-selftest.sh alone carries 166 assertions about the
+# aggregate lint runner. The fuzz-*-selftest suites are deliberately absent:
+# they already have their own entry points, and their cost (real git bisect,
+# real worktrees, real `go test`) is heavy and unmeasured.
+SELFTEST_SCRIPTS := run-module-lint disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send
+
+# selftest hangs off `make test` because a script selftest is a test, and NOT
+# off `make lint` because run-module-lint-selftest.sh drives a fixture
+# `make lint` of its own — putting the selftests there would have that fixture
+# reach back for scripts it does not have. Quiet on success like every other
+# gate here; a failing suite's whole log is replayed. The seven measured 31s,
+# 51s and 76s on three runs of a fleet-loaded box, but only ~15s of that is CPU
+# (5.7s user, 9.9s sys) — they are mostly waiting on other work, so they cost
+# the machine little even though they run before the Go waves start.
+selftest:
+	@set -u; fail=0; \
+	for s in $(SELFTEST_SCRIPTS); do \
+		log="$$(mktemp -t serf-selftest.XXXXXX)" || exit 1; \
+		if /usr/bin/time -p scripts/$$s-selftest.sh >"$$log" 2>&1; then \
+			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$log" | tail -1)"; \
+		else \
+			printf 'FAIL  %-26s\n' "$$s"; cat "$$log"; fail=1; \
+		fi; \
+		rm -f "$$log"; \
+	done; \
+	exit $$fail
+
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-test:
+test: selftest
 	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
