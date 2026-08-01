@@ -1,15 +1,20 @@
 # job-notification-semantics: exactly one terminal notification, correct block format, boundary batching without loss
 
 **What this covers**: the terminal-notification contract
-(`docs/job-control.md` lines 943-980). (a) Exactly ONE terminal
+(`docs/job-control.md` "Notifications"). (a) Exactly ONE terminal
 notification per notification-armed background job — asserted
-separately for a shell job and a delegate job (lines 946, 962, 966);
+separately for a shell job and a delegate job ("Terminal job
+notifications are automatic for notification-armed jobs"; "Duplicate
+terminal notifications for the same job are suppressed");
 (b) the block format: `<job-notification>` carrying `job_id`, `event`
 (the lifecycle kind, never named `type`), `job_type`, `status`,
 `reason`, `output_bytes`, `exit_code` when known, `transcript_ref`
-for delegates (lines 951-958); (c) notifications for multiple jobs
+for delegates ("Terminal job notifications carry a concrete `job_id`,
+`event`"); (c) notifications for multiple jobs
 finishing while the model is mid-turn queue for the boundary
-(line 961) and arrive batched — without loss (line 968) — including
+("If the parent is mid-turn, notifications queue for a safe turn
+boundary") and arrive batched — without loss ("Notification delivery
+must also avoid lost notifications") — including
 mixed completed/failed outcomes; (d) post-F3, blocks carry a bounded
 result excerpt. The basic wake-and-read loop is
 job-notification-wake.md; watch-flavored (`event="watch"`) delivery
@@ -84,14 +89,16 @@ Run 1:
   may be empty for a completed delegate — the attribute's presence,
   not its value, is asserted.)
 - The `event` attribute equals the lifecycle kind and is never spelled
-  `type` (line 958); `job_type` is the job class. An assistant turn
+  `type` ("Notifications" "Notification `event` must not be named
+  `type`"); `job_type` is the job class. An assistant turn
   follows the notification turn(s), and the session returns to `idle`.
 - `jobs.jsonl` settle: for EACH of J1/J2, exactly one
   `job_notification_pending` and exactly one
   `job_notification_delivered`.
 - Falsification (duplicate): two blocks for the same job_id anywhere
   in the transcript without an intervening daemon restart — duplicate
-  suppression broken (line 962).
+  suppression broken ("Notifications" "Duplicate terminal
+  notifications for the same job are suppressed").
 - Falsification (wake hole): the jobs reach terminal (their
   `job_finished` events exist) but the idle session shows no
   notification turn within ~120s of the later finish.
@@ -101,7 +108,8 @@ Run 2:
 - No early delivery: NO `<job-notification` block for J3 or J4
   appears in the transcript BEFORE the busy turn's final assistant
   message — mid-turn terminal events queue for the boundary
-  (line 961).
+  ("Notifications" "If the parent is mid-turn, notifications queue for
+  a safe turn boundary").
 - Batched delivery without loss: after the final assistant message of
   the busy turn, the NEXT notification delivery contains BOTH blocks —
   J3 with `status="completed"`/`reason="exit_zero"`, and J4 with
@@ -112,7 +120,8 @@ Run 2:
   exactly-once-each, after the boundary.
 - Falsification (loss): only one of J3/J4 ever gets a block — a
   queued terminal notification was dropped at the boundary
-  (line 968: pending state must survive until injection).
+  ("Notifications" "must remain in a durable `pending` state until the
+  notification is successfully injected into the visible session").
 - Falsification (mixed-status smearing): J4 reported as anything but
   `failed`/`exit_nonzero` — the failure outcome must survive batching
   intact.
@@ -142,10 +151,13 @@ Run 2:
   count only occurrences of `<job-notification job_id="<id>"`, not
   bare id mentions.
 - A foreground shell command that completes inline is NOT
-  notification-armed (line 946) and must never produce a block — any
+  notification-armed ("Existing shell/bash tool" "A shell command that
+  completes before the tool returns does not inject a terminal
+  notification") and must never produce a block — any
   block for a job_id you never saw (an ephemeral inline call) is a
   finding.
 - Duplicate blocks ARE legal across a daemon crash/restore midway
-  (at-least-once with durable suppression, line 966); this card's
+  ("Notifications" "at-least-once delivery with durable duplicate
+  suppression"); this card's
   duplicate falsification applies only to an uninterrupted run. The
   restart flavor is job-restart-durability.md's exactly-once arm.

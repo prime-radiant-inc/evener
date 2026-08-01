@@ -6,10 +6,12 @@ fire while that session is IDLE wakes it with no user input, and the
 model receives the notification as a job-notification turn. Run 2: N
 fires against a BUSY session produce N wake tokens but coalesce to the
 latest-frame-wins current frame, rendered once per delivery boundary,
-never one render per fire. Contract anchors: `docs/job-control.md:484-486`
-("delivers a bounded notification/frame back to that watcher. There is
-no model-facing `send` object"), `:607` (coalescing must not become silence),
-`:1067` (mid-turn notifications queue for a safe turn boundary).
+never one render per fire. Contract anchors: `docs/job-control.md`
+"`job_watch`" ("delivers a bounded notification/frame back to that
+watcher. There is no model-facing `send` object"; "coalescing is
+latest-frame-wins by durable key and must not turn a matched condition
+into silence") and "Notifications" ("If the parent is mid-turn,
+notifications queue for a safe turn boundary").
 
 **Scope change (kata `f9gn`)**: this card used to install the same
 watch two ways — implicit notify, and an explicit `send:{to:"caller"}`
@@ -90,7 +92,8 @@ Run 1:
   `replaced_existing: false`.
 - Step 3 is IDEMPOTENT, not a second watch: identical
   `(watcher_session_id, source identity, receiver identity, condition
-  hash)` is one key (`docs/job-control.md:599`). Expect the same
+  hash)` is one key ("`job_watch`" "There is at most one active watch
+  configuration per"). Expect the same
   `watch_id` back. `job_watch(operation="list")` must show ONE active
   watch on that job, not two. Falsification: two watch_ids for the
   same configuration, or a `replaced_existing: true` that silently
@@ -128,7 +131,8 @@ Run 2:
   well past that). No notification appears mid-stream (inside a
   streaming model response) — but one MAY surface between tool rounds:
   mid-turn notifications queue for a safe turn boundary
-  (`docs/job-control.md:1067`), so a between-rounds delivery during the
+  ("Notifications" "If the parent is mid-turn, notifications queue for
+  a safe turn boundary"), so a between-rounds delivery during the
   paced essay is contract-true, not a leak.
 - Each rendered notification's `reason` references the LATEST tick that
   had fired by its delivery time — latest-wins per watch key; a
@@ -138,7 +142,8 @@ Run 2:
 - Falsification: more rendered notifications than delivery boundaries
   (one-per-fire leaked into rendering — coalescing broken); zero
   rendered (the matched condition turned into silence, which the
-  contract forbids at `docs/job-control.md:607`); or a notification
+  contract forbids: "`job_watch`" "must not turn a matched condition
+  into silence"); or a notification
   whose `reason` references a tick OLDER than the latest fire at its
   delivery time.
 

@@ -1,22 +1,27 @@
 # job-nested-visibility: forwarded nested jobs list, read, and stop through the parent-visible job_id
 
 **What this covers**: nested shell jobs started by a delegate
-(`docs/job-control.md` lines 1019-1065). (a) The parent sees the
-nested job ONLY via `job_list(include_nested=true)` (line 672 default
-false, line 1029), with `parent_job_id` linking it to the delegate
-(line 1023); (b) the parent reads its output by the one parent-visible
-`job_id` (lines 98-100, 1032); (c) parent `job_stop` on the nested job
-routes to the live owner runtime and stops it — line 1035 specifies
-routing-if-live, so a live in-process owner yields a confirmed stop,
-NOT `not_controllable` (which line 122 reserves for a believed-live
-owner that cannot route/control, and restart loss is `runtime_lost`,
-line 1003); (d) after the delegate is finished and the nested job is
-terminal, the forwarded job's retained output is STILL readable by the
-parent — the forwarded-output promise (line 940; design spec
-2026-06-08 §3.4: mirroring or durable routing metadata, model-
-invisible). The cross-store read GRANT flavor — an observer reading a
-job it does not own, through the grant a `job.notification` delivery
-mints — is covered by
+(`docs/job-control.md` "Nested jobs"). (a) The parent sees the
+nested job ONLY via `job_list(include_nested=true)` (`job_list`
+"Default `include_nested=false`"; "Nested jobs" "Parent-visible job
+lists may include nested jobs when `include_nested=true`"), with
+`parent_job_id` linking it to the delegate ("Nested jobs" "A nested
+job records the job that caused it in `parent_job_id`"); (b) the
+parent reads its output by the one parent-visible `job_id` ("Job
+identity and visibility"); (c) parent `job_stop` on the nested job
+routes to the live owner runtime and stops it — "Nested jobs" "Parent
+`job_stop` on a nested job routes to the owning session/runtime if
+live" specifies routing-if-live, so a live in-process owner yields a
+confirmed stop, NOT `not_controllable` (which "Job status and reason
+model" reserves for a believed-live owner that cannot route/control,
+and restart loss is `stopped`/`runtime_lost`); (d) after the delegate
+is finished and the nested job is terminal, the forwarded job's
+retained output is STILL readable by the parent — the
+forwarded-output promise ("Output storage" "either by mirroring
+output into the parent job store or by durable routing metadata";
+design spec 2026-06-08 §3.4: model-invisible). The cross-store read
+GRANT flavor — an observer reading a job it does not own, through the
+grant a `job.notification` delivery mints — is covered by
 `sidecar-handoff-packager-job-notification.md`, not here.
 
 ## Pre-state
@@ -64,7 +69,9 @@ mints — is covered by
   shell job. The step-2 listing adds exactly one more row: the nested
   job with `type` `"shell"`, `status` `"running"`, `parent_job_id`
   equal to the delegate's job_id, and `owner_session_id` NOT equal to
-  `$SID` (the child session owns the runtime) (line 76). Do not ask for
+  `$SID` (the child session owns the runtime — "Vocabulary" "For a
+  nested forwarded job, `owner_session_id` is the child/delegate
+  session that owns the runtime"). Do not ask for
   `visible_to_session_id`: it is `json:"-"` on the row
   (`agent/session_tools_jobs.go:1320-1322`, "kept for tooling but omitted
   from the model wire"), so the model structurally cannot read it, and in
@@ -74,23 +81,29 @@ mints — is covered by
   the nested job leaks into the default listing, or appears with a
   different/namespaced id than the one the delegate reported — the
   parent-visible `job_id` must be the same opaque handle everywhere
-  (lines 98-100).
+  ("Job identity and visibility" "the same opaque `job_id` in
+  notifications, `job_list`, `job_status`, `job_watch`, `job_stop`,
+  and the `job:<job_id>` transcript ref").
 - The nested job OUTLIVES its creating delegate: the delegate is
   `completed` while the nested job still runs — background jobs are
-  not tied to the creating turn (line 9).
+  not tied to the creating turn ("Summary" "durable enough to list,
+  inspect, notify about, and reconstruct after their creating turn
+  has ended").
 - Arm (b): the step-3 read returns a `# Shell Job job_...` envelope
   with `- status: running` and a fenced block containing
   `NEST_TOKEN_1` — the parent read its output through the
   parent-visible id with no extra handle. Falsification:
   `target_not_found`/`not found` or empty content while the child
-  store holds bytes (forwarded-output routing broken, line 940).
+  store holds bytes (forwarded-output routing broken — "Output
+  storage").
 - Arm (c): the step-4 stop returns `status` `"cancelled"`, `reason`
   `"stopped_by_parent"` — the parent's stop ROUTED to the live owner
-  runtime and confirmed (line 1035). Falsification (the cited rule):
+  runtime and confirmed ("Nested jobs" "routes to the owning
+  session/runtime if live"). Falsification (the cited rule):
   a `not_controllable` error here, with the owner session live
-  in-process, is wrong — line 122 + line 1003 reserve
-  `not_controllable` for a believed-live owner that cannot
-  route/control the job, and the shipped router routes any live
+  in-process, is wrong — "Job status and reason model" and "Restart
+  behavior" reserve `not_controllable` for a believed-live owner that
+  cannot route/control the job, and the shipped router routes any live
   in-process owner directly (`agent/jobs_nested.go:342-356`,
   `stopNestedOrLocal`, whose comment states exactly this — the cited
   `:76-78` is unrelated descendant-walk code).
@@ -99,7 +112,7 @@ mints — is covered by
   the retained output: `- status: cancelled`, with the fenced block
   containing `NEST_TOKEN_1` and NOT `NEST_TOKEN_2` (never printed; the
   sleep was cut short). The forwarded job's output remains readable by
-  the parent after both lifetimes ended (line 940). Falsification: the
+  the parent after both lifetimes ended ("Output storage"). Falsification: the
   read degrades to `not found` or an empty block once the jobs are
   terminal while retention obviously still holds (fresh session, tiny
   output).
@@ -107,7 +120,8 @@ mints — is covered by
   `job_started` and `job_finished` events for the nested job_id with
   `parent_job_id` = the delegate job and `owner_session_id` = the
   child session — the durable substrate behind parent visibility
-  (line 1033).
+  ("Nested jobs" "Shell jobs created by subagents are visible to the
+  parent through forwarded durable job events").
 - The nested job's own terminal (cancelled) notification is
   OWNER-SCOPED (spec §3/§10): it renders on the OWNER's (the child
   delegate's) rail, NOT on the parent's. The parent is told its
@@ -132,13 +146,16 @@ mints — is covered by
   retained in-process (it is — terminal delegates are kept for
   resume). The owner-truly-GONE variants are elsewhere: restart turns
   control attempts into `stopped/runtime_lost` reconciliation
-  (job-restart-durability.md mechanics; line 1036), which is the only
+  (job-restart-durability.md mechanics; "Nested jobs" "If routing is
+  unavailable after restart"), which is the only
   live route to asserting the `not_controllable`-vs-`runtime_lost`
   boundary honestly.
 - Whether the parent's read in arm (d) is served by the retained
   child store or by the forwarded record plus durable output routing
-  is model-invisible by design (line 100, line 940 "either by
-  mirroring ... or by durable routing metadata") — do not assert the
+  is model-invisible by design ("Job identity and visibility" "that
+  mapping must be durable and invisible to the model-facing tools";
+  "Output storage" "either by mirroring output into the parent job
+  store or by durable routing metadata") — do not assert the
   mechanism, only the readability.
 - If step 2's listing shows the nested job's `status` already
   terminal, the 300s sleep died early (crashed shell?) — investigate

@@ -83,9 +83,10 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   event kind installs (`watching: true`) and the runtime breaker bounds
   the loop instead — `TestJobWatchSelfSourceSelfKindInstalls`
   (`agent/job_watch_loopguard_test.go:138`). Falsification: an
-  `invalid_request` here means the create-time guard came back, and
-  `docs/job-control.md:601` — which still describes that guard — became
-  true again rather than merely stale.
+  `invalid_request` here means the create-time guard came back, which
+  contradicts the contract as it now reads — `docs/job-control.md`
+  "`job_watch`" "nothing is rejected at creation for being a potential
+  feedback loop. The loop is bounded at runtime instead".
 - Step 4 is ACCEPTED: the delegate result reports `watching: true` and
   lists the OBSERVER's own watch (`source: "parent"`). The observer
   creates it; the parent never names a delivery target, because there

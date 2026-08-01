@@ -5,9 +5,11 @@ an observer is woken by an irrelevant `assistant.tool` frame and should
 be allowed to finish with a plain no-action disposition, plus the
 `assistant.tool` `event_filter` path that prevents irrelevant frames
 from waking the observer at all. Contract anchors:
-`docs/job-control.md:555` (`event_filter` drops non-matching events
-before any delivery is recorded) and the observer composition at
-`:1185-1191`. Driving mechanism: `delegate(watch_parent:true)` + two
+`docs/job-control.md` "`job_watch`" ("`event_filter` narrows event
+watches before any delivery is recorded"; "Non-matching events do not
+create a delivery, pending row, notification, or observer wake") and
+"Observer and sidecar composition". Driving mechanism:
+`delegate(watch_parent:true)` + two
 successive observer-installed `job_watch(source:"parent")` configs +
 terminal `communicate(end_turn:true)` callbacks.
 

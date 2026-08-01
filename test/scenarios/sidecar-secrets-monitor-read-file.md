@@ -81,9 +81,11 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # exp
   or the readiness result cannot report `watching: true`.
 - The finding and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`).
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent").
 - Frames are bounded and may be redacted, but the contract does not
-  promise secret-free frames (`docs/job-control.md:1203`). The fixture
+  promise secret-free frames ("Observer and sidecar composition"
+  "frames are not guaranteed secret-free"). The fixture
   landing in the frame is expected; the assertion is about what the
   observer chooses to echo.
 

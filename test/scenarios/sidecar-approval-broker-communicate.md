@@ -125,9 +125,12 @@ rm -rf "$tmpdir" "$XDG_STATE_HOME"
   or the readiness result cannot report `watching: true`.
 - The packet and the record collapse into one call: the terminal
   `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`). A watch-origin observer job that has
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent"). A watch-origin observer job that has
   sent that callback records terminal state without a second owner
-  notification (`docs/job-control.md:1044`), so do not wait for one.
+  notification ("Notifications" "A watch-origin observer job that
+  successfully calls `communicate(end_turn=true)` uses that callback
+  as the owner signal"), so do not wait for one.
 - The parent's acknowledgement of the callback is itself a
   `communicate` event and re-fires the watch. Bounded by the
   self-influence breaker; clear the watch rather than reading the extra

@@ -1,15 +1,21 @@
 # job-stop-and-children: stop confirms and retains output; include_children fells the visible tree
 
 **What this covers**: `job_stop` semantics from `docs/job-control.md`
-lines 730-802 and the nested-stop rules at lines 1029-1054. (a) A
+"`job_stop`" and the nested-stop rules in "Nested jobs". (a) A
 confirmed stop of a running shell job lands `cancelled` /
-`stopped_by_parent` (line 753) with retained output still readable
-afterward (line 750: stopping deletes nothing); (b) `max_wait_ms` on
+`stopped_by_parent` ("If stop is confirmed, terminal status is
+`cancelled` with reason `stopped_by_parent`") with retained output
+still readable afterward ("Stopping does not delete output,
+transcript, or durable job records"); (b) `max_wait_ms` on
 job_stop makes the stop call itself wait for finalization, so the
 result carries the terminal status instead of `running`/`stop_pending`
-(lines 744, 755);
+("the tool performs one bounded wait of up to that many ms for the
+stop to finalize"; "If still running after timeout, status remains
+`running` with reason `stop_pending`");
 (c) `job_stop(delegate, include_children=true)` also stops the
-delegate's visible nested shell job (lines 756, 778, 1038), with both
+delegate's visible nested shell job ("`job_stop`" "cascades into the
+subtree"; "Nested jobs" "each cascade-stopped job finalizes as
+`cancelled/stopped_by_parent`"), with both
 terminal afterward and the child visible via
 `job_list(include_nested=true)`. The plain stop-a-delegate +
 resume-after-stop path is already covered by
@@ -76,7 +82,8 @@ Turn 1:
   `STOP_RETAIN_TOKEN`, and the `job_status` call reports
   `"status":"cancelled"` / `"reason":"stopped_by_parent"`.
   Falsification: `job ... not found`, an empty block, or a read error —
-  stop deleted or hid history (violates lines 750-751).
+  stop deleted or hid history (violates "`job_stop`" "Stopping does
+  not delete output, transcript, or durable job records").
 - `jobs.jsonl` has exactly one `job_finished` for the job with
   `status:"cancelled"`, `reason:"stopped_by_parent"`.
 
@@ -88,17 +95,24 @@ Turn 2:
   visible yet, wait and re-list once rather than stopping early).
 - The step-4 result reports the delegate terminal: `status`
   `"cancelled"` with reason `"stopped_by_parent"` or
-  `"stopped_with_children"` (both contract-legal, line 753; the
-  shipped implementation emits `stopped_by_parent` — record what you
-  see).
+  `"stopped_with_children"` (both contract-legal — "`job_stop`" names
+  `stopped_by_parent` for a confirmed stop and "Job status and reason
+  model" allows "additional diagnostic text or implementation-specific
+  reason values"; the shipped implementation emits `stopped_by_parent`
+  — record what you see).
 - Step 5 shows BOTH terminal: the delegate `cancelled`, and the nested
   shell job terminal as `cancelled`/`stopped_by_parent` (an explicit
-  stop was sent to it, line 778) — still listed, still carrying
+  stop was sent to it — "Nested jobs" "each cascade-stopped job
+  finalizes as `cancelled/stopped_by_parent`") — still listed, still carrying
   `parent_job_id`. Falsification (recursion hole): the nested job
   still `running` after an `include_children=true` stop. Accept
   `stopped`/`runtime_lost`-or-`supervision_lost` for the child ONLY if
   the delegate cancellation tore down the owner runtime before the
-  child stop confirmed (line 757 allows that finalization); a child
+  child stop confirmed ("`job_stop`" "If no live handle remains and
+  cancellation cannot be confirmed, terminal status is `stopped` with
+  reason `stop_unconfirmed` or `runtime_lost`", and "Job status and
+  reason model" defines `supervision_lost` for an owner runtime that
+  ended mid-supervision); a child
   left silently running is the failure, a child finalized by
   supervision loss is a recorded variant.
 - The parent's `jobs.jsonl` contains `job_finished` events for both
@@ -117,16 +131,20 @@ Turn 2:
   has not yet started its background job, making the child-stop arm
   vacuous. The step-3 listing is the explicit gate — re-prompt if the
   nested job is absent.
-- `job_stop` is non-recursive by DEFAULT (line 756): without
-  `include_children`, the nested shell job may keep running after a
-  delegate stop as long as the owner runtime survives (line 767).
-  This card deliberately exercises only the recursive arm; do not
-  reinterpret a surviving child in a default-stop variant as a bug.
+- `include_children` is the SHELL-job flag: "`job_stop`" makes a shell
+  stop non-recursive by default and takes `include_children=true` to
+  fell its visible active nested jobs. A DELEGATE stop needs no flag —
+  it "cascades into the subtree" regardless (`agent/jobs_nested.go`,
+  `stopDelegateSubtree`). This card passes `include_children=true` on
+  a delegate stop, which is legal and redundant: the cascade is what
+  fells the nested job. A nested job left running after a delegate
+  stop is a bug in either variant.
 - The delegate's own 240s foreground sleep keeps the child session
   busy so the delegate is still `running` at stop time. If the
   delegate finished early (model skipped the sleep), `job_stop`
-  returns the actual terminal status (line 752) and the arm
-  degrades — rerun with the prompt tightened.
+  returns the actual terminal status ("`job_stop`" "If the job already
+  completed before stop lands, return the actual terminal status") and
+  the arm degrades — rerun with the prompt tightened.
 - Terminal notifications are OWNER-SCOPED (spec §3/§10): the PARENT
   is notified about its OWN delegate finishing (one block, on the
   parent's rail), but the nested shell job's terminal is owner-scoped

@@ -10,9 +10,11 @@ terminal target with `events` still fails `target_terminal`.
 Pre-design, (a) silently never fired (the matcher only saw post-attach
 appends) and (b) errored — the `job_watch` description had to warn
 about a race the model could not avoid; these assertions are that
-warning's retirement. Contract anchors: `docs/job-control.md:552`
-(level-triggered), `:590` (terminal catch-up and `target_terminal`),
-`:75` (which watch types accept a terminal target). Executed by plan
+warning's retirement. Contract anchors: `docs/job-control.md`
+"`job_watch`" ("`output_match` is level-triggered: it fires once at
+attach"; "performs a one-shot catch-up scan of that retained output"
+plus the `target_terminal` rule beside it) and "Choosing a wait
+primitive" ("Terminal targets differ by watch type"). Executed by plan
 Phase 5.2.
 
 ## Pre-state
@@ -130,7 +132,8 @@ Phase 5.2.
   terminal-flush config the old card pointed at is internal-only now.
 - Sequential one-shots share the watch key
   `(watcher_session_id, source identity, receiver identity, condition
-  hash)` (`docs/job-control.md:599`) but install nothing:
+  hash)` (`docs/job-control.md` "`job_watch`" "There is at most one
+  active watch configuration per") but install nothing:
   `replaced_existing` should not be true on the second catch-up call.
   If it is, the one-shot leaked into the watch table — record what
   ships.

@@ -75,10 +75,13 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
   or the readiness result cannot report `watching: true` and the parent
   has no watch_id to clear.
 - `event_filter` drops non-matching events before any delivery is
-  recorded (`docs/job-control.md:555`), so a filtered-out tool call
+  recorded (`docs/job-control.md` "`job_watch`" "Non-matching events
+  do not create a delivery, pending row, notification, or observer
+  wake"), so a filtered-out tool call
   leaves no pending row to assert on — the negative here is an absence
   in `serf-doctor watches`, bounded by the positive alert.
 - The alert and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`).
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent").
 
