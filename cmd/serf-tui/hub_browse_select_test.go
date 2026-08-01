@@ -60,8 +60,8 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 	if m.forkDraft == nil {
 		t.Fatal("f on a selected user turn must start a fork draft")
 	}
-	if m.forkDraft.Turn != 1 {
-		t.Fatalf("fork draft turn=%d, want 1", m.forkDraft.Turn)
+	if m.forkDraft.EntryIndex != 1 {
+		t.Fatalf("fork draft entry index=%d, want 1", m.forkDraft.EntryIndex)
 	}
 
 	// j walks back down (after re-entering browse on a fresh model).

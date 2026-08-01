@@ -515,7 +515,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.SendKeys("k")
 	app.WaitFor("▶ ┃  > initial question")
 	app.SendKeys("f")
-	app.WaitFor("Fork draft for turn 1", "> initial question")
+	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 
 	app.SendKeys("Enter")
 	app.WaitFor("serf / session / fork child")
@@ -548,7 +548,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.SendKeys("k")
 	app.SendKeys("k")
 	app.SendKeys("f")
-	app.WaitFor("Fork draft for turn 1", "> initial question")
+	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 	app.TypeText(" with edit")
 	app.SendKeys("Enter")
 	app.WaitFor("Fork failed: appwire thread/fork: fork failed", "> initial question with edit")

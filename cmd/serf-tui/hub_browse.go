@@ -235,13 +235,13 @@ func (m *hubModel) startForkDraft() {
 	}
 	m.forkDraft = &hubForkDraft{
 		Ref:          ref,
-		Turn:         msg.TranscriptEntryIndex,
+		EntryIndex:   msg.TranscriptEntryIndex,
 		OriginalText: msg.Text,
 		Label:        "original before fork",
 	}
 	m.exitSessionBrowse()
 	m.session.setInputValue(msg.Text)
-	m.addSessionSystem(fmt.Sprintf("Fork draft for turn %d. Edit the input, press enter to fork, or esc to cancel.", msg.TranscriptEntryIndex))
+	m.addSessionSystem(fmt.Sprintf("Fork draft from transcript position %d. Edit the input, press enter to fork, or esc to cancel.", msg.TranscriptEntryIndex))
 }
 
 func (m *hubModel) addSessionSystem(text string) {

@@ -180,9 +180,10 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 }
 
 // forkDraftHeader returns a tuiprim.SectionDivider for the fork-draft UI surface,
-// showing the branch name and diverge-turn info as the right label.
-func forkDraftHeader(branch string, divergeTurn int, width int) string {
-	right := fmt.Sprintf("%s@diverge:%d", branch, divergeTurn)
+// showing the branch name and the transcript entry the child diverges at as the
+// right label.
+func forkDraftHeader(branch string, divergeEntry int, width int) string {
+	right := fmt.Sprintf("%s@diverge:%d", branch, divergeEntry)
 	return tuiprim.SectionDivider(width, "fork draft", right)
 }
 
@@ -223,7 +224,7 @@ func (m hubModel) renderSessionMainBody() string {
 	if m.forkDraft != nil {
 		branch := firstNonEmptyString(m.detail.Branch, "fork")
 		b.WriteString("\n")
-		b.WriteString(forkDraftHeader(branch, m.forkDraft.Turn, m.sessionHeaderWidth()))
+		b.WriteString(forkDraftHeader(branch, m.forkDraft.EntryIndex, m.sessionHeaderWidth()))
 		b.WriteString("\n")
 	}
 	messages := m.session.messages

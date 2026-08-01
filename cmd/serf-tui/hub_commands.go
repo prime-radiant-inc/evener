@@ -741,7 +741,7 @@ func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) te
 	return func() tea.Msg {
 		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
 			Ref:          ref.String(),
-			SourceTurnID: strconv.Itoa(req.Turn),
+			SourceTurnID: strconv.Itoa(req.EntryIndex),
 			EditedInput:  req.EditedMessage,
 			Label:        req.Label,
 		})

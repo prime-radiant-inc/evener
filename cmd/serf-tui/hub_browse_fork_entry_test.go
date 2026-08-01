@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/internal/appserver"
 )
 
 // TestHubForkDraftDivergesAtTheTranscriptEntryIndex (kata e6q0, the TUI twin of
@@ -50,9 +54,70 @@ func TestHubForkDraftDivergesAtTheTranscriptEntryIndex(t *testing.T) {
 	if m.forkDraft == nil {
 		t.Fatalf("no fork draft started; session log: %s", forkEntrySystemLog(m))
 	}
-	if m.forkDraft.Turn != 3 {
-		t.Fatalf("fork divergence position=%d, want 3 (the entry the user pointed at); 2 is the assistant reply that live turn_2 numbers", m.forkDraft.Turn)
+	if m.forkDraft.EntryIndex != 3 {
+		t.Fatalf("fork divergence position=%d, want 3 (the entry the user pointed at); 2 is the assistant reply that live turn_2 numbers", m.forkDraft.EntryIndex)
 	}
+}
+
+// TestHubForkDraftCopyNamesTheTranscriptPositionNotATurn (kata zw97) pins what
+// the two fork-draft messages call the number they print. It is a transcript
+// entry index, and on a session whose turn ids and entry indexes have diverged
+// the same number names a different row as a turn than it does as an entry —
+// so a message that says "turn 3" points the reader at the wrong place. The
+// wording matches the refusal on the same path, "fork requires a persisted
+// transcript position".
+func TestHubForkDraftCopyNamesTheTranscriptPositionNotATurn(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+			return appwire.ThreadForkResponse{}, errors.New("fork refused")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.Capabilities.Fork = true
+	// The same diverged shape as the test above: entry 3 is the second user
+	// message, which live turn numbering calls turn_2.
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "first task", TurnIndex: 1, TranscriptEntryIndex: 1},
+		{Kind: transcript.MsgAssistant, Text: "first reply"},
+		{Kind: transcript.MsgUser, Text: "second task", TurnIndex: 2, TranscriptEntryIndex: 3},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 2
+	m.startForkDraft()
+
+	draftMessage := lastForkEntrySystemMessage(t, m)
+	if !strings.Contains(draftMessage, "transcript position 3") {
+		t.Errorf("fork draft message %q does not name the transcript position it diverges at", draftMessage)
+	}
+	if strings.Contains(draftMessage, "turn") {
+		t.Errorf("fork draft message %q calls the entry index a turn", draftMessage)
+	}
+
+	m.session.setInputValue("second task, edited")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("confirming a fork draft should post to the hub")
+	}
+	submitMessage := lastForkEntrySystemMessage(t, updated.(hubModel))
+	if !strings.Contains(submitMessage, "transcript position 3") {
+		t.Errorf("fork submit message %q does not name the transcript position it forks from", submitMessage)
+	}
+	if strings.Contains(submitMessage, "turn") {
+		t.Errorf("fork submit message %q calls the entry index a turn", submitMessage)
+	}
+}
+
+func lastForkEntrySystemMessage(t *testing.T, m hubModel) string {
+	t.Helper()
+	for i := len(m.session.messages) - 1; i >= 0; i-- {
+		if m.session.messages[i].Kind == transcript.MsgSystem {
+			return m.session.messages[i].Text
+		}
+	}
+	t.Fatalf("no system message in session log: %s", forkEntrySystemLog(m))
+	return ""
 }
 
 func applyForkEntryItem(t *testing.T, m hubModel, item appwire.ThreadItem) hubModel {

@@ -354,6 +354,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestHubModelSendErrorRemovesOptimisticUserEcho,
 		TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild,
 		TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex,
+		TestHubForkDraftCopyNamesTheTranscriptPositionNotATurn,
 		TestHubModelBrowseForkRequiresSelectedUserMessage,
 		TestHubModelForkFailurePreservesDraftAndLabel,
 		TestHubModelDashboardShowsRecentWhenNothingLive,

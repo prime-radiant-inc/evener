@@ -498,7 +498,7 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		return renderSample(name, width, m.sessionView()), true
 	case "session-fork":
 		m := sampleSessionModel(width, sampleSessionDetails()["serf-idle"])
-		m.forkDraft = &hubForkDraft{Turn: 1, OriginalText: "original before fork", Label: "original before fork"}
+		m.forkDraft = &hubForkDraft{EntryIndex: 1, OriginalText: "original before fork", Label: "original before fork"}
 		m.session.setInputValue("edited prompt")
 		return renderSample(name, width, m.sessionView()), true
 	case "ask-card-pending":

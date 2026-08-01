@@ -3197,7 +3197,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
 	draft := updated.(hubModel)
-	if draft.forkDraft == nil || draft.forkDraft.Turn != 3 {
+	if draft.forkDraft == nil || draft.forkDraft.EntryIndex != 3 {
 		t.Fatalf("fork draft=%+v", draft.forkDraft)
 	}
 	if draft.session.scrollMode {
