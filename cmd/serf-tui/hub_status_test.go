@@ -14,6 +14,7 @@ import (
 // existing contract: when SerfDiagnostics is nil, the rendered status is
 // exactly the thin summary (no diagnostics sections leaking through).
 func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T) {
+	withTestColorProfile(t)
 	detail := hubSessionDetail{
 		SessionID:       "01ABC",
 		SourceLabel:     "serf",
@@ -24,7 +25,7 @@ func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T
 		ContextPressure: 0.21,
 		Diagnostics:     nil,
 	}
-	got := renderHubSessionStatus(detail, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+	plain := ansiPattern.ReplaceAllString(renderHubSessionStatus(detail, nil, appwire.AuthStatusResponse{}, nil, nil, 80), "")
 
 	for _, want := range []string{
 		"Session:  01ABC",
@@ -33,13 +34,13 @@ func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T
 		"Turns:    3",
 		"Context:  21% used",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("thin status missing %q:\n%s", want, got)
+		if !strings.Contains(plain, want) {
+			t.Fatalf("thin status missing %q:\n%s", want, plain)
 		}
 	}
 	for _, unwanted := range []string{"Tools (", "MCP Servers (", "Skills (", "Plugins ("} {
-		if strings.Contains(got, unwanted) {
-			t.Fatalf("thin status should not include diagnostics section %q when Diagnostics is nil:\n%s", unwanted, got)
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("thin status should not include diagnostics section %q when Diagnostics is nil:\n%s", unwanted, plain)
 		}
 	}
 }

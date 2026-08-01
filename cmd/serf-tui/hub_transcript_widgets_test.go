@@ -175,6 +175,7 @@ func TestDetailsDrawerShowsCapabilities(t *testing.T) {
 }
 
 func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
+	withTestColorProfile(t)
 	m := newSessionHubModel(nil)
 	m.hubURL = "http://127.0.0.1:9180"
 	m.detail = hubSessionDetail{
@@ -202,7 +203,7 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 		},
 	}
 
-	got := m.renderSessionDetails()
+	plain := ansiPattern.ReplaceAllString(m.renderSessionDetails(), "")
 	for _, want := range []string{
 		"Hub ref:  local:01SEND",
 		"Web:      http://127.0.0.1:9180/s/local:01SEND",
@@ -220,8 +221,8 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 		"RECENT ERRORS",
 		"turn_2: provider quota exceeded",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("details drawer missing %q:\n%s", want, got)
+		if !strings.Contains(plain, want) {
+			t.Fatalf("details drawer missing %q:\n%s", want, plain)
 		}
 	}
 }

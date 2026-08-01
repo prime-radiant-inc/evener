@@ -2628,6 +2628,7 @@ func TestFetchHubSessionStatusRefreshDoesNotReplaceLiveSubscription(t *testing.T
 }
 
 func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
+	withTestColorProfile(t)
 	var methods []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -2671,7 +2672,7 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 	if len(model.session.messages) != 0 {
 		t.Fatalf("/status should not append diagnostics to transcript history: %+v", model.session.messages)
 	}
-	got := model.View()
+	plain := ansiPattern.ReplaceAllString(model.View(), "")
 	for _, want := range []string{
 		"status",
 		"Model:    gpt-5 (openai)",
@@ -2683,8 +2684,8 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 		"Recent errors:",
 		"turn_2: provider quota exceeded",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("status output missing %q:\n%s", want, got)
+		if !strings.Contains(plain, want) {
+			t.Fatalf("status output missing %q:\n%s", want, plain)
 		}
 	}
 	if strings.Join(methods, ",") != appwire.MethodThreadRead+","+appwire.MethodSerfTasksList+","+appwire.MethodSerfAuthStatus {
