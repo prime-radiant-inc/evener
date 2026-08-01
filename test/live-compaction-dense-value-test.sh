@@ -3,11 +3,16 @@
 # Does a MANDATED, self-authored note beat a blind summary-only compaction when
 # the agent must carry MANY facts through the compaction? (The 7-clean-fact task
 # showed no difference; this stresses it with 15 facts + heavy bulk.)
-set -u
-. /tmp/serf-live.env
-SERF=/tmp/serf-live
+set -eu
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_DIR/../scripts/live-eval-isolation.sh"
+# Run with SERF_LIVE_ENV pointing at the operator's private handoff file and
+# SERF_LIVE_BINARY pointing at the built serf binary. The helper copies those
+# read-only inputs into a fresh state/home/binary tree for every trial.
+live_eval_begin
+trap live_eval_cleanup EXIT
 TRIALS=2
-RESULTS=/tmp/live_eval_dense_results.txt
+RESULTS="$LIVE_EVAL_ROOT/results.txt"
 : > "$RESULTS"
 
 FACTS='1. The API rate limit is 5000 requests per hour.
@@ -46,7 +51,8 @@ QUESTIONS='1. API rate limit?
 
 run_trial() {
   local arm="$1" trial="$2"
-  local work; work=$(mktemp -d -t serf-live-work-XXXXX)
+  live_eval_prepare_trial "$arm-$trial"
+  local work="$LIVE_EVAL_WORK"
   # heavy filler so the facts get pushed well outside the preserved window and
   # the compaction has to compress hard
   for i in 1 2 3 4 5 6 7 8; do
@@ -70,8 +76,8 @@ Step 4: Now write a file answers.txt answering the following, one answer per lin
 $QUESTIONS
 Step 5: reply with the single word DONE."
 
-  HOME="$HOMEISO" XDG_STATE_HOME="$ISO" "$SERF" --model openai/gpt-5.5 \
-    --state-dir "$ISO/serf" --dir "$work" --max-rounds 24 "$prompt" \
+  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
+    --state-dir "$LIVE_EVAL_STATE/serf" --dir "$work" --max-rounds 24 "$prompt" \
     > "$work/run.log" 2>&1
 
   local ans="$work/answers.txt" kept=0 missing=""
@@ -82,7 +88,7 @@ Step 5: reply with the single word DONE."
   else
     missing="(no answers.txt)"
   fi
-  local tr; tr=$(ls -t "$ISO"/serf/sessions/*.transcript.jsonl 2>/dev/null | head -1)
+  local tr; tr=$(ls -t "$LIVE_EVAL_STATE"/serf/sessions/*.transcript.jsonl 2>/dev/null | head -1)
   local note=0 comp="?"
   if [ -n "$tr" ]; then
     grep -q 'NOTE TO SELF' "$tr" && comp="note" || comp="empty"

@@ -2,7 +2,6 @@ package serf_test
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -138,7 +137,7 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 			if !scenarioPatternKillPattern.MatchString(line) {
 				continue
 			}
-			if filepath.Dir(path) == scriptDir {
+			if isAuditedShellScript(path) {
 				scriptMatches++
 			}
 			if lineIsAllowed(line, allowed) {
@@ -155,7 +154,7 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 		t.Fatalf("the pattern-kill needle matched nothing across %s/*.sh, where "+
 			"disk-reclaim-selftest.sh reaps its own stall probes with `pkill -f`. "+
 			"Zero matches means the pattern or the file set is dead and the script "+
-			"half of this audit is checking nothing", scriptDir)
+			"half of this audit is checking nothing", auditedShellScriptDirs)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
@@ -168,7 +167,7 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 			"checklist). If the line WARNS against a pattern kill rather than "+
 			"performing one, or the pattern provably carries something unique to "+
 			"this run, add it to scenarioPatternKillAllowedMentions and say why:\n%s",
-			scriptDir, strings.Join(findings, "\n"))
+			auditedShellScriptDirs, strings.Join(findings, "\n"))
 	}
 }
 

@@ -2,7 +2,6 @@ package serf_test
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -188,7 +187,7 @@ func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 			if !scenarioNamesAFixedTmpPath(line) {
 				continue
 			}
-			if filepath.Dir(path) == scriptDir {
+			if isAuditedShellScript(path) {
 				scriptMatches++
 			}
 			if lineIsAllowed(line, allowed) {
@@ -207,7 +206,7 @@ func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 			"exist to talk about /tmp (reclaim-test-debris.sh names the one-off "+
 			"GOCACHE debris it removes, report-tmp-debris.sh sizes `/tmp/serf*`), so "+
 			"zero matches means the pattern or the file set is dead and the script "+
-			"half of this audit is checking nothing", scriptDir)
+			"half of this audit is checking nothing", auditedShellScriptDirs)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
@@ -221,7 +220,7 @@ func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 			"path without instructing anyone to use one — a warning against it, a "+
 			"past run's record, an observed payload with the random part elided — "+
 			"add it to scenarioFixedTmpPathAllowedMentions with the reason:\n%s",
-			scriptDir, strings.Join(findings, "\n"))
+			auditedShellScriptDirs, strings.Join(findings, "\n"))
 	}
 }
 

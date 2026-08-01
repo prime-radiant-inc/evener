@@ -386,36 +386,50 @@ func scenarioCardFiles(t *testing.T) []string {
 	return files
 }
 
-// scriptDir holds the shell scripts agents run directly. It is the second
-// corpus the two collision audits read: a script carries exactly the hazards a
-// card does — a fixed path under the shared /tmp that two concurrent runs
-// fight over, a `pkill -f` on a string a second run also uses — and agents run
-// these at least as often as they run a card (kata qw8e).
-const scriptDir = "scripts"
+// auditedShellScriptDirs holds the shell scripts agents run directly. It is
+// the second corpus the two collision audits read: a script carries exactly
+// the hazards a card does — a fixed path under the shared /tmp that two
+// concurrent runs fight over, a `pkill -f` on a string a second run also uses
+// — and agents run these at least as often as they run a card (kata qw8e).
+// Keep the live evals in test/ in this corpus too: their per-test isolation is
+// just as important as the reusable scripts under scripts/ (kata 1w4c).
+var auditedShellScriptDirs = []string{"scripts", "test"}
 
-// auditedShellScripts is scriptDir's *.sh, sorted. It fatals on an empty list
-// rather than returning one, because the file set is the half of a corpus
-// audit that can die with every needle still intact: rename the directory or
-// change the extension and the audit passes forever having read nothing.
+// auditedShellScripts is the *.sh file set in auditedShellScriptDirs, sorted.
+// It fatals on an empty list rather than returning one, because the file set is
+// the half of a corpus audit that can die with every needle still intact:
+// rename the directories or change the extension and the audit passes forever
+// having read nothing.
 func auditedShellScripts(t *testing.T) []string {
 	t.Helper()
 	var files []string
-	entries, err := os.ReadDir(scriptDir)
-	if err != nil {
-		t.Fatalf("reading %s: %v", scriptDir, err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".sh" {
-			continue
+	for _, dir := range auditedShellScriptDirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("reading %s: %v", dir, err)
 		}
-		files = append(files, filepath.Join(scriptDir, e.Name()))
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".sh" {
+				continue
+			}
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
 	}
 	if len(files) == 0 {
-		t.Fatalf("%s holds no .sh files: the script half of the collision audits "+
-			"is reading an empty corpus and cannot fail", scriptDir)
+		t.Fatalf("%v hold no .sh files: the script half of the collision audits "+
+			"is reading an empty corpus and cannot fail", auditedShellScriptDirs)
 	}
 	sort.Strings(files)
 	return files
+}
+
+func isAuditedShellScript(path string) bool {
+	for _, dir := range auditedShellScriptDirs {
+		if filepath.Dir(path) == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // containsWholePort9180 reports whether line contains the digits 9180 as a

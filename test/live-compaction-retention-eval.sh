@@ -4,11 +4,16 @@
 # Baseline arm: agent calls compact with an empty note (summary-only compaction).
 # Task: read 7 facts + filler (so facts fall outside preserved-recent), compact,
 # then answer 7 questions from post-compaction memory. Score = facts recalled / 7.
-set -u
-. /tmp/serf-live.env
-SERF=/tmp/serf-live
+set -eu
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+. "$SCRIPT_DIR/../scripts/live-eval-isolation.sh"
+# Run with SERF_LIVE_ENV pointing at the operator's private handoff file and
+# SERF_LIVE_BINARY pointing at the built serf binary. The helper copies those
+# read-only inputs into a fresh state/home/binary tree for every trial.
+live_eval_begin
+trap live_eval_cleanup EXIT
 TRIALS=2
-RESULTS=/tmp/live_eval_results.txt
+RESULTS="$LIVE_EVAL_ROOT/results.txt"
 : > "$RESULTS"
 
 FACTS='The API rate limit is 5000 requests per hour.
@@ -32,7 +37,8 @@ QUESTIONS='1. What is the API rate limit?
 
 run_trial() {
   local arm="$1" trial="$2"
-  local work; work=$(mktemp -d -t serf-live-work-XXXXX)
+  live_eval_prepare_trial "$arm-$trial"
+  local work="$LIVE_EVAL_WORK"
   # Facts live in the PROMPT, not a re-readable file, so the only way to recall
   # them after compaction is whatever survived (the note, or the summary).
   for i in 1 2 3 4 5 6; do
@@ -56,9 +62,8 @@ Step 4: Now write a file answers.txt that answers, one answer per line, the foll
 $QUESTIONS
 Step 5: reply with the single word DONE."
 
-  # Use the same env as the working smoke: OAuth token + config live under $ISO/$HOMEISO.
-  HOME="$HOMEISO" XDG_STATE_HOME="$ISO" "$SERF" --model openai/gpt-5.5 \
-    --state-dir "$ISO/serf" --dir "$work" --max-rounds 20 "$prompt" \
+  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
+    --state-dir "$LIVE_EVAL_STATE/serf" --dir "$work" --max-rounds 20 "$prompt" \
     > "$work/run.log" 2>&1
 
   # score
@@ -72,8 +77,7 @@ Step 5: reply with the single word DONE."
     tokfound="(no answers.txt produced)"
   fi
   # did it re-read facts.md after compacting? (fairness check)
-  # trials share $ISO/serf; this trial's transcript is the most-recent one.
-  local tr; tr=$(ls -t "$ISO"/serf/sessions/*.transcript.jsonl 2>/dev/null | head -1)
+  local tr; tr=$(ls -t "$LIVE_EVAL_STATE"/serf/sessions/*.transcript.jsonl 2>/dev/null | head -1)
   local compacted="no" reread="?" notelen=0
   if [ -n "$tr" ]; then
     grep -q 'NOTE TO SELF' "$tr" && compacted="yes-note" || { grep -q '"compact"' "$tr" && compacted="yes-empty"; }
