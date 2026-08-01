@@ -412,7 +412,7 @@ else
 	bad "--check returned in ${slow_elapsed}s without waiting for a 3s probe"
 fi
 
-# --- scenarios 15-17 use their own repo, laid out the way the real one is ---
+# --- scenarios 15-18 use their own repo, laid out the way the real one is ---
 # The fixture above puts its worktrees in "$repo/wt", but the script sizes
 # "$main_root/.claude/worktrees" — so nothing above this line has ever
 # exercised the sizing code at all. These scenarios need a known population in
@@ -547,7 +547,78 @@ else
 	bad "the cache lever was suppressed in the footer even though it can help: $cache_out"
 fi
 
-# --- scenario 17: the floor message offers only levers it can substantiate ---
+# --- scenario 17: the report names a STALLED GOCACHE volume and finishes ---
+# The report is the mode a human runs when something is already wrong, and it
+# touched GOCACHE four times with no bound at all: `[ -d ]`, two `df`s and a
+# `du`. A stalled volume does not fail any of those, it BLOCKS them — so the
+# report printed its "NNG free of ..." first line and then nothing whatsoever,
+# with the build-cache volume unnamed as the reason it stopped (kata 6jxs).
+# --check, cured of the same disease by kata r07s, names it in seconds.
+#
+# Same seam and same limit as scenario 13: no filesystem can be made to stall
+# on demand, so SERF_GOCACHE_PROBE_CMD stands in for the touch that would
+# block. Everything asserted here — the bound, the kill, the line, and the rest
+# of the report arriving after it — is the real thing.
+report_stall_probe="sleep 987655" # a duration nothing else on this machine runs
+report_stall_start=$SECONDS
+(cd "$repo2" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$report_stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
+	GOCACHE="$samevol_cache" bash "$script" --into main) >"$work/report-stall.out" 2>&1
+report_stall_status=$?
+report_stall_elapsed=$((SECONDS - report_stall_start))
+if [ "$report_stall_status" -eq 124 ]; then
+	bad "the report HUNG on a stalled GOCACHE volume (killed at 30s): its touches are unbounded"
+elif grep -qi "stall" "$work/report-stall.out" && grep -qF "$samevol_cache" "$work/report-stall.out"; then
+	ok "the report names the stalled GOCACHE volume instead of blocking on it"
+else
+	bad "the report did not name the stalled GOCACHE volume: $(cat "$work/report-stall.out")"
+fi
+# The rest of the report still arriving is the whole difference from --check,
+# which exits on a stall. A human runs this when something is already wrong;
+# the worktree classes are what they came for and a stalled build cache is no
+# reason to withhold them.
+if grep -q "registered checkouts" "$work/report-stall.out"; then
+	ok "the report finishes past a stalled GOCACHE volume"
+else
+	bad "the report stopped at the stalled GOCACHE volume: $(cat "$work/report-stall.out")"
+fi
+if grep -q "Killed" "$work/report-stall.out"; then
+	bad "the stall line carries bash's job-kill notice: $(cat "$work/report-stall.out")"
+else
+	ok "the stall line arrives without bash's job-kill notice"
+fi
+if [ "$report_stall_elapsed" -le 10 ]; then
+	ok "the report gave up on the stalled volume in ${report_stall_elapsed}s (the bound it was given was 1s)"
+else
+	bad "the report took ${report_stall_elapsed}s against a 1s bound on the GOCACHE probe"
+fi
+# The probe must not outlive the report that gave up on it: left running it
+# holds the blocked I/O open with nobody watching. SIGKILL is not instant, so
+# poll.
+report_orphan_polls=20
+while [ "$report_orphan_polls" -gt 0 ] && pgrep -f "$report_stall_probe" >/dev/null 2>&1; do
+	sleep 0.1
+	report_orphan_polls=$((report_orphan_polls - 1))
+done
+if pgrep -f "$report_stall_probe" >/dev/null 2>&1; then
+	bad "the stalled probe outlived the report (orphan still holding the volume)"
+	pkill -f "$report_stall_probe" >/dev/null 2>&1
+else
+	ok "the report kills the stalled probe rather than leaving it behind"
+fi
+
+# --- scenario 18: a GOCACHE volume that answers is not called stalled ---
+# Without this half, a report that prints the stall line unconditionally
+# satisfies scenario 17. $cache_out is scenario 16's run of the same code
+# against a real, reachable cache directory, and scenario 16 has already
+# asserted that run sized the cache and placed it on this volume — which it
+# can only do by using the probe's actual answer.
+if echo "$cache_out" | grep -qi "stall"; then
+	bad "the report called a reachable GOCACHE stalled: $cache_out"
+else
+	ok "a GOCACHE volume that answers the probe is not reported as stalled"
+fi
+
+# --- scenario 19: the floor message offers only levers it can substantiate ---
 # The message fires on every test run below the floor and is the whole remedy
 # the next person gets. Measured on the real machine at 3G free: it named
 # --worktrees, worth exactly 0 bytes, while 10.0G of /tmp scratch and 1.6G of
@@ -588,7 +659,7 @@ else
 	bad "the cache lever was suppressed even though it can move this floor: $cache_floor_out"
 fi
 
-# --- scenario 18: --help prints the whole header, not a stale line range ---
+# --- scenario 20: --help prints the whole header, not a stale line range ---
 # It printed lines 2-64 of a header that had grown to 77, so --help stopped
 # mid-sentence and dropped the Safety paragraph entirely. Nothing failed; the
 # documentation just quietly went missing.

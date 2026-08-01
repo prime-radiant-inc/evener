@@ -415,6 +415,9 @@ func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) err
 	if err := removeProjectSessionRendezvous(s.cfg.RunDir, sessionID); err != nil {
 		return err
 	}
+	if err := removeProjectSessionDaemonLog(s.cfg.RunDir, sessionID); err != nil {
+		return err
+	}
 	apiLogPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")
 	if err := removeProjectSessionFile(apiLogPath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -447,6 +450,32 @@ func removeProjectSessionRendezvous(runDir, sessionID string) error {
 		if err := removeProjectSessionRendezvousEntry(runDir, entry.PID); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// removeProjectSessionDaemonLog deletes the per-daemon log this session wrote
+// under <run-dir>/logs (spawn_daemonlog.go). Nothing else ever removes one:
+// rendezvous.List skips that subdirectory and hubcore.Roster prunes rendezvous
+// entries only, so a machine that has spawned sessions for months keeps every
+// daemon log it ever wrote (kata dd8d).
+//
+// Deletion is the one moment the hub knows for certain that nobody owns the
+// file, which is why the reaping lives here and not behind an age or size
+// policy: an operator reads these logs after a crash, sometimes days later,
+// and a session that still exists is a session whose log still has a reader.
+//
+// Same run-dir boundary the rendezvous removal above already crosses, and
+// sessionID has been through identifier.ValidateSessionID by the time this
+// runs (removeFlatProjectSessionArtifacts, at the top of the caller);
+// daemonLogName folds anything else away regardless.
+func removeProjectSessionDaemonLog(runDir, sessionID string) error {
+	if runDir == "" {
+		return nil
+	}
+	path := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	if err := removeProjectSessionFile(path); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }

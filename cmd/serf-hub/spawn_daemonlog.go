@@ -36,6 +36,9 @@ const daemonLogDirName = "logs"
 type daemonLog struct {
 	file *os.File
 	path string
+	// pending is true until a session id is known for this log. Only a pending
+	// log may be deleted: see removeIfPending.
+	pending bool
 }
 
 // openDaemonLog opens the file a daemon's output goes to, under runDir.
@@ -57,7 +60,7 @@ func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("daemon log: %w", err)
 		}
-		return &daemonLog{file: f, path: f.Name()}, nil
+		return &daemonLog{file: f, path: f.Name(), pending: true}, nil
 	}
 	path := filepath.Join(dir, daemonLogName(sessionID))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -99,6 +102,9 @@ func (l *daemonLog) adopt(sessionID string) {
 	if sessionID == "" {
 		return
 	}
+	// A session owns this file from here on, whatever the rename does next: a
+	// failed rename leaves the pending NAME, not a log nobody can account for.
+	l.pending = false
 	target := filepath.Join(filepath.Dir(l.path), daemonLogName(sessionID))
 	if target == l.path {
 		return
@@ -123,6 +129,23 @@ func (l *daemonLog) tail(limit int) string {
 		return ""
 	}
 	return b.String()
+}
+
+// removeIfPending deletes a log no session ever claimed. A launch that fails
+// before rendezvous has already quoted this file's tail into its error, and
+// nothing can name it after a session afterwards — the id arrives only with
+// the rendezvous entry the launch did not get. Left behind, it is an opaque
+// daemon-pending-*.log under <run-dir>/logs that no hub code reads, lists, or
+// removes, one more per failed launch, forever (kata dd8d).
+//
+// A log a session HAS its name on is never removed here, whoever calls this:
+// that file is an operator's account of a daemon that ran, and a resume
+// appends to it.
+func (l *daemonLog) removeIfPending() {
+	if !l.pending {
+		return
+	}
+	_ = os.Remove(l.path)
 }
 
 // close releases the hub's own descriptor. Call it once the child has been
