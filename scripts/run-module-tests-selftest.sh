@@ -232,6 +232,14 @@ started_streams() {
 	cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ *$//'
 }
 
+runner_logdirs() {
+	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
+}
+
+full_logs_path() {
+	awk '/^full logs: / { print substr($0, 12); exit }' "$1"
+}
+
 new_case
 out="$case_dir/inherited-selftest-disabled.out"
 if SELFTEST=1 run_tests "agent" "$out"; then rc=0; else rc=$?; fi
@@ -248,6 +256,7 @@ assert_one_verdict_per_name "$out" "all-passing run reports no name twice"
 assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
+assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
 
 new_case
 out="$case_dir/root-full.out"
@@ -315,6 +324,7 @@ assert_has "$out" "----- auth -----" "the test-failed module is dumped"
 assert_has "$out" "--- FAIL: TestThing" "a failure with a go-test marker is still dumped"
 assert_not_has "$out" "----- agent -----" "the passing module is not dumped"
 assert_not_has "$out" "go-stdout:agent" "passing module chatter stays hidden"
+if [ -d "$(full_logs_path "$out")" ]; then ok "a failing run retains the logs it names"; else bad "a failing run removes the logs it names"; fi
 llm_line="$(grep -nF -- '----- llm -----' "$out" | cut -d: -f1)"
 auth_line="$(grep -nF -- '----- auth -----' "$out" | cut -d: -f1)"
 if [ -n "$llm_line" ] && [ -n "$auth_line" ] && [ "$llm_line" -lt "$auth_line" ]; then

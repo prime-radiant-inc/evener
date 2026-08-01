@@ -130,6 +130,17 @@ module_test_flags() {
 	printf '%s' "${selected# }"
 }
 
+logdir=""
+keep_failed_logs=0
+
+cleanup() {
+	if [ -n "$logdir" ] && [ "$keep_failed_logs" -eq 0 ]; then
+		rm -rf "$logdir"
+	fi
+}
+
+trap cleanup EXIT
+
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
 failed_modules=()
@@ -284,6 +295,7 @@ if [ "$fail" -ne 0 ]; then
 	done
 	echo
 	echo "full logs: $logdir"
+	keep_failed_logs=1
 fi
 
 exit "$fail"
