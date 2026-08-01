@@ -1,16 +1,19 @@
 # job-list-and-recovery: filters, newest-first order, the short-job race, and list-as-reorientation
 
 **What this covers**: `job_list` as authoritative durable inventory
-(`docs/job-control.md` lines 654-726). (a) `status[]` and `type[]`
+(`docs/job-control.md` "`job_list`"). (a) `status[]` and `type[]`
 filters select exactly the matching records; (b) results are
 newest-first — `started_at` descending, tie-broken by `job_id`
-(line 674); (c) the short-job race: a job that completes before any
+("Results are sorted by `started_at` descending, tie-broken by
+`job_id`"); (c) the short-job race: a job that completes before any
 running-filtered list observes it is still visible without the status
 filter (the `job_list` description's own warning, ergonomics §3);
 (d) the re-orientation flow — before any terminal notification has
 been delivered, a mid-turn `job_list` already shows the durable truth
-(line 675: authoritative inventory; durable overlay of in-memory
-running state, line 922); (e) post-F2, the result also reports active
+("`job_list` is authoritative durable inventory for the visible
+session"; "Durable reconstruction invariants" "`job_list`
+reconstructs from durable job state and overlays in-memory state for
+currently running jobs"); (e) post-F2, the result also reports active
 watches. Delegate enumeration + double-read non-consumption is
 already covered by subagent-list-and-output.md.
 
@@ -93,7 +96,9 @@ Turn 1:
   status outside the canonical five.
 - Every entry carries the documented row fields: `job_id`, `type`,
   `status`, `reason`, `started_at`, `total_bytes`; J4's row also has
-  `transcript_ref` and `resumable` (line 678). The byte counter on a
+  `transcript_ref` and `resumable` ("`job_list`" "Delegate records
+  include `delegate_id`, `current_job_id`, `latest_job_id`,
+  `transcript_ref`, `resumable`"). The byte counter on a
   `job_list` row is `total_bytes` (`agent/session_tools_jobs.go:1349`) —
   `output_bytes` is the `<job-notification>` attribute and a `job_status`
   field, and asserting it here would fail on a working build.
@@ -101,8 +106,9 @@ Turn 1:
 Turn 2:
 
 - The step-3 listing reports J5 `"completed"` — INSIDE the same turn,
-  BEFORE any terminal notification was delivered (notifications queue
-  for the turn boundary, line 961). This is the re-orientation
+  BEFORE any terminal notification was delivered ("Notifications" "If
+  the parent is mid-turn, notifications queue for a safe turn
+  boundary"). This is the re-orientation
   promise: when no notification has arrived yet, one `job_list` shows
   the durable truth.
 - Transcript ordering proof: the TOOL_RESULTS entry for step 3
@@ -150,4 +156,5 @@ Turn 2:
   reinterpret.
 - One listing per question, by design: this card's repeated job_list
   calls each answer a DIFFERENT filter question. Do not present this
-  as a sanctioned poll-for-completion loop (anti-pattern, line 693).
+  as a sanctioned poll-for-completion loop ("Anti-patterns" "polling
+  `job_list` for completion").
