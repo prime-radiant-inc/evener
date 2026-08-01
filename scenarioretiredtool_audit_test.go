@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -257,12 +258,7 @@ func retiredToolLiveDocFiles(t *testing.T) []string {
 }
 
 func isRetiredToolHistoricalDocDir(path string) bool {
-	for _, dir := range retiredToolHistoricalDocDirs {
-		if path == dir {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(retiredToolHistoricalDocDirs, path)
 }
 
 // datedRecordFilename reports whether a markdown file name starts with a
