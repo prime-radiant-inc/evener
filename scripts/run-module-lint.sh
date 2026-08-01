@@ -2,12 +2,23 @@
 # run-module-lint.sh - lint all non-fuzz Go modules with bounded concurrency.
 set -uo pipefail
 
+# A run owes its reader exactly one summary line, so every failing exit routes
+# through here and none of them can end silently. The leading category is the
+# vocabulary a human or a log scraper reads the failure by: setup for a run that
+# never got as far as a module, not-checked for an unusable linter, findings for
+# real lint output, results-lost for checks whose verdicts did not survive the
+# run, interrupted for a signal.
+fail_lint() {
+	printf 'FAIL lint (%s)\n' "$1"
+	exit "$2"
+}
+
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 LINT_PARALLEL=${LINT_PARALLEL:-4}
 case "$LINT_PARALLEL" in
 	''|*[!0-9]*|0*)
 		printf 'lint: LINT_PARALLEL must be a positive integer without leading zeroes (got %s)\n' "$LINT_PARALLEL" >&2
-		exit 2
+		fail_lint 'setup: LINT_PARALLEL must be a positive integer without leading zeroes' 2
 		;;
 esac
 
@@ -43,9 +54,9 @@ cleanup() {
 }
 
 interrupted() {
-	local status="$1"
+	local status="$1" signal="$2"
 	stop_children
-	exit "$status"
+	fail_lint "interrupted: $signal" "$status"
 }
 
 # Nothing in this run deletes anything under $logdir before cleanup, so an
@@ -55,18 +66,17 @@ interrupted() {
 scratch_vanished() {
 	printf 'lint: %s disappeared mid-run: %s\n' "$1" "$2" >&2
 	printf 'lint: nothing in this run removes it before cleanup, so something outside did; a TMPDIR reaper under disk pressure is the usual suspect on macOS\n' >&2
-	printf 'FAIL lint (%d modules, results lost: %s)\n' "$module_count" "$MODULES"
-	exit 1
+	fail_lint "results-lost: $module_count modules: $MODULES" 1
 }
 
 trap cleanup EXIT
-trap 'interrupted 129' HUP
-trap 'interrupted 130' INT
-trap 'interrupted 143' TERM
+trap 'interrupted 129 SIGHUP' HUP
+trap 'interrupted 130 SIGINT' INT
+trap 'interrupted 143 SIGTERM' TERM
 
 if ! logdir="$(mktemp -d -t serf-module-lint.XXXXXX)"; then
 	printf 'lint: unable to create temporary log directory\n' >&2
-	exit 1
+	fail_lint 'setup: unable to create temporary log directory' 1
 fi
 
 # Invoke an absent command once so Bash retains its original diagnostic without
@@ -75,8 +85,7 @@ if ! command -v golangci-lint >/dev/null 2>&1; then
 	( golangci-lint run ./... ) >"$logdir/setup.log" 2>&1
 	status=$?
 	cat "$logdir/setup.log"
-	printf 'FAIL lint (%d modules not checked: %s)\n' "$module_count" "$MODULES"
-	exit "$status"
+	fail_lint "not-checked: $module_count modules: $MODULES" "$status"
 fi
 
 run_wave() {
@@ -87,14 +96,14 @@ run_wave() {
 	gate="$logdir/wave.start"
 	if ! mkfifo "$gate"; then
 		printf 'lint: unable to create module start gate\n' >&2
-		exit 1
+		fail_lint 'setup: unable to create module start gate' 1
 	fi
 	# Without the gate open, every child of this wave blocks forever opening a
 	# FIFO nobody will write, so refuse the wave rather than hang in wait.
 	if ! exec 7<>"$gate"; then
 		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 		printf 'lint: unable to open module start gate: %s\n' "$gate" >&2
-		exit 1
+		fail_lint 'setup: unable to open module start gate' 1
 	fi
 	for ((i = first; i < last; i++)); do
 		module="${modules[$i]}"
@@ -121,7 +130,7 @@ run_wave() {
 		if ! { printf '%s\n' "$status" >"$logdir/${indexes[$j]}.status"; } 2>/dev/null; then
 			[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 			printf 'lint: unable to record the result for module %s\n' "${modules[${indexes[$j]}]}" >&2
-			exit 1
+			fail_lint "results-lost: unable to record the result for module ${modules[${indexes[$j]}]}" 1
 		fi
 	done
 	active_pids=()
@@ -143,7 +152,7 @@ for ((i = 0; i < module_count; i++)); do
 	if ! status="$(cat "$logdir/$i.status" 2>/dev/null)"; then
 		[ -d "$logdir" ] || scratch_vanished 'the temporary log directory' "$logdir"
 		printf 'lint: unable to read the result for module %s\n' "${modules[$i]}" >&2
-		exit 1
+		fail_lint "results-lost: unable to read the result for module ${modules[$i]}" 1
 	fi
 	if [ "$status" -ne 0 ]; then
 		failed_modules+=("${modules[$i]}")
@@ -165,6 +174,4 @@ for ((i = 0; i < module_count; i++)); do
 done
 printf 'full logs: %s\n' "$logdir"
 keep_failed_logs=1
-printf 'FAIL lint (%d/%d modules: %s)\n' \
-	"${#failed_modules[@]}" "$module_count" "${failed_modules[*]}"
-exit 1
+fail_lint "findings: ${#failed_modules[@]}/$module_count modules: ${failed_modules[*]}" 1
