@@ -172,8 +172,24 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(stopRes), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, stopRes.Output)
 	}
-	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusCancelled) || stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
-		t.Fatalf("job_stop = %+v, want cancelled/stopped_by_parent", stopOut)
+	// max_wait_ms is the tool's BOUNDED wait: its contract is "stop delivered,
+	// and here is the state I saw inside the window", which on a starved
+	// machine is legitimately still running (observed: a sharded run whose
+	// child outlived the 1s window). The immediate answer therefore pins only
+	// delivery; the settled cancelled/stopped_by_parent truth is asserted on
+	// the durable record below, behind waitForShellDone's own loud await.
+	if stopOut.JobID != shellOut.JobID {
+		t.Fatalf("job_stop = %+v, want job %s", stopOut, shellOut.JobID)
+	}
+	switch stopOut.Status {
+	case string(jobstore.StatusCancelled):
+		if stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
+			t.Fatalf("job_stop settled without its reason = %+v, want stopped_by_parent", stopOut)
+		}
+	case string(jobstore.StatusRunning):
+		// Stop delivered, child not yet settled inside the bounded wait.
+	default:
+		t.Fatalf("job_stop = %+v, want cancelled (settled) or running (bounded wait expired)", stopOut)
 	}
 
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
