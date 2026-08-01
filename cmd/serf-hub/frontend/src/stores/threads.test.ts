@@ -127,6 +127,11 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
 // and passing for the wrong reason. The emit is a callback rather than the
 // caller's next statement for the same reason: returning from here would cost
 // microtasks of its own, and publish is the very next one.
+//
+// `published` is how the second guard recognises the snapshot: a ref gaining a
+// model at all covers an initial hydrate, but a resync into a ref that already
+// has one needs a witness from the snapshot itself, so those callers pass their
+// own.
 function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
   return {
     ...response,
@@ -137,12 +142,15 @@ function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }
   };
 }
 
-async function emitAtResponseCut(cut: { reached: boolean }, ref: string, emit: () => void): Promise<void> {
+async function emitAtResponseCut(
+  cut: { reached: boolean },
+  ref: string,
+  emit: () => void,
+  published: () => boolean = () => threadsStore.getState().threads.has(ref),
+): Promise<void> {
   for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
   expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
-  expect(threadsStore.getState().threads.has(ref), "the snapshot published before the cut window was reached").toBe(
-    false,
-  );
+  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
   emit();
 }
 
@@ -1636,6 +1644,72 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
     expect(a.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
     expect(b.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
+  // The one window where a superseding hydrate's routing and the pending it
+  // supersedes disagree about which thread this ref names: thread/clear rebinds
+  // ref_a while an earlier resync read is still in flight, so the next resync
+  // is seeded from the post-clear model and the pending it replaces still holds
+  // the pre-clear id. Neither seed decides anything past the response cut - the
+  // snapshot this read actually returned re-seeds the routing there, and that
+  // is the only reason a frame naming the post-clear thread reaches the model
+  // instead of being refused as a contradictory identity and dropped.
+  test("a resync that supersedes a pre-clear hydrate routes post-cut frames by its own snapshot's thread id", async () => {
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    const resyncReads: Array<(response: ThreadReadResponse) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) return readResponse("ref_a");
+      return new Promise<ThreadReadResponse>((resolve) => resyncReads.push(resolve));
+    });
+    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { id: "thr_cleared" }), ref: "ref_a" }));
+
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
+
+    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushUntil(() => resyncReads.length === 1);
+
+    await threadsStore.getState().clearThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_cleared");
+
+    fake.emitNotification({ method: "serf/thread/resync", params: { threadId: "thr_cleared", ref: "ref_a" } });
+    await flushUntil(() => resyncReads.length === 2);
+
+    const snapshotTurn = (): boolean =>
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.some((turn) => turn.id === "turn_9") === true;
+    resyncReads[1]?.(
+      markResponseCut(
+        readResponse("ref_a", {
+          id: "thr_cleared",
+          turns: [{ id: "turn_9", status: "completed", itemsView: "full", items: [] }],
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(
+      cut,
+      "ref_a",
+      () =>
+        fake.emitNotification({
+          method: "thread/status/changed",
+          params: { threadId: "thr_cleared", ref: "ref_a", status: { type: "active", activeFlags: ["streaming"] } },
+        }),
+      snapshotTurn,
+    );
+    await flushUntil(snapshotTurn);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_9"]);
+    expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
 
     threadsStore.getState().releaseThread("ref_a");
   });
