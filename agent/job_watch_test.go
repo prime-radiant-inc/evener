@@ -604,7 +604,7 @@ type grantReadFixture struct {
 func newGrantReadFixture(t *testing.T) *grantReadFixture {
 	t.Helper()
 	parentStateDir := t.TempDir()
-	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(parentStateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
@@ -617,7 +617,7 @@ func newGrantReadFixture(t *testing.T) *grantReadFixture {
 		_ = observerJM.store.Close()
 	})
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
+	parent := &Session{id: testParentSessionID, jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 	observer := &Session{id: "child_job_obs", jobManager: observerJM}
 	observer.cfg.spawn.parentGrantedJobRead = parent.lookupGrantedJobRead
 

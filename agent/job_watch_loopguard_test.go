@@ -744,8 +744,8 @@ func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
 		TS:               ended,
 		JobID:            "job_obs_resumed",
 		Type:             jobstore.JobDelegate,
-		OwnerSessionID:   "PARENT",
-		VisibleToSession: "PARENT",
+		OwnerSessionID:   testParentSessionID,
+		VisibleToSession: testParentSessionID,
 		TranscriptRef:    encodeRef("", "child_job_obs"),
 		StartedAt:        &ended,
 	}); err != nil {
@@ -770,7 +770,7 @@ func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
 func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 	t.Parallel()
 	parentStateDir := t.TempDir()
-	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(parentStateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 		t.Fatalf("close parent store: %v", err)
 	}
 
-	reopenedJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	reopenedJM, err := newJobManager(parentStateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen parent jobManager: %v", err)
 	}
@@ -819,7 +819,7 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 		t.Fatalf("grants after clear+reopen = %+v, want child_job_obs -> %s", grants, watched.JobID)
 	}
 
-	reopenedParent := &Session{id: "PARENT", jobManager: reopenedJM, subagents: newSubagentManager(nil, 0)}
+	reopenedParent := &Session{id: testParentSessionID, jobManager: reopenedJM, subagents: newSubagentManager(nil, 0)}
 	observer := &Session{id: "child_job_obs", jobManager: observerJM}
 	observer.cfg.spawn.parentGrantedJobRead = reopenedParent.lookupGrantedJobRead
 
@@ -869,8 +869,8 @@ func TestGrantedReadRejectsBlock(t *testing.T) {
 
 func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	childJM := newWalkJobManager(t, "CHILD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	childJM := newWalkJobManager(t, testChildSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = childJM.store.Close()
@@ -885,9 +885,9 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, childJM, childRec.JobID) })
 
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+	child := &Session{id: testChildSessionID, jobManager: childJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testChildSessionID, sess: child, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
 		"operation":    "create",
@@ -1019,9 +1019,9 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 
 func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -1039,11 +1039,11 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
 		"operation":    "create",

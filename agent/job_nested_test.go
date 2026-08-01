@@ -22,11 +22,11 @@ import (
 
 func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobManager) {
 	t.Helper()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -39,13 +39,13 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 	childJM.parentJobID = parentJobID
 
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   &Session{id: "CHILD", jobManager: childJM},
+		id:     testChildSessionID,
+		sess:   &Session{id: testChildSessionID, jobManager: childJM},
 		status: SubagentRunning,
 	})
 	return parent, childJM
@@ -53,14 +53,14 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 
 func TestDelegateRelinkSynchronizesNestedShellParent(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = childJM.store.Close()
 	})
-	child := &Session{id: testOwnerSessionID, jobManager: childJM}
+	child := &Session{id: testChildSessionID, jobManager: childJM}
 
 	iterations := 8
 	if raceDetectorEnabled || !testing.Short() {
@@ -95,11 +95,11 @@ func TestDelegateRelinkSynchronizesNestedShellParent(t *testing.T) {
 
 func TestNestedShellForwardsJobStarted(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -149,10 +149,10 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
 	}
-	if parentRec.OwnerSessionID != "CHILD" {
+	if parentRec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
 	}
-	if parentRec.VisibleToSession != "PARENT" {
+	if parentRec.VisibleToSession != testParentSessionID {
 		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
 	}
 	if parentRec.Status != jobstore.StatusRunning {
@@ -162,7 +162,7 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 
 func TestDelegateStartForwardsToParent(t *testing.T) {
 	t.Parallel()
-	root, err := newJobManager(t.TempDir(), "ROOT", func(jobNotification) {})
+	root, err := newJobManager(t.TempDir(), testRootSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new root jobManager: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestDelegateStartForwardsToParent(t *testing.T) {
 	if rootRec.ParentJobID != "job_ROOTDELEGATE" {
 		t.Fatalf("root record ParentJobID = %q, want job_ROOTDELEGATE", rootRec.ParentJobID)
 	}
-	if rootRec.VisibleToSession != "ROOT" {
+	if rootRec.VisibleToSession != testRootSessionID {
 		t.Fatalf("root record VisibleToSession = %q, want ROOT", rootRec.VisibleToSession)
 	}
 	if rootRec.Status != jobstore.StatusRunning {
@@ -270,11 +270,11 @@ func TestDelegateStartForwardFailureWritesDurableTerminal(t *testing.T) {
 
 func TestParentRuntimeCloseKeepsStoreOpenForNestedTerminalForward(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestParentRuntimeCloseKeepsStoreOpenForNestedTerminalForward(t *testing.T) 
 
 func TestNestedShellStartReturnsForwardFailure(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestNestedShellStartReturnsForwardFailure(t *testing.T) {
 
 func TestNestedDelayedShellStartForwardFailurePreservesFailedOutput(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -398,11 +398,11 @@ func TestNestedDelayedShellStartForwardFailurePreservesFailedOutput(t *testing.T
 
 func TestNestedDelayedShellStartForwardTerminalAppendFailureFinalizesRun(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestNestedDelayedShellStartForwardTerminalAppendFailureFinalizesRun(t *test
 
 func TestNestedRuntimeTimeoutForwardFailurePreservesFailedOutput(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -531,11 +531,11 @@ func TestNestedRuntimeTimeoutForwardFailurePreservesFailedOutput(t *testing.T) {
 
 func TestJobListIncludeNestedFilter(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -588,11 +588,11 @@ func TestJobListIncludeNestedFilter(t *testing.T) {
 
 func TestFindJobRecordFindsForwardedNestedJob(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -712,11 +712,11 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 
 func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -740,13 +740,13 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	}
 
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   &Session{id: "CHILD", jobManager: childJM},
+		id:     testChildSessionID,
+		sess:   &Session{id: testChildSessionID, jobManager: childJM},
 		status: SubagentCompleted,
 		closed: true,
 	})
@@ -768,18 +768,18 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	if selected != parentJM {
 		t.Fatalf("nestedOrLocalJobManager selected closed child manager, want parent manager")
 	}
-	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != "CHILD" {
+	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("nestedOrLocalJobManager record = %+v, want parent forwarded record", rec)
 	}
 }
 
 func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -803,13 +803,13 @@ func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 		t.Fatalf("create nested shell: %v", err)
 	}
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   &Session{id: "CHILD", jobManager: childJM},
+		id:     testChildSessionID,
+		sess:   &Session{id: testChildSessionID, jobManager: childJM},
 		status: SubagentCompleted,
 		closed: true,
 	})
@@ -827,11 +827,11 @@ func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 
 func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -855,13 +855,13 @@ func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	}
 
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:            "CHILD",
-		sess:          &Session{id: "CHILD", jobManager: childJM},
+		id:            testChildSessionID,
+		sess:          &Session{id: testChildSessionID, jobManager: childJM},
 		status:        SubagentCompleted,
 		closeTimedOut: true,
 	})
@@ -883,18 +883,18 @@ func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	if selected != parentJM {
 		t.Fatalf("nestedOrLocalJobManager selected closed-store child manager, want parent manager")
 	}
-	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != "CHILD" {
+	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("nestedOrLocalJobManager record = %+v, want parent forwarded record", rec)
 	}
 }
 
 func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -924,13 +924,13 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 	}
 
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   &Session{id: "CHILD", jobManager: childJM},
+		id:     testChildSessionID,
+		sess:   &Session{id: testChildSessionID, jobManager: childJM},
 		status: SubagentCompleted,
 	})
 
@@ -973,9 +973,9 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 // fallback must resolve `local` from COORD and recover the forwarded copy.
 func TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -1015,9 +1015,9 @@ func TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy(t *testing.T)
 		t.Fatalf("root store unexpectedly holds forwarded worker copy; forwarding must be single-hop")
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
 
 	// Close the OWNER (worker) store: the read can only be served from the
 	// forwarded copy in COORD.
@@ -1049,11 +1049,11 @@ func TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy(t *testing.T)
 
 func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -1069,13 +1069,13 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 		t.Fatalf("create nested shell: %v", err)
 	}
 	parent := &Session{
-		id:         "PARENT",
+		id:         testParentSessionID,
 		jobManager: parentJM,
 		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   &Session{id: "CHILD", jobManager: childJM},
+		id:     testChildSessionID,
+		sess:   &Session{id: testChildSessionID, jobManager: childJM},
 		status: SubagentRunning,
 	})
 
@@ -1315,8 +1315,8 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 		Type:             jobstore.JobShell,
 		Command:          "sleep 30",
 		Description:      "stale nested child",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "PARENT",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testParentSessionID,
 		ParentJobID:      delegate.JobID,
 		StartedAt:        &startedAt,
 	}); err != nil {
@@ -1349,14 +1349,14 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 
 func TestStopOwnerGoneNestedTerminalRecordReturnsStatus(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = parentJM.store.Close()
 	})
-	parent := &Session{id: "PARENT", jobManager: parentJM}
+	parent := &Session{id: testParentSessionID, jobManager: parentJM}
 	startedAt := time.Unix(1, 0).UTC()
 	endedAt := time.Unix(2, 0).UTC()
 	if err := parentJM.appendEvent(jobstore.Event{
@@ -1367,7 +1367,7 @@ func TestStopOwnerGoneNestedTerminalRecordReturnsStatus(t *testing.T) {
 		Command:          "true",
 		Description:      "owner gone terminal nested",
 		OwnerSessionID:   "CHILDGONE",
-		VisibleToSession: "PARENT",
+		VisibleToSession: testParentSessionID,
 		ParentJobID:      "job_DELEGATE",
 		StartedAt:        &startedAt,
 	}); err != nil {
@@ -1402,14 +1402,14 @@ func TestStopOwnerGoneNestedTerminalRecordReturnsStatus(t *testing.T) {
 
 func TestStopOwnerGoneNestedRunningRecordIsNotControllable(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = parentJM.store.Close()
 	})
-	parent := &Session{id: "PARENT", jobManager: parentJM}
+	parent := &Session{id: testParentSessionID, jobManager: parentJM}
 	startedAt := time.Unix(1, 0).UTC()
 	if err := parentJM.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
@@ -1419,7 +1419,7 @@ func TestStopOwnerGoneNestedRunningRecordIsNotControllable(t *testing.T) {
 		Command:          "sleep 30",
 		Description:      "owner gone running nested",
 		OwnerSessionID:   "CHILDGONE",
-		VisibleToSession: "PARENT",
+		VisibleToSession: testParentSessionID,
 		ParentJobID:      "job_DELEGATE",
 		StartedAt:        &startedAt,
 	}); err != nil {
@@ -1441,7 +1441,7 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 	t.Parallel()
 	parentDir := t.TempDir()
 
-	seed, err := newJobManager(parentDir, "PARENT", func(jobNotification) {})
+	seed, err := newJobManager(parentDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1455,7 +1455,7 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 		Description:      "forwarded nested job",
 		ParentJobID:      "job_DELEGATE",
 		OwnerSessionID:   "CHILDGONE",
-		VisibleToSession: "PARENT",
+		VisibleToSession: testParentSessionID,
 		StartedAt:        &startedAt,
 	}); err != nil {
 		t.Fatalf("append forwarded job_started: %v", err)
@@ -1465,7 +1465,7 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 	}
 
 	var queued []jobNotification
-	jm, err := newJobManager(parentDir, "PARENT", func(n jobNotification) { queued = append(queued, n) })
+	jm, err := newJobManager(parentDir, testParentSessionID, func(n jobNotification) { queued = append(queued, n) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1492,7 +1492,7 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 	if rec.Type != jobstore.JobShell || rec.Command != "sleep 999" || rec.Description != "forwarded nested job" {
 		t.Fatalf("forwarded nested metadata = %+v, want original shell command metadata", rec)
 	}
-	if rec.ParentJobID != "job_DELEGATE" || rec.OwnerSessionID != "CHILDGONE" || rec.VisibleToSession != "PARENT" {
+	if rec.ParentJobID != "job_DELEGATE" || rec.OwnerSessionID != "CHILDGONE" || rec.VisibleToSession != testParentSessionID {
 		t.Fatalf("forwarded nested ownership metadata = %+v, want parent/owner/visible preserved", rec)
 	}
 	if rec.TerminalGen != "" {
@@ -1522,11 +1522,11 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 func TestRestoreSessionDoesNotInstallNestedForwardHook(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	parentJM, err := newJobManager(stateDir, "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(stateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	childSeed, err := newJobManager(stateDir, "CHILD", func(jobNotification) {})
+	childSeed, err := newJobManager(stateDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1543,15 +1543,15 @@ func TestRestoreSessionDoesNotInstallNestedForwardHook(t *testing.T) {
 		Command:          "true",
 		Description:      "restored child completed nested",
 		ParentJobID:      "job_DELEGATE",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		StartedAt:        &startedAt,
 	}
 	if err := childSeed.store.Append(started); err != nil {
 		t.Fatalf("append child started: %v", err)
 	}
 	parentStarted := started
-	parentStarted.VisibleToSession = "PARENT"
+	parentStarted.VisibleToSession = testParentSessionID
 	if err := parentJM.store.Append(parentStarted); err != nil {
 		t.Fatalf("append parent started: %v", err)
 	}
@@ -1582,7 +1582,7 @@ func TestRestoreSessionDoesNotInstallNestedForwardHook(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	meta := schema.SessionMeta{
-		ID:        "CHILD",
+		ID:        testChildSessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
@@ -1622,11 +1622,11 @@ func TestRestoreSessionDoesNotInstallNestedForwardHook(t *testing.T) {
 
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -1678,10 +1678,10 @@ func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
 	}
-	if parentRec.OwnerSessionID != "CHILD" {
+	if parentRec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
 	}
-	if parentRec.VisibleToSession != "PARENT" {
+	if parentRec.VisibleToSession != testParentSessionID {
 		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
 	}
 	if parentRec.Status != jobstore.StatusRunning {
@@ -1692,13 +1692,13 @@ func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 func TestNestedTerminalForwardsGenerationVerbatim(t *testing.T) {
 	t.Parallel()
 	var parentNotifications []jobNotification
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(n jobNotification) {
 		parentNotifications = append(parentNotifications, n)
 	})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -1748,17 +1748,17 @@ func TestNestedTerminalForwardsGenerationVerbatim(t *testing.T) {
 	if parentRec.TerminalGen != childRec.TerminalGen {
 		t.Fatalf("parent TerminalGen = %q, want child TerminalGen %q", parentRec.TerminalGen, childRec.TerminalGen)
 	}
-	if parentRec.VisibleToSession != "PARENT" {
+	if parentRec.VisibleToSession != testParentSessionID {
 		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
 	}
 	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
 	}
-	if parentRec.OwnerSessionID != "CHILD" {
+	if parentRec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
 	}
 	if parentRec.DedupeKey() != (jobstore.DedupeKey{
-		VisibleSessionID: "PARENT",
+		VisibleSessionID: testParentSessionID,
 		JobID:            rec.JobID,
 		TerminalGen:      childRec.TerminalGen,
 	}) {
@@ -1778,11 +1778,11 @@ func TestNestedTerminalForwardsGenerationVerbatim(t *testing.T) {
 
 func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -1864,11 +1864,11 @@ func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 
 func TestKeptSyncNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -1956,11 +1956,11 @@ func TestKeptSyncNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T)
 
 func TestNestedTerminalForwardRecoveryReplaysStoredTerminal(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -2032,26 +2032,26 @@ func TestRecoverForwardedExhaustedTerminalAfterParentRestart(t *testing.T) {
 	t.Parallel()
 	parentDir := t.TempDir()
 	childDir := t.TempDir()
-	parentSeed, err := newJobManagerNoSync(parentDir, "PARENT", nil)
+	parentSeed, err := newJobManagerNoSync(parentDir, testParentSessionID, nil)
 	if err != nil {
 		t.Fatalf("new seed parent jobManager: %v", err)
 	}
-	childSeed, err := newJobManagerNoSync(childDir, "CHILD", nil)
+	childSeed, err := newJobManagerNoSync(childDir, testChildSessionID, nil)
 	if err != nil {
 		_ = parentSeed.closeStoreOnly()
 		t.Fatalf("new seed child jobManager: %v", err)
 	}
 
 	startedAt := time.Unix(4400, 0).UTC()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childSeed.sessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            jobID,
 		Type:             jobstore.JobDelegate,
 		Description:      "exhausted descendant",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 	}
@@ -2086,11 +2086,11 @@ func TestRecoverForwardedExhaustedTerminalAfterParentRestart(t *testing.T) {
 		t.Fatalf("close seed child store: %v", err)
 	}
 
-	parentRestored, err := newJobManagerNoSync(parentDir, "PARENT", nil)
+	parentRestored, err := newJobManagerNoSync(parentDir, testParentSessionID, nil)
 	if err != nil {
 		t.Fatalf("restore parent jobManager: %v", err)
 	}
-	childRestored, err := newJobManagerNoSync(childDir, "CHILD", nil)
+	childRestored, err := newJobManagerNoSync(childDir, testChildSessionID, nil)
 	if err != nil {
 		_ = parentRestored.closeStoreOnly()
 		t.Fatalf("restore child jobManager: %v", err)
@@ -2130,14 +2130,14 @@ func TestRecoverForwardedExhaustedTerminalAfterParentRestart(t *testing.T) {
 func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	t.Parallel()
 	var parentNotifications []jobNotification
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(n jobNotification) {
 		parentNotifications = append(parentNotifications, n)
 	})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	childDir := t.TempDir()
-	childSeed, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childSeed, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new seed child jobManager: %v", err)
 	}
@@ -2147,7 +2147,7 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	})
 
 	startedAt := time.Unix(4500, 0).UTC()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childSeed.sessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2155,8 +2155,8 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 		Type:             jobstore.JobShell,
 		Command:          "true",
 		Description:      "restored nested shell",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 	}
@@ -2183,7 +2183,7 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 		t.Fatalf("close seed child store: %v", err)
 	}
 
-	childJM, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new restored child jobManager: %v", err)
 	}
@@ -2191,7 +2191,7 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	childJM.forward = parentJM.forwardEvent
 	childJM.parentJobID = "job_PARENTDELEGATE"
 	restored := &Session{
-		id:         "CHILD",
+		id:         testChildSessionID,
 		stateDir:   childDir,
 		jobManager: childJM,
 	}
@@ -2224,11 +2224,11 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 
 func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -2241,7 +2241,7 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 
 	startedAt := time.Unix(4700, 0).UTC()
 	endedAt := startedAt.Add(time.Second)
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childJM.sessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2249,8 +2249,8 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 		Type:             jobstore.JobShell,
 		Command:          "printf nested",
 		Description:      "nested start lost before parent forward",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 		OutputPath:       "/tmp/nested.log",
@@ -2282,7 +2282,7 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 		t.Fatalf("parent record missing for recovered nested job %s", jobID)
 	}
 	if parentRec.Status != jobstore.StatusCompleted || parentRec.Type != jobstore.JobShell ||
-		parentRec.OwnerSessionID != "CHILD" || parentRec.VisibleToSession != "PARENT" ||
+		parentRec.OwnerSessionID != testChildSessionID || parentRec.VisibleToSession != testParentSessionID ||
 		parentRec.ParentJobID != "job_PARENTDELEGATE" || parentRec.OutputPath != "/tmp/nested.log" {
 		t.Fatalf("parent recovered record = %+v, want started metadata plus completed terminal state", parentRec)
 	}
@@ -2290,7 +2290,7 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 
 func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -2305,7 +2305,7 @@ func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testi
 
 	startedAt := time.Unix(4800, 0).UTC()
 	endedAt := startedAt.Add(time.Second)
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childJM.sessionID)
 	if err := childJM.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2313,14 +2313,14 @@ func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testi
 		Type:             jobstore.JobShell,
 		Command:          "printf nested",
 		Description:      "nested terminal recovery with provenance",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 	}); err != nil {
 		t.Fatalf("append child started: %v", err)
 	}
-	p := provenance.WithWatch(nil, "watch_recover", "wg_1", "wd_1", "PARENT", "job_PARENTDELEGATE")
+	p := provenance.WithWatch(nil, "watch_recover", "wg_1", "wd_1", testParentSessionID, "job_PARENTDELEGATE")
 	if err := childJM.store.Append(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
@@ -2350,14 +2350,14 @@ func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testi
 func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testing.T) {
 	t.Parallel()
 	var parentNotifications []jobNotification
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(n jobNotification) {
 		parentNotifications = append(parentNotifications, n)
 	})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	childDir := t.TempDir()
-	childSeed, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childSeed, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new seed child jobManager: %v", err)
 	}
@@ -2367,7 +2367,7 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 	})
 
 	startedAt := time.Unix(4600, 0).UTC()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childSeed.sessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2375,8 +2375,8 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 		Type:             jobstore.JobShell,
 		Command:          "sleep 60",
 		Description:      "lost nested shell",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 	}
@@ -2390,7 +2390,7 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 		t.Fatalf("close seed child store: %v", err)
 	}
 
-	childJM, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new restored child jobManager: %v", err)
 	}
@@ -2398,7 +2398,7 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 	childJM.forward = parentJM.forwardEvent
 	childJM.parentJobID = "job_PARENTDELEGATE"
 	restored := &Session{
-		id:         "CHILD",
+		id:         testChildSessionID,
 		stateDir:   childDir,
 		jobManager: childJM,
 	}
@@ -2431,12 +2431,12 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 
 func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	childDir := t.TempDir()
-	childSeed, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childSeed, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new seed child jobManager: %v", err)
 	}
@@ -2446,7 +2446,7 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 	})
 
 	startedAt := time.Unix(4700, 0).UTC()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(childSeed.sessionID)
 	if err := childSeed.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2454,8 +2454,8 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 		Type:             jobstore.JobShell,
 		Command:          "true",
 		Description:      "failed start forward",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		ParentJobID:      "job_PARENTDELEGATE",
 		StartedAt:        &startedAt,
 	}); err != nil {
@@ -2477,7 +2477,7 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 		t.Fatalf("close seed child store: %v", err)
 	}
 
-	childJM, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(childDir, testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new restored child jobManager: %v", err)
 	}
@@ -2485,7 +2485,7 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 	childJM.forward = parentJM.forwardEvent
 	childJM.parentJobID = "job_PARENTDELEGATE"
 	restored := &Session{
-		id:         "CHILD",
+		id:         testChildSessionID,
 		stateDir:   childDir,
 		jobManager: childJM,
 	}
@@ -2504,11 +2504,11 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 
 func TestNestedNotificationForwardFailureRetriesPendingNotification(t *testing.T) {
 	t.Parallel()
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
@@ -2560,7 +2560,7 @@ func TestForwardedChildJobDoesNotNotifyParentRail(t *testing.T) {
 	t.Parallel()
 	var parentRailMu sync.Mutex
 	var parentRail []jobNotification
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(n jobNotification) {
 		parentRailMu.Lock()
 		parentRail = append(parentRail, n)
 		parentRailMu.Unlock()
@@ -2570,7 +2570,7 @@ func TestForwardedChildJobDoesNotNotifyParentRail(t *testing.T) {
 	}
 	var childRailMu sync.Mutex
 	var childRail []jobNotification
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(n jobNotification) {
+	childJM, err := newJobManager(t.TempDir(), testChildSessionID, func(n jobNotification) {
 		childRailMu.Lock()
 		childRail = append(childRail, n)
 		childRailMu.Unlock()
@@ -2629,10 +2629,10 @@ func TestForwardedChildJobDoesNotNotifyParentRail(t *testing.T) {
 	if parentRec == nil {
 		t.Fatalf("parent store keys = %v, want forwarded record %q for visibility", keysOf(parentRecords), rec.JobID)
 	}
-	if parentRec.OwnerSessionID != "CHILD" {
+	if parentRec.OwnerSessionID != testChildSessionID {
 		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
 	}
-	if parentRec.VisibleToSession != "PARENT" {
+	if parentRec.VisibleToSession != testParentSessionID {
 		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
 	}
 	if parentRec.NotifyState != jobstore.NotifyPending {
@@ -2649,7 +2649,7 @@ func TestParentNotifiedWhenOwnDelegateFinishes(t *testing.T) {
 	t.Parallel()
 	var parentRailMu sync.Mutex
 	var parentRail []jobNotification
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+	parentJM, err := newJobManager(t.TempDir(), testParentSessionID, func(n jobNotification) {
 		parentRailMu.Lock()
 		parentRail = append(parentRail, n)
 		parentRailMu.Unlock()
@@ -2662,12 +2662,12 @@ func TestParentNotifiedWhenOwnDelegateFinishes(t *testing.T) {
 	})
 
 	// A delegate job the PARENT created is owned by the parent (OwnerSessionID ==
-	// "PARENT"); it is the parent's own job, not a forwarded child job.
+	// testParentSessionID); it is the parent's own job, not a forwarded child job.
 	rec, err := parentJM.createShell(createShellOpts{Command: "true", Description: "own delegate"})
 	if err != nil {
 		t.Fatalf("createShell: %v", err)
 	}
-	if rec.OwnerSessionID != "PARENT" {
+	if rec.OwnerSessionID != testParentSessionID {
 		t.Fatalf("own job OwnerSessionID = %q, want PARENT", rec.OwnerSessionID)
 	}
 	code := 0
@@ -2996,9 +2996,9 @@ func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 // against the worker.
 func TestJobReadOutputDepth2Resolves(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -3027,11 +3027,11 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 		t.Fatalf("append worker output: %v", err)
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	// Snapshot read at depth 2: the root resolves root -> coordinator -> worker
 	// and serves the worker's live bytes.
@@ -3068,7 +3068,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 	if ownerParent != coordinator {
 		t.Fatalf("resolveDescendantJobOwner owner parent = %p, want coordinator %p", ownerParent, coordinator)
 	}
-	if rec == nil || rec.OwnerSessionID != "WORK" {
+	if rec == nil || rec.OwnerSessionID != testWorkerSessionID {
 		t.Fatalf("resolved record = %+v, want owner WORK", rec)
 	}
 
@@ -3083,10 +3083,10 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 	}
 
 	// Owner-session projection (T11 advisory): a worker-owned runtime_lost
-	// delegate record (descriptor.ParentSessionID == "WORK") must be assessed
+	// delegate record (descriptor.ParentSessionID == testWorkerSessionID) must be assessed
 	// against the worker. Projecting it against the root mis-reads the
 	// parent-linkage gate, so the two projections must disagree on the reason.
-	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, "WORK")
+	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, testWorkerSessionID)
 	viaOwner := projectJobRecord(worker, delegRec)
 	viaRoot := projectJobRecord(root, delegRec)
 	if viaOwner.NotResumableReason == nil || viaRoot.NotResumableReason == nil {
@@ -3110,7 +3110,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 // against its true owner.
 func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string) *jobstore.JobRecord {
 	t.Helper()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(jm.sessionID)
 	now := time.Now().UTC()
 	ref := encodeRef("", "WORKERCHILD")
 	desc := &jobstore.DelegateRestoreDescriptor{
@@ -3164,7 +3164,7 @@ func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string
 func seedRunningDelegate(t *testing.T, jm *jobManager, transcriptRef string, signals *atomic.Int32) string {
 	t.Helper()
 	startedAt := jm.now()
-	jobID := jobstore.NewJobID(testOwnerSessionID)
+	jobID := jobstore.NewJobID(jm.sessionID)
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -3218,9 +3218,9 @@ func seedRunningDelegate(t *testing.T, jm *jobManager, transcriptRef string, sig
 // stop cancels only the coordinator's turn and the workers survive orphaned.
 func TestJobStopCascadesToWorkers(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -3234,7 +3234,7 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 	// Coordinator-owned worker delegate (its child session is WORK) and the
 	// worker-delegate job becomes the parent job for WORK's forwarded jobs.
 	var workerDelegateSignals atomic.Int32
-	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", "WORK"), &workerDelegateSignals)
+	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", testWorkerSessionID), &workerDelegateSignals)
 	workerJM.parentJobID = workerDelegateJobID
 
 	// Worker-owned shell job that finalizes terminal when signalled.
@@ -3254,7 +3254,7 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 	// Root-owned coordinator delegate (its child session is COORD); the
 	// coordinator's jobs forward up through it.
 	var coordDelegateSignals atomic.Int32
-	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", "COORD"), &coordDelegateSignals)
+	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", testCoordinatorSessionID), &coordDelegateSignals)
 	coordJM.parentJobID = coordDelegateJobID
 
 	t.Cleanup(func() {
@@ -3264,11 +3264,11 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
 		"job_id": coordDelegateJobID,
@@ -3331,8 +3331,8 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 // the coordinator's running shell is signalled exactly once by the cascade.
 func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -3350,8 +3350,8 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 
 	// Root-owned coordinator delegate (its child session is COORD), seeded
 	// already TERMINAL (completed). The coordinator's jobs forward up through it.
-	coordDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
-	appendDelegateRecordForChild(t, rootJM, coordDelegateJobID, "COORD", jobstore.StatusCompleted, "exit_zero")
+	coordDelegateJobID := jobstore.NewJobID(rootJM.sessionID)
+	appendDelegateRecordForChild(t, rootJM, coordDelegateJobID, testCoordinatorSessionID, jobstore.StatusCompleted, "exit_zero")
 	coordJM.parentJobID = coordDelegateJobID
 
 	t.Cleanup(func() {
@@ -3359,9 +3359,9 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
 		"job_id": coordDelegateJobID,
@@ -3394,8 +3394,8 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 // WITHOUT signalling the child's current (J2-era) running shell.
 func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -3413,12 +3413,12 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 
 	// Root-owned coordinator delegate J1 (its child session is COORD), seeded
 	// already TERMINAL (stopped) — the OLD, superseded delegate record.
-	staleDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
-	appendDelegateRecordForChild(t, rootJM, staleDelegateJobID, "COORD", jobstore.StatusStopped, "runtime_lost")
+	staleDelegateJobID := jobstore.NewJobID(rootJM.sessionID)
+	appendDelegateRecordForChild(t, rootJM, staleDelegateJobID, testCoordinatorSessionID, jobstore.StatusStopped, "runtime_lost")
 
 	// The child was RESUMED: relinked to a NEWER delegate job J2. Its current
 	// parent is J2, NOT the stale J1 record being stopped.
-	currentDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
+	currentDelegateJobID := jobstore.NewJobID(rootJM.sessionID)
 	if currentDelegateJobID == staleDelegateJobID {
 		t.Fatalf("J2 == J1 = %q, want distinct delegate job ids", currentDelegateJobID)
 	}
@@ -3429,9 +3429,9 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
 		"job_id": staleDelegateJobID,
@@ -3462,9 +3462,9 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 // stop to cascade-stop the subtree.
 func TestJobStopNonDirectDescendant(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -3475,7 +3475,7 @@ func TestJobStopNonDirectDescendant(t *testing.T) {
 	workerJM.forward = coordJM.forwardEvent
 
 	var workerDelegateSignals atomic.Int32
-	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", "WORK"), &workerDelegateSignals)
+	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", testWorkerSessionID), &workerDelegateSignals)
 	workerJM.parentJobID = workerDelegateJobID
 
 	workerShellSE := newSignalCompletesStreamingExecutor()
@@ -3485,7 +3485,7 @@ func TestJobStopNonDirectDescendant(t *testing.T) {
 	}
 
 	var coordDelegateSignals atomic.Int32
-	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", "COORD"), &coordDelegateSignals)
+	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", testCoordinatorSessionID), &coordDelegateSignals)
 	coordJM.parentJobID = coordDelegateJobID
 
 	t.Cleanup(func() {
@@ -3493,11 +3493,11 @@ func TestJobStopNonDirectDescendant(t *testing.T) {
 		waitForShellDone(t, workerJM, workerShell.JobID)
 	})
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	_, err := jobStopTool(context.Background(), root, map[string]any{
 		"job_id": workerShell.JobID,
@@ -3509,7 +3509,7 @@ func TestJobStopNonDirectDescendant(t *testing.T) {
 	if !strings.Contains(msg, "not_controllable:") {
 		t.Fatalf("job_stop error = %q, want canonical not_controllable token", msg)
 	}
-	if !strings.Contains(msg, "COORD") {
+	if !strings.Contains(msg, testCoordinatorSessionID) {
 		t.Fatalf("job_stop error = %q, want it to name the owning coordinator COORD", msg)
 	}
 	if !strings.Contains(msg, coordDelegateJobID) {

@@ -235,7 +235,7 @@ func TestWatchEndNoticeFrameIsMarkedAsTeardown(t *testing.T) {
 	t.Run("restart expiry", func(t *testing.T) {
 		t.Parallel()
 		stateDir := t.TempDir()
-		original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+		original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 		if err != nil {
 			t.Fatalf("new job manager: %v", err)
 		}
@@ -254,7 +254,7 @@ func TestWatchEndNoticeFrameIsMarkedAsTeardown(t *testing.T) {
 		}
 		crashJobManager(t, original)
 
-		assertSingleEndNoticeFrame(t, restartJobManager(t, stateDir, "S1", func(jobNotification) {}), true)
+		assertSingleEndNoticeFrame(t, restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {}), true)
 	})
 
 	// The mark is for teardown frames only: an ordinary match must stay a

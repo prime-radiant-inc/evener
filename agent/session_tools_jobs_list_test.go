@@ -133,7 +133,7 @@ func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
 		JobID:            "job_descendant",
 		Type:             jobstore.JobDelegate,
 		DelegateID:       "dlg_descendant",
-		OwnerSessionID:   "CHILD",
+		OwnerSessionID:   testChildSessionID,
 		VisibleToSession: s.id,
 		TranscriptRef:    encodeRef("", "DESCENDANT"),
 		StartedAt:        &descStart,
@@ -464,8 +464,8 @@ func TestJobListDefaultListingOmitsDepth(t *testing.T) {
 
 func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	childJM := newWalkJobManager(t, "CHILD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	childJM := newWalkJobManager(t, testChildSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = childJM.store.Close()
@@ -479,8 +479,8 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 		Delegate: &jobstore.DelegateEvent{
 			ChildSessionID:   "GRANDCHILD",
 			TranscriptRef:    encodeRef("", "GRANDCHILD"),
-			OwnerSessionID:   "CHILD",
-			VisibleSessionID: "CHILD",
+			OwnerSessionID:   testChildSessionID,
+			VisibleSessionID: testChildSessionID,
 			Generation:       "dg_child",
 			Resumable:        true,
 		},
@@ -494,8 +494,8 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 		JobID:            "job_child_delegate",
 		Type:             jobstore.JobDelegate,
 		DelegateID:       "dlg_child",
-		OwnerSessionID:   "CHILD",
-		VisibleToSession: "CHILD",
+		OwnerSessionID:   testChildSessionID,
+		VisibleToSession: testChildSessionID,
 		TranscriptRef:    encodeRef("", "GRANDCHILD"),
 		StartedAt:        &started,
 	}); err != nil {
@@ -527,9 +527,9 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 		t.Fatalf("append legacy child delegate job: %v", err)
 	}
 
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+	child := &Session{id: testChildSessionID, jobManager: childJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testChildSessionID, sess: child, status: SubagentRunning})
 
 	out, err := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
 	if err != nil {
@@ -572,11 +572,11 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 // session), and leaves default + include_nested semantics unchanged.
 func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
-	deadJM := newWalkJobManager(t, "DEAD")
-	deadChildJM := newWalkJobManager(t, "DEADCHILD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
+	deadJM := newWalkJobManager(t, testDeadSessionID)
+	deadChildJM := newWalkJobManager(t, testDeadChildSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -634,14 +634,14 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 		t.Fatalf("finalize dead coordinator job: %v", err)
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	dead := &Session{id: "DEAD", jobManager: deadJM, subagents: newSubagentManager(nil, 0)}
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	dead := &Session{id: testDeadSessionID, jobManager: deadJM, subagents: newSubagentManager(nil, 0)}
 
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
-	root.subagents.track(&subagent{id: "DEAD", sess: dead, status: SubagentCompleted, closed: true})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
+	root.subagents.track(&subagent{id: testDeadSessionID, sess: dead, status: SubagentCompleted, closed: true})
 
 	run := func(args string) jobListDescendantOutput {
 		t.Helper()
@@ -660,15 +660,15 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 
 	// Each owner job appears exactly once, at its real owner depth.
 	rootRow := findDescendantRow(descendants.Jobs, rootRec.JobID)
-	if rootRow == nil || rootRow.OwnerSessionID != "ROOT" || rootRow.Depth != 0 {
+	if rootRow == nil || rootRow.OwnerSessionID != testRootSessionID || rootRow.Depth != 0 {
 		t.Fatalf("root row = %+v, want owner=ROOT depth=0", rootRow)
 	}
 	coordRow := findDescendantRow(descendants.Jobs, coordRec.JobID)
-	if coordRow == nil || coordRow.OwnerSessionID != "COORD" || coordRow.Depth != 1 {
+	if coordRow == nil || coordRow.OwnerSessionID != testCoordinatorSessionID || coordRow.Depth != 1 {
 		t.Fatalf("coordinator row = %+v, want owner=COORD depth=1", coordRow)
 	}
 	workerRow := findDescendantRow(descendants.Jobs, workerRec.JobID)
-	if workerRow == nil || workerRow.OwnerSessionID != "WORK" || workerRow.Depth != 2 {
+	if workerRow == nil || workerRow.OwnerSessionID != testWorkerSessionID || workerRow.Depth != 2 {
 		t.Fatalf("worker row = %+v, want owner=WORK depth=2", workerRow)
 	}
 
@@ -689,7 +689,7 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 	// Dead coordinator: only the terminal forwarded copy surfaces (from the root
 	// store, depth 0). No recursion into the gone session.
 	deadRow := findDescendantRow(descendants.Jobs, deadRec.JobID)
-	if deadRow == nil || deadRow.OwnerSessionID != "DEAD" || deadRow.Status != string(jobstore.StatusCompleted) {
+	if deadRow == nil || deadRow.OwnerSessionID != testDeadSessionID || deadRow.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("dead coordinator row = %+v, want owner=DEAD completed terminal copy", deadRow)
 	}
 	if findDescendantRow(descendants.Jobs, deadGrandRec.JobID) != nil {
@@ -731,8 +731,8 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 // empty list with success — a silent regression from the plain path.
 func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 
 	// Close the depth-0 (own) store before the call so both paths hit
 	// ErrStoreClosed from the same store.
@@ -773,9 +773,9 @@ func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
 // list row must match the owner projection.
 func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -788,15 +788,15 @@ func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
 	workerJM.forward = coordJM.forwardEvent
 	workerJM.parentJobID = "job_coord_delegate_worker"
 
-	// A worker-owned runtime_lost delegate (descriptor.ParentSessionID == "WORK"),
+	// A worker-owned runtime_lost delegate (descriptor.ParentSessionID == testWorkerSessionID),
 	// forwarded one hop up into the coordinator's store.
-	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, "WORK")
+	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, testWorkerSessionID)
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	// Oracle: projecting against the true owner (worker) clears the parent-linkage
 	// gate; projecting against the root does not.

@@ -16,8 +16,6 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-const testOwnerSessionID = "02wMz5TxvEMoJEDTDGOTil"
-
 // Shrink the graceful-shutdown grace so tests whose jobs never naturally
 // terminate don't each pay the full production window at teardown. The value is
 // build-tagged (see closegrace_{race,norace}_test.go): a generous window under
@@ -509,8 +507,8 @@ func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
 		Kind:             jobstore.EventJobStarted,
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
-		OwnerSessionID:   "S1",
-		VisibleToSession: "S1",
+		OwnerSessionID:   testOwnerSessionID,
+		VisibleToSession: testOwnerSessionID,
 		StartedAt:        &start,
 		OutputPath:       outputPath,
 	}); err != nil {
@@ -561,7 +559,7 @@ func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
 		Type:             jobstore.JobDelegate,
 		Status:           jobstore.StatusRunning,
 		OwnerSessionID:   "child",
-		VisibleToSession: "S1",
+		VisibleToSession: testOwnerSessionID,
 		StartedAt:        &start,
 		OutputPath:       outputPath,
 	}); err != nil {
@@ -866,7 +864,7 @@ func TestJobManagerListWithErrorSurfacesLoadFailure(t *testing.T) {
 func TestJobManagerFinalize(t *testing.T) {
 	t.Parallel()
 	var queued []jobNotification
-	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {
@@ -912,7 +910,7 @@ func TestJobManagerFinalize(t *testing.T) {
 func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 	t.Parallel()
 	var queued []jobNotification
-	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {
@@ -965,7 +963,7 @@ func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *testing.T) {
 	t.Parallel()
 	var queued []jobNotification
-	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {
@@ -1051,7 +1049,7 @@ func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *tes
 func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	t.Parallel()
 	var queued int32
-	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
+	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {
 		atomic.AddInt32(&queued, 1)
 	})
 	if err != nil {
@@ -1144,7 +1142,7 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	t.Parallel()
 	var queued int32
-	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
+	jm, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {
 		atomic.AddInt32(&queued, 1)
 	})
 	if err != nil {
@@ -1229,7 +1227,7 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
@@ -1260,7 +1258,7 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 	}
 
 	var queued []jobNotification
-	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+	restarted, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {
@@ -1290,7 +1288,7 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
@@ -1311,7 +1309,7 @@ func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *test
 	}
 
 	var queued []jobNotification
-	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+	restarted, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {
@@ -1335,7 +1333,7 @@ func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *test
 func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
@@ -1361,7 +1359,7 @@ func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
 	}
 
 	var queued []jobNotification
-	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+	restarted, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) {
 		queued = append(queued, n)
 	})
 	if err != nil {

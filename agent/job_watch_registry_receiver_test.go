@@ -73,7 +73,7 @@ func TestFoldedWatchRecordCarriesReceiverIdentity(t *testing.T) {
 	if w.ReceiverSessionID != "S-observer" || w.ReceiverDelegateID != "" {
 		t.Errorf("folded receiver = %q/%q, want S-observer and no delegate", w.ReceiverSessionID, w.ReceiverDelegateID)
 	}
-	if w.OwnerSessionID != "S1" || w.VisibleSessionID != "S1" {
+	if w.OwnerSessionID != jm.sessionID || w.VisibleSessionID != jm.sessionID {
 		t.Errorf("folded owner/visible = %q/%q, want the owning manager on both — the reason the receiver field is needed", w.OwnerSessionID, w.VisibleSessionID)
 	}
 }
@@ -158,8 +158,8 @@ func TestFoldWatchesToleratesRegistryRowWithoutConfigSnapshot(t *testing.T) {
 		WatchID: "w1",
 		Watch: &jobstore.WatchEvent{
 			Generation:       "g1",
-			OwnerSessionID:   "S1",
-			VisibleSessionID: "S1",
+			OwnerSessionID:   testOwnerSessionID,
+			VisibleSessionID: testOwnerSessionID,
 			Target:           "job_x",
 			ConfigHash:       "sha256:old",
 		},

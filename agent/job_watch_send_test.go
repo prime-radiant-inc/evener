@@ -341,7 +341,7 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
@@ -904,7 +904,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sessionID := "S1"
+	sessionID := testOwnerSessionID
 	delegateID := "dlg_restore_delegate"
 	jobID := "job_restore_delegate"
 	now := time.Unix(3300, 0).UTC()
@@ -1054,7 +1054,7 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			stateDir := t.TempDir()
-			sessionID := "S1"
+			sessionID := testOwnerSessionID
 			now := time.Unix(1000, 0).UTC()
 			var notified []jobNotification
 			jm, err := newJobManager(stateDir, sessionID, func(n jobNotification) { notified = append(notified, n) })
@@ -1110,7 +1110,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	t.Parallel()
 	stateDir := t.TempDir()
 	var notified []jobNotification
-	jm, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) { notified = append(notified, n) })
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 
 	// The drop is durable: a restart re-loads no pending, so a drain re-diagnoses
 	// nothing — the diagnostic stays at exactly one across restores.
-	reopened, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) { notified = append(notified, n) })
 	if err != nil {
 		t.Fatalf("first reopen: %v", err)
 	}
@@ -1155,7 +1155,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	if err := reopened.store.Close(); err != nil {
 		t.Fatalf("close reopened store: %v", err)
 	}
-	second, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	second, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) { notified = append(notified, n) })
 	if err != nil {
 		t.Fatalf("second reopen: %v", err)
 	}
@@ -1519,7 +1519,7 @@ func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1547,7 +1547,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
@@ -1589,7 +1589,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1623,7 +1623,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
@@ -1646,7 +1646,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1668,7 +1668,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
@@ -1689,7 +1689,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1707,7 +1707,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
@@ -1728,7 +1728,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -1751,7 +1751,7 @@ func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *
 		t.Fatalf("close first store: %v", err)
 	}
 
-	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	reopened, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}

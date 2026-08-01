@@ -223,7 +223,7 @@ type ws_harness struct {
 	installedSnapshot []string
 }
 
-const ws_sessionID = "S1"
+const ws_sessionID = testOwnerSessionID
 
 func ws_newHarness(t *testing.T, rt *rapid.T) *ws_harness {
 	t.Helper()

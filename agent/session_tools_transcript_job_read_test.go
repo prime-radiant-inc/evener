@@ -258,9 +258,9 @@ func seedTerminalDelegateJob(t *testing.T, jm *jobManager, report string, struct
 // topology in which a job is owned at depth 2 relative to the root.
 func newDepthTwoJobTree(t *testing.T) (root, coord, worker *Session, workerJobID string) {
 	t.Helper()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -285,10 +285,10 @@ func newDepthTwoJobTree(t *testing.T) (root, coord, worker *Session, workerJobID
 		t.Fatalf("append worker output: %v", err)
 	}
 
-	worker = &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coord = &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coord.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root = &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coord, status: SubagentRunning})
+	worker = &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coord = &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coord.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root = &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coord, status: SubagentRunning})
 	return root, coord, worker, rec.JobID
 }

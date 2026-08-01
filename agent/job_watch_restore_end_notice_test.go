@@ -64,7 +64,7 @@ func endNoticePendingCount(t *testing.T, jm *jobManager) int {
 func TestWatchEndNoticeSurvivesRestartForNeverFiredSendWatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestWatchEndNoticeSurvivesRestartForNeverFiredSendWatch(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 1 {
 		t.Fatalf("pending watch sends after restart = %d (%+v), want exactly one end notice", len(pending), pending)
@@ -116,7 +116,7 @@ func TestWatchEndNoticeSurvivesRestartForNeverFiredSendWatch(t *testing.T) {
 func TestNoRestartEndNoticeForSendWatchThatAlreadyFired(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestNoRestartEndNoticeForSendWatchThatAlreadyFired(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 1 {
 		t.Fatalf("pending watch sends after restart = %d (%+v), want only the match", len(pending), pending)
@@ -168,7 +168,7 @@ func TestNoRestartEndNoticeForSendWatchThatAlreadyFired(t *testing.T) {
 func TestRestartEndNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -187,10 +187,10 @@ func TestRestartEndNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 	crashJobManager(t, restarted)
 
-	again := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	again := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	pending := loadWatchSendRecord(t, again).Pending
 	if len(pending) != 1 {
@@ -217,7 +217,7 @@ func TestRestartEndNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 func TestRestartEndsWatchesRuntimeLostBeforeReconcileCanSeeThem(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRestartEndsWatchesRuntimeLostBeforeReconcileCanSeeThem(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	watches, err := restarted.store.LoadWatches()
 	if err != nil {
@@ -255,7 +255,7 @@ func TestRestartEndsWatchesRuntimeLostBeforeReconcileCanSeeThem(t *testing.T) {
 func TestRestartSendsNoWatchChannelNoticeForNoSendWatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestRestartSendsNoWatchChannelNoticeForNoSendWatch(t *testing.T) {
 	crashJobManager(t, original)
 
 	var notified []jobNotification
-	restarted := restartJobManager(t, stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(n jobNotification) { notified = append(notified, n) })
 
 	if notices := watchChannelNotices(notified); len(notices) != 0 {
 		t.Errorf("watch-channel notices after restart = %+v, want none on the notification rail", notices)
