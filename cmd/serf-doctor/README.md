@@ -22,8 +22,9 @@ and `…/2026-06-20-serf-doctor-apilog-design.md`.
 
 ## Subcommands (the tools)
 
-Every subcommand takes a session selector first: `local:<id>`, `proj:<project-id>:<id>`,
-or a bare `<id>` (searched across buckets). Common flags: `--state-dir <path>`
+Every session-scoped subcommand takes a session selector first: `local:<id>`,
+`proj:<project-id>:<id>`, or a bare `<id>` (searched across buckets). The
+state-root sweeps (`turnids`) take no selector. Common flags: `--state-dir <path>`
 (state root; default `SERF_STATE_DIR` → `XDG_STATE_HOME` → `~/.local/state`) and
 `--json`. Run `serf-doctor <subcommand> -h` for the full flag list.
 
@@ -36,6 +37,7 @@ or a bare `<id>` (searched across buckets). Common flags: `--state-dir <path>`
 | `mutations <sel>` | Did the user's input reach the daemon? Renders `mutations/<sid>.json`: the journal of every client mutation the daemon accepted **and** every one it rejected (method / operation state / execution state / stable turn / rejection), the durable input queue, pending executions, accepted turns, and queue revision. Absence from the journal means the request never arrived. | — |
 | `watches <sel>` | Watch/delivery inspector: distinct deliveries (collapsing coalescing), provenance, lifecycle, the self-loop verdict, and the **target job's state** joined from the same `jobs.jsonl` (a target that died with no output could never match its condition). | `--watch <id>`, `--self-loops` |
 | `tree <sel>` | Parent ↔ delegate/observer session tree across buckets. | `--depth N`, `--observers` |
+| `turnids` | State-root sweep (no selector): which sessions persisted a reserved turn id inside the transcript's entry-index namespace (`turn_<digits>` rather than `turn_m<digits>`), so a reseed publishes one id for two turns. Names each session, the offending ids, the entries under them, and the turn kinds; a transcript it cannot decode is listed separately as unanswered rather than counted clean. | — |
 
 ## Examples
 
@@ -49,5 +51,6 @@ serf-doctor jobs <id>                                   # what jobs has this ses
 serf-doctor jobs <id> --job job_01KV8MVQ7BZHX0EN8D7ZH5   # what state is this one job in
 serf-doctor mutations <id>                              # did the user's message reach the daemon at all?
 serf-doctor watches <id> --self-loops
+serf-doctor turnids                                     # which sessions carry a reserved turn id that collides with an entry's position
 serf-doctor tree <id> --observers
 ```
