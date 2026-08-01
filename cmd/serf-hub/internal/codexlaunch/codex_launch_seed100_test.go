@@ -156,7 +156,7 @@ func checkSeed100LaunchArgumentsEnvironmentAndScanning(t *testing.T) {
 	}
 
 	endpoints := make(chan string, 2)
-	scanCodexEndpoint(strings.NewReader("noise\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"), endpoints, io.Discard, "[codex:seed]")
+	scanCodexEndpoint(strings.NewReader("noise\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"), endpoints, launching(), io.Discard, "[codex:seed]")
 	close(endpoints)
 	var got []string
 	for endpoint := range endpoints {

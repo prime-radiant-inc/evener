@@ -1,13 +1,17 @@
 package codexlaunch
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/serf/appwire"
@@ -16,14 +20,31 @@ import (
 // syncBuffer collects the launcher's log the way the hub's stderr does: both
 // of an app-server's pipes are scanned concurrently and write to the one sink.
 type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	want string
+	seen chan struct{}
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	n, err := b.buf.Write(p)
+	if b.seen != nil && strings.Contains(b.buf.String(), b.want) {
+		close(b.seen)
+		b.seen = nil
+	}
+	return n, err
+}
+
+// await returns a channel closed once want has been logged, so a test waits on
+// the forwarding it is asserting rather than on the clock.
+func (b *syncBuffer) await(want string) <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.want = want
+	b.seen = make(chan struct{})
+	return b.seen
 }
 
 func (b *syncBuffer) String() string {
@@ -43,7 +64,7 @@ func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	var log syncBuffer
 	scanCodexEndpoint(
 		strings.NewReader("codex: error: address already in use\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"),
-		endpoints, &log, "[codex:live]")
+		endpoints, launching(), &log, "[codex:live]")
 	close(endpoints)
 
 	var got []string
@@ -62,6 +83,28 @@ func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	// normalization still labels its lines as the codex app-server's.
 	if got := codexLogPrefix("  "); got != "[codex]" {
 		t.Fatalf("unnamed launch prefix = %q", got)
+	}
+}
+
+// Scan() reports a clean end of output and a fatal read failure the same way,
+// by returning false, and bufio.Scanner fails on any line past its 64KB token
+// limit — a stack dump, a serialized payload. That ends the scan of that pipe,
+// and with the scan goes every later line the app-server writes: the trailing
+// line here never reaches the log. A record that simply stops reads as an
+// app-server that went quiet, which is the one thing it does not mean, so the
+// launch says why it stopped listening (kata e1nh).
+func TestScanCodexEndpointSaysWhyItStoppedReading(t *testing.T) {
+	endpoints := make(chan string, 4)
+	var log syncBuffer
+	scanCodexEndpoint(
+		strings.NewReader(strings.Repeat("x", bufio.MaxScanTokenSize+1)+"\ncodex: still here\n"),
+		endpoints, launching(), &log, "[codex:live]")
+
+	// Exact: the record names the failure, and the 64KB line that caused it
+	// is not dumped into the log in the name of reporting it.
+	want := "[codex:live] app-server output ended early: " + bufio.ErrTooLong.Error() + "\n"
+	if log.String() != want {
+		t.Fatalf("log = %q, want %q", log.String(), want)
 	}
 }
 
@@ -105,6 +148,116 @@ func TestCodexLaunchForwardsAppServerOutputFromBothPipes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Once launchLocked has returned, nothing will ever receive from the endpoints
+// channel again — and ParseCodexEndpoint accepts any line carrying a ws:// URL,
+// so an app-server that merely mentions its own address ("client connected to
+// ws://…") keeps offering endpoints to a wait that is gone. One line past the
+// channel's four slots, a blocking send parks the scanner goroutine for the
+// life of the hub: it stops reading that pipe, and the app-server's only log
+// record dies with it, exactly when the app-server has something to say
+// (kata e1nh). Post-launch, an endpoint announcement is just another line for
+// the log.
+func TestCodexLaunchKeepsForwardingAfterTheEndpointWaitIsGone(t *testing.T) {
+	l := NewCodexLauncher(nil)
+	l.client = seedClient(http.StatusOK, nil)
+	var log syncBuffer
+	l.logOutput = &log
+	process := newSeedProcess("", "")
+	appServer := seedProcessLiveStdout(t, process)
+	useSeedRuntime(l, process, 0, false)
+
+	// A configured listen address is ready on the first check, so this launch
+	// returns without ever receiving from endpoints: what the scanner fills
+	// afterwards is an empty buffer with no reader behind it.
+	launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{ID: "live", Listen: "ws://127.0.0.1:4321"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = launched.process.Kill()
+		<-launched.Exited
+	})
+
+	// One endpoint-shaped line more than the channel can hold, then the line
+	// that matters. Written as a single small write so a wedged scanner shows
+	// up as a missing log line instead of as a blocked test.
+	const dying = "codex: fatal: session store is corrupt"
+	const chatter = 5
+	logged := log.await(dying)
+	var talk strings.Builder
+	for i := range chatter {
+		fmt.Fprintf(&talk, "client %d connected to ws://127.0.0.1:4321/session\n", i)
+	}
+	fmt.Fprintln(&talk, dying)
+	if _, err := appServer.WriteString(talk.String()); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-logged:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("app-server output stopped reaching the log after %d endpoint-shaped lines: %q", chatter, log.String())
+	}
+	if got := strings.Count(log.String(), "connected to ws://"); got != chatter {
+		t.Fatalf("logged %d of %d post-launch endpoint lines: %q", got, chatter, log.String())
+	}
+}
+
+// The other half of that contract: while the launch is still waiting, a full
+// buffer is backpressure and nothing else. An app-server can name several
+// addresses before the one that answers — the readiness wait tries them in
+// turn — so an announcement dropped because four were already queued is an
+// announcement the launch needed. The send waits for the wait to catch up.
+func TestDeliverCodexEndpointWaitsForTheLaunchToCatchUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		endpoints := make(chan string, 1)
+		endpoints <- "ws://first:1"
+		delivered := make(chan bool, 1)
+		go func() { delivered <- deliverCodexEndpoint(endpoints, launching(), "ws://second:2") }()
+
+		// The bubble goes idle only once the sender is durably blocked, which
+		// is the state under test: buffer full, launch not yet caught up. A
+		// send that gave up on a full buffer would have answered by now.
+		synctest.Wait()
+		select {
+		case taken := <-delivered:
+			t.Fatalf("a full buffer ended the send early, taken=%v", taken)
+		default:
+		}
+
+		if got := <-endpoints; got != "ws://first:1" {
+			t.Fatalf("queued endpoint = %q", got)
+		}
+		if got := <-endpoints; got != "ws://second:2" {
+			t.Fatalf("endpoint after the buffer drained = %q", got)
+		}
+		// An announcement the wait took is consumed, not also logged as prose.
+		if !<-delivered {
+			t.Fatal("delivered announcement reported as not taken")
+		}
+	})
+}
+
+// launching is the launch-done signal a scanner sees while the readiness wait
+// is still there to receive endpoints: never closed.
+func launching() <-chan struct{} { return make(chan struct{}) }
+
+// seedProcessLiveStdout gives a seeded app-server a stdout it can still speak
+// on after launchLocked has returned: a real pipe, the way the hub's own
+// StdoutPipe behaves, so a test write never blocks on the scanner.
+func seedProcessLiveStdout(t *testing.T, process *seedProcess) *os.File {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Closing the write end is what ends the scanner, at EOF; the read end is
+	// the scanner's for as long as it lives.
+	t.Cleanup(func() { _ = w.Close() })
+	process.stdout = r
+	return w
 }
 
 // A ready-wait that never saw the app-server come up ended one of two
