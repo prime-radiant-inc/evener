@@ -96,7 +96,12 @@ run_seeds() {
 }
 build_failed() { printf '%s' "$REPRO_OUT" | grep -qE '\[build failed\]|\[setup failed\]'; }
 
-declare -A clean_ok=()
+# Per-target clean-tree memo as two newline-delimited lists (ok / bad):
+# bash 3.2 — the stock macOS bash — has no associative arrays.
+clean_ok_list=$'\n'
+clean_bad_list=$'\n'
+# in_list <needle> <newline-delimited-list>
+in_list() { case "$2" in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
 pass=0 blind=0 rot=0 err=0 audited=0
 
 while IFS=$'\t' read -r id target patchfile desc; do
@@ -113,12 +118,16 @@ while IFS=$'\t' read -r id target patchfile desc; do
 
 	# Clean sanity per target (once): the un-mutated target must pass, or a
 	# "blind" verdict would be meaningless.
-	if [ -z "${clean_ok[$target]:-}" ]; then
+	if ! in_list "$target" "$clean_ok_list" && ! in_list "$target" "$clean_bad_list"; then
 		git -C "$wt" checkout -q -- . 2>/dev/null || true
 		run_seeds "$module" "$pkg" "$name"
-		if [ "$REPRO_RC" -eq 0 ]; then clean_ok[$target]=ok; else clean_ok[$target]=bad; fi
+		if [ "$REPRO_RC" -eq 0 ]; then
+			clean_ok_list="$clean_ok_list$target"$'\n'
+		else
+			clean_bad_list="$clean_bad_list$target"$'\n'
+		fi
 	fi
-	if [ "${clean_ok[$target]}" != ok ]; then
+	if ! in_list "$target" "$clean_ok_list"; then
 		echo "ERR  $id — target '$target' already fails on a CLEAN tree (cannot audit)"; err=$((err + 1)); continue
 	fi
 
