@@ -38,3 +38,41 @@ Complete. Implemented the pure lossless web shell-command formatter and its dete
 ## Concerns
 
 The brief's source-continuation fixture contains two runtime backslashes in `raw` but expects one runtime backslash in its first output line. Those expectations contradict the required no-loss invariant. The test keeps the raw value verbatim and expects both backslashes in the output, preserving the stated lossless contract.
+
+## Fix round 1
+
+### Status
+
+Complete. Corrected single-quote escape handling and added the reviewer-requested regression test.
+
+### Commit
+
+- `dd0b57566` — `fix(web): respect single-quote backslashes in formatter`
+
+### Files changed
+
+- `cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.ts`
+  - Single-quoted regions now treat backslashes as literal characters, allowing the following quote to close the region.
+  - Double-quoted and backtick regions retain one-character backslash escape behavior.
+- `cmd/serf-hub/frontend/src/widgets/shellcommand/shellCommand.test.ts`
+  - Added a regression for a literal backslash in single quotes followed by an outside semicolon operator.
+  - Clarified that the source-continuation fixture deliberately contains two runtime backslashes and must preserve both.
+
+### Fix commands and results
+
+- `npm test -- --run src/widgets/shellcommand/shellCommand.test.ts` before the fix — RED: 11 passed, 1 failed; the new single-quote regression remained one unsplit line.
+- `npm test -- --run src/widgets/shellcommand/shellCommand.test.ts` after the fix — PASS: 1 file, 12 tests.
+- `npx biome check src/widgets/shellcommand/shellCommand.ts src/widgets/shellcommand/shellCommand.test.ts` — PASS.
+- `npm run typecheck` — PASS.
+- `git diff --check` — PASS.
+
+### Self-review
+
+- Confirmed the fix changes only the two Task 1 formatter files and does not touch later-task files.
+- Confirmed the regression asserts the exact split and the no-loss invariant.
+- Confirmed single-quote backslashes are literal while double/backtick escape behavior remains explicit and unchanged.
+- Confirmed normal commit hooks remained enabled.
+
+### Concerns
+
+- The original brief's continuation expected value remains internally inconsistent with its raw value; the test comment now documents the two-runtime-backslash choice while preserving the lossless contract.
