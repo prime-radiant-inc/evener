@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/serf/agent/internal/runetrim"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains
@@ -183,6 +185,15 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
+	if start > 0 {
+		// The window was cut at a raw byte offset, so it can open mid-rune. Drop the
+		// dangling continuation bytes rather than reading further back: the window
+		// SHRINKS, which keeps the caller's retained-start arithmetic (total minus the
+		// bytes returned) naming the first byte actually handed over. Only our own cut
+		// is realigned — at start 0 the first byte is the file's own, and binary output
+		// keeps it.
+		buf = runetrim.TrimLeadingPartial(buf)
+	}
 	return buf, total, truncated, nil
 }
 
@@ -225,6 +236,13 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
+	}
+	if n < retained {
+		// The window was cut at a raw byte offset, so it can end mid-rune. Drop the
+		// dangling partial rune: like the tail's start, the window only ever SHRINKS.
+		// Only our own cut is realigned — when the window reaches the end of the file
+		// the last byte is the file's own, and binary output keeps it.
+		buf = runetrim.TrimTrailingPartial(buf)
 	}
 	return buf, total, truncated, nil
 }
@@ -359,6 +377,12 @@ func (o *OutputStore) pruneLocked() error {
 	if _, err := io.ReadFull(o.f, tail); err != nil {
 		return fmt.Errorf("jobstore: read output prune tail: %w", err)
 	}
+	// The cap is a raw byte count, so it can cut inside a rune. Evict the orphaned
+	// continuation bytes too: what survives here becomes the file's OWN first byte,
+	// which readers pass through untouched rather than realigning — only a reader's
+	// own window cut gets realigned.
+	tail = runetrim.TrimLeadingPartial(tail)
+	keep = int64(len(tail))
 	retainedStart := o.total - keep
 	if err := writeOutputMetaFileFsSync(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
 		TotalBytes:     o.total,

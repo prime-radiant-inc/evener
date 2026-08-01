@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/afero"
 
@@ -35,6 +36,9 @@ func FuzzTask8OutputRecovery(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 2}, []byte("complete trailing event\n"))
 	// Exercises the corrupt trailing-event forensic path and different chunking.
 	f.Add([]byte{77, 2, 2, 31}, []byte("\x00longer payload\nwith lines\n"))
+	// Multi-byte runes wider than a chunk, under the smallest cap: the retained
+	// tail, the prune cut, and the read windows all land inside a rune.
+	f.Add([]byte{0, 1, 0, 2}, []byte("😀😀😀😀😀"))
 
 	f.Fuzz(func(t *testing.T, program, payload []byte) {
 		if len(program) > 128 || len(payload) > 512 {
@@ -61,7 +65,7 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 	if err != nil {
 		t.Fatalf("open memory output: %v", err)
 	}
-	var lifetime []byte
+	var lifetime, retained []byte
 	for offset, step := 0, 0; offset < len(stream); step++ {
 		chunkLen := min(1+int(t8OutputProgramByte(program, step+1))%31, len(stream)-offset)
 		chunk := stream[offset : offset+chunkLen]
@@ -70,7 +74,8 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 			t.Fatalf("append step %d = %d/%v, want %d/nil", step, n, err, len(chunk))
 		}
 		lifetime = append(lifetime, chunk...)
-		t8AssertOutputState(t, store, lifetime, capBytes, int(t8OutputProgramByte(program, step+4)))
+		retained = t8Prune(append(retained, chunk...), capBytes)
+		t8AssertOutputState(t, store, lifetime, retained, int(t8OutputProgramByte(program, step+4)))
 		offset += chunkLen
 
 		// Reopen frequently enough to exercise metadata validation between
@@ -83,7 +88,7 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 			if err != nil {
 				t.Fatalf("reopen output step %d: %v", step, err)
 			}
-			t8AssertOutputState(t, store, lifetime, capBytes, int(t8OutputProgramByte(program, step+5)))
+			t8AssertOutputState(t, store, lifetime, retained, int(t8OutputProgramByte(program, step+5)))
 		}
 	}
 	if err := store.Close(); err != nil {
@@ -94,7 +99,7 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 		t.Fatalf("final reopen output: %v", err)
 	}
 	defer func() { _ = store.Close() }()
-	t8AssertOutputState(t, store, lifetime, capBytes, int(t8OutputProgramByte(program, 9)))
+	t8AssertOutputState(t, store, lifetime, retained, int(t8OutputProgramByte(program, 9)))
 
 	matches, err := store.Grep(regexp.MustCompile(`^__T8_END__$`), len(lifetime)+16)
 	if err != nil {
@@ -117,9 +122,9 @@ func t8RunOutputRecovery(t *testing.T, program, payload []byte) {
 	t8AssertStoreFaultRollback(t)
 }
 
-func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capBytes int64, rawLimit int) {
+func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime, retained []byte, rawLimit int) {
 	t.Helper()
-	retained, retainedStart := t8RetainedTail(lifetime, capBytes)
+	retainedStart := int64(len(lifetime) - len(retained))
 	if got := store.Len(); got != int64(len(lifetime)) {
 		t.Fatalf("lifetime Len = %d, want %d", got, len(lifetime))
 	}
@@ -134,7 +139,7 @@ func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capB
 	}
 	wantTail := retained
 	if len(wantTail) > limit {
-		wantTail = wantTail[len(wantTail)-limit:]
+		wantTail = t8AlignWindowStart(wantTail[len(wantTail)-limit:])
 	}
 	wantTruncated := retainedStart > 0 || len(retained) > limit
 	if total != int64(len(lifetime)) || tailTruncated != wantTruncated || !bytes.Equal(tail, wantTail) {
@@ -147,19 +152,54 @@ func t8AssertOutputState(t *testing.T, store *OutputStore, lifetime []byte, capB
 	}
 	wantHead := retained
 	if len(wantHead) > limit {
-		wantHead = wantHead[:limit]
+		wantHead = t8AlignWindowEnd(wantHead[:limit])
 	}
 	if headTotal != int64(len(lifetime)) || headTruncated != wantTruncated || !bytes.Equal(head, wantHead) {
 		t.Fatalf("Head(%d) = %q/%d/%v, want %q/%d/%v", limit, head, headTotal, headTruncated, wantHead, len(lifetime), wantTruncated)
 	}
 }
 
-func t8RetainedTail(lifetime []byte, capBytes int64) ([]byte, int64) {
-	if capBytes > 0 && int64(len(lifetime)) > capBytes {
-		start := int64(len(lifetime)) - capBytes
-		return append([]byte(nil), lifetime[start:]...), start
+// t8AlignWindowStart models what Tail does to its own cut: a window that opens
+// inside a rune drops the orphaned continuation bytes, at most the three a
+// 4-byte rune can leave behind. Re-derived here from the UTF-8 bit pattern
+// rather than borrowed from the production helper, so this stays an independent
+// oracle; the exhaustive edges live in output_rune_align_test.go.
+func t8AlignWindowStart(window []byte) []byte {
+	drop := 0
+	for drop < len(window) && drop < 3 && window[drop]&0xC0 == 0x80 {
+		drop++
 	}
-	return append([]byte(nil), lifetime...), 0
+	return window[drop:]
+}
+
+// t8AlignWindowEnd models what Head does to its own cut: a window that closes
+// inside a rune drops the incomplete trailing sequence. It walks back over the
+// continuation bytes to the byte that opened the sequence and cuts there unless
+// those bytes decode as one whole rune.
+func t8AlignWindowEnd(window []byte) []byte {
+	i := len(window) - 1
+	for i >= 0 && window[i]&0xC0 == 0x80 {
+		i--
+	}
+	if i < 0 {
+		return window
+	}
+	if r, size := utf8.DecodeRune(window[i:]); r == utf8.RuneError && size == 1 {
+		return window[:i]
+	}
+	return window
+}
+
+// t8Prune models the retention cap as the store applies it: an over-cap file is
+// cut back to its last capBytes bytes, and the cut is realigned like a window's,
+// because what survives becomes the file's own first byte. The retained tail is
+// a running state, not a slice of the lifetime — a prune that sheds an orphaned
+// rune leaves the file BELOW the cap until the next append fills it again.
+func t8Prune(retained []byte, capBytes int64) []byte {
+	if capBytes > 0 && int64(len(retained)) > capBytes {
+		return t8AlignWindowStart(retained[int64(len(retained))-capBytes:])
+	}
+	return retained
 }
 
 func t8AssertPublicOutputWrappers(t *testing.T) {

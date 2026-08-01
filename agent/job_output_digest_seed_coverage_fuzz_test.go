@@ -22,20 +22,6 @@ func FuzzJobOutputDigestSeedCoverage(f *testing.F) {
 func assertJobOutputDigestContracts(t *testing.T, data []byte) {
 	t.Helper()
 
-	continuations := []byte{0x80, 0x81}
-	if got := trimTrailingPartialRune(continuations); string(got) != string(continuations) {
-		t.Fatalf("all-continuation trailing slice changed: %x", got)
-	}
-	if got := trimTrailingPartialRune([]byte{'a', 0xe2, 0x82}); string(got) != "a" {
-		t.Fatalf("incomplete trailing rune = %x, want 61", got)
-	}
-	if got := trimTrailingPartialRune([]byte("ok")); string(got) != "ok" {
-		t.Fatalf("complete trailing rune changed: %q", got)
-	}
-	if got := trimLeadingPartialRune(append(append([]byte{}, continuations...), 'x')); string(got) != "x" {
-		t.Fatalf("leading continuation bytes not trimmed: %x", got)
-	}
-
 	clamped := assembleOutputDigest([]byte("head"), []byte("tail"), 1, 0)
 	if !strings.HasPrefix(clamped, "head\n") || !strings.Contains(clamped, "0 B elided") {
 		t.Fatalf("clamped digest = %q", clamped)
