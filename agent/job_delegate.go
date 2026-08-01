@@ -526,9 +526,6 @@ var delegateSendTestHooks struct {
 }
 
 func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	background := true
 	if args.BackgroundSet {
 		background = args.Background

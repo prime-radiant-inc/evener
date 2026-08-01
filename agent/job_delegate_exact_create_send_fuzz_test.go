@@ -61,7 +61,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 		case 4:
 			jdaf100CreateLaunchRollback(t)
 		case 5:
-			res := (&Session{}).sendDelegateMessage(nil, sendMessageArgs{Target: "dlg_missing", Message: "hello"})
+			res := (&Session{}).sendDelegateMessage(context.Background(), sendMessageArgs{Target: "dlg_missing", Message: "hello"})
 			if res.Err == nil {
 				t.Fatal("send without a job manager succeeded")
 			}
@@ -69,7 +69,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			s := &Session{}
 			s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return true }
 			s.setActiveEntryKind(EntryWatchDelivery)
-			res := s.sendDelegateMessage(nil, sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "callback"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "callback"})
 			if res.Err != nil || !res.Delivered {
 				t.Fatalf("watch callback send = %+v", res)
 			}
