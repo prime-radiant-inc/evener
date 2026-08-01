@@ -155,6 +155,12 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if !strings.Contains(fmt.Sprint(result.Content), "arguments were not valid JSON") {
 		t.Fatalf("tool result content = %q, want invalid-JSON diagnostic", fmt.Sprint(result.Content))
 	}
+	// The coaching must quote the region of the model's own arguments that
+	// failed parsing; `{"value": broken` fails at a byte offset, so the
+	// excerpt marks it with >>>.
+	if got := fmt.Sprint(result.Content); !strings.Contains(got, "near byte") || !strings.Contains(got, ">>>") {
+		t.Fatalf("tool result content = %q, want failing-input excerpt", got)
+	}
 
 	_, entries, skipped, err := readTranscript(transcriptPath)
 	if err != nil {
@@ -250,6 +256,9 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	}
 	if !strings.Contains(output, `"is_error":true`) || !strings.Contains(output, "arguments were not valid JSON") {
 		t.Fatalf("function_call_output.output = %q, want wrapped error content", output)
+	}
+	if !strings.Contains(output, "near byte") {
+		t.Fatalf("function_call_output.output = %q, want failing-input excerpt", output)
 	}
 }
 
