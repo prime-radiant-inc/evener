@@ -37,7 +37,7 @@ set -uo pipefail
 # a single `df`, so the cost is unmeasurable next to the rest of this script.
 scripts/disk-reclaim.sh --check || exit 1
 
-MODULES=${MODULES:-". agent llm auth envvars invariant"}
+MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
 
 # WEB controls the concurrent frontend gate. It is skipped automatically when

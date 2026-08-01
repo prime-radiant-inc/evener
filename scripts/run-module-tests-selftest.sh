@@ -228,6 +228,17 @@ run_tests() {
 	) >"$output" 2>&1
 }
 
+run_tests_default_modules() {
+	output="$1"
+	shift
+	(
+		cd "$repo" || exit 1
+		unset MODULES
+		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
+	) >"$output" 2>&1
+}
+
 started_streams() {
 	cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ *$//'
 }
@@ -257,6 +268,12 @@ assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
 assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
+
+new_case
+out="$case_dir/default-modules.out"
+if run_tests_default_modules "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a default-module run exits zero"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent llm auth envvars invariant identifier web" "a default-module run covers every non-fuzz Makefile module"
 
 new_case
 out="$case_dir/root-full.out"
