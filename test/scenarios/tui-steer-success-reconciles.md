@@ -16,7 +16,7 @@ The wiring lives in:
 - `cmd/serf-tui/internal/pending/pending.go:164`
   (`PendingCoordinator.TryReconcile`) — matches an in-flight pending
   entry by method + normalized text.
-- `cmd/serf-tui/hub_notifications.go:15` (`applyHubNotification`) —
+- `cmd/serf-tui/hub_notifications.go#applyHubNotification` (`applyHubNotification`) —
   invokes `TryReconcile` before the authoritative reducer append.
 - `cmd/serf-tui/internal/msgrender/message.go` — Pending sets `⠋ ` prefix; the
   reconcile drops `msg.Pending` so the prefix disappears and the
@@ -108,7 +108,7 @@ Driver: tmux send-keys / capture-pane.
   on the steer text. A `↻ Change of plans: …` line (the
   authoritative steering chip, rendered by the same `↻ ` prefix
   by the `case transcript.MsgSteering:` branch of `RenderMessage`,
-  `cmd/serf-tui/internal/msgrender/message.go:235` — there is no
+  `cmd/serf-tui/internal/msgrender/message.go#RenderMessage` — there is no
   `msgSteering` identifier) is present.
   ```
   ! grep -q '⠋' "$run/pane-reconciled.txt"
@@ -157,7 +157,7 @@ rm -f "$run/pane-pending.txt" "$run/pane-reconciled.txt"
   `⠋ ` glyph. Insert a `sleep 0.2` immediately before the first
   capture if needed; the pending entry is still visible because
   the optimistic timeout is 10 s (see `pendingTimeout`,
-  `cmd/serf-tui/internal/pending/pending.go:12`).
+  `cmd/serf-tui/internal/pending/pending.go#pendingTimeout`).
 - **Same `↻ ` glyph for pending and authoritative**. Both rows
   use the steering `↻ ` prefix. The pending differentiator is the
   preceding `⠋ ` glyph and the faint lipgloss style; the

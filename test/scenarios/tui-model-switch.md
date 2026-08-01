@@ -68,7 +68,7 @@ cell (`hub_dashboard_view.go:338`; the details drawer's `Model:` line is
 
 - The marker text is exact: `"Switched model: %s/%s → %s/%s"` built from
   `oldProfile.ID()/oldProfile.Model()` and `nextProfile.ID()/nextProfile.Model()`
-  (`buildModelSwitchMarkerText`, `agent/session.go:900-901`; `:775` is
+  (`buildModelSwitchMarkerText`, `agent/session.go#buildModelSwitchMarkerText`; `:775` is
   `SetModel`'s doc comment, 125 lines above) — assert that literal first
   line, not a paraphrase. The marker may carry further `Warning:` lines
   (`:902-908`), so match the first line rather than the whole entry.

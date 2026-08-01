@@ -33,7 +33,7 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 - Network reachable to `auth.openai.com` — `RequestDeviceCode` is
   a real HTTPS call before the poll begins.
 - The watcher polls `auth.json` once per second
-  (`defaultConcurrentLoginWatchInterval`, `auth/openai/service.go:23`).
+  (`defaultConcurrentLoginWatchInterval`, `auth/openai/service.go#defaultConcurrentLoginWatchInterval`).
   Expect detection within ~1–2s of the on-disk write.
 
 ## Steps

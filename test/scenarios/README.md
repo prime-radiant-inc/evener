@@ -44,11 +44,25 @@ at an unrelated line.
   drive signal") ```. Quotes may be separated by punctuation and the word
   `and`; the run ends at the first other word, so ordinary prose quotes
   later in the paragraph are not anchors.
+- **Code (`.go`)** — the file path with the symbol appended after a
+  `#`: `` `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns` ``.
+  That is the spelling `scripts/run-fuzz.sh` already uses for the same
+  idea. The symbol may be a func or method, a type, a package-level or
+  grouped `const`/`var`, a struct field, or an interface method. The
+  path may be abbreviated to the part that reads well
+  (`internal/hubcore/tree.go`) as long as the suffix is findable.
 
-`TestScenarioDocAnchorsAppearInTheDocTheyName` in the root module
-resolves every quoted anchor against the doc it names, so a renamed
-heading or a reworded sentence fails loudly instead of leaving a
-citation that points at nothing.
+Three root-module audits keep both halves honest:
+`TestScenarioDocAnchorsAppearInTheDocTheyName` resolves every quoted
+anchor against the doc it names, `TestScenarioSourceCitationsResolve`
+resolves every cited source path, and
+`TestScenarioSourceSymbolsAreDeclared` resolves every `#symbol`. A
+renamed heading, a moved package, or a renamed function fails loudly
+instead of leaving a citation that points at nothing.
+
+`scripts/scenario-cite-migrate.sh` moves surviving `:line` citations
+onto symbol anchors where the card's own prose and the line number
+agree on which symbol is meant.
 
 ## How to run
 

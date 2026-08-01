@@ -126,7 +126,7 @@ prevent, and the next card to start a hub is the one that pays for it.
   $tmpdir/serf-tui` and confirm the EvalSymlinks branch resolves to
   the symlink target's directory and finds serf-hub there. Covered
   in the unit test `TestResolveFollowsSymlinkedExecutable`
-  (`internal/binresolve/sibling_test.go:117`) but not exercised
+  (`internal/binresolve/sibling_test.go#TestResolveFollowsSymlinkedExecutable`) but not exercised
   end-to-end here.
 - `unset SERF_HUB_BIN` matters; if a developer has it set (e.g. to
   point at a wip build), the explicit override pre-empts sibling

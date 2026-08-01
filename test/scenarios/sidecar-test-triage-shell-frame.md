@@ -15,7 +15,7 @@ this rewrite exists to remove. Why it cannot:
 
 - `output_match` requires a concrete `job_id` the watcher owns or whose
   owner is a live DESCENDANT (`resolveDescendantJobOwner`,
-  `agent/jobs_nested.go:312`, walks down only). This card's observer
+  `agent/jobs_nested.go#resolveDescendantJobOwner`, walks down only). This card's observer
   needs an ANCESTOR's job. Jesse ruled on 2026-07-30 that ancestor-job
   `output_match` access is NOT to be added. That ruling stands, and this
   card is repaired against the existing mechanism rather than around it.

@@ -223,7 +223,7 @@ default).**"); this card only runs with the raised config below.
   so do NOT require COORD2's own status to be `cancelled`. The cascade
   fires regardless of the coordinator's own terminal status (the
   stop-cascade has no terminal gate; `delegateChildSessionToCascade`,
-  `agent/jobs_nested.go:437`): a fire-and-return coordinator whose own job is
+  `agent/jobs_nested.go#delegateChildSessionToCascade`): a fire-and-return coordinator whose own job is
   already `completed` STILL has its live workers stopped. Falsification
   (the cascade hole this guards): either worker is still `running` after
   the stop confirmed — `job_stop` on the coordinator failed to halt its
@@ -279,7 +279,7 @@ default).**"); this card only runs with the raised config below.
   "**Tree-wide running-delegate cap.**"; "Rollout (live vs. dark)"
   "**Live — the tree-wide running-delegate cap binds existing
   fan-out.**"; `--max-concurrent-delegates`,
-  `defaultMaxConcurrentDelegateTurns`, `agent/tree_counter.go:12`).** It was
+  `defaultMaxConcurrentDelegateTurns`, `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`).** It was
   raised from the original hardcoded 16, and drive turns now budget
   separately (`defaultMaxConcurrentDriveTurns` = 8, `:17`). This card's
   fan-out (1 coordinator + 3 workers = 4 running, then COORD2 + 2 = 3)

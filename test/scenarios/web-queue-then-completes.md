@@ -73,7 +73,7 @@ HUB=http://127.0.0.1:$PORT
   Queue on "a turn in flight" (`server/appwire_runtime.go:1046,1055`).
   Falsify: `queue:false` while active — either the harness wired no queue or
   `Capabilities.Queue` stopped being threaded through
-  `hubCapabilitiesFromAppwire` (`cmd/serf-hub/web_api_tree.go:792-800`), and
+  `hubCapabilitiesFromAppwire` (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and
   every browser assertion below is moot.
 - **Step 4 (queue submit)**: the strip appears with heading
   `Queued messages (1)` (`composer/queue/QueueStrip.tsx:278`) and one row

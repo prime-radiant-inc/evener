@@ -1,6 +1,9 @@
 package serf_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -71,6 +74,126 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 			"audit sees it (kata ypwb). Repoint at the file that carries the "+
 			"code now, or drop the anchor if the sentence is deliberately "+
 			"naming something deleted:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// TestScenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a Go
+// citation resolvable. `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`
+// survives every edit to that file — which is the entire reason kata ypwb moved
+// the corpus off `:12` — but only until the symbol is renamed or moved to
+// another file, and nothing else in the suite would notice that.
+//
+// A symbol is anything a card legitimately anchors to: a func or method, a
+// type, a package-level or grouped const or var, a struct field, an interface
+// method. `Type.Method` resolves on its last element, because that is the
+// declaration go/ast can see.
+func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
+	byBase := scenarioGoFilesByBase(t)
+	declared := map[string]map[string]bool{}
+	var findings []string
+	checked := 0
+	for _, path := range scenarioCardFiles(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, m := range scenarioGoCitation.FindAllStringSubmatch(line, -1) {
+				cited, symbol := m[1], m[2]
+				if symbol == "" {
+					continue
+				}
+				if dot := strings.LastIndexByte(symbol, '.'); dot >= 0 {
+					symbol = symbol[dot+1:]
+				}
+				checked++
+				found := false
+				for _, file := range scenarioResolveGoPath(byBase, cited) {
+					names, err := scenarioDeclarationsIn(declared, file)
+					if err != nil {
+						t.Fatalf("parsing %s cited by %s: %v", file, path, err)
+					}
+					if names[symbol] {
+						found = true
+						break
+					}
+				}
+				if !found {
+					findings = append(findings, path+":"+strconv.Itoa(i+1)+
+						": `"+cited+"` declares no "+symbol+": "+strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+	// A corpus audit is green either because the corpus is clean or because its
+	// needle stopped matching anything; only a floor on matches tells the two
+	// apart. The corpus carries symbol anchors today, so zero checks means the
+	// `#symbol` needle broke, not that the anchors left.
+	if checked == 0 {
+		t.Fatalf("the `#symbol` needle matched nothing across the corpus — " +
+			"the detector is dead and this audit is checking nothing")
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("a scenario card's `file.go#symbol` anchor must name something "+
+			"that file still declares — a rename or a move to another file "+
+			"leaves the anchor parsing fine and pointing at nothing, which is "+
+			"the failure the line numbers it replaced had by construction "+
+			"(kata ypwb). Repoint at the file and symbol that carry the code "+
+			"now:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// scenarioDeclarationsIn returns every name a Go file declares — funcs and
+// methods, types, package-level and grouped consts and vars, struct fields,
+// interface methods — memoized across citations into the same file.
+func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
+	if names, ok := cache[path]; ok {
+		return names, nil
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for _, decl := range parsed.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			names[decl.Name.Name] = true
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					names[spec.Name.Name] = true
+					scenarioAddMemberNames(names, spec.Type)
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						names[name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	cache[path] = names
+	return names, nil
+}
+
+// scenarioAddMemberNames records a struct type's field names and an interface
+// type's method names; cards anchor to both.
+func scenarioAddMemberNames(names map[string]bool, typ ast.Expr) {
+	var fields *ast.FieldList
+	switch typ := typ.(type) {
+	case *ast.StructType:
+		fields = typ.Fields
+	case *ast.InterfaceType:
+		fields = typ.Methods
+	default:
+		return
+	}
+	for _, field := range fields.List {
+		for _, name := range field.Names {
+			names[name.Name] = true
+		}
 	}
 }
 

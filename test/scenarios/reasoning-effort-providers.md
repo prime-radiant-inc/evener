@@ -1,7 +1,7 @@
 # reasoning-effort-providers: reasoning effort works end-to-end on Kimi and Anthropic
 
 **What this covers**: the kimi-effort branch — `llm.ClampReasoningEffort`
-(`llm/types.go:670`), the Anthropic forced-`tool_choice`-under-thinking
+(`llm/types.go#ClampReasoningEffort`), the Anthropic forced-`tool_choice`-under-thinking
 downgrade (`llm/providers/anthropic/request.go:175-186`), and the
 `max_tokens` > thinking-budget reconciliation (`:188-198`). (The three
 commit hashes this card used to cite resolve to nothing in this repo's

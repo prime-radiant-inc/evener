@@ -5,7 +5,7 @@ card here whose value is entirely a **negative** assertion. A shell command
 prints an out-of-cwd path, a `../` traversal, an external URL, a missing file,
 a non-image, or an SVG; none of them may ever become a preview, and none of
 them may fail, blank, or error the tool row that printed them. The boundary is
-`fspaths.ResolveInRoot` (`cmd/serf-hub/internal/fspaths/paths.go:81-113`) —
+`fspaths.ResolveInRoot` (`cmd/serf-hub/internal/fspaths/paths.go#ResolveInRoot`) —
 lexical containment *and* symlink-resolved containment, each independently
 sufficient — the same check `/doc/file` uses. Failing candidates are simply
 skipped (`output_images.go:74-77`), and a notification with nothing to add is
@@ -144,5 +144,5 @@ untouched.
   `TestSupportedOutputImageMediaAcceptsV1FormatsAndRejectsSVG`
   (`output_images_test.go:31,228,241,58`), `TestDocImageRejectsTraversalAndSVG`
   (`doc_serve_test.go:195`), and `TestDocFile_RejectsSymlinkEscape`
-  (`doc_serve_test.go:246`). Those pin the boundary; this card pins that
+  (`doc_serve_test.go#TestDocFile_RejectsSymlinkEscape`). Those pin the boundary; this card pins that
   nothing downstream re-opens it.

@@ -19,15 +19,15 @@ The dormant case is a three-layer contract, each layer independently
 checkable:
 
 - **Wire**: `hubThreadStart` calls `StartTurn` only when
-  `len(params.Input) > 0` (`cmd/serf-hub/app_threadlifecycle.go:182-197`).
+  `len(params.Input) > 0` (`cmd/serf-hub/app_threadlifecycle.go#hubThreadStart`).
 - **Client**: `buildInput` pushes a text item only `if (text.trim())`,
   and sends it UNTRIMMED when it does
   (`panes/spawn/startThread.ts:39-45`). The REST shim does the same:
   `inputItemsForText` returns nil for a whitespace-only prompt
-  (`cmd/serf-hub/web_session.go:177-182`).
+  (`cmd/serf-hub/web_session.go#inputItemsForText`).
 - **Presentation**: the fact rides beside the state, not inside it —
-  `hubcore.TreeNode.Dormant` (`cmd/serf-hub/internal/hubcore/tree.go:270-280`),
-  wired to `/api/tree` as `"dormant"` (`hubapi/types.go:120`,
+  `hubcore.TreeNode.Dormant` (`cmd/serf-hub/internal/hubcore/tree.go#Dormant`),
+  wired to `/api/tree` as `"dormant"` (`hubapi/types.go#Dormant`,
   `web_api_tree.go:1334`) and to the rail as
   `[data-testid="rail-row-not-started"]`.
 
@@ -46,7 +46,7 @@ and the session pane's empty state; anything else, grep `data-testid` in
 - **`past_index_rebuild_interval = "2s"` in the hub's `hub.toml`.** The
   default is 60s (`cmd/serf-hub/config.go:62,134-135`) and `dormant` is
   read out of session meta via the Past index
-  (`navigationSnapshotInputs`, `web_api_tree.go:387-390`), so on the
+  (`navigationSnapshotInputs`, `web_api_tree.go#navigationSnapshotInputs`), so on the
   default a just-spawned session reports `dormant:false` for up to a
   minute. See Sharp edges — that is the single most likely false
   negative in this card.

@@ -6,7 +6,7 @@ buried-stderr HTTP 500s on spawn. This card re-checks, live, the three
 remaining named failure classes: a bogus model id, a working dir that
 doesn't exist, and a harness binary the hub can't execute — against the
 real `POST /api/spawn` handler (`handleApiSpawn`,
-`cmd/serf-hub/web_spawn.go:63-102` → `hubThreadStart` in
+`cmd/serf-hub/web_spawn.go#handleApiSpawn` → `hubThreadStart` in
 `cmd/serf-hub/app_threadlifecycle.go` → `HubSpawner.Spawn` in
 `cmd/serf-hub/spawn.go`).
 
@@ -37,7 +37,7 @@ longer on it".
    HTTP 503
    {"error":"model provider is not reported by the Serf launch harness: totallyfakeprovider","code":-32014,"serf_error_info":"hubLaunch"}
    ```
-   Rejected in `validateSerfLaunchModel` (`cmd/serf-hub/app_models.go:104-125`,
+   Rejected in `validateSerfLaunchModel` (`cmd/serf-hub/app_models.go#validateSerfLaunchModel`,
    message at `:122`) before any subprocess is spawned. Legible, named,
    structured JSON.
 
@@ -82,16 +82,16 @@ longer on it".
 **All three classes: legible, structured, actionable — no raw 500, no
 silent hang.** Every failure is caught pre-spawn (model validation, cwd
 canonicalization, or the `launch-check` subprocess probe) and returned
-as a structured JSON body (`hubapi.ErrorResponse`, `hubapi/types.go:268-272`:
+as a structured JSON body (`hubapi.ErrorResponse`, `hubapi/types.go#ErrorResponse`:
 `{"error": ..., "code": ..., "serf_error_info": ...}`) with an HTTP
 status appropriate to the failure kind — 400 for caller input errors via
 `appwire.CodeInvalidParams` (`-32602`), 503 for launch/environment-side
 failures via `appwire.CodeUnavailable` (`-32014`), both in
 `appwire/errors.go:7,10`. The mapping is `writeSpawnError`
-(`cmd/serf-hub/web_spawn.go:104-116`) → `writeAPIWireError`
-(`cmd/serf-hub/web_api.go:89-100`), with the `serf_error_info` string
+(`cmd/serf-hub/web_spawn.go#writeSpawnError`) → `writeAPIWireError`
+(`cmd/serf-hub/web_api.go#writeAPIWireError`), with the `serf_error_info` string
 lifted off the wire error's data by `serfErrorInfoFromData`
-(`web_api.go:127-137`; the values are `appwire.ErrorInvalidParams` /
+(`web_api.go#serfErrorInfoFromData`; the values are `appwire.ErrorInvalidParams` /
 `ErrorHubLaunch`, `appwire/errors.go:16,22`). WS5's fix holds: no
 regression to buried-stderr raw 500s was found for any of the three
 named classes. **No code change made — this card is the
@@ -121,7 +121,7 @@ response). Neither was observed.
   Commit `1b717fe72` added one: the branch now returns nil for any
   instance whose *behavior tag* declares auth mode `none`
   (`cmd/serf-hub/spawn.go:569-574`, `envvars.RequiresNoCredential`,
-  `envvars/providers.go:65-68`; ollama's `AuthModes: []string{"none"}`
+  `envvars/providers.go#RequiresNoCredential`; ollama's `AuthModes: []string{"none"}`
   at `envvars/providers.go:155-161`), and the rule is pinned by
   `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
   (`cmd/serf-hub/spawn_test.go:1437`), which also checks that the

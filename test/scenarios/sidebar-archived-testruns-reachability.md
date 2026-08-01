@@ -4,7 +4,7 @@
 `cmd/serf-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
 `:126-134,939-940`) and `/api/tree`'s projection of it into
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
-Archived (`navigationProjectBuckets`, `cmd/serf-hub/web_api_tree.go:355-368`;
+Archived (`navigationProjectBuckets`, `cmd/serf-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
 the `SERF_SESSION_ORIGIN=test` classification path (`envvars/envvars.go:81`,
 read once at fresh-session create in `agent/session_init.go:209`), and whole-
@@ -72,7 +72,7 @@ a browser, and only assert what the rail renders.
    ```
 6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
    the archive handler broadcasts `serf/tree/changed` unconditionally
-   (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go:84-98`) and
+   (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
    the store refetches on a 250ms debounce
    (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
    then click the `Archived sessions (…)` button and confirm `$A`'s project row
@@ -98,7 +98,7 @@ a browser, and only assert what the rail renders.
   or `archived_projects[]` — the precedence at `web_api_tree.go:359-362` is
   what routes it, and a mixed project (one unmarked session) is correctly
   *not* a test run (`fuzzScenarioAllTestSessionsClassifyAsTestRun`,
-  `internal/hubcore/tree_test.go:1730-1752`).
+  `internal/hubcore/tree_test.go#fuzzScenarioAllTestSessionsClassifyAsTestRun`).
 - **Step 3 (exact)**: `200 {"ok":true}`; `$A` moves to `archived_projects[]`
   and is gone from `projects[]`. Its entry is a **stub**: `"sessions": null`
   with `session_count` carrying the real row count
@@ -175,7 +175,7 @@ a browser, and only assert what the rail renders.
   hub's own environment.** `agent/session_init.go:209` reads it from the
   *daemon's* process env at fresh-create time, which the hub controls
   per-spawn: `launchconfig.ToEnv` applies per-launch env last so it wins over
-  the inherited parent env (`cmd/serf-hub/internal/launchconfig/env.go:61-71`).
+  the inherited parent env (`cmd/serf-hub/internal/launchconfig/env.go#ToEnv`).
   Setting it in the hub's own environment would stamp `origin=test` onto every
   session the hub ever spawns.
 - **"Live" for the delete refusal means a registered daemon, not a running

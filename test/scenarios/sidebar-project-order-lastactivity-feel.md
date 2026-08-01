@@ -13,7 +13,7 @@ Layer (1) is already pinned deterministically by two scenarios —
 `fuzzScenarioBuildTree_OrdersProjectsByLastActivity` and
 `…OrdersProjectsByLastActivityNotCreatedAt`
 (`internal/hubcore/tree_test.go:958,984`, replayed by `FuzzHubcoreScenarios`,
-`internal/hubcore/scenarios_fuzz_test.go:53-54`). This card exists for layer
+`internal/hubcore/scenarios_fuzz_test.go#FuzzHubcoreScenarios`). This card exists for layer
 (2), which unit tests cannot see: `/api/tree` builds from
 `cfg.Past.AllMetas()` (`cmd/serf-hub/web_api_tree.go:389`, memoized on the
 inputs version at `:261-280`), an in-memory index that has to *learn* a
@@ -44,10 +44,10 @@ chain is:
    comment names this exact symptom: "so the sidebar order (which is keyed off
    UpdatedAt) doesn't lag behind a completed turn").
 2. `Roster.Refresh` diffs per-session status and fires the callback once per
-   changed id (`internal/hubcore/roster.go:344-354`), driven by an fsnotify
+   changed id (`internal/hubcore/roster.go#Refresh`), driven by an fsnotify
    watch on the run dir plus a 5s ticker (`:433-471`).
 3. `refreshPastOnStatus` calls `past.RefreshOne(id)`
-   (`cmd/serf-hub/main_background.go:30-32`), which re-reads that one session's
+   (`cmd/serf-hub/main_background.go#refreshPastOnStatus`), which re-reads that one session's
    `meta.json` and folds it in via `UpdateMeta`
    (`internal/hubcore/past.go:371-397,327-350`) — no full rescan.
 4. `past.SetOnChange(func(){ bump(); notifyTreeChanged(web.appRPC) })`
@@ -72,7 +72,7 @@ broken — that is the failure this card now catches.
   `validateProviderCredentials` demanded a credential for ollama; **that is
   fixed** — the branch now returns early for any instance type whose auth mode
   is `none` (`cmd/serf-hub/spawn.go:566-572`, `envvars.RequiresNoCredential`,
-  `envvars/providers.go:65-68`; ollama is `AuthModes: ["none"]` at
+  `envvars/providers.go#RequiresNoCredential`; ollama is `AuthModes: ["none"]` at
   `envvars/providers.go:155-161`). If an ollama spawn 503s with "provider
   credentials missing", that regression is back and is worth its own kata.
 
@@ -162,7 +162,7 @@ Those numbers are the shape of the regression, not the current expectation.
 - **`RefreshOne` keys off a *status transition*, not off the meta write, and
   that leaves one narrower residual race.** The hub re-reads a session's
   `meta.json` at the moment `Roster.Refresh` notices its status changed
-  (`internal/hubcore/roster.go:344-354`). The daemon writes its meta on its own
+  (`internal/hubcore/roster.go#Refresh`). The daemon writes its meta on its own
   schedule — `maybeAutoSave` has many call sites, including a deferred flush on
   every exit from a turn (`agent/session_lifecycle.go:908-919`) — so if the
   write lands *after* the status flip the roster observed, that `RefreshOne`
@@ -176,6 +176,6 @@ Those numbers are the shape of the regression, not the current expectation.
   There is no status change to key off, by design (`main.go:272-278`). Don't
   mistake that for the regression this card guards.
 - **`RefreshOne` is a no-op for an id the index has never seen**
-  (`past.go:384-389`), so a brand-new session's very first appearance still
+  (`past.go#RefreshOne`), so a brand-new session's very first appearance still
   depends on a rebuild or on the live roster's own path. Step 6 deliberately
   touches an *already-indexed* session for this reason.

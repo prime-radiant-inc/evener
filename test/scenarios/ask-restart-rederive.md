@@ -5,7 +5,7 @@
 question at the transcript tail must report `awaiting` on its **first** successful
 `/status` read after restart (never an idle-until-next-turn window), and the question must
 still render and be answerable after the restart. Mirrors
-`cmd/serf/serve_ask_test.go:387`'s `TestServeAsk_RestoreReportsAwaitingImmediately` at the
+`cmd/serf/serve_ask_test.go#TestServeAsk_RestoreReportsAwaitingImmediately` at the
 live, hub-fronted level, plus `reconnect-auto-resume.md`'s daemon-kill technique.
 
 **Surface**: see `docs/agentic-testing.md` — "The REST surface, and what is no longer on
@@ -79,7 +79,7 @@ Chrome.
    port and give this daemon its own `--run-dir` so the hub never adopts it; both are real
    `serf serve` flags (`cmd/serf/serve.go:236,239,241,242`), and the daemon reports the
    address it actually bound in its own rendezvous entry (`rendezvous.Entry.Address`,
-   `rendezvous/rendezvous.go:21-23`). Do **not** pass `--state-dir`: Part A must read the
+   `rendezvous/rendezvous.go#Address`). Do **not** pass `--state-dir`: Part A must read the
    same default state layout the hub wrote.
    ```bash
    partrun="$tmpdir/partA-run"; mkdir -p "$partrun"

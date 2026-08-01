@@ -110,7 +110,7 @@ optimistic overlay.
 - **The Rename menu item is server-gated.** It renders only when the wire's
   `rename` flag is set on the node (`RailRow.tsx:362-364`), and the hub sets
   that from `rowRenameable` (`web_api_tree.go:972,1308-1312`), which is just
-  "does this id parse as a local ref" (`isLocalRouteID`, `web.go:235-241`). So
+  "does this id parse as a local ref" (`isLocalRouteID`, `web.go#isLocalRouteID`). So
   Codex-bridged rows and synthetic `cluster:` fold rows never offer it — this
   card is about local top-level serf sessions.
 - **The ref is URL-escaped on the way out and unescaped on the way in.**

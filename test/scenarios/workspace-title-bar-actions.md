@@ -1,7 +1,7 @@
 # workspace-title-bar-actions: interrupt, compact, shutdown end-to-end
 
 **What this covers**: kata `gx92`. The session actions (interrupt, compact,
-shutdown) hit `handleSessionAction` in `cmd/serf-hub/web_session.go:188`,
+shutdown) hit `handleSessionAction` in `cmd/serf-hub/web_session.go#handleSessionAction`,
 which forwards to the daemon via appwire (`TurnInterruptParams`,
 `ThreadCompactStartParams`, `ThreadShutdownParams`). This scenario is the
 server-side counterpart to `SessionActionsMenu.test.tsx`: did the daemon
@@ -82,7 +82,7 @@ settles back to idle, the daemon's outer ProcessInput loop pops the queue
 head and runs it as a fresh user turn.
 
    **There is no REST route for queue.** `handleAPISession`'s verb list
-   (`cmd/serf-hub/web_api_tree.go:1376-1416`) has no `queue` case, and the
+   (`cmd/serf-hub/web_api_tree.go#handleAPISession`) has no `queue` case, and the
    old `/s/<id>/queue` shim died with the vanilla frontend. `turn/queue`
    lives only on the AppWire WebSocket (`appwire/types.go:26`), so this leg
    needs one of:
@@ -291,11 +291,11 @@ find $HOME/.local/state/serf/projects -name "$SID*" -delete
   with a `<SYSTEM-REMINDER>` so the model sees on its next turn
   that the previous round was cut short. If you see state stay at
   `closed` after the interrupt, the abort path in
-  `agent/session_lifecycle.go:517-527`'s `ProcessInputKind` regressed to its
+  `agent/session_lifecycle.go#ProcessInputKind` regressed to its
   pre-`0ax1` behaviour of calling `s.Close()`.
 - **Compact is not free, and its checkpoint text depends on the strategy.**
-  `Session.Compact` (`agent/session_compaction.go:20-58`) runs
-  `Manager.ForceCompact` (`agent/internal/contextmgr/context_manager.go:355`),
+  `Session.Compact` (`agent/session_compaction.go#Compact`) runs
+  `Manager.ForceCompact` (`agent/internal/contextmgr/context_manager.go#ForceCompact`),
   which is Layer 1 (a deterministic checkpoint) **plus** Layer 2 (LLM
   summarization) whenever a client is available. Layer 2 short-circuits on a
   short history — `summarizeWithLLMSteered` returns the input unchanged when

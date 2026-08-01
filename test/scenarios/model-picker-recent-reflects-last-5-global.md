@@ -3,7 +3,7 @@
 **What this covers**: Track B Tasks 1-3's `appwire.ModelListResponse.Recent`,
 `hubcore.PastIndex.RecentModels` (`recentModelsLimit = 5`,
 `cmd/serf-hub/app_models.go:30`), and `attachRecentModels`
-(`app_models.go:36-56`) — spawning across many working directories and
+(`app_models.go#attachRecentModels`) — spawning across many working directories and
 models must produce a `Recent` group that is (a) capped at the 5
 most-recently-*touched* distinct `(provider, model)` pairs, (b) ordered
 most-recent-first, (c) identical regardless of which `cwd` the caller
@@ -167,7 +167,7 @@ Recent — spawn real sessions.
   `[instances.ollama]` block. Commit `1b717fe72` fixed it properly: the
   config path now returns nil for any instance whose *behavior tag*
   declares auth mode `none` (`cmd/serf-hub/spawn.go:567-573`,
-  `envvars.RequiresNoCredential`, `envvars/providers.go:65-68`; ollama's
+  `envvars.RequiresNoCredential`, `envvars/providers.go#RequiresNoCredential`; ollama's
   `AuthModes: []string{"none"}` at `envvars/providers.go:155-160`),
   pinned by `TestValidateProviderCredentials_ConfigInstanceAuthModeNone`
   (`cmd/serf-hub/spawn_test.go:1243`). Step 1 spawns ollama with no
@@ -177,7 +177,7 @@ Recent — spawn real sessions.
 - **The spawn picker's Recent is legitimately narrower than the
   settings picker's.** `/api/models` Recent is already filtered to
   models the hub offers (`recentModelEntriesFromDescriptors`,
-  `cmd/serf-hub/web_spawn.go:248-264`), and the *spawn* picker filters
+  `cmd/serf-hub/web_spawn.go#recentModelEntriesFromDescriptors`), and the *spawn* picker filters
   it a second time to the harness/cwd-scoped set it actually renders
   (`mergeScopedCatalog`, `widgets/modelCatalog/scopedCatalog.ts:26-27`).
   So on a non-default harness, or a cwd whose project config narrows the
@@ -197,7 +197,7 @@ Recent — spawn real sessions.
 - **Recent is capped before it is filtered.** `RecentModels(5)` takes
   the 5 most recent distinct pairs from the index, and *then*
   `attachRecentModels` / `recentModelEntriesFromDescriptors` drop any
-  the hub no longer offers (`app_models.go:44-54`,
+  the hub no longer offers (`app_models.go#attachRecentModels`,
   `web_spawn.go:248-264`). So a hub that retired one of the top 5 shows
   **4** Recent rows, not 4-plus-the-6th. That is correct; a card
   asserting "always exactly 5" would be wrong.
