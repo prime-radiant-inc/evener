@@ -532,6 +532,68 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
   });
 
+  // The pending routing's thread id is seeded from the published model and
+  // re-seeded from the authoritative snapshot at the response cut; it is never
+  // learned from the stream (kata j4b0). This pins both halves of why that is
+  // enough BEFORE the cut, the only window where the routing can lack a thread
+  // id at all. An initial hydration has no published model at its ref, so a
+  // ref-less frame has nothing to reach whether the buffer takes it or not;
+  // and the cut discards everything buffered before it, because the snapshot
+  // the daemon ordered there already represents it. A frame the snapshot does
+  // NOT carry is what makes that discard visible.
+  test("frames before the response cut leave no trace: nothing published to reach, and the cut drops the buffer", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+
+    // A ref-targeted frame naming a turn the snapshot will not carry, then a
+    // ref-less frame on the same stream: the pair a buffer would have to route
+    // on a thread id taken from the first of them. The second one needs the
+    // cast because every notification's params requires `ref` on the wire
+    // (ItemLifecycleParams) - the strongest form of the scenario, and still no
+    // trace.
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_9", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    fake.emitNotification({
+      method: "item/started",
+      params: {
+        threadId: "thr_ref_a",
+        turnId: "turn_9",
+        item: { type: "commandExecution", id: "item_pre_cut_1", turnId: "turn_9", status: "inProgress" },
+      },
+    } as AnyNotification);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    finishRead(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_1"]);
+    expect(model?.turns.flatMap((turn) => turn.items.map((item) => item.id))).toEqual([]);
+    expect(model?.activeTurnId).toBeUndefined();
+  });
+
   test("an announcement frame landing after the response cut is replayed onto the published snapshot", async () => {
     // The daemon bundles a no-active-turn announcement into one synthetic turn
     // and sends it as a complete turn/completed (systemAnnouncementItem in

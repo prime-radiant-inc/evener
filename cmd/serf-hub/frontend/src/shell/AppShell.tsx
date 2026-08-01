@@ -22,7 +22,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
-import { SETTINGS_PRIMARY_ID, SPAWN_PRIMARY_ID, useWorkspaceStore, workspaceStore } from "./workspace";
+import { useWorkspaceStore, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -200,11 +200,11 @@ function openRouteAsPane(
 
   pendingSessionRef.current = null;
   if (route.type === "settings") {
-    workspaceStore.getState().replacePrimary("settings", route.params, SETTINGS_PRIMARY_ID);
+    workspaceStore.getState().replacePrimary("settings", route.params);
     return;
   }
   if (route.type === "spawn") {
-    workspaceStore.getState().replacePrimary("spawn", route.params, SPAWN_PRIMARY_ID);
+    workspaceStore.getState().replacePrimary("spawn", route.params);
     return;
   }
   workspaceStore.getState().openPane("welcome", {});

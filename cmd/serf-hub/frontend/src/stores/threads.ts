@@ -229,10 +229,18 @@ const ensureGenerations = new Map<string, number>();
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
-// The published model is intentionally stale while a thread/read is pending.
-// Keep only the routing facts that can evolve from accepted notifications, so
-// a later ref-less or threadId-only frame is judged against the pending stream
-// rather than that stale snapshot.
+// The identity a pending hydration accepts frames for. Both facts come from an
+// authority, never from the stream: the routing is seeded from the published
+// model when the read starts and re-seeded from the authoritative snapshot at
+// the response cut, which is what lets a ref-less (threadId-only) frame after
+// the cut be judged against the thread the snapshot actually named.
+//
+// threadId is therefore absent only before the cut of a hydration that had no
+// published model to seed from - and in exactly that window there is no model
+// at this ref for a ref-less frame to reach, and the cut discards whatever the
+// buffer took anyway (pinned by "frames before the response cut leave no
+// trace" in threads.test.ts). Learning an id from a buffered frame there is
+// unobservable, which is why nothing does (kata j4b0).
 type PendingHydrationRouting = {
   ref: string;
   threadId?: string;
@@ -901,13 +909,8 @@ function transferPendingHydration(previous: PendingThreadHydration | undefined, 
   next.routing = { ...previous.routing };
 }
 
-// A buffered frame that names a thread id teaches it to the routing, so a
-// later ref-less frame on the same stream is judged against what this
-// subscription has actually seen rather than against the stale model.
 function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): void {
   pending.notifications.push(notification);
-  const threadId = notificationThreadId(notification);
-  if (pending.routing.threadId === undefined && threadId !== undefined) pending.routing.threadId = threadId;
 }
 
 function replayHydrationNotifications(

@@ -21,9 +21,6 @@ import { type PaneTypeId, paneFor } from "./paneRegistry";
 // point (Jesse: "there should only ever be one pane in the 'main group'").
 export type PaneSlot = "main" | "secondary";
 
-export const SETTINGS_PRIMARY_ID = "settings";
-export const SPAWN_PRIMARY_ID = "spawn";
-
 type PrimaryPaneType = "settings" | "spawn" | "session";
 
 export interface OpenPaneRecord {
@@ -65,7 +62,11 @@ export interface WorkspaceStoreState {
   // affects a pane being CREATED: slot is assign-once, so reopening an
   // already-open pane resolves to that pane wherever it already sits.
   openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
-  replacePrimary(type: PrimaryPaneType, params: unknown, identity: string): string;
+  // Makes (type, params) the one pane in the main slot, keeping that pane (and
+  // its id, and everything mounted under it) only when it is already the same
+  // primary - which for a session means the same ref. See primaryMatches for
+  // why the identity is derived here rather than named by the caller.
+  replacePrimary(type: PrimaryPaneType, params: unknown): string;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -96,12 +97,22 @@ function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function primaryMatches(pane: OpenPaneRecord | null, type: PrimaryPaneType, identity: string): boolean {
+// Is `pane` the same primary as the (type, params) being requested? The
+// identity is READ OUT OF the requested params here, at the one seam that
+// consumes it, rather than passed in beside them: a caller that could spell a
+// session's identity separately from its ref could pair one with the other,
+// and replacePrimary would then keep the live main pane while rewriting its
+// params - same pane id, new ref. Neither host remounts for that (both key a
+// pane by its id), and nothing below the pane is keyed either, so the previous
+// session's job list and badge count would stay on screen (kata z44z; it is
+// this rule that makes pcx5/tmyw unreachable). Matching on the params makes
+// the mismatch unrepresentable instead of merely unwritten.
+function primaryMatches(pane: OpenPaneRecord | null, type: PrimaryPaneType, params: unknown): boolean {
   if (pane?.type !== type) return false;
-  if (type === "settings") return identity === SETTINGS_PRIMARY_ID;
-  if (type === "spawn") return identity === SPAWN_PRIMARY_ID;
-  const ref = (pane.params as { ref?: unknown }).ref;
-  return typeof ref === "string" && ref === identity;
+  // Settings and spawn are singletons: their type IS their identity, and a
+  // section change is a params update to the pane that already holds it.
+  if (type !== "session") return true;
+  return (pane.params as { ref?: unknown }).ref === (params as { ref?: unknown }).ref;
 }
 
 let nextPaneSeq = 0;
@@ -259,13 +270,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     return id;
   },
 
-  replacePrimary(type, params, identity) {
+  replacePrimary(type, params) {
     paneFor(type);
     const state = get();
     const main = state.panes.find((pane) => pane.slot === "main") ?? null;
 
-    if (main !== null && primaryMatches(main, type, identity)) {
-      const panes = state.panes.filter((pane) => pane.id === main.id || !primaryMatches(pane, type, identity));
+    if (main !== null && primaryMatches(main, type, params)) {
+      const panes = state.panes.filter((pane) => pane.id === main.id || !primaryMatches(pane, type, params));
       const paramsChanged = !sameParams(main.params, params);
       const duplicatesRemoved = panes.length !== state.panes.length;
       if (!paramsChanged && !duplicatesRemoved && state.focusedPaneId === main.id) return main.id;

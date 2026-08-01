@@ -159,7 +159,7 @@ test("switching the focused pane (workspace.focusPane) swaps which one is render
 // secondary doc in shared state and can render the wrong pane after a route.
 test("renders the replacement session and drops stale secondary panes from the shared workspace", async () => {
   const workspace = workspaceStore.getState();
-  workspace.replacePrimary("settings", {}, "settings");
+  workspace.replacePrimary("settings", {});
   workspace.openPane("doc", { ref: "secondary" }, { slot: "secondary" });
   openTopLevelSession("local:session-a");
   const replacementId = workspaceStore.getState().mainPane()!.id;
