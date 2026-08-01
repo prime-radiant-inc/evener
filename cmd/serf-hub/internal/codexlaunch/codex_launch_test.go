@@ -1,6 +1,7 @@
 package codexlaunch
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -82,6 +83,28 @@ func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	// normalization still labels its lines as the codex app-server's.
 	if got := codexLogPrefix("  "); got != "[codex]" {
 		t.Fatalf("unnamed launch prefix = %q", got)
+	}
+}
+
+// Scan() reports a clean end of output and a fatal read failure the same way,
+// by returning false, and bufio.Scanner fails on any line past its 64KB token
+// limit — a stack dump, a serialized payload. That ends the scan of that pipe,
+// and with the scan goes every later line the app-server writes: the trailing
+// line here never reaches the log. A record that simply stops reads as an
+// app-server that went quiet, which is the one thing it does not mean, so the
+// launch says why it stopped listening (kata e1nh).
+func TestScanCodexEndpointSaysWhyItStoppedReading(t *testing.T) {
+	endpoints := make(chan string, 4)
+	var log syncBuffer
+	scanCodexEndpoint(
+		strings.NewReader(strings.Repeat("x", bufio.MaxScanTokenSize+1)+"\ncodex: still here\n"),
+		endpoints, launching(), &log, "[codex:live]")
+
+	// Exact: the record names the failure, and the 64KB line that caused it
+	// is not dumped into the log in the name of reporting it.
+	want := "[codex:live] app-server output ended early: " + bufio.ErrTooLong.Error() + "\n"
+	if log.String() != want {
+		t.Fatalf("log = %q, want %q", log.String(), want)
 	}
 }
 

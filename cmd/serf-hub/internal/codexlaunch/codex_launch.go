@@ -373,6 +373,15 @@ func scanCodexEndpoint(r io.Reader, endpoints chan<- string, launchDone <-chan s
 		// dropped here is a line nobody will ever see.
 		_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
 	}
+	// Scan() says "clean end of output" and "this pipe can no longer be read"
+	// the same way, by returning false, and only Err() tells them apart. A
+	// line past bufio's 64KB token limit — a stack dump, a serialized payload
+	// — ends the scan, and every later line the app-server writes is lost with
+	// it. Unannounced, that reads as an app-server that went quiet, which is
+	// the one thing it does not mean (kata e1nh).
+	if err := scanner.Err(); err != nil {
+		_, _ = fmt.Fprintf(out, "%s app-server output ended early: %v\n", prefix, err)
+	}
 }
 
 // deliverCodexEndpoint offers an announcement to the launch's readiness wait
