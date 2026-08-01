@@ -133,9 +133,15 @@ FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 # so a leaky test or fuzz run is OOM-killed individually instead of firing the
 # kernel's global OOM killer and taking the whole host — and its network — down.
 # Tune or disable via SERF_MEM_MAX (default 16G; SERF_MEM_MAX=0 turns it off).
-# Degrades to running uncapped (with a warning) where user scopes are unavailable.
+# Systemd user scopes are unavailable on Darwin, where the wrapper can only warn
+# before execing the same command, so recipes run directly there. Other hosts
+# retain the wrapper and its uncapped-warning fallback when scopes are unavailable.
 # See scripts/run-capped.sh and docs/fuzzing.md ("Memory safety").
+ifeq ($(shell uname -s),Darwin)
+MEMCAP :=
+else
 MEMCAP := scripts/run-capped.sh
+endif
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
@@ -238,7 +244,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
-	@set -eu; cap="$$(pwd)/$(MEMCAP)"; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s "$$cap" go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
+	@set -eu; cap="$(MEMCAP)"; if [ -n "$$cap" ]; then cap="$$(pwd)/$$cap"; fi; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s $${cap:+"$$cap"} go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
 # fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential
