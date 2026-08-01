@@ -43,6 +43,24 @@ assert_not_has() {
 	fi
 }
 
+assert_has_word() {
+	case " $1 " in
+		*" $2 "*) ok "$3" ;;
+		*) bad "$3 (missing word '$2' in '$1')" ;;
+	esac
+}
+
+assert_not_has_word() {
+	case " $1 " in
+		*" $2 "*) bad "$3 (unexpected word '$2' in '$1')" ;;
+		*) ok "$3" ;;
+	esac
+}
+
+arguments_for() {
+	awk -F '\t' -v stream="$1" '$1 == stream { print $2; exit }' "$state/calls"
+}
+
 # The verdict block is everything the runner prints before the failure dump.
 # Reading it separately keeps replayed suite output - which carries PASS/FAIL
 # lines of its own - from being counted as a verdict.
@@ -177,6 +195,17 @@ assert_one_verdict_per_name "$out" "all-passing run reports no name twice"
 assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
+
+new_case
+out="$case_dir/root-full.out"
+if run_tests ". agent" "$out" ROOT_FULL=1; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "full-root run exits zero"
+root_args="$(arguments_for .)"
+agent_args="$(arguments_for agent)"
+assert_not_has_word "$root_args" "-short" "full-root mode removes exact -short from root"
+assert_has_word "$root_args" "-count=1" "full-root mode preserves root's other flags"
+assert_has_word "$agent_args" "-short" "full-root mode keeps -short on non-root modules"
+assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flags"
 
 # kata mjzx: the frontend stream already reports and logs under the name "web",
 # so a MODULES entry of the same name gave one label two owners - two verdict

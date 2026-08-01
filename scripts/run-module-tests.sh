@@ -38,6 +38,7 @@ set -uo pipefail
 scripts/disk-reclaim.sh --check || exit 1
 
 MODULES=${MODULES:-". agent llm auth envvars invariant"}
+ROOT_FULL=${ROOT_FULL:-0}
 
 # WEB controls the concurrent frontend gate. It is skipped automatically when
 # the frontend directory is absent so this script still works in a checkout
@@ -110,6 +111,19 @@ AGENT_P=${AGENT_P-4}
 fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsAdapter|SeqAdapter|TurnPagingEquivalenceSanity|WireTypeRegistryCoverage|LineWindowExtractorsSanity|TranscriptReadersAgreeSanity|WriteListRoundTrip|LaunchConfigThreeStateRoundTrip|DifferentialSanity|StreamVsNonStreamSanity|FuzzBuildEnforces)'
 
 flags="$*"
+module_test_flags() {
+	local m="$1" flag selected=""
+	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
+		printf '%s' "$flags"
+		return
+	fi
+	for flag in $flags; do
+		[ "$flag" = "-short" ] && continue
+		selected="$selected $flag"
+	done
+	printf '%s' "${selected# }"
+}
+
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
 failed_modules=()
@@ -117,7 +131,8 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 run_module() {
-	local m="$1" extra="$2"
+	local m="$1" extra="$2" test_flags
+	test_flags="$(module_test_flags "$m")"
 	# Word-split flags and extra intentionally so callers can pass multiple flags.
 	# shellcheck disable=SC2086
 	if [ "$m" = "." ]; then
@@ -131,7 +146,7 @@ run_module() {
 			esac
 			packages+=("$pkg")
 		done < <(go list ./...)
-		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -146,18 +161,18 @@ run_module() {
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		(cd .. && ./scripts/agent-test-shards.sh $flags) || shardStatus=$?
+		(cd .. && ./scripts/agent-test-shards.sh $test_flags) || shardStatus=$?
 		local subpkgs=()
 		local pkg
 		while IFS= read -r pkg; do
 			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
 		done < <(go list ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
+	/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
