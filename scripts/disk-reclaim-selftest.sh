@@ -347,7 +347,7 @@ bounded() { # seconds command...
 stall_probe="sleep 987654" # a duration nothing else on this machine runs
 stall_start=$SECONDS
 (cd "$repo" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
-	GOCACHE="$work/stalled-gocache" SERF_DISK_MIN_FREE_GB=0 \
+	GOCACHE="$work/wedged-gocache" SERF_DISK_MIN_FREE_GB=0 \
 	bash "$script" --check) >"$work/gocache-stall.out" 2>&1
 stall_status=$?
 stall_elapsed=$((SECONDS - stall_start))
@@ -355,7 +355,7 @@ if [ "$stall_status" -eq 124 ]; then
 	bad "--check HUNG on a stalled GOCACHE probe (killed at 30s): the probe is unbounded"
 elif [ "$stall_status" -eq 0 ]; then
 	bad "--check with a stalled GOCACHE probe exited 0: $(cat "$work/gocache-stall.out")"
-elif grep -qi "stall" "$work/gocache-stall.out" && grep -qF "$work/stalled-gocache" "$work/gocache-stall.out"; then
+elif grep -qi "stall" "$work/gocache-stall.out" && grep -qF "$work/wedged-gocache" "$work/gocache-stall.out"; then
 	ok "--check fails when the GOCACHE probe stalls, naming the stall and the path"
 else
 	bad "--check failed on a stalled probe without naming the stall: $(cat "$work/gocache-stall.out")"
