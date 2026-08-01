@@ -13,7 +13,7 @@
 }
 
 .done {
-  color: var(--success);
+  color: var(--alive);
 }
 
 .cancelled {
