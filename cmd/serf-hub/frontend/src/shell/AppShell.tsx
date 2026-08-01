@@ -2,7 +2,7 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { initNotifications } from "../notifications";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
@@ -12,6 +12,7 @@ import { type TreeResponse, useTreeStore } from "../stores/tree";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
+import { DockRegion } from "./DockRegion";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
@@ -51,13 +52,10 @@ import styles from "./AppShell.module.css";
 
 // dockview (pulled in by DockHost.tsx) is ~636kB of the main bundle on its
 // own (see Task 2's own report) - dead weight for the mobile path, which
-// renders StackHost instead and never touches dockview at all. Lazy-loading
-// DockHost here, rather than importing it eagerly like every other shell
-// module, moves that weight into its own chunk that only a desktop session
-// ever fetches. DockHost is a named export (not default), so the import()
-// promise is adapted the same way App.tsx's own DevHarnessRoute already
-// does for dev/DevHarness.tsx.
-const DockHost = lazy(() => import("./DockHost").then((m) => ({ default: m.DockHost })));
+// renders StackHost instead and never touches dockview at all. DockRegion
+// owns that lazy load (and the boundary around it) rather than importing
+// DockHost eagerly like every other shell module, so dockview's weight lands
+// in its own chunk that only a desktop session ever fetches.
 
 export interface AppShellProps {
   // Test seam: production (main.tsx) omits this, and AppShell constructs +
@@ -390,15 +388,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
           ) : isMobile ? (
             <StackHost railSlot={<RailHost />} routeDeferred={routeDeferred} />
           ) : (
-            // fallback={null}: DockHost's own boot sequence (handleReady)
-            // already produces the very first meaningful paint (a routed
-            // pane, or welcome) synchronously once its chunk resolves -
-            // there is no useful intermediate state to show while just the
-            // dockview chunk itself is still loading, only this app's
-            // existing blank-shell moment stretched slightly longer.
-            <Suspense fallback={null}>
-              <DockHost />
-            </Suspense>
+            <DockRegion />
           )}
         </div>
       </div>
