@@ -184,7 +184,7 @@ visible pane.
 ## Sharp edges
 
 - **The queue preview is TUI-local, not authoritative.** The
-  appwire layer (`internal/appwire/types.go`) does not yet
+  appwire layer (`appwire/types.go`) does not yet
   surface queue depth or preview text — Phase 2a only landed the
   `Capabilities.Queue` bit. The TUI mirrors what *it* enqueued
   in the current process via `hubModel.sessionQueue` and
