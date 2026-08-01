@@ -100,6 +100,21 @@ func watchEndedUnfiredMessage(target string, status jobstore.Status, reason stri
 	)
 }
 
+// watchLostAtRestartMessage is the end-notice text for a watch that died with
+// its runtime while its target kept running — the shape reconcileLostJobs
+// leaves alone, a job another session owns and recovers on its own restore.
+// It is a DIFFERENT claim from watchEndedUnfiredMessage's, not a variant of it:
+// "condition never matched" says something about the target, and this target may
+// match the condition minutes from now with nothing left watching for it. All
+// this notice can honestly report is that the watch is gone, which only the
+// watcher can decide what to do about.
+func watchLostAtRestartMessage(target string, status jobstore.Status) string {
+	return fmt.Sprintf(
+		"watch ended: this session restarted and the watch did not survive it; %s is still %s, so its condition may still occur with nothing watching — re-arm the watch if you still care",
+		target, status,
+	)
+}
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -2783,21 +2798,29 @@ func watchEverDelivered(cfg *watchConfig) bool {
 }
 
 // noticeUnrestoredWatchEnds is the restart-side half of the end-notice contract
-// completeExpiredJobWatchesLocked keeps on the live path: a watch whose target
-// went terminal without it ever firing tells its watcher once, instead of ending
-// in a silence the watcher waits out. Here the watch died with the runtime, so
-// there is no live config to deliver from and only the durable registry to speak
-// from, which bounds what the notice can honestly cover:
+// completeExpiredJobWatchesLocked keeps on the live path: a watch that ends
+// without ever firing tells its watcher once, instead of ending in a silence the
+// watcher waits out. Here the watch died with the runtime, so there is no live
+// config to deliver from and only the durable registry to speak from, which
+// bounds what the notice can honestly cover:
 //
 //   - The send rail only. A no-send watch notifies its owner session, and that
 //     session hears the target's own job-stopped notification on this same
 //     restore; the registry also records no per-fire evidence for that rail, so
 //     restore cannot tell a watch that already matched from one that never did
 //     and would risk telling it "condition never matched" untruthfully.
-//   - A terminal target only. The notice explains why the condition can never
-//     match, and that explanation is the target's terminal outcome.
+//   - A recorded target only. The notice's whole content is what became of the
+//     target, and a target this log never recorded leaves nothing to say.
 //   - Never fired, proven durably: any watch-send frame ever persisted for this
 //     watch generation, settled or still pending, means it already spoke.
+//
+// The target's state picks WHICH notice, and the two are different claims. A
+// terminal target gets watchEndedUnfiredMessage — the condition can never match
+// again, and the terminal outcome is why. A target still running gets
+// watchLostAtRestartMessage: reconcileLostJobs leaves foreign-owned records
+// alone, so their owner recovers them and the condition may still occur, with
+// nothing watching for it. Borrowing the terminal frame there would be a lie
+// about a job that is still going.
 //
 // It must run AFTER reconcileLostJobs so a target lost with the runtime is
 // already terminal, and it is idempotent — the notice it appends is itself a
@@ -2820,8 +2843,12 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 			continue
 		}
 		rec := recs[watch.Target]
-		if rec == nil || !rec.Status.IsTerminal() {
+		if rec == nil {
 			continue
+		}
+		trigger := watchLostAtRestartMessage(watch.Target, rec.Status)
+		if rec.Status.IsTerminal() {
+			trigger = watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
 		}
 		// A detached config, like the one restoreWatchSendPendingFrom rebuilds for
 		// a pending frame: enough identity for the send rail to route and settle
@@ -2835,7 +2862,6 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 			generation:   watch.Generation,
 			pending:      make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
 		}
-		trigger := watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, watch.Target)}
 		jm.mu.Lock()
 		delivery := jm.watchSendSnapshot(cfg, watch.Target, trigger, root)
