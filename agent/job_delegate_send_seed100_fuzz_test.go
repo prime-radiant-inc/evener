@@ -224,7 +224,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			rig := newWtDlgRepo(t, delegateTestClient(func(llm.Request) llm.Response {
 				return communicateWithDefaultOutput("done")
 			}))
-			res := rig.s.createDelegate(nil, delegateArgs{Task: "lane", Isolation: "worktree", Background: true})
+			res := rig.s.createDelegate(context.Background(), delegateArgs{Task: "lane", Isolation: "worktree", Background: true})
 			if res.Err != nil {
 				t.Fatalf("create isolated delegate: %v", res.Err)
 			}

@@ -35,7 +35,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				t.Fatal("resume history override was not called")
 			}
 		case 1:
-			res := (&Session{}).createDelegate(nil, delegateArgs{Task: "create"})
+			res := (&Session{}).createDelegate(context.Background(), delegateArgs{Task: "create"})
 			if res.Err == nil {
 				t.Fatal("create without a job manager succeeded")
 			}
@@ -52,7 +52,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				BwrapCapable:     true,
 				OverlaySupported: true,
 			}}
-			res := s.createDelegate(nil, delegateArgs{Task: "sandboxed", Sandbox: "restricted", Background: true})
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "sandboxed", Sandbox: "restricted", Background: true})
 			if res.Err != nil {
 				t.Fatalf("sandboxed create: %v", res.Err)
 			}
@@ -61,7 +61,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 		case 4:
 			jdaf100CreateLaunchRollback(t)
 		case 5:
-			res := (&Session{}).sendDelegateMessage(nil, sendMessageArgs{Target: "dlg_missing", Message: "hello"})
+			res := (&Session{}).sendDelegateMessage(context.Background(), sendMessageArgs{Target: "dlg_missing", Message: "hello"})
 			if res.Err == nil {
 				t.Fatal("send without a job manager succeeded")
 			}
@@ -69,7 +69,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			s := &Session{}
 			s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return true }
 			s.setActiveEntryKind(EntryWatchDelivery)
-			res := s.sendDelegateMessage(nil, sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "callback"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "callback"})
 			if res.Err != nil || !res.Delivered {
 				t.Fatalf("watch callback send = %+v", res)
 			}

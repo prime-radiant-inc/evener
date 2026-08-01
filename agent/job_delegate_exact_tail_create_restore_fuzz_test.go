@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func jdTailCreateWorktreeFailure(t *testing.T) {
 	s.mu.Lock()
 	s.env = &timeoutEnv{wd: s.env.WorkingDirectory()}
 	s.mu.Unlock()
-	res := s.createDelegate(nil, delegateArgs{Task: "isolated", Isolation: "worktree"})
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "isolated", Isolation: "worktree"})
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "local execution environment") {
 		t.Fatalf("worktree failure = %v", res.Err)
 	}
@@ -92,7 +93,7 @@ func jdTailCreatePrepareRollback(t *testing.T) {
 			rig.s.treeCounter.releaseKind(slotKindJob)
 		}
 	})
-	res := rig.s.createDelegate(nil, delegateArgs{
+	res := rig.s.createDelegate(context.Background(), delegateArgs{
 		Task: "prepare failure", Isolation: "worktree",
 	})
 	if !errors.Is(res.Err, errTreeAtCapacity) || res.DelegateID == "" {
@@ -114,7 +115,7 @@ func jdTailCreateForegroundTimeout(t *testing.T) {
 	s.jobManager.now = clk.Now
 	result := make(chan delegateResult, 1)
 	blocked := clk.BlockedCount()
-	go func() { result <- s.createDelegate(nil, delegateArgs{Task: "timeout", BlockTimeoutMS: 1}) }()
+	go func() { result <- s.createDelegate(context.Background(), delegateArgs{Task: "timeout", BlockTimeoutMS: 1}) }()
 	clk.BlockUntil(blocked + 1)
 	clk.Advance(time.Millisecond)
 	res := <-result
@@ -263,7 +264,7 @@ func jdTailRestoreWorktreeReacquire(t *testing.T) {
 	rig := newWtDlgRepo(t, delegateTestClient(func(llm.Request) llm.Response {
 		return communicateWithDefaultOutput("done")
 	}))
-	res := rig.s.createDelegate(nil, delegateArgs{Task: "lane", Isolation: "worktree", Background: true})
+	res := rig.s.createDelegate(context.Background(), delegateArgs{Task: "lane", Isolation: "worktree", Background: true})
 	if res.Err != nil {
 		t.Fatalf("create isolated delegate: %v", res.Err)
 	}

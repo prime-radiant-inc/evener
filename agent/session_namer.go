@@ -53,9 +53,6 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 	if text == "" {
 		return sessionNameResult{}, errors.New("session namer: source text is empty")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	callCtx, cancel := context.WithTimeout(ctx, sessionNameTimeout)
 	defer cancel()
 

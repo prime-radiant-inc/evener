@@ -132,11 +132,7 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		}}
 		client := llm.NewClient()
 		client.Register(adapter)
-		var callCtx context.Context = context.Background()
-		if mode&4 != 0 {
-			callCtx = nil // nameSession explicitly accepts nil contexts.
-		}
-		result, err := nameSession(callCtx, client, profile, source, text, noNamerSleep)
+		result, err := nameSession(context.Background(), client, profile, source, text, noNamerSleep)
 		if wantNameError {
 			if err == nil || !strings.Contains(err.Error(), "generated name is empty") {
 				t.Fatalf("empty scripted name error = %v", err)

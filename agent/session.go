@@ -656,9 +656,6 @@ type forkInfo struct {
 func (s *Session) ID() string { return s.id }
 
 func (s *Session) apiLogContext(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return llm.WithAPILogContext(ctx, s.id)
 }
 

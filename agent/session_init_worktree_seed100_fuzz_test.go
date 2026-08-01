@@ -189,14 +189,14 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 
 	var nilSession *Session
 	nilSession.deferSessionStartHooks(plugin.SessionStartKindStartup)
-	if _, _, have, run := nilSession.pendingSessionStartForUserTurn(nil); have || run {
+	if _, _, have, run := nilSession.pendingSessionStartForUserTurn(context.Background()); have || run {
 		t.Fatal("nil pending hook session returned work")
 	}
 	if _, ok := nilSession.beginPendingSessionStartHooksForRestoreSideEffects(); ok {
 		t.Fatal("nil pending restore hook began")
 	}
 	nilSession.finishPendingSessionStartHooksForRestoreSideEffects(plugin.SessionStartKindStartup, hooksRunResultZero())
-	if got := nilSession.runSessionStartHooksWithContext(nil, plugin.SessionStartKindStartup); len(got.ModelContext)+len(got.UserMessages) != 0 {
+	if got := nilSession.runSessionStartHooksWithContext(context.Background(), plugin.SessionStartKindStartup); len(got.ModelContext)+len(got.UserMessages) != 0 {
 		t.Fatal("nil hook runner returned messages")
 	}
 	nilSession.logPluginLoadDiag(plugin.Instance{})
