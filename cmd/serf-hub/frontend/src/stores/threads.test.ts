@@ -111,6 +111,40 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
   return { thread: testThread(ref, overrides) };
 }
 
+// A pending hydration's notification buffer only ever matters in one window:
+// between the response cut (which discards everything buffered before it,
+// because the authoritative snapshot already represents it) and the publish
+// that replays whatever arrived after. markResponseCut/emitAtResponseCut park a
+// test exactly there.
+//
+// The mark rides olderCursor because hydrateThread reads it while building the
+// snapshot model, in the same synchronous step that applies the cut. That is a
+// probe into someone else's read order, so both guards in emitAtResponseCut are
+// load-bearing: if hydrateThread stops reading olderCursor the mark never
+// fires, and if the publish outruns it the snapshot is already in the store —
+// either way the test fails there rather than emitting into the live-model path
+// and passing for the wrong reason. The emit is a callback rather than the
+// caller's next statement for the same reason: returning from here would cost
+// microtasks of its own, and publish is the very next one.
+function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
+  return {
+    ...response,
+    get olderCursor(): string | undefined {
+      cut.reached = true;
+      return response.olderCursor;
+    },
+  };
+}
+
+async function emitAtResponseCut(cut: { reached: boolean }, ref: string, emit: () => void): Promise<void> {
+  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
+  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
+  expect(threadsStore.getState().threads.has(ref), "the snapshot published before the cut window was reached").toBe(
+    false,
+  );
+  emit();
+}
+
 function sameEpochReconnectFixture() {
   const authoritativeSnapshot = readResponse("ref_a", {
     status: { type: "active", activeFlags: ["streaming"] },
@@ -495,6 +529,195 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.activeTurnId).toBeUndefined();
     expect(model?.turns[0]?.status).toBe("completed");
     expect(model?.turns[0]?.items[0]?.output).toBe("done");
+  });
+
+  test("an announcement frame landing after the response cut is replayed onto the published snapshot", async () => {
+    // The daemon bundles a no-active-turn announcement into one synthetic turn
+    // and sends it as a complete turn/completed (systemAnnouncementItem in
+    // internal/appprojector/appwire_projection.go). That turn is never the
+    // hydration's active turn, so an activeTurnId gate on BUFFERING loses the
+    // frame outright: post-cut frames have no other route into the model, and
+    // handleNotification also withholds them from the stale published model
+    // while a hydration is pending.
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(
+      markResponseCut(
+        readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turn: {
+            id: "turn_system",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                type: "systemMessage",
+                id: "item_plugin_loaded_1",
+                turnId: "turn_system",
+                description: "Plugin loaded: superpowers",
+                text: "",
+                eventKind: "plugin_loaded",
+                status: "completed",
+              },
+            ],
+          },
+        },
+      } as AnyNotification),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_system", "turn_1"]);
+    expect(model?.turns[0]?.items[0]?.id).toBe("item_plugin_loaded_1");
+    // The real turn the snapshot was cut on is still in flight.
+    expect(model?.activeTurnId).toBe("turn_1");
+  });
+
+  test("a ref-less announcement frame is buffered on its thread id, not on the active turn", async () => {
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(
+      markResponseCut(
+        readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+        }),
+        cut,
+      ),
+    );
+    // No ref on this frame: the thread id the response cut taught the routing
+    // is the whole identity check it gets.
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thr_ref_a",
+          turn: {
+            id: "turn_system",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                type: "systemMessage",
+                id: "item_hook_completed_1",
+                turnId: "turn_system",
+                description: "Hook completed",
+                text: "exit 0",
+                eventKind: "hook_completed",
+                status: "completed",
+              },
+            ],
+          },
+        },
+      } as AnyNotification),
+    );
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_system", "turn_1"]);
+    expect(model?.turns[0]?.items[0]?.id).toBe("item_hook_completed_1");
+  });
+
+  test("a turn opened and completed after the response cut arrives whole", async () => {
+    // The projector announces a turn it opens implicitly (kata e5r2), so a
+    // round that starts and fails inside the post-cut window reaches the
+    // buffer as turn/started + turn/completed. Both must be buffered, in
+    // order, or the published snapshot shows a turn that never opened or one
+    // that never ended.
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(
+      markResponseCut(
+        readResponse("ref_a", {
+          status: { type: "active" },
+          serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(cut, "ref_a", () => {
+      fake.emitNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turn: { id: "turn_7", status: "inProgress", itemsView: "", startedAt: 1000 },
+        },
+      });
+      fake.emitNotification({
+        method: "item/started",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turnId: "turn_7",
+          item: { type: "commandExecution", id: "item_tool_1", turnId: "turn_7", status: "inProgress" },
+        },
+      });
+      fake.emitNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          turn: { id: "turn_7", status: "failed", itemsView: "", error: { message: "boom" } },
+        },
+      } as AnyNotification);
+    });
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_7"]);
+    expect(model?.turns[0]?.status).toBe("failed");
+    expect(model?.turns[0]?.items.map((item) => item.id)).toEqual(["item_tool_1"]);
+    expect(model?.activeTurnId).toBeUndefined();
   });
 
   test("a thread resync publishes its authoritative replacement snapshot", async () => {
