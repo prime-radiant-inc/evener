@@ -66,15 +66,64 @@ type launchProcess interface {
 	Kill() error
 }
 
-type execLaunchProcess struct{ cmd *exec.Cmd }
+// execLaunchProcess owns the app-server's pipes instead of borrowing os/exec's.
+// Cmd.StdoutPipe hands back a pipe that Cmd.Wait closes the moment the child
+// exits — "It is thus incorrect to call Wait before all reads from the pipe
+// have completed" — and this launch cannot honour that, because the readiness
+// loop needs the exit signal while the scanners are still draining. A pipe the
+// launch owns survives Wait, so the app-server's dying words are still there to
+// be read after the exit that produced them, and a scanner reaches EOF instead
+// of an os.ErrClosed it would have to report as a read failure (kata j27f).
+type execLaunchProcess struct {
+	cmd *exec.Cmd
+	// The child's ends, held only until Start hands them to the child: the
+	// parent must drop its copies or no scanner ever sees the EOF that the
+	// app-server's exit produces.
+	childEnds []*os.File
+	// The launch's ends. Closed here only when Start fails and no scanner will
+	// ever read them, which is what os/exec does with its own pipes.
+	launchEnds []*os.File
+}
 
 func (p *execLaunchProcess) Cmd() *exec.Cmd                     { return p.cmd }
 func (p *execLaunchProcess) SetDir(dir string)                  { p.cmd.Dir = dir }
 func (p *execLaunchProcess) SetEnv(env []string)                { p.cmd.Env = env }
-func (p *execLaunchProcess) StdoutPipe() (io.ReadCloser, error) { return p.cmd.StdoutPipe() }
-func (p *execLaunchProcess) StderrPipe() (io.ReadCloser, error) { return p.cmd.StderrPipe() }
-func (p *execLaunchProcess) Start() error                       { return p.cmd.Start() }
-func (p *execLaunchProcess) Wait() error                        { return p.cmd.Wait() }
+func (p *execLaunchProcess) StdoutPipe() (io.ReadCloser, error) { return p.pipeTo(&p.cmd.Stdout) }
+func (p *execLaunchProcess) StderrPipe() (io.ReadCloser, error) { return p.pipeTo(&p.cmd.Stderr) }
+
+// pipeTo points one of the child's output streams at a pipe this launch owns.
+// An *os.File assigned to Cmd.Stdout or Cmd.Stderr is passed straight to the
+// child, so os/exec never adopts either end and Wait never closes one.
+func (p *execLaunchProcess) pipeTo(stream *io.Writer) (io.ReadCloser, error) {
+	launchEnd, childEnd, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	*stream = childEnd
+	p.childEnds = append(p.childEnds, childEnd)
+	p.launchEnds = append(p.launchEnds, launchEnd)
+	return launchEnd, nil
+}
+
+// Start hands the write ends to the child and then drops the parent's copies,
+// which is what turns the app-server's exit into the EOF a scanner stops on.
+// os/exec does this for pipes it made itself; it cannot for pipes it was given.
+func (p *execLaunchProcess) Start() error {
+	err := p.cmd.Start()
+	for _, childEnd := range p.childEnds {
+		_ = childEnd.Close()
+	}
+	p.childEnds = nil
+	if err != nil {
+		for _, launchEnd := range p.launchEnds {
+			_ = launchEnd.Close()
+		}
+	}
+	p.launchEnds = nil
+	return err
+}
+
+func (p *execLaunchProcess) Wait() error { return p.cmd.Wait() }
 func (p *execLaunchProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
@@ -253,8 +302,8 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// take (kata e1nh).
 	launchDone := make(chan struct{})
 	defer close(launchDone)
-	go scanCodexEndpoint(stdout, endpoints, launchDone, l.logOutput, prefix)
-	go scanCodexEndpoint(stderr, endpoints, launchDone, l.logOutput, prefix)
+	go forwardCodexPipe(stdout, endpoints, launchDone, l.logOutput, prefix)
+	go forwardCodexPipe(stderr, endpoints, launchDone, l.logOutput, prefix)
 	// exitErr is published before close(exited); a receive on exited
 	// happens-after the close, so reading exitErr after the receive is race-free.
 	exited := make(chan struct{})
@@ -358,6 +407,17 @@ func codexLogPrefix(id string) string {
 		return "[codex]"
 	}
 	return "[codex:" + id + "]"
+}
+
+// forwardCodexPipe scans one of the app-server's pipes to its end and then
+// gives up the launch's end of it. The launch owns these pipes so that Cmd.Wait
+// cannot close them out from under a scan in progress (kata j27f), which leaves
+// closing them to the reader that has finished with one. "Its end" is now the
+// pipe's real EOF — every writer gone, the app-server's own words included —
+// rather than the moment Wait pulled the descriptor away.
+func forwardCodexPipe(r io.ReadCloser, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
+	defer r.Close() //nolint:errcheck // a drained read end's close has no actionable failure
+	scanCodexEndpoint(r, endpoints, launchDone, out, prefix)
 }
 
 func scanCodexEndpoint(r io.Reader, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {

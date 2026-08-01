@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +52,104 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// gatedLog holds the one forwarded line that carries hold until the test
+// releases it, which is how a scanner is put where output goes missing: busy
+// writing to the hub log at the moment the app-server exits. Only that line is
+// held, so anything the other pipe's scanner has to say still lands and can be
+// asserted on.
+type gatedLog struct {
+	syncBuffer
+	hold    string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedLog) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(g.hold)) {
+		g.once.Do(func() {
+			close(g.entered)
+			<-g.release
+		})
+	}
+	return g.syncBuffer.Write(p)
+}
+
+// os/exec closes a StdoutPipe as soon as Cmd.Wait sees the child exit — "It is
+// thus incorrect to call Wait before all reads from the pipe have completed" —
+// and this launch starts Wait in a goroutine while both scanners are still
+// draining, because the readiness loop needs the exit signal. Whatever is still
+// in the pipe when Wait closes it is gone, and since d35w the hub log is the
+// only place a launched app-server's output can land: what gets lost is its
+// dying words, the most valuable thing it ever writes (kata j27f).
+//
+// The loss needs a scanner to be busy elsewhere at the moment of exit, which is
+// what the gate arranges: the app-server does not say its last words until the
+// scanner is held inside a write to the hub log, and it is not released until
+// the process has been reaped.
+func TestCodexLaunchKeepsTheAppServersDyingWordsAcrossWait(t *testing.T) {
+	const held = "codex: warning: reticulating splines"
+	const dying = "codex: fatal: session store is corrupt"
+	// The app-server speaks, waits to be told the scanner is held, then says
+	// its last words and exits. Reading stdin is how it waits — the test closes
+	// the write end to release it — so nothing here turns on a clock.
+	cmd := exec.Command("/bin/sh", "-c", `printf '%s\n' "$1"; read -r gate; printf '%s\n' "$2"`, "sh", held, dying)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l := NewCodexLauncher(nil)
+	l.client = seedClient(http.StatusOK, nil)
+	log := &gatedLog{hold: held, entered: make(chan struct{}), release: make(chan struct{})}
+	l.logOutput = log
+	l.process = func(string, ...string) launchProcess { return &execLaunchProcess{cmd: cmd} }
+
+	// A configured listen address answers on the first readiness check, so the
+	// launch returns while the app-server is still talking.
+	launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{ID: "live", Listen: "ws://127.0.0.1:4321"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-log.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the app-server's first line never reached the hub log: %q", log.String())
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait has returned, so it has already done whatever it does to the pipes.
+	<-launched.Exited
+
+	logged := log.await(dying)
+	close(log.release)
+	select {
+	case <-logged:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the app-server's last words never reached the hub log: %q", log.String())
+	}
+	// The other half of the same lifecycle bug: a scanner whose pipe is closed
+	// under it reports os.ErrClosed rather than reaching EOF, so an ordinary
+	// exit files a read failure nobody can act on.
+	if strings.Contains(log.String(), "ended early") {
+		t.Fatalf("an ordinary app-server exit was reported as a read failure: %q", log.String())
+	}
+	// Owning the pipe puts the other half of that bargain on the launch: the
+	// parent's copy of the child's write end has to go at Start, or the exit
+	// that ends the app-server never becomes the EOF that ends the scan. A zero
+	// byte write reports the descriptor's state without putting anything on the
+	// pipe.
+	childEnd, ok := launched.Cmd.Stdout.(*os.File)
+	if !ok {
+		t.Fatalf("app-server stdout = %T, want a pipe the launch owns", launched.Cmd.Stdout)
+	}
+	if _, err := childEnd.Write(nil); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("the launch still holds the child's end of its own stdout: %v", err)
+	}
 }
 
 // A codex app-server that fails after launch says so on the pipes the hub is
