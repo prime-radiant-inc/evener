@@ -149,6 +149,43 @@ test("tokenizes shell constructs without changing token text", () => {
   );
 });
 
+test("tokenizes a quoted variable as disjoint source slices", () => {
+  const lines = formatShellCommand('echo "prefix$HOME"');
+  const tokens = tokenizeShellCommand(lines);
+
+  expect(
+    tokens
+      .flat()
+      .map((part) => part.text)
+      .join(""),
+  ).toBe(lines.map((line) => line.text).join(""));
+  expect(tokens[0]).toEqual([
+    { kind: "command", text: "echo" },
+    { kind: "plain", text: " " },
+    { kind: "string", text: '"prefix' },
+    { kind: "variable", text: "$HOME" },
+    { kind: "string", text: '"' },
+  ]);
+});
+
+test("tokenizes an embedded unquoted variable as adjacent source slices", () => {
+  const lines = formatShellCommand("echo prefix$HOME");
+  const tokens = tokenizeShellCommand(lines);
+
+  expect(
+    tokens
+      .flat()
+      .map((part) => part.text)
+      .join(""),
+  ).toBe(lines.map((line) => line.text).join(""));
+  expect(tokens[0]).toEqual([
+    { kind: "command", text: "echo" },
+    { kind: "plain", text: " " },
+    { kind: "plain", text: "prefix" },
+    { kind: "variable", text: "$HOME" },
+  ]);
+});
+
 test("renders formatted shell lines, token kinds, and copies the raw command", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");

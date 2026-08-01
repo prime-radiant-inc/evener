@@ -169,6 +169,7 @@ function isAssignmentWord(text: string): boolean {
  */
 export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellCommandToken[][] {
   let quote: "'" | '"' | "`" | undefined;
+  let quoteOpening = false;
   let escaped = false;
   let expectCommand = true;
 
@@ -186,15 +187,21 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
       }
 
       if (quote !== undefined) {
-        const start = index;
+        let segmentStart = index;
         while (index < text.length) {
           const quoted = text[index] ?? "";
+          if (quoteOpening) {
+            quoteOpening = false;
+            index += 1;
+            continue;
+          }
           if (quote !== "'" && !escaped && quoted === "$") {
-            if (start < index) tokens.push(token("string", text.slice(start, index)));
+            if (segmentStart < index) tokens.push(token("string", text.slice(segmentStart, index)));
             const end = variableEnd(text, index);
             tokens.push(token("variable", text.slice(index, end)));
             index = end;
-            break;
+            segmentStart = end;
+            continue;
           }
           if (quote !== "'" && escaped) {
             escaped = false;
@@ -212,7 +219,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
             break;
           }
         }
-        if (start < index) tokens.push(token("string", text.slice(start, index)));
+        if (segmentStart < index) tokens.push(token("string", text.slice(segmentStart, index)));
         continue;
       }
 
@@ -231,6 +238,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
 
       if (character === "'" || character === '"' || character === "`") {
         quote = character;
+        quoteOpening = true;
         escaped = false;
         continue;
       }
@@ -248,6 +256,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
         if (
           /\s/.test(wordCharacter) ||
           tokenOperatorAt(text, index) !== undefined ||
+          wordCharacter === "$" ||
           wordCharacter === "'" ||
           wordCharacter === '"' ||
           wordCharacter === "`"
