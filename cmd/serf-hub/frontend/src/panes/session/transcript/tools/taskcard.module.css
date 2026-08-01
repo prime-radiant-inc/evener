@@ -1,7 +1,9 @@
-/* Task-update card. Neutral throughout: a plan's rows are not attention-
- * worthy (color-is-attention - only error/failed earns colour, and a failed
- * task_list never renders a card at all), so the touched-row distinction is
- * carried by a text flag label, not a tint. */
+/* Task-update card: a checklist of what the mutation changed. Neutral
+ * throughout EXCEPT one scoped, user-approved exception (docs/superpowers/
+ * specs/2026-07-31-tasklist-renderer-design.md): the TaskCheck glyph alone
+ * carries subtle semantic colour (see taskcheck.module.css). All text stays
+ * on the ink scale - done/cancelled read through strikethrough + low ink,
+ * never colour, and a failed task_list still renders no card at all. */
 .card {
   display: flex;
   flex-direction: column;
@@ -30,24 +32,45 @@
 
 .row {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: var(--space-2);
   font-size: var(--font-size-ui);
 }
 
-.flag {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  min-width: 5ch;
+/* The label + note column: the note hangs under its label, aligned with the
+ * label text rather than the checkbox glyph. */
+.rowText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .desc {
   color: var(--ink-hi);
 }
 
+.descStruck {
+  color: var(--ink-low);
+  text-decoration: line-through;
+}
+
 .note {
   color: var(--ink-mid);
+  font-size: var(--font-size-caption);
   font-style: italic;
+}
+
+/* Standard visually-hidden recipe (same as statusrow.module.css's .srOnly):
+ * carries the row's status word for assistive tech now that the visible
+ * flag label is gone. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
