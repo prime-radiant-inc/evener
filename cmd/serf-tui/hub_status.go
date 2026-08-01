@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // compactThreshold must match agent/internal/contextmgr/context_manager.go's
@@ -35,8 +37,15 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth 
 		fmt.Fprintf(&b, "Dir:      %s\n", detail.WorkingDir)
 	}
 	fmt.Fprintf(&b, "Turns:    %d\n", detail.TurnCount)
+	// Context escalates off the same bands as the session header's ctx cell and
+	// the details drawer's Context line, so every live surface tells the reader
+	// the same story about a filling window. The panel renders inside
+	// tuitheme.DefaultTUIStyles().Modal, whose foreground is Text, so Text is
+	// this surface's calm tone.
 	if detail.ContextPressure > 0 {
-		fmt.Fprintf(&b, "Context:  %.0f%% used\n", detail.ContextPressure*100)
+		pressure := fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)
+		band := contextPressureColor(detail, tuitheme.ActiveTheme().Text)
+		fmt.Fprintf(&b, "Context:  %s\n", lipgloss.NewStyle().Foreground(band).Render(pressure))
 	}
 	if detail.WorkMillis > 0 {
 		fmt.Fprintf(&b, "Work:     %s\n", formatWorkMillis(detail.WorkMillis))
