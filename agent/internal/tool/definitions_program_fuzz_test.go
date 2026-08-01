@@ -124,7 +124,6 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefDelegateSend(),
 		DefJobWatch(eventKinds),
 		DefJobStatus(),
-		DefJobReadOutput(),
 		DefJobList(),
 		DefJobStop(),
 		DefGrep(),

@@ -19,9 +19,9 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // Ground truth: agent/session_tools_jobs.go's jobStatusTool is the ONLY
 // job_* tool whose Output is genuine whole-string JSON (marshalBoundedJSON)
 // - registered as "job_status" (agent/internal/tool/definitions.go:245);
-// "job_read_output" (DefJobReadOutput) exists but is never wired into
-// registerJobToolsWithRegistrar, so it's kept only as a defensive alias
-// for the parity checklist's legacy name / any not-yet-observed path.
+// "job_read_output" has neither a definition nor a registration, so it is
+// kept only as a defensive alias for the parity checklist's legacy name and
+// for stored transcripts that still carry such calls.
 
 test("job_status: summary reads job_id and status from the parsed JSON output", () => {
   const d = toolRendererFor("job_status");

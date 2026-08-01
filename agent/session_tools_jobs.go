@@ -447,9 +447,10 @@ func classifyJobReadWindow(hasGrep, hasFromLine, hasHead, hasTail bool) jobReadW
 }
 
 // jobReadResolution names where a model-facing job output read is served from
-// once the resolution chain has run. It is the single answer both job_read_output
-// and read_transcript's job:<job_id> path act on, so the two cannot drift into
-// different reachability.
+// once the resolution chain has run. read_transcript's job:<job_id> path is the
+// one model-facing reader, and this is the single answer it acts on, so every
+// reachability rule — own store, direct child, deep descendant, watch grant —
+// is decided here rather than re-derived at a call site.
 type jobReadResolution struct {
 	// manager is the store the read runs against for every non-granted path.
 	manager *jobManager
