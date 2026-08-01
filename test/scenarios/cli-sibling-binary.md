@@ -32,6 +32,19 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
    immediately and it resolves `serf-hub` and execs it — the sibling
    lookup this card is about.
 6. Capture stderr.
+7. Record the hub this run caused, if it started one. The TUI execs
+   `serf-hub --addr <the address you passed>` and deliberately releases
+   it (`cmd/serf-tui/internal/hubstart/hub_start.go`, `StartLocalHub`),
+   so on a machine where the flock was free a detached hub is now
+   holding the REAL `~/.serf/hub.lock` — this card runs on the real
+   `$HOME` on purpose. `$PORT` came from the kernel in step 4, so that
+   argv names this run's hub and nobody else's:
+   ```bash
+   pgrep -f "serf-hub --addr 127.0.0.1:$PORT" | head -1 > "$tmpdir/hub.pid" || true
+   ```
+   An empty `hub.pid` is the other legal outcome (another serf-hub held
+   the lock, so the sibling exec failed before listening) and Cleanup
+   handles it.
 
 ## Expected
 
@@ -52,15 +65,36 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
   conflict is not one of the outcomes any more: step 4's port was free
   when the kernel handed it back. The hub started this way is
   deliberately detached and outlives the TUI
-  (`cmd/serf-tui/internal/hubstart/hub_start.go:441`), so look for one
-  on `$PORT` before you leave (kata `zw9j`).
+  (`cmd/serf-tui/internal/hubstart/hub_start.go:441`); step 7 records
+  its pid and Cleanup kills it, so nothing this card started is left
+  holding the real `~/.serf/hub.lock` (kata `zw9j`).
 - Falsification: stderr contains `executable file not found in $PATH`
   or `cannot run executable found relative to current directory` —
   the kata regression is back.
 
 ## Cleanup
 
-- `rm -rf "$tmpdir"`.
+Kill the hub step 7 recorded BEFORE removing `$tmpdir` — that file is
+the only record of it, and a survivor holds the real `~/.serf/hub.lock`
+against every later hub on this machine. The `ps` re-check is the
+safety catch: this only ever signals a process whose own argv still
+names the port step 4 took from the kernel, so it can never reach
+another agent's hub or a hub this card did not start.
+
+```bash
+HUBPID=$(cat "$tmpdir/hub.pid" 2>/dev/null || true)
+if [ -n "$HUBPID" ] && ps -o command= -p "$HUBPID" 2>/dev/null | grep -q -- "--addr 127.0.0.1:$PORT"; then
+  kill "$HUBPID"
+  for i in $(seq 1 50); do kill -0 "$HUBPID" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$HUBPID" 2>/dev/null; then kill -9 "$HUBPID"; fi
+fi
+rm -rf "$tmpdir"
+```
+
+Confirm nothing survives: `pgrep -f "serf-hub --addr 127.0.0.1:$PORT"`
+prints nothing. If it still does, say so in the run record rather than
+walking away — a held `hub.lock` is the failure this cleanup exists to
+prevent, and the next card to start a hub is the one that pays for it.
 
 ## Sharp edges
 
@@ -80,6 +114,14 @@ absolute path so Go's `exec.ErrDot` restriction doesn't trip.
   the system. The flock-failure signal works because the hub uses a
   shared run-dir; on a clean machine the test still passes via a
   different startup error path.
+- The real `$HOME` is deliberate and is why Cleanup matters. Isolating
+  `$HOME` would remove the very signal the Expected section reads: the
+  flock contention that proves the sibling binary was exec'd only
+  happens against the one host-wide lock (`~/.serf/hub.lock`,
+  `cmd/serf-hub/main.go:157`). So the card takes the opposite trade —
+  keep the real lock in play, and account for the hub it may start.
+  Step 7 plus Cleanup are that accounting; do not "fix" this card by
+  isolating `$HOME` without replacing the assertion first.
 - A symlink variant is worth adding: `ln -s real/path/serf-tui
   $tmpdir/serf-tui` and confirm the EvalSymlinks branch resolves to
   the symlink target's directory and finds serf-hub there. Covered

@@ -291,6 +291,16 @@ var scenarioHubLaunchApprovedFiles = map[string]string{
 		"web-goal-set-and-complete.md's arrangement, including its documented " +
 		"OAuth-footgun exception and the flock pre-check that goes with it\", so " +
 		"it launches its hub on the real $HOME for the same reason.",
+	"test/scenarios/cli-sibling-binary.md": "kata zw9j's ruling: this card's " +
+		"Expected section READS the real hub flock — stderr naming " +
+		"`resource temporarily unavailable (another serf-hub may already be " +
+		"running` is what proves the sibling binary was exec'd, and that " +
+		"contention only exists against the one host-wide `~/.serf/hub.lock`. " +
+		"Isolating $HOME would delete the assertion. The card does not type a " +
+		"launch: the TUI execs `serf-hub --addr …` itself (StartLocalHub) and " +
+		"detaches it, and the argv appears here only in the pgrep/ps patterns " +
+		"the card's step 7 and Cleanup use to kill exactly that hub — the " +
+		"mitigation zw9j asked for in place of isolation.",
 }
 
 // TestScenarioCardsThatLaunchAHubIsolateHome closes the second blind spot in
