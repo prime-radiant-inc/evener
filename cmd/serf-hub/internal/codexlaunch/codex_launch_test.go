@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -191,7 +190,7 @@ func TestCodexLaunchKeepsForwardingAfterTheEndpointWaitIsGone(t *testing.T) {
 		fmt.Fprintf(&talk, "client %d connected to ws://127.0.0.1:4321/session\n", i)
 	}
 	fmt.Fprintln(&talk, dying)
-	if _, err := io.WriteString(appServer, talk.String()); err != nil {
+	if _, err := appServer.WriteString(talk.String()); err != nil {
 		t.Fatal(err)
 	}
 
