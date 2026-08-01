@@ -139,6 +139,7 @@ printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/calls"
 printf 'go-stdout:%s\n' "$module"
 printf 'go-stderr:%s\n' "$module" >&2
 if [ "$module" = "agent" ] && [ "${FAKE_AGENT_AWAITS_SELFTEST:-0}" -ne 0 ]; then
+	: >"$FAKE_STATE/agent.started"
 	attempt=0
 	while [ ! -f "$FAKE_STATE/selftest.started" ]; do
 		attempt=$((attempt + 1))
@@ -177,6 +178,17 @@ if [ "$stream" = "selftest" ]; then
 		exit 4
 	fi
 	: >"$FAKE_STATE/selftest.started"
+	if [ "${FAKE_SELFTEST_AWAITS_AGENT:-0}" -ne 0 ]; then
+		attempt=0
+		while [ ! -f "$FAKE_STATE/agent.started" ]; do
+			attempt=$((attempt + 1))
+			if [ "$attempt" -ge 200 ]; then
+				printf 'selftest started without the wave-two agent\n' >&2
+				exit 5
+			fi
+			sleep 0.01
+		done
+	fi
 	printf 'selftest-stdout: tooling contracts passed\n'
 	if [ "${FAKE_SELFTEST_FAIL:-0}" -ne 0 ]; then
 		printf 'selftest-stderr: tooling contract failed\n' >&2
@@ -205,13 +217,20 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
-			MODULES="$modules" AGENT_SHARDS=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
 started_streams() {
 	cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ *$//'
 }
+
+new_case
+out="$case_dir/inherited-selftest-disabled.out"
+if SELFTEST=1 run_tests "agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "an inherited SELFTEST value does not fail an ordinary fixture case"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "agent web" "an inherited SELFTEST value does not add a tooling verdict"
+assert_eq "$(started_streams)" "agent web" "an inherited SELFTEST value does not start a tooling stream"
 
 new_case
 out="$case_dir/all-pass.out"
@@ -237,7 +256,7 @@ assert_has_word "$agent_args" "-count=1" "full-root mode preserves non-root flag
 new_case
 out="$case_dir/selftest-overlap.out"
 if FAKE_SELFTEST_REQUIRES_ROOT=1 FAKE_AGENT_AWAITS_SELFTEST=1 \
-	run_tests ". agent" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
+	FAKE_SELFTEST_AWAITS_AGENT=1 run_tests ". agent" "$out" SELFTEST=1; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "selftest waits for root and overlaps wave two"
 assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent selftest web" "selftest reports once after wave two"
 assert_one_verdict_per_name "$out" "selftest overlap reports no name twice"
