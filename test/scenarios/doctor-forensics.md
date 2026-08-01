@@ -2,13 +2,14 @@
 
 **What this covers**: the serf doctoring system end-to-end. (a) The
 `serf-doctor` forensic tools — `locate`, `watches`, `transcript --count`,
-`apilog`, `tree` — read settled on-disk state (transcript / private API log /
+`apilog`, `tree`, `jobs` — read settled on-disk state (transcript / private API log /
 meta / jobs.jsonl) through
 serf's own folds and types, and report the numbers a hand-parser got wrong:
 distinct deliveries after coalescing collapse, the watch breaker verdict read
 from the runtime's own stamps (`max_self_influence_depth`/`runaway_drops`,
 `agent/doctor/watches.go:46-49` — never re-derived from the provenance
-`Chain`), and the structural tool-call count vs assistant-prose mentions. (b) The `doctor` agent type
+`Chain`), the state of the job each watch was watching, and the structural
+tool-call count vs assistant-prose mentions. (b) The `doctor` agent type
 loads the `doctoring-serf` skill, runs the tools, and emits structured Findings
 — **healthy ⇒ zero findings**, a real defect ⇒ exactly one. The watch/provenance
 mechanics under test are produced by `job-watch-actually-monty-python-injection.md`
@@ -47,6 +48,7 @@ jobs_path, api_log_path, project_id}`.
 serf-doctor watches $SID
 serf-doctor watches $SID --self-loops
 serf-doctor watches $SID --json | jq '.watches[0] | {pending_lines, distinct_deliveries, delivered, dropped, evicted, max_self_influence_depth, runaway_drops}'
+serf-doctor watches $SID --json | jq '.watches[] | {watch_id, target, target_job: (.target_job | if . == null then null else {status, reason, exit_code, output_bytes} end), target_job_missing}'
 ```
 
 Assert, for the observer watch:
@@ -65,6 +67,14 @@ Assert, for the observer watch:
   message `no watches where the runaway fuse fired (self-influence is
   bounded)` (`watches.go:315`) — distinct from `no watches recorded` (`:319`),
   which would mean the session never registered one and the fixture is wrong.
+- a watch on a **job** carries that job's own state on the row: `target job:
+  status=…  reason=…  exit=…  output_bytes=…  ended=…`, joined from the same
+  `jobs.jsonl` fold (`agent/doctor/watches.go:206-221`), and `target_job` in
+  the JSON. Pivot to §6 for the full job row. A watch whose target names a job
+  this log never recorded reads `target job: not recorded in this session's
+  jobs.jsonl` / `target_job_missing: true` instead of going quiet — the guess
+  the flag exists to refuse. A watch on the session rather than a job (a target
+  that is not a `job_` id) carries neither field, which is not a defect.
 
 ### 3 — transcript --count separates calls from mentions
 
@@ -107,7 +117,29 @@ Assert the caller session roots a tree with its delegate child (`delegate <SID>
 `observer <SID>` edge — children resolved by their transcript ref so a
 cross-project child still links.
 
-### 6 — the doctor agent diagnoses a HEALTHY session (zero findings)
+### 6 — jobs answers "what did this session run, and how did each end"
+
+```
+serf-doctor jobs $SID
+serf-doctor jobs $SID --job <a-job-id-from-the-list>
+serf-doctor jobs $SID --json | jq '.jobs[] | {job_id, type, status, reason, exit_code, output_bytes, terminal_notification_state}'
+```
+
+Assert every job the session ran appears in the log's own append order, each
+leading with `job <id>  (<status>)` — or `(<status>: <reason>)` when a reason
+produced it, e.g. `(stopped: run_timeout)` — over a
+`type=  exit=  output_bytes=  notify=` line and a `started=  ended=` line. This
+is settled-disk data: before `jobs` existed the same numbers were reachable
+only from a live daemon's `/status`, so a session that had already exited could
+not be asked at all. If §2's watch row named a `target job`, that job must
+appear here with the same `status`/`reason`/`exit_code`/`output_bytes` — that
+is the join, seen from the other side. `--job <id>` scopes to one job; an id
+this session never ran
+prints `job <id> not found in this session` and exits 0, NOT `no jobs
+recorded`, which would wrongly say the session ran nothing
+(`agent/doctor/jobs.go:209-214`).
+
+### 7 — the doctor agent diagnoses a HEALTHY session (zero findings)
 
 ```
 PATH="$PWD:$PATH" ./serf --model kimi/kimi-for-coding --agent doctor \
@@ -125,7 +157,7 @@ distinct-delivery count and zero runaway drops. The doctor must NOT emit a
 finding for the expected coalescing, nor for bounded self-influence depth —
 both are visibility, not violations.
 
-### 7 — the doctor agent emits ONE finding on a BROKEN session
+### 8 — the doctor agent emits ONE finding on a BROKEN session
 
 Synthesize a **fired breaker** in a scratch state dir — a `watch_send_dropped`
 event carrying `"diagnostic_reason":"runaway"` and a deep

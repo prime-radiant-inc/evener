@@ -22,10 +22,14 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 ## Pre-state
 
 - Repo built: `./serf` exists at the repo root.
-- No other `serf openai login` is running:
-  `pgrep -f 'serf openai login'` is empty. (If any are running,
-  `pkill -f 'serf openai login'` first — the auto-detect scenario
-  is a common source of orphaned pollers.)
+- Other `serf openai login` processes may be running; leave them
+  alone. `pgrep -f 'serf openai login'` counts every login on the
+  box, including other agents' (the auto-detect scenario is a
+  common source of orphaned pollers), and this card is isolated
+  from all of them by its own `XDG_STATE_HOME` and its own `$PID`.
+  Reap only a poller you started, by the pid you recorded — never
+  `pkill -f 'serf openai login'`, which would also kill a
+  concurrent agent's login flow.
 - Network reachable to `auth.openai.com` — `RequestDeviceCode` is
   a real HTTPS call before the poll begins.
 - The watcher polls `auth.json` once per second
@@ -48,6 +52,7 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
    ```bash
    ./serf openai login --device > /tmp/login-out.txt 2>&1 &
    PID=$!
+   echo "$PID" >"$tmpdir/login.pid"   # so a later shell can kill it by pid, not by pattern
    ```
 
 3. **Wait for the poller to be live** — the `device_code=…` line
@@ -151,7 +156,11 @@ rm -f /tmp/login-out.txt
 
 The `kill $PID` step is NOT needed here — the process exits on
 its own once the watcher fires. If the test fails and the process
-hangs, `pkill -f 'serf openai login'` it.
+hangs, `kill "$PID"` it — the pid step 2 recorded, never a
+`pkill -f 'serf openai login'` pattern, which would also kill a
+concurrent agent's login flow. From a second shell, read it back
+from `$tmpdir/login.pid`, spelling that directory out in full —
+the variable is not set there.
 
 ## Sharp edges
 
