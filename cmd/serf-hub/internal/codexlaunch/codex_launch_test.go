@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/serf/appwire"
@@ -202,6 +203,41 @@ func TestCodexLaunchKeepsForwardingAfterTheEndpointWaitIsGone(t *testing.T) {
 	if got := strings.Count(log.String(), "connected to ws://"); got != chatter {
 		t.Fatalf("logged %d of %d post-launch endpoint lines: %q", got, chatter, log.String())
 	}
+}
+
+// The other half of that contract: while the launch is still waiting, a full
+// buffer is backpressure and nothing else. An app-server can name several
+// addresses before the one that answers — the readiness wait tries them in
+// turn — so an announcement dropped because four were already queued is an
+// announcement the launch needed. The send waits for the wait to catch up.
+func TestDeliverCodexEndpointWaitsForTheLaunchToCatchUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		endpoints := make(chan string, 1)
+		endpoints <- "ws://first:1"
+		delivered := make(chan bool, 1)
+		go func() { delivered <- deliverCodexEndpoint(endpoints, launching(), "ws://second:2") }()
+
+		// The bubble goes idle only once the sender is durably blocked, which
+		// is the state under test: buffer full, launch not yet caught up. A
+		// send that gave up on a full buffer would have answered by now.
+		synctest.Wait()
+		select {
+		case taken := <-delivered:
+			t.Fatalf("a full buffer ended the send early, taken=%v", taken)
+		default:
+		}
+
+		if got := <-endpoints; got != "ws://first:1" {
+			t.Fatalf("queued endpoint = %q", got)
+		}
+		if got := <-endpoints; got != "ws://second:2" {
+			t.Fatalf("endpoint after the buffer drained = %q", got)
+		}
+		// An announcement the wait took is consumed, not also logged as prose.
+		if !<-delivered {
+			t.Fatal("delivered announcement reported as not taken")
+		}
+	})
 }
 
 // launching is the launch-done signal a scanner sees while the readiness wait
