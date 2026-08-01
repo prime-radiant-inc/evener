@@ -35,7 +35,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				t.Fatal("resume history override was not called")
 			}
 		case 1:
-			res := (&Session{}).createDelegate(nil, delegateArgs{Task: "create"})
+			res := (&Session{}).createDelegate(context.Background(), delegateArgs{Task: "create"})
 			if res.Err == nil {
 				t.Fatal("create without a job manager succeeded")
 			}
