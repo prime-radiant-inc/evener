@@ -57,8 +57,26 @@ build-web: web-preflight
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain
 # doesn't need separate targets per check).
+# The three checks are independent readers of the same sources, so they run
+# concurrently and the target's wall time is the slowest one (vitest) instead
+# of the sum. Each writes its own log; a failure replays exactly the failing
+# check's output.
 test-web: web-preflight
-	cd cmd/serf-hub/frontend && npm run typecheck && npm run test && npm run lint
+	@set -u; cd cmd/serf-hub/frontend && \
+	dir="$$(mktemp -d -t serf-test-web.XXXXXX)" || exit 1; \
+	for c in typecheck test lint; do \
+		{ npm run $$c >"$$dir/$$c.log" 2>&1; echo $$? >"$$dir/$$c.status"; } & \
+	done; \
+	wait; fail=0; \
+	for c in typecheck test lint; do \
+		if [ "$$(cat "$$dir/$$c.status" 2>/dev/null || echo 1)" = 0 ]; then \
+			printf 'PASS  web-%s\n' "$$c"; \
+		else \
+			printf 'FAIL  web-%s\n' "$$c"; cat "$$dir/$$c.log"; fail=1; \
+		fi; \
+	done; \
+	rm -rf "$$dir"; \
+	exit $$fail
 
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/
