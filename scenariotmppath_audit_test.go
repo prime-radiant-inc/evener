@@ -2,6 +2,7 @@ package serf_test
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -59,6 +60,22 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 		// An invented path in a sentence about tmux send-keys parsing: the
 		// point is that the string contains a `/`, and nothing creates it.
 		"a literal `/tmp/foo/AGENTS.md` containing",
+	},
+	// scripts/*.sh, added to this audit by kata qw8e. Only two rows, because a
+	// script has no prose to warn in: both of these are scripts ABOUT the debris
+	// in /tmp rather than scripts that put any there.
+	"scripts/reclaim-test-debris.sh": {
+		// The one-off GOCACHE this script exists to DELETE (kata r07s left it
+		// behind). Naming it is the whole job, no run creates it, and two
+		// concurrent reclaims of one already-absent directory collide over
+		// nothing.
+		"2) /tmp/serf-gocache-k3",
+		"gocache_debris='/tmp/serf-gocache-k3'",
+	},
+	"scripts/report-tmp-debris.sh": {
+		// A dated measurement in the header — what 120 `/tmp/serf*` entries
+		// weighed on 2026-07-30. This script reports and never writes.
+		"8.4G across 120 `/tmp/serf*`",
 	},
 	"test/scenarios/auth-device-poll-concurrent.md": {
 		"fixed `/tmp/login-out.txt`, which a second agent running this card",
@@ -136,7 +153,7 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 	},
 }
 
-// TestScenarioCardsNeverNameAFixedTmpPath is the structural check the fourth
+// TestNoCardOrScriptNamesAFixedTmpPath is the structural check the fourth
 // member of this hazard family never had. Ports (9180, literal host:port,
 // hand-picked placeholder) and homes (real state root, literal home path, hub
 // launch without HOME) each fail the build; a card writing to a fixed path
@@ -149,34 +166,62 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 // tui-paste-image-path.md's fixed PNG fixture), and its own sweep of
 // serf-doctor-forensics.md left three `/tmp/serf-doctor` invocations behind in
 // steps 5 and 6 — which is what this test found on its first run (kata xvb2).
-func TestScenarioCardsNeverNameAFixedTmpPath(t *testing.T) {
+//
+// scripts/*.sh is the second corpus, added by kata qw8e: the audit stopped at
+// the cards while the scripts agents run every day carried the same class
+// unchecked, and two live ones were sitting there — fuzz-triage's stub flake
+// counter defaulting to a shared `/tmp/stubgo.cnt` whose odd/even parity
+// decides the verdict, and fuzz-coverage-global's `RAPID_FAILFILE=/tmp/ambient`.
+// Shell narrows the prose-versus-instruction problem that makes the card
+// allowlist long, but does not remove it: three of the six lines this found on
+// its first run over scripts/ were a comment or a path named to be deleted.
+func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 	var findings []string
-	for _, path := range scenarioCardFiles(t) {
+	scriptMatches := 0
+	for _, path := range append(scenarioCardFiles(t), auditedShellScripts(t)...) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		allowed := scenarioFixedTmpPathAllowedMentions[path]
 		for i, line := range strings.Split(string(raw), "\n") {
-			if !scenarioNamesAFixedTmpPath(line) || lineIsAllowed(line, allowed) {
+			if !scenarioNamesAFixedTmpPath(line) {
+				continue
+			}
+			if filepath.Dir(path) == scriptDir {
+				scriptMatches++
+			}
+			if lineIsAllowed(line, allowed) {
 				continue
 			}
 			findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 		}
 	}
+	// A corpus audit is green either because the corpus is clean or because its
+	// needle stopped reaching that corpus, and the two are the same green
+	// (scenariofixture_audit_test.go). The cards cannot go quiet — their half of
+	// the allowlist above says how many lines still name a /tmp path — but
+	// scripts/ carries only the three below, so the script half gets the floor.
+	if scriptMatches == 0 {
+		t.Fatalf("the fixed-/tmp needle matched nothing across %s/*.sh. Two scripts "+
+			"exist to talk about /tmp (reclaim-test-debris.sh names the one-off "+
+			"GOCACHE debris it removes, report-tmp-debris.sh sizes `/tmp/serf*`), so "+
+			"zero matches means the pattern or the file set is dead and the script "+
+			"half of this audit is checking nothing", scriptDir)
+	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("scenario cards must never name a fixed path under the shared "+
-			"/tmp — two agents running the card at once resolve the same string, so "+
-			"one's build overwrites the other's binary mid-run and one's Cleanup "+
-			"deletes the fixture the other is about to read (kata k2rx). Name every "+
-			"artifact from the run's own directory instead: `run=$(mktemp -d -t "+
-			"serf-e2e-XXXXXX)` and then `\"$run/…\"`, per docs/agentic-testing.md's "+
-			"Setup checklist. If the line NAMES a fixed path without instructing "+
-			"anyone to use one — a warning against it, a past run's record, an "+
-			"observed payload with the random part elided — add it to "+
-			"scenarioFixedTmpPathAllowedMentions with the reason:\n%s",
-			strings.Join(findings, "\n"))
+		t.Fatalf("a scenario card or a script in %s must never name a fixed path "+
+			"under the shared /tmp — two agents running it at once resolve the same "+
+			"string, so one's build overwrites the other's binary mid-run and one's "+
+			"Cleanup deletes the fixture the other is about to read (kata k2rx). "+
+			"Name every artifact from the run's own directory instead: "+
+			"`run=$(mktemp -d -t serf-e2e-XXXXXX)` and then `\"$run/…\"`, per "+
+			"docs/agentic-testing.md's Setup checklist. If the line NAMES a fixed "+
+			"path without instructing anyone to use one — a warning against it, a "+
+			"past run's record, an observed payload with the random part elided — "+
+			"add it to scenarioFixedTmpPathAllowedMentions with the reason:\n%s",
+			scriptDir, strings.Join(findings, "\n"))
 	}
 }
 
