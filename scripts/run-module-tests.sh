@@ -46,19 +46,6 @@ WEB=${WEB:-1}
 WEB_DIR=${WEB_DIR:-cmd/serf-hub/frontend}
 [ -d "$WEB_DIR" ] || WEB=0
 
-# The frontend stream reports and logs under the fixed name "web", so a MODULES
-# entry of the same name hands one name two owners: two verdict lines under it,
-# two streams writing one log file, and a failure whose output the other stream
-# overwrites before anyone reads it (kata mjzx). The two are genuinely
-# ambiguous, so refuse the run instead of reporting it twice.
-for m in $MODULES; do
-	if [ "$WEB" -ne 0 ] && [ "$m" = "web" ]; then
-		echo "run-module-tests.sh: MODULES entry 'web' is the frontend stream's name, not a Go module." >&2
-		echo "run-module-tests.sh: run 'make test-web' for the frontend alone, or pass WEB=0 to test a Go module named web." >&2
-		exit 2
-	fi
-done
-
 if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
 	# Wave 1 is the root module alone; wave 2 is everything else, concurrently.
 	#
@@ -84,6 +71,21 @@ else
 	WAVE1=${WAVE1:-}
 	WAVE2=${WAVE2:-}
 fi
+
+# The frontend stream reports and logs under the fixed name "web", so scheduling
+# a Go module of the same name hands one name two owners: two verdict lines
+# under it, two streams writing one log file, and a failure whose output the
+# other stream overwrites before anyone reads it (kata mjzx). The two are
+# genuinely ambiguous, so refuse the run rather than report it twice. Checked
+# against the waves, not MODULES, because WAVE1/WAVE2 override MODULES and both
+# routes reach the same collision.
+for m in $WAVE1 $WAVE2; do
+	if [ "$WEB" -ne 0 ] && [ "$m" = "web" ]; then
+		echo "run-module-tests.sh: 'web' is the frontend stream's name, not a Go module." >&2
+		echo "run-module-tests.sh: run 'make test-web' for the frontend alone, or pass WEB=0 to test a Go module named web." >&2
+		exit 2
+	fi
+done
 
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate

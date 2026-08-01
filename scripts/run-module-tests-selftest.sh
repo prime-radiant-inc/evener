@@ -192,6 +192,16 @@ assert_has "$out" "WEB=0" "the refusal names the other way out"
 assert_not_has "$out" "=== failing module output ===" "the refused run prints no empty failure section"
 assert_eq "$(started_streams)" "" "the refused run starts no stream"
 
+# WAVE1/WAVE2 are a documented override that bypasses MODULES entirely, so the
+# same collision arrives by a second route and has to be refused by the same
+# rule: what matters is the name actually being scheduled.
+new_case
+out="$case_dir/web-wave-conflict.out"
+if run_tests "agent" "$out" WAVE2=web; then rc=0; else rc=$?; fi
+assert_eq "$rc" "2" "a WAVE entry colliding with the frontend stream is refused"
+assert_eq "$(verdicts "$out" | wc -l | tr -d ' ')" "0" "the refused wave reports no verdict at all"
+assert_eq "$(started_streams)" "" "the refused wave starts no stream"
+
 new_case
 out="$case_dir/mixed-failures.out"
 if FAKE_BUILD_FAIL="llm" FAKE_TEST_FAIL="auth" run_tests "agent llm auth" "$out"; then rc=0; else rc=$?; fi
