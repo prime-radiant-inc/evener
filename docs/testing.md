@@ -33,6 +33,24 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Post-Merge Gate
+
+Run the post-merge gate serially from the repository root:
+
+```sh
+make lint
+make build
+ROOT_FULL=1 make test
+```
+
+`ROOT_FULL=1` makes the protected first wave run the full root Go suite instead
+of its ordinary `-short` form. `make test` owns the remaining Go module,
+script self-test, and frontend streams; the self-test stream starts only after
+the protected root wave and runs alongside wave two. The standalone
+`go test ./...` gate is therefore duplicate coverage and must not be appended
+to this stack. Ordinary `make test` remains the default local command and keeps
+the root wave in short mode unless `ROOT_FULL=1` is explicitly set.
+
 ## Proving a Type Survives a Round Trip
 
 When two code paths must agree about a struct — a decoder and a

@@ -1,7 +1,7 @@
 # Test-gate runtime reduction design
 
 Date: 2026-08-01
-Status: Approved in conversation; pending written-spec review
+Status: Implemented
 Base: `webui-workspace-shell` at `96e1fc6ef`
 
 ## Problem
@@ -28,9 +28,12 @@ stream: its printed 10.67s verdict was only the final subpackage phase. The
 preceding shard phase took 33.01s, so the agent stream's actual critical path
 was about 43.68s.
 
-Jesse's success target remains a total gate time at or below 100 seconds, a
+The original success target was a total gate time at or below 100 seconds, a
 reduction of at least 50% from the approximately 200-second directive-time
-baseline. Green, complete coverage outranks the runtime target.
+baseline. During the final measurement Jesse revised publication acceptance to
+demonstrable improvement from the measured 167.39-second idle stack, with the
+approximately 200-second directive baseline retained as secondary context.
+Green, complete coverage still outranks the runtime target.
 
 ## Approved approach
 
@@ -121,9 +124,36 @@ evidence rather than matching rendered shell source.
 6. Update `docs/testing.md`, the fleet ledger, and the controller gate helper
    only after the equivalence cycle and timing runs pass.
 
-If the median remains above 100 seconds, do not weaken coverage or add
+If the median does not improve on 167.39 seconds, do not weaken coverage or add
 contention to wave one. Profile the new critical path and bring the next
 structural change back for design approval.
+
+## Measured result
+
+The legacy equivalence cycle ran `make lint`, `make build`, `make test`, and
+`go test ./...` serially. Their bare exits were `0`, `0`, `0`, and `0`, and all
+four captured logs were pristine. This proves that the optimized stack retains
+the root, non-root module, script self-test, and frontend coverage formerly
+split across the four commands.
+
+Three optimized cycles ran only after an idle-box check returned exit 1 with no
+matching test process. All nine gate commands had bare exit 0 and pristine
+captured output:
+
+| Cycle | `make lint` | `make build` | `ROOT_FULL=1 make test` | Total |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 11.20s | 6.02s | 77.28s | 94.50s |
+| 2 | 11.45s | 5.89s | 81.21s | 98.55s |
+| 3 | 10.73s | 7.39s | 82.44s | 100.56s |
+
+The median total is 98.55 seconds. That is 68.84 seconds, or 41.13%, below the
+measured 167.39-second idle stack and 101.45 seconds, or 50.73%, below the
+approximately 200-second directive baseline. The revised performance criterion
+therefore passes without reducing coverage or changing the protected wave-one
+contention policy.
+
+The complete logs are under
+`/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/task-4-logs/`.
 
 ## Out of scope
 
