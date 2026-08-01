@@ -147,16 +147,18 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The fuzz-*-selftest suites are deliberately absent:
 # they already have their own entry points, and their cost (real git bisect,
 # real worktrees, real `go test`) is heavy and unmeasured.
-SELFTEST_SCRIPTS := run-module-lint disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send
+SELFTEST_SCRIPTS := run-module-lint disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # selftest hangs off `make test` because a script selftest is a test, and NOT
 # off `make lint` because run-module-lint-selftest.sh drives a fixture
 # `make lint` of its own — putting the selftests there would have that fixture
 # reach back for scripts it does not have. Quiet on success like every other
-# gate here; a failing suite's whole log is replayed. The seven measured 31s,
-# 51s and 76s on three runs of a fleet-loaded box, but only ~15s of that is CPU
-# (5.7s user, 9.9s sys) — they are mostly waiting on other work, so they cost
-# the machine little even though they run before the Go waves start.
+# gate here; a failing suite's whole log is replayed. The scripts are mostly
+# waiting on other work rather than CPU-bound (the original seven measured
+# 31-76s wall on a fleet-loaded box but only ~15s CPU), so the wave costs the
+# machine little even though it runs before the Go waves start. The six fuzz
+# selftests are fixture-contained (seam-driven stubs, mktemp worlds) and never
+# touch this repo, so they are safe in the same wave.
 selftest:
 	@set -u; fail=0; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
