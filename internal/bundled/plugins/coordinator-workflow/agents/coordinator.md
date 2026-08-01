@@ -3,7 +3,7 @@ name: coordinator
 description: "Top-level architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, shell, delegate, delegate_send, job_read_output, job_list, job_stop, job_watch, task_list]
+tools: [glob, grep, read_file, shell, delegate, delegate_send, job_status, job_list, job_stop, job_watch, read_transcript, task_list]
 tasks:
   - title: Plan
     prompt: >
