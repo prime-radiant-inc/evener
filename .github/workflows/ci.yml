@@ -54,6 +54,8 @@ jobs:
       # tool does not always fail loudly — secret-scan skips with a warning
       # and a zero exit when gitleaks is missing.
       - name: Lint (make lint — every family of the local gate, all go.work modules)
+        env:
+          SERF_GITLEAKS_REQUIRED: "1"
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.8.0
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
@@ -72,6 +74,8 @@ jobs:
       # The repo-wide scan is a lint family and runs above; this is the
       # corpus-scoped pass, which is not.
       - name: Secret scan (gitleaks — committed fuzz corpora)
+        env:
+          SERF_GITLEAKS_REQUIRED: "1"
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           export PATH="$(go env GOPATH)/bin:$PATH"

@@ -9,8 +9,9 @@
 # Both use the committed .gitleaks.toml ruleset — the same engine the harvester's
 # write-time barrier shells out to, so the writer and the repo gate cannot drift.
 #
-# If gitleaks is not installed the scan is SKIPPED with a warning and a zero exit,
-# so the gate stays green where the tool is absent (it is required in CI). Install:
+# If gitleaks is not installed the scan is SKIPPED with a warning and a zero exit
+# for local runs. Set SERF_GITLEAKS_REQUIRED=1 for gates that require the tool.
+# Install:
 #   https://github.com/gitleaks/gitleaks#installing
 set -euo pipefail
 
@@ -19,6 +20,10 @@ root="$(git rev-parse --show-toplevel)"
 cfg="${root}/.gitleaks.toml"
 
 if ! command -v gitleaks >/dev/null 2>&1; then
+  if [ "${SERF_GITLEAKS_REQUIRED:-}" = 1 ]; then
+    echo "error: gitleaks is required but not installed; cannot run ${mode} secret scan (install: https://github.com/gitleaks/gitleaks)" >&2
+    exit 1
+  fi
   echo "warning: gitleaks not installed; skipping ${mode} secret scan (install: https://github.com/gitleaks/gitleaks)" >&2
   exit 0
 fi
