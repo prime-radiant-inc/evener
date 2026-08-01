@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
   resetSubagentModuleStoreForTests,
   turnScopeKey,
@@ -2855,7 +2856,7 @@ describe("useThreadsStore.send", () => {
 
     await threadsStore
       .getState()
-      .send("ref_a", "hello", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+      .send("ref_a", "hello", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2890,7 +2891,7 @@ describe("useThreadsStore.send", () => {
   // kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
   // haiku read one as a file path and called read_file("[image 1]") instead of
   // looking at the vision block it was sitting next to. The composer keeps the
-  // marker as its chip anchor; the wire gets prose.
+  // marker as its tile anchor; the wire gets prose.
   test("translates the composer's [image N] markers to prose on the wire (kata 6nmz)", async () => {
     const fake = connectMutationClient();
     fake.on("turn/start", (params) => ({
@@ -2901,7 +2902,7 @@ describe("useThreadsStore.send", () => {
     await threadsStore
       .getState()
       .send("ref_a", "[image 1]Describe the attached image", [
-        { mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
@@ -2916,6 +2917,33 @@ describe("useThreadsStore.send", () => {
     });
   });
 
+  // kata 1gm2: the marker number rides InputAttachment so the composer, the
+  // durable record and the recovery draft can pair text to attachment by
+  // identity. It is client-side state and the daemon must never see it.
+  test("the attachment's marker number never reaches the wire (kata 1gm2)", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "[image 7]look", [{ marker: 7, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "(attached image 7: pic.png)look" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+    expect(JSON.stringify(call?.params)).not.toContain("marker");
+  });
+
   test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
     const fake = connectMutationClient();
     fake.on("turn/start", (params) => ({
@@ -2923,7 +2951,9 @@ describe("useThreadsStore.send", () => {
       receipt: mutationReceipt(params.clientMutationId),
     }));
 
-    await threadsStore.getState().send("ref_a", "look: [image 1]", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .send("ref_a", "look: [image 1]", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2946,7 +2976,9 @@ describe("useThreadsStore.send", () => {
 
     await threadsStore
       .getState()
-      .send("ref_a", "  keep\n  every\n  byte  ", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+      .send("ref_a", "  keep\n  every\n  byte  ", [
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
 
     const call = fake.calls.find((c) => c.method === "turn/start");
@@ -2959,6 +2991,40 @@ describe("useThreadsStore.send", () => {
       ],
     });
   });
+});
+
+// kata 1gm2: a record born from a real submit used to reach recovery carrying
+// only the translated prose, so the restored composer showed sentences where
+// its tile anchors belonged and removing a tile stripped nothing. Nothing here
+// is hand-seeded: the record is the one send() actually wrote.
+test("a submitted record recovers into a composer draft with its marker anchors intact", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+
+  await threadsStore.getState().send("ref_a", "look [image 3] then [image 1]", [
+    { marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" },
+    { marker: 3, mediaType: "image/png", data: "BAUG", name: "third.png" },
+  ]);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const submitted = (await storage.listOutbox("ref_a"))[0];
+  expect(submitted).toBeDefined();
+  if (!submitted) return;
+  expect((submitted.payload as { input: { text?: string }[] }).input[0]?.text).toBe(
+    "look (attached image 3: third.png) then (attached image 1: first.png)",
+  );
+
+  const recovered = await storage.transferToRecovery(submitted.clientMutationId, "rejected");
+  expect(recovered).toBeDefined();
+  if (!recovered) return;
+  const draft = recoveryComposerDraft(recovered);
+
+  expect(draft.text).toBe("look [image 3] then [image 1]");
+  expect(draft.attachments.map((attachment) => [attachment.marker, attachment.name])).toEqual([
+    [1, "first.png"],
+    [3, "third.png"],
+  ]);
 });
 
 test("recovery resend rebuilds queue CAS values from the current thread", async () => {
@@ -3039,7 +3105,9 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     await ensureActiveTurn(fake, "ref_a");
     fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().steer("ref_a", "steer text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .steer("ref_a", "steer text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
 
     const call = fake.calls.find((c) => c.method === "turn/steer");
@@ -3091,7 +3159,9 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().queue("ref_a", "", [{ mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
+    await threadsStore
+      .getState()
+      .queue("ref_a", "", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
 
     const call = fake.calls.find((c) => c.method === "turn/queue");
@@ -3129,7 +3199,9 @@ describe("useThreadsStore.drainAsSteer", () => {
     await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().drainAsSteer("ref_a", "drain text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    await threadsStore
+      .getState()
+      .drainAsSteer("ref_a", "drain text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");

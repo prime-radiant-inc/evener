@@ -12,8 +12,13 @@ export type MutationDiscoveryReason =
   | "visibility"
   | "interval";
 
+// marker is the composer marker number this attachment was staged under. It
+// is what pairs the attachment back to its "[image N]" anchor in composerText
+// when a failed record is restored into a composer, so it is recorded rather
+// than re-derived from array position at restore time.
 export interface MutationAttachment {
   presentationId: string;
+  marker: number;
   name: string;
   mediaType: string;
   blob: Blob;
@@ -26,6 +31,12 @@ export interface MutationIntent {
   payload: Record<string, unknown>;
   attachments: MutationAttachment[];
   optimisticDisplay: unknown;
+  // The composer's text exactly as typed, "[image N]" anchors intact. The
+  // payload's own text is not a substitute: composerMutationIntent translates
+  // every marker to prose at the submit boundary, so a payload restored
+  // straight into a composer would carry sentences about images in place of
+  // the anchors its tiles remove. Absent on intents no composer authored.
+  composerText?: string;
 }
 
 export interface MutationRecord extends MutationIntent {

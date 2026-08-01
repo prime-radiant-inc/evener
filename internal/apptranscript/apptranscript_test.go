@@ -696,27 +696,37 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 	}
 }
 
-func TestProjectTurnProjectsAudioAndDocumentAttachments(t *testing.T) {
-	items := ProjectTurn("turn_1", 1, schema.Turn{
-		Kind: schema.TurnUserInput,
-		Message: llm.Message{Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "summarize these"},
-			{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf", MediaType: "application/pdf"}},
-			{Kind: llm.ContentAudio, Audio: &llm.AudioData{MediaType: "audio/wav"}},
-		}},
-	}, map[string]string{}, nil, nil)
-	if len(items) != 1 || items[0].Type != "userMessage" {
-		t.Fatalf("expected 1 userMessage, got %+v", items)
+// Images carries pictures only. An audio or document part alongside them
+// contributes nothing to it: the array is the client's thumbnail source, and
+// the client has no way to render a part it cannot resolve to an image.
+func TestProjectTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
+	content := []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "summarize these"},
+		{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf", MediaType: "application/pdf"}},
+		{Kind: llm.ContentAudio, Audio: &llm.AudioData{MediaType: "audio/wav"}},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte("png")}},
 	}
-	atts := items[0].Images
-	if len(atts) != 2 {
-		t.Fatalf("expected 2 attachments, got %+v", atts)
-	}
-	if atts[0].Type != "input_document" || atts[0].Name != "report.pdf" || atts[0].MediaType != "application/pdf" {
-		t.Fatalf("document attachment=%+v", atts[0])
-	}
-	if atts[1].Type != "input_audio" || atts[1].MediaType != "audio/wav" {
-		t.Fatalf("audio attachment=%+v", atts[1])
+	for _, tc := range []struct {
+		kind schema.TurnKind
+		want string
+	}{
+		{schema.TurnUserInput, "userMessage"},
+		{schema.TurnSteering, "steering"},
+	} {
+		items := ProjectTurn("turn_1", 1, schema.Turn{
+			Kind:    tc.kind,
+			Message: llm.Message{Content: content},
+		}, map[string]string{}, nil, nil)
+		if len(items) != 1 || items[0].Type != tc.want {
+			t.Fatalf("%s: expected 1 %s, got %+v", tc.kind, tc.want, items)
+		}
+		images := items[0].Images
+		if len(images) != 1 {
+			t.Fatalf("%s: expected the picture alone, got %+v", tc.kind, images)
+		}
+		if images[0].Type != "input_image" || images[0].MediaType != "image/png" {
+			t.Fatalf("%s: image=%+v", tc.kind, images[0])
+		}
 	}
 }
 

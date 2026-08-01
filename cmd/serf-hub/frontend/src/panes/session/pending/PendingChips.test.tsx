@@ -45,6 +45,7 @@ async function seedPending(method: PendingMethod, text: string, ref = "ref_a", a
     payload: { ref, input },
     attachments: (attachments ?? []).map((attachment, index) => ({
       presentationId: `presentation_${index}`,
+      marker: attachment.marker,
       name: attachment.name ?? "attachment",
       mediaType: attachment.mediaType,
       blob: new Blob(),
@@ -104,7 +105,7 @@ test("shows only the entries for the given sessionRef", async () => {
 });
 
 test("an image-only pending entry shows the image placeholder rather than blank text", async () => {
-  await seedPending("send", "", "ref_a", [{ mediaType: "image/png", data: "AAAA" }]);
+  await seedPending("send", "", "ref_a", [{ marker: 1, mediaType: "image/png", data: "AAAA" }]);
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("[image]")).toBeTruthy();
 });

@@ -146,7 +146,9 @@ test("replaceWithSettled hydrates recovery attachments without re-encoding", () 
       pending: false,
     },
   ]);
-  expect(result.current.toInputAttachments()).toEqual([{ name: "proof.png", mediaType: "image/png", data: "AQID" }]);
+  expect(result.current.toInputAttachments()).toEqual([
+    { marker: 4, name: "proof.png", mediaType: "image/png", data: "AQID" },
+  ]);
 });
 
 test("a new attachment after recovery hydration uses the next marker", async () => {
@@ -391,7 +393,7 @@ test("clearSubmitted removes exactly the submitted markers, leaving items added 
 // a genuinely stale, un-removable "[image N]" marker was left orphaned in
 // the textarea/draft whenever the text had ALREADY diverged from the
 // submitted snapshot (a concurrent edit mid-flight) - the marker's own
-// backing item vanishes from `items` (no chip, no bytes) while its literal
+// backing item vanishes from `items` (no tile, no bytes) while its literal
 // text lingers with nothing left to represent it.
 test("clearSubmitted strips the submitted markers' own text from the editor too - a concurrent edit must not leave an orphaned marker behind", async () => {
   const editor = makeFakeEditor("", 0);
@@ -469,7 +471,7 @@ test("clearSubmitted does NOT reset the counter when surviving (mid-flight) item
   expect(result.current.items.map((i) => i.marker)).toEqual([2, 3]);
 });
 
-test("toInputAttachments maps settled items to the wire-facing {mediaType, data, name} shape only", async () => {
+test("toInputAttachments maps settled items to the {marker, mediaType, data, name} shape only", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -481,6 +483,7 @@ test("toInputAttachments maps settled items to the wire-facing {mediaType, data,
   const attachments = result.current.toInputAttachments();
   expect(attachments).toHaveLength(1);
   expect(attachments[0]).toEqual({
+    marker: 1,
     mediaType: "image/png",
     data: result.current.items[0]?.data,
     name: "a.png",

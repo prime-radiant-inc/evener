@@ -56,7 +56,15 @@ import { createSecureUUID } from "./secureUUID";
 // is left unexercised here rather than invented into this store's public
 // surface. A future caller that genuinely has a hosted URL can still reach
 // it at the wire layer; it just isn't this parameter.
+//
+// `marker` is the one field here that never reaches the wire: it is the
+// composer marker number this attachment was staged under, carried so that
+// every consumer downstream - the submit boundary's marker translation, the
+// durable outbox record, the recovery draft that rebuilds a composer - pairs
+// text and attachment by identity instead of re-deriving the pairing from
+// array position. buildInput drops it when it assembles the wire input.
 export interface InputAttachment {
+  marker: number;
   mediaType: string;
   data: string; // base64-encoded bytes (wire InputItem.data)
   name?: string;
@@ -473,6 +481,7 @@ export async function updateRecoveryMutation(
     clientMutationId,
     buildInput(text, attachments),
     durableAttachments(attachments),
+    text,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -677,6 +686,7 @@ function attachmentBlob(attachment: InputAttachment): Blob {
 function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
   return (attachments ?? []).map((attachment) => ({
     presentationId: createSecureUUID(),
+    marker: attachment.marker,
     name: attachment.name ?? "attachment",
     mediaType: attachment.mediaType,
     blob: attachmentBlob(attachment),
@@ -691,14 +701,15 @@ function composerMutationIntent(
 ): MutationIntent {
   const model = threadsStore.getState().threads.get(ref);
   // Translated HERE, not inside buildInput: this is the submit boundary. The
-  // other buildInput caller (updateRecoveryMutation) persists a composer DRAFT
-  // that recoveryComposerDraft reads back into the textarea, where the raw
-  // "[image N]" markers are still the chips' anchors and must survive.
+  // untranslated text rides along as composerText so a record that fails and
+  // lands in recovery can be restored into a composer with its marker anchors
+  // intact - the tiles remove those anchors, and prose is not one.
   const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
     attachments: durableAttachments(attachments),
+    composerText: text,
   };
   if (route === "send") {
     return {

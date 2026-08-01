@@ -896,12 +896,17 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	}
 }
 
-func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
+// A transcript file can hold any content kind the schema can decode. Replay
+// still hands the client only what it can render: audio and document parts
+// reach Images no more than they reach the live EventUserInput payload, which
+// has no field for them at all.
+func TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[` +
 		`{"kind":"text","text":"summarize"},` +
 		`{"kind":"document","document":{"file_name":"report.pdf","media_type":"application/pdf"}},` +
-		`{"kind":"audio","audio":{"media_type":"audio/wav"}}` +
+		`{"kind":"audio","audio":{"media_type":"audio/wav"}},` +
+		`{"kind":"image","image":{"media_type":"image/png","data":"cG5n"}}` +
 		`]}}}`)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
@@ -910,15 +915,12 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
-	atts := items[0].Images
-	if len(atts) != 2 {
-		t.Fatalf("expected 2 attachments, got %+v", atts)
+	images := items[0].Images
+	if len(images) != 1 {
+		t.Fatalf("expected the picture alone, got %+v", images)
 	}
-	if atts[0].Type != "input_document" || atts[0].Name != "report.pdf" {
-		t.Fatalf("document attachment=%+v", atts[0])
-	}
-	if atts[1].Type != "input_audio" || atts[1].MediaType != "audio/wav" {
-		t.Fatalf("audio attachment=%+v", atts[1])
+	if images[0].Type != "input_image" || images[0].MediaType != "image/png" {
+		t.Fatalf("image=%+v", images[0])
 	}
 }
 

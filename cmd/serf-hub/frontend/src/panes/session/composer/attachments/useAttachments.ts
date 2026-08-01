@@ -83,11 +83,13 @@ export interface UseAttachmentsResult {
    * and only when the result is empty (parity: removing the highest
    * marker still never reuses it). */
   removeItem(marker: number): void;
-  /** Maps settled items to the wire-facing shape stores/threads.ts expects
-   * - mediaType/data/name only, dropping the UI-only width/height/marker/
-   * pending fields. Callers should only invoke this once hasPending is
-   * false (nothing here defends against an in-flight item; the composer's
-   * own submit-gating on hasPending is what prevents that). */
+  /** Maps settled items to the InputAttachment shape stores/threads.ts
+   * expects - marker/mediaType/data/name, dropping the UI-only width/height/
+   * pending fields. The marker travels so the store can pair text and
+   * attachment by identity (see InputAttachment's own doc comment); the wire
+   * never sees it. Callers should only invoke this once hasPending is false
+   * (nothing here defends against an in-flight item; the composer's own
+   * submit-gating on hasPending is what prevents that). */
   toInputAttachments(): InputAttachment[];
   /** Removes exactly the items whose marker is in `submittedMarkers` -
    * called after a successful send/steer/queue/drain with the marker set
@@ -244,7 +246,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   const toInputAttachments = useCallback((): InputAttachment[] => {
     return items
       .filter((item): item is PendingAttachment & { data: string } => item.data !== undefined)
-      .map((item) => ({ mediaType: item.mediaType, data: item.data, name: item.name }));
+      .map((item) => ({ marker: item.marker, mediaType: item.mediaType, data: item.data, name: item.name }));
   }, [items]);
 
   return {
