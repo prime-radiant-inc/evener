@@ -299,7 +299,7 @@ one happy path and one negative or repair path where that is meaningful:
 | Shell | `shell` | Use shell only when command execution is the task; avoid shell when a safer tool exists. |
 | Communication | `communicate` | Use result tool for final/status/input request; no plain assistant message. |
 | Tasks/skills | `task_list`, `use_skill` | Use when task structure or skill trigger requires it; avoid gratuitous use. |
-| Jobs | `job_list`, `job_read_output`, `job_stop` | Recover/job-control workflows without polling loops. |
+| Jobs | `job_list`, `job_status`, `job_stop`, `read_transcript` on a `job:` ref | Recover/job-control workflows without polling loops; read output with the transcript reader, never by polling status. |
 | Delegation | `delegate`, `delegate_send` | Foreground, background, idle send, callback, unavailable target repair. |
 | Watches | `job_watch` | Caller notification, observer callback, invalid filter repair, no self-loop. |
 | Web | `web_fetch`, `web_search` | Use only when enabled and current information is needed. |

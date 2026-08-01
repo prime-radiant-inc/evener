@@ -145,7 +145,7 @@ evidence:
   state_dir: /tmp/...
   doctor:
     parent job_list count: 0
-    parent job_read_output count: 0
+    parent job_status count: 0
     observer communicate count: 1
 fix: make job_watch optional field X non-strict / clarify repair message
 ```
