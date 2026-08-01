@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { ToolCallItem } from "../ToolCallItem";
@@ -55,14 +55,26 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByText("check the thing")).toBeTruthy();
 });
 
-test("the progress head reads <done> / <total> from the tool output footer", () => {
+test("the progress head reads '<done> of <total> done' from the tool output footer", () => {
   renderItem(
     taskItem(
       { action: "update", updates: [{ id: 3, status: "done" }] },
       "Updated 3→done. Progress: 3/3 tasks complete.",
     ),
   );
-  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 / 3");
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+});
+
+test("the count appears exactly once - the tool-row summary is just 'Tasks'", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "done" }] },
+      "Updated 3→done. Progress: 3/3 tasks complete.",
+    ),
+  );
+  expect(screen.getAllByTestId("task-card-progress")).toHaveLength(1);
+  expect(screen.queryByText(/Tasks ·/)).toBe(null);
+  expect(screen.getByText("Tasks")).toBeTruthy();
 });
 
 test("a completed update renders a flagged touched-done row", () => {
@@ -329,4 +341,70 @@ test("a reopen update (status open, not a flagged touch) shows the head but no p
   );
   expect(screen.getByTestId("task-card")).toBeTruthy();
   expect(screen.queryByTestId("task-card-row")).toBe(null);
+});
+
+test("every row leads with a TaskCheck glyph whose touch matches the row's", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 4, status: "done" },
+          { id: 5, status: "in_progress" },
+        ],
+      },
+      "Updated 4→done, 5→in_progress. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  for (const row of rows) {
+    const glyph = within(row).getByTestId("task-check");
+    expect(glyph.getAttribute("data-touch")).toBe(row.getAttribute("data-touch"));
+  }
+});
+
+test("done and cancelled labels are struck through; added and started labels are not", () => {
+  const { unmount } = renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "done" }] },
+      "Updated 2→done. Progress: 2/2 tasks complete.",
+    ),
+  );
+  expect(screen.getByText("#2").className).toContain("descStruck");
+  unmount();
+
+  renderItem(
+    taskItem(
+      { action: "append", tasks: [{ type: "implement", description: "build the thing" }] },
+      "Added 1 task(s). Progress: 0/1 tasks complete.",
+    ),
+  );
+  expect(screen.getByText("build the thing").className).not.toContain("descStruck");
+});
+
+test("the visible flag word is gone; the status rides along visually-hidden", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "done" }] },
+      "Updated 2→done. Progress: 2/2 tasks complete.",
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  const spoken = within(row).getByText("done");
+  expect(spoken.className).toContain("srOnly");
+});
+
+test("a note renders under its row's label, inside the row's text column", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 4, status: "cancelled", notes: "superseded by #5" }] },
+      "Updated 4→cancelled. Progress: 1/2 tasks complete.",
+    ),
+  );
+  const note = screen.getByText("superseded by #5");
+  expect(note.className).toContain("note");
+  // The note sits in the same column wrapper as the label, not on the
+  // glyph's baseline row.
+  expect(note.parentElement?.className).toContain("rowText");
 });

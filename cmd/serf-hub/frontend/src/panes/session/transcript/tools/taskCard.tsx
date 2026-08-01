@@ -40,6 +40,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseArgs, str } from "./helpers";
+import { TaskCheck, type TaskTouch } from "./taskCheck";
 import styles from "./taskcard.module.css";
 import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
 
@@ -48,15 +49,17 @@ const CLASS = {
   head: requireClass(styles.head, "taskcard.module.css", "head"),
   rows: requireClass(styles.rows, "taskcard.module.css", "rows"),
   row: requireClass(styles.row, "taskcard.module.css", "row"),
-  flag: requireClass(styles.flag, "taskcard.module.css", "flag"),
+  rowText: requireClass(styles.rowText, "taskcard.module.css", "rowText"),
   desc: requireClass(styles.desc, "taskcard.module.css", "desc"),
+  descStruck: requireClass(styles.descStruck, "taskcard.module.css", "descStruck"),
   note: requireClass(styles.note, "taskcard.module.css", "note"),
   progress: requireClass(styles.progress, "taskcard.module.css", "progress"),
+  srOnly: requireClass(styles.srOnly, "taskcard.module.css", "srOnly"),
 };
 
 interface TouchedRow {
   key: string;
-  touch: string; // added | done | cancelled | started
+  touch: TaskTouch; // added | done | cancelled | started
   label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
   note?: string;
 }
@@ -148,7 +151,7 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
 
 // touchKind's status-to-flag mapping for the three statuses the card renders as
 // a row (renderer-format.js:525-533's touchKind, gated by renderer.js:5010).
-const TOUCH_BY_STATUS: Record<string, string> = {
+const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
   done: "done",
   cancelled: "cancelled",
   in_progress: "started",
@@ -170,12 +173,25 @@ function isTaskMutation(item: ItemModel): boolean {
   return mutationRows(item) !== undefined;
 }
 
+// The word assistive tech reads for each touch - the visible flag label is
+// gone, so the status rides along visually-hidden beside the glyph.
+const TOUCH_WORD: Record<TaskTouch, string> = {
+  added: "added",
+  done: "done",
+  cancelled: "cancelled",
+  started: "started",
+};
+
 function TaskCardRow({ row }: { row: TouchedRow }) {
+  const struck = row.touch === "done" || row.touch === "cancelled";
   return (
     <div className={CLASS.row} data-testid="task-card-row" data-touch={row.touch}>
-      <span className={CLASS.flag}>{row.touch}</span>
-      <span className={CLASS.desc}>{row.label}</span>
-      {row.note && <span className={CLASS.note}>{row.note}</span>}
+      <TaskCheck touch={row.touch} />
+      <div className={CLASS.rowText}>
+        <span className={CLASS.srOnly}>{TOUCH_WORD[row.touch]}</span>
+        <span className={struck ? CLASS.descStruck : CLASS.desc}>{row.label}</span>
+        {row.note && <span className={CLASS.note}>{row.note}</span>}
+      </div>
     </div>
   );
 }
@@ -192,7 +208,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.done} / {progress.total}
+            {progress.done} of {progress.total} done
           </span>
           <Meter
             label={`Task progress: ${progress.done} of ${progress.total} complete`}
@@ -216,10 +232,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "task_list",
   icon: "tasks",
-  summary(item: ItemModel) {
-    const progress = parseProgress(item.output);
-    return progress ? `Tasks · ${progress.done} / ${progress.total}` : "Tasks";
-  },
+  summary: () => "Tasks",
   body: TaskCardBody,
   // The card is a header, not a fold-to-open tool row - open it at settle so a
   // task change is visible without a click, the way the legacy always-visible
