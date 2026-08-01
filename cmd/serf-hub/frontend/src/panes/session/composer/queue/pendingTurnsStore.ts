@@ -52,7 +52,46 @@ function replaceTargetRecords<T extends { clientMutationId: string; targetRef: s
   return next;
 }
 
-export async function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
+// Every durable projection operation below is registered here while it runs.
+// The work is the mutation runtime's start plus real IndexedDB reads and
+// writes, so its wall time scales with machine load - a mount-to-activation
+// latency of 124-1246ms was measured for the Composer's own path (kata 3c7t).
+// That leaves a test with nothing to await but the operation itself: polling
+// its side effects against a fixed window is a race, not an assertion.
+const inFlightProjectionWork = new Set<Promise<unknown>>();
+
+function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
+  inFlightProjectionWork.add(work);
+  return work.finally(() => {
+    inFlightProjectionWork.delete(work);
+  });
+}
+
+// Awaits whatever projection work is outstanding right now and reports how
+// much that was. Callers repeat until it reports zero, flushing React in
+// between: the components start this work from effects, so only a flush can
+// reveal whether anything is left. The macrotask hop drains every pending
+// microtask, so work chained onto an operation that just finished has already
+// registered itself by the time the caller looks again.
+export async function settlePendingTurnsProjectionForTests(): Promise<number> {
+  const outstanding = [...inFlightProjectionWork];
+  await Promise.allSettled(outstanding);
+  await new Promise<void>((resolve) => {
+    const hop = new MessageChannel();
+    hop.port1.onmessage = () => {
+      hop.port1.close();
+      resolve();
+    };
+    hop.port2.postMessage(undefined);
+  });
+  return outstanding.length;
+}
+
+export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
+  return trackProjectionWork(readProjectionIntoStore(ref));
+}
+
+async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
   const key = ref ?? "*";
   const generation = (refreshGenerations.get(key) ?? 0) + 1;
@@ -169,45 +208,55 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
   }, [outbox, ref]);
 }
 
-export async function retryBlockedPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
-  const retried = await retryBlockedMutation(clientMutationId);
-  await refreshPendingTurnsProjection(ref);
-  return retried;
+// A durable mutation and the projection refresh that publishes it are one
+// operation: nothing has observed the mutation until the refresh has run.
+function mutateThenRefresh<T>(ref: string, mutate: () => Promise<T>): Promise<T> {
+  return trackProjectionWork(
+    (async () => {
+      const result = await mutate();
+      await refreshPendingTurnsProjection(ref);
+      return result;
+    })(),
+  );
 }
 
-export async function updateRecoveryPendingTurn(
+export function retryBlockedPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
+  return mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId));
+}
+
+export function updateRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   text: string,
   attachments: InputAttachment[],
 ): Promise<boolean> {
-  const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments);
-  await refreshPendingTurnsProjection(ref);
-  return updated;
+  return mutateThenRefresh(ref, () => updateRecoveryMutation(clientMutationId, ref, text, attachments));
 }
 
-export async function discardRecoveryPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
-  const discarded = await discardRecoveryMutation(clientMutationId, ref);
-  await refreshPendingTurnsProjection(ref);
-  return discarded;
+export function discardRecoveryPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
+  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref));
 }
 
-export async function resendRecoveryPendingTurn(
+export function resendRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   route: ComposerMutationRoute,
   text: string,
   attachments: InputAttachment[],
 ): Promise<boolean> {
-  const resent = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments);
-  await refreshPendingTurnsProjection(ref);
-  return resent !== undefined;
+  return mutateThenRefresh(
+    ref,
+    async () => (await resendRecoveryMutation(clientMutationId, ref, route, text, attachments)) !== undefined,
+  );
 }
 
 export function resetPendingTurnsStoreForTests(): void {
   refreshEpoch += 1;
   refreshGenerations.clear();
   appliedRefreshGenerations.clear();
+  // The epoch bump already voids anything still running against the previous
+  // test's storage, so it is not this test's projection work to wait for.
+  inFlightProjectionWork.clear();
   pendingTurnsStore.setState({ outbox: new Map(), optimistic: new Map(), recovery: new Map() });
 }
 

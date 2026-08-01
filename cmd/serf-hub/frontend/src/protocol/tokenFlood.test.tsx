@@ -262,9 +262,18 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
       });
     }
 
-    await waitFor(() =>
-      expect(document.querySelector('[data-testid="streaming-text"]')?.textContent).toBe(chunks.join("")),
-    );
+    // Asserted synchronously, NOT polled: StreamingText appends each delta to
+    // its text node from a useLayoutEffect (see that component), which React
+    // runs inside the commit of the act() that emitted the delta - so the
+    // final text is in the DOM the instant the loop above ends. Instrumenting
+    // this line showed the polled version finding the condition already true
+    // on its first check in every run, quiet or starved, yet still costing
+    // 40ms idle and up to 2233ms when the box was oversubscribed: waitFor's
+    // interval and RTL's own trailing setTimeout are wall-clock round trips,
+    // and starving them inflates a zero-wait assertion into seconds of this
+    // test's 5000ms budget. Polling for something already settled is the same
+    // mistake as racing a clock for something that is not.
+    expect(document.querySelector('[data-testid="streaming-text"]')?.textContent).toBe(chunks.join(""));
 
     // The settled sibling's own DOM content must still be correct after the
     // flood regardless of how many times it re-rendered - this probe

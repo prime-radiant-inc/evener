@@ -17,7 +17,11 @@ import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css"
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import {
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+  settlePendingTurnsProjectionForTests,
+} from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -132,6 +136,56 @@ class PausedRecoveryReadStorage extends MutationOutboxIndexedDB {
     await this.recoveryReadGate;
     return super.listRecovery(targetRef);
   }
+}
+
+// Recovery IndexedDB work that lands well after the flush a mount can drive,
+// the way a loaded machine makes the real work land: mount-to-activation
+// latency on this path measured 124-1246ms across 12 runs (kata 3c7t) while a
+// React flush is single-digit ms. Nothing waits on the delay - the tests await
+// the operation's own completion through settleRecoveryProjection - so the
+// number only has to be long enough that an unawaited path cannot have
+// finished yet.
+const SLOW_RECOVERY_WORK_MS = 150;
+
+class SlowRecoveryStorage extends MutationOutboxIndexedDB {
+  override async listRecovery(targetRef?: string): ReturnType<MutationOutboxIndexedDB["listRecovery"]> {
+    await new Promise((resolve) => setTimeout(resolve, SLOW_RECOVERY_WORK_MS));
+    return super.listRecovery(targetRef);
+  }
+
+  override async updateRecoveryInput(
+    ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+  ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+    await new Promise((resolve) => setTimeout(resolve, SLOW_RECOVERY_WORK_MS));
+    return super.updateRecoveryInput(...args);
+  }
+}
+
+class CountingRecoveryStorage extends MutationOutboxIndexedDB {
+  recoveryInputWrites = 0;
+
+  override async updateRecoveryInput(
+    ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+  ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+    this.recoveryInputWrites += 1;
+    return super.updateRecoveryInput(...args);
+  }
+}
+
+// Awaits the durable projection work itself rather than polling the DOM for
+// its effects. The composer starts that work from React effects, so a round
+// has to flush React and then re-check: a round that awaited nothing is the
+// proof that nothing is left. The bound is a tripwire for a livelock - it
+// throws rather than letting a test pass on a half-settled projection.
+async function settleRecoveryProjection(): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    let awaited = 0;
+    await act(async () => {
+      awaited = await settlePendingTurnsProjectionForTests();
+    });
+    if (awaited === 0) return;
+  }
+  throw new Error("pending-turns projection never settled");
 }
 
 async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
@@ -1101,7 +1155,8 @@ test("editing a rejected queue row merges it through the normal Composer", async
   if (!row) throw new Error("missing rejected queue row");
   await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
-  await waitFor(() => expect(textarea().value).toBe("current work\n\nrejected draft"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("current work\n\nrejected draft");
   expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
   expect(screen.queryByText("rejected draft")).toBeNull();
 });
@@ -1129,15 +1184,20 @@ test("sending recovered text uses current Composer routing and consumes the reco
     },
   }));
 
-  await waitFor(() => expect(textarea().value).toBe("retry me"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("retry me");
   await user.click(submitButton());
+  await settleRecoveryProjection();
 
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  // The wire call itself stays a waitFor: dispatch is deliberately
+  // fire-and-forget off the durable resend (threads.ts's own
+  // handleDiscoveredMutations call), so it is not projection work to await.
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true));
   expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
     expectedTurnId: "turn-current",
     input: [{ type: "text", text: "retry me" }],
   });
-  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
 });
 
 test("a losing cross-tab recovered send does not issue a second request", async () => {
@@ -1146,7 +1206,8 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const recovered = await seedRejectedRecovery(storage, "ref_a", "one winner");
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("one winner"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("one winner");
   const otherTab = new MutationOutboxIndexedDB();
   await otherTab.resendRecovery(recovered.clientMutationId, {
     targetRef: "ref_a",
@@ -1167,27 +1228,80 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   otherTab.close();
 });
 
+// An activated recovery draft republishes the projection on every durable
+// write, and every projection publish re-renders this component. So an effect
+// that writes on each render is a self-feeding IndexedDB loop that never
+// stops while the draft sits there - it burns the event loop the composer's
+// own awaits need, and it means "the projection has settled" is never true.
+test("a recovered draft nobody is touching stops writing itself back to IndexedDB", async () => {
+  const storage = new CountingRecoveryStorage();
+  setMutationStorageForTests(storage);
+  await seedRejectedRecovery(storage, "ref_a", "sitting still");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("sitting still");
+
+  const afterActivation = storage.recoveryInputWrites;
+  await settleRecoveryProjection();
+
+  expect(storage.recoveryInputWrites).toBe(afterActivation);
+});
+
+// The two below pin the mount-time recovery gate and the recovery write to an
+// AWAITABLE completion. Both hold a rejected record behind IndexedDB work that
+// outlasts the mount's own flush, so a Composer whose activation or whose
+// durable edit is merely polled for cannot have landed by the assertion.
+
+test("a slow recovery read still activates before the mount's projection work is awaited out", async () => {
+  const storage = new SlowRecoveryStorage();
+  setMutationStorageForTests(storage);
+  await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(textarea().value).toBe("");
+
+  await settleRecoveryProjection();
+
+  expect(textarea().value).toBe("slow to arrive");
+});
+
+test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
+  const storage = new SlowRecoveryStorage();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "before");
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await settleRecoveryProjection();
+  await user.type(textarea(), "!");
+
+  await settleRecoveryProjection();
+
+  expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "before!" },
+  ]);
+});
+
 test("recovered edits and attachment removal survive Composer remount", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("edit me [image 1]"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("edit me [image 1]");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
 
   await user.clear(textarea());
   await user.type(textarea(), "edited");
   await user.click(screen.getByRole("button", { name: "Remove proof.png" }));
-  await waitFor(async () => {
-    expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
-      { type: "text", text: "edited" },
-    ]);
-  });
+  await settleRecoveryProjection();
+  expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "edited" },
+  ]);
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("edited"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("edited");
   // Any remove control at all, not one named for this file: a tile carries
   // its filename in labels rather than as a text node, so a text query would
   // report "gone" for an attachment still sitting there - and a query naming
@@ -1201,12 +1315,15 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   const recovered = await seedRejectedRecovery(storage, "ref_a", "discard me");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("discard me"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("discard me");
   await user.clear(textarea());
-  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
+  await settleRecoveryProjection();
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
+  await settleRecoveryProjection();
   expect(textarea().value).toBe("");
   expect(screen.queryByText("discard me")).toBeNull();
 });
