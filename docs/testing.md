@@ -43,13 +43,16 @@ make build
 ROOT_FULL=1 make test
 ```
 
-`ROOT_FULL=1` makes the protected first wave run the full root Go suite instead
-of its ordinary `-short` form. `make test` owns the remaining Go module,
-script self-test, and frontend streams; the self-test stream starts only after
-the protected root wave and runs alongside wave two. The standalone
-`go test ./...` gate is therefore duplicate coverage and must not be appended
-to this stack. Ordinary `make test` remains the default local command and keeps
-the root wave in short mode unless `ROOT_FULL=1` is explicitly set.
+`ROOT_FULL=1` makes the protected first wave run the full intended non-fuzz
+root Go suite instead of its ordinary `-short` form. `make test` owns the
+remaining non-fuzz Go module, script self-test, and frontend streams; the
+self-test stream starts only after the protected root wave and runs alongside
+wave two. This stack preserves the intended non-fuzz post-merge coverage. The
+retired standalone `go test ./...` also ran the ordinary unit tests in
+`cmd/serf-fuzzcov` and `cmd/serf-fuzz-harvest`; all fuzz coverage, including
+those tests, is explicitly owned and run by `make fuzz`. Ordinary `make test`
+remains the default local command and keeps the root wave in short mode unless
+`ROOT_FULL=1` is explicitly set.
 
 ## Proving a Type Survives a Round Trip
 

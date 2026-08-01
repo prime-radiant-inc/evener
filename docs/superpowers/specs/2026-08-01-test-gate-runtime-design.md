@@ -7,11 +7,12 @@ Base: `webui-workspace-shell` at `96e1fc6ef`
 ## Problem
 
 The post-merge gate runs `make lint`, `make build`, `make test`, and then
-`go test ./...`. The root module therefore runs twice: once with `-short` in
-`make test`'s protected first wave, then again without `-short` as the final
-gate. In addition, all script self-tests finish before the protected root wave
-starts even though they are mostly wait-bound and safe to overlap with the
-second wave.
+`go test ./...`. The intended non-fuzz root package set therefore runs twice:
+once with `-short` in `make test`'s protected first wave, then again without
+`-short` as part of the final gate. That standalone command also runs the
+fuzz-tool packages whose tests belong to `make fuzz`. In addition, all script
+self-tests finish before the protected root wave starts even though they are
+mostly wait-bound and safe to overlap with the second wave.
 
 An idle-box measurement on the base commit produced:
 
@@ -33,16 +34,19 @@ reduction of at least 50% from the approximately 200-second directive-time
 baseline. During the final measurement Jesse revised publication acceptance to
 demonstrable improvement from the measured 167.39-second idle stack, with the
 approximately 200-second directive baseline retained as secondary context.
-Green, complete coverage still outranks the runtime target.
+Green intended non-fuzz merge-gate coverage and explicit fuzz ownership still
+outrank the runtime target.
 
 ## Approved approach
 
 Implement the two structural levers already identified in the fleet ledger:
 
-1. Let the root module run its full suite in the existing protected first wave.
+1. Let the root module run its full intended non-fuzz suite in the existing
+   protected first wave.
 2. Start script self-tests only after that root wave, alongside wave two.
-3. Once equivalence is proven, remove the now-duplicate standalone
-   `go test ./...` from the operational post-merge gate.
+3. Once intended non-fuzz merge-gate coverage is proven, remove standalone
+   `go test ./...` from the operational post-merge gate. Keep its fuzz-tool
+   tests under their explicit `make fuzz` owner.
 
 The optimized gate command sequence becomes:
 
@@ -54,7 +58,7 @@ ROOT_FULL=1 make test
 
 ## Runner interface
 
-### Full root suite
+### Full non-fuzz root suite
 
 Add `ROOT_FULL`, defaulting to disabled, to `scripts/run-module-tests.sh`.
 When `ROOT_FULL=1`, the runner removes the exact `-short` argument only from
@@ -62,6 +66,11 @@ the root module's `go test` invocation. All other flags and all non-root module
 invocations are unchanged. Direct runner callers and ordinary `make test`
 remain backward-compatible because the default stays disabled; the optimized
 gate opts in explicitly.
+
+The root package list continues to omit `cmd/serf-fuzzcov` and
+`cmd/serf-fuzz-harvest`. Their ordinary unit tests are fuzz coverage by policy
+and remain explicitly run by `make fuzz`; `ROOT_FULL` does not change that
+ownership boundary.
 
 The root module remains alone in wave one. No module or self-test work may be
 moved into that wave. The existing concurrent frontend stream is unchanged.
@@ -116,13 +125,14 @@ evidence rather than matching rendered shell source.
 1. Run the runner self-test directly.
 2. Run `make selftest` to verify the aggregate tooling wave.
 3. Run the legacy four-gate stack once, including standalone `go test ./...`,
-   to prove the scheduler change did not lose coverage.
+   to validate the scheduler change and intended non-fuzz merge-gate coverage.
+   Confirm separately that `make fuzz` retains the fuzz-tool package tests.
 4. Run the optimized three-command stack on an otherwise idle box, capturing
    bare exits and per-command wall times.
 5. Repeat the optimized measurement three times. Use the median total for the
    performance claim; all three cycles must be green and pristine.
 6. Update `docs/testing.md`, the fleet ledger, and the controller gate helper
-   only after the equivalence cycle and timing runs pass.
+   only after the coverage-validation cycle and timing runs pass.
 
 If the median does not improve on 167.39 seconds, do not weaken coverage or add
 contention to wave one. Profile the new critical path and bring the next
@@ -130,11 +140,14 @@ structural change back for design approval.
 
 ## Measured result
 
-The legacy equivalence cycle ran `make lint`, `make build`, `make test`, and
+The legacy validation cycle ran `make lint`, `make build`, `make test`, and
 `go test ./...` serially. Their bare exits were `0`, `0`, `0`, and `0`, and all
-four captured logs were pristine. This proves that the optimized stack retains
-the root, non-root module, script self-test, and frontend coverage formerly
-split across the four commands.
+four captured logs were pristine. The optimized stack preserves the intended
+non-fuzz root, non-root module, script self-test, and frontend merge-gate
+coverage. The command selections are not exactly equivalent: standalone
+`go test ./...` also ran the ordinary tests in `cmd/serf-fuzzcov` and
+`cmd/serf-fuzz-harvest`. Those tests remain explicitly owned and run by
+`make fuzz`, rather than by the post-merge gate.
 
 Three optimized cycles ran only after an idle-box check returned exit 1 with no
 matching test process. All nine gate commands had bare exit 0 and pristine
@@ -149,8 +162,9 @@ captured output:
 The median total is 98.55 seconds. That is 68.84 seconds, or 41.13%, below the
 measured 167.39-second idle stack and 101.45 seconds, or 50.73%, below the
 approximately 200-second directive baseline. The revised performance criterion
-therefore passes without reducing coverage or changing the protected wave-one
-contention policy.
+therefore passes while preserving intended non-fuzz merge-gate coverage,
+leaving fuzz coverage under `make fuzz`, and keeping the protected wave-one
+contention policy unchanged.
 
 The complete logs are under
 `/private/tmp/claude-501/-Users-jesse-prime-radiant-toil-suite-serf--claude-worktrees-webui-workspace-shell/a25329dd-a50c-4efe-bd9b-e36a57c5e538/scratchpad/task-4-logs/`.
