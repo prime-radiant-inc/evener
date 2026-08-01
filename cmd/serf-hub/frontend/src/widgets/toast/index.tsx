@@ -20,13 +20,21 @@ const KIND_CLASS: Record<ToastKind, string> = {
   info: requireClass(styles.info, "toast.module.css", "info"),
 };
 
+// One frozen object for the whole app, not a fresh literal per render: push is
+// a module function with no per-caller state, and callers legitimately put the
+// hook's result in a dependency array. A new object each render silently
+// re-runs every such effect on every render - in Composer's case an effect
+// that writes the active recovery draft to IndexedDB, which republishes the
+// projection, which re-renders, which writes again.
+const TOASTS: { push: (kind: ToastKind, text: string) => void } = Object.freeze({ push: pushToast });
+
 /**
  * `push(kind, text)` enqueues a toast for the `<Toast/>` region (mounted
  * once, e.g. near the app root) to display. Toasts always auto-dismiss -
  * there is no imperative dismiss in this hook's return value.
  */
 export function useToasts(): { push: (kind: ToastKind, text: string) => void } {
-  return { push: pushToast };
+  return TOASTS;
 }
 
 /** The aria-live="polite" region that renders the active toast queue. */
