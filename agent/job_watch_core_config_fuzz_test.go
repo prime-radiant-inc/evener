@@ -123,8 +123,9 @@ func jwccExerciseConfigureFailures(t *testing.T) {
 	}
 
 	// Receiver-internal delivery bypasses public send-target validation. With a
-	// concrete live run, closing the store therefore fails specifically while
-	// minting the observer read grant.
+	// concrete live run, install still writes durable state — the observed-by
+	// link (grants themselves mint per-delivery now, not at create) — so a
+	// closed store fails the install and says the store is the reason.
 	grant := jwccManager(t)
 	rec, err := grant.createShell(createShellOpts{Command: "core config grant"})
 	if err != nil {
@@ -134,8 +135,8 @@ func jwccExerciseConfigureFailures(t *testing.T) {
 		t.Fatalf("close grant store: %v", err)
 	}
 	_, err = grant.configureWatch(watchArgs{Target: rec.JobID, Events: []string{"job.notification"}, Send: &watchSendArgs{To: "dlg_observer"}, ReceiverSendInternal: true, ReceiverSessionID: "S-observer"})
-	if err == nil || !strings.Contains(err.Error(), "watch read grant") {
-		t.Fatalf("grant failure = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "store closed") {
+		t.Fatalf("closed-store install failure = %v, want the store named", err)
 	}
 	grant.mu.Lock()
 	delete(grant.running, rec.JobID)
