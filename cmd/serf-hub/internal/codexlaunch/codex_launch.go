@@ -247,8 +247,14 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 		return nil, appwire.HubLaunchError("start codex app-server: " + err.Error())
 	}
 	prefix := codexLogPrefix(cfg.ID)
-	go scanCodexEndpoint(stdout, endpoints, l.logOutput, prefix)
-	go scanCodexEndpoint(stderr, endpoints, l.logOutput, prefix)
+	// The readiness wait below is the only reader endpoints will ever have.
+	// Closing this on the way out tells the scanners that, so a later
+	// endpoint-shaped line becomes a log line instead of a send nobody will
+	// take (kata e1nh).
+	launchDone := make(chan struct{})
+	defer close(launchDone)
+	go scanCodexEndpoint(stdout, endpoints, launchDone, l.logOutput, prefix)
+	go scanCodexEndpoint(stderr, endpoints, launchDone, l.logOutput, prefix)
 	// exitErr is published before close(exited); a receive on exited
 	// happens-after the close, so reading exitErr after the receive is race-free.
 	exited := make(chan struct{})
@@ -354,12 +360,11 @@ func codexLogPrefix(id string) string {
 	return "[codex:" + id + "]"
 }
 
-func scanCodexEndpoint(r io.Reader, endpoints chan<- string, out io.Writer, prefix string) {
+func scanCodexEndpoint(r io.Reader, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if endpoint, ok := ParseCodexEndpoint(line); ok {
-			endpoints <- endpoint
+		if endpoint, ok := ParseCodexEndpoint(line); ok && deliverCodexEndpoint(endpoints, launchDone, endpoint) {
 			continue
 		}
 		// Everything else is the app-server talking to whoever launched it —
@@ -367,6 +372,35 @@ func scanCodexEndpoint(r io.Reader, endpoints chan<- string, out io.Writer, pref
 		// place it can land: the hub holds both pipes to scan them, so a line
 		// dropped here is a line nobody will ever see.
 		_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
+	}
+}
+
+// deliverCodexEndpoint offers an announcement to the launch's readiness wait
+// and reports whether the wait took it.
+//
+// Only that wait ever receives from endpoints, and it is gone the moment
+// launchLocked returns. ParseCodexEndpoint accepts any line carrying a ws://
+// URL, so an app-server that keeps mentioning its own address goes on
+// producing announcements for a reader that no longer exists: past the
+// channel's buffer, a blocking send parks the scanner goroutine for good, and
+// the app-server's only log record dies with it (kata e1nh).
+//
+// launchDone says the wait is gone. An announcement that arrives after it is
+// just another line for the log, which is where the caller sends everything a
+// launched app-server says once the launch itself is settled.
+func deliverCodexEndpoint(endpoints chan<- string, launchDone <-chan struct{}, endpoint string) bool {
+	// Checked first so a settled launch is decided, not raced against a
+	// buffer slot that happens to be free.
+	select {
+	case <-launchDone:
+		return false
+	default:
+	}
+	select {
+	case endpoints <- endpoint:
+		return true
+	case <-launchDone:
+		return false
 	}
 }
 
