@@ -9409,11 +9409,16 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
-// the hub app server registers. It dispatches every expected method (with a
-// providers config present so the instance handlers register too) and asserts
-// none responds with methodNotFound, then confirms an unknown method does. This
-// guards the constructor decomposition (registerThreadHandlers / Auth /
-// Instance / Launch / Misc) against accidentally dropping a registration.
+// the hub app server registers (with a providers config present so the
+// instance handlers register too): the router's method set must equal the
+// list below, so both a dropped registration and one nobody has named here
+// fail. That guards the constructor decomposition (registerThreadHandlers /
+// Auth / Instance / Launch / Plugin / Misc / PluginAutoUpgrade) in both
+// directions.
+//
+// Every named method is then dispatched over the wire and must not answer
+// methodNotFound — reachability the router set alone cannot show — except the
+// handlers listed in notDispatched, which act outside the process.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -9426,7 +9431,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		ProviderConfig:      &provCfg,
 		ProvidersConfigPath: tomlPath,
@@ -9443,21 +9448,28 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodThreadTurnsList,
+		appwire.MethodSerfSubagentPreview,
 		appwire.MethodThreadStart,
 		appwire.MethodThreadResume,
 		appwire.MethodThreadFork,
 		appwire.MethodTurnStart,
 		appwire.MethodTurnSteer,
 		appwire.MethodTurnInterrupt,
+		appwire.MethodSerfSandboxEscalationResolve,
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,
+		appwire.MethodTurnCancelQueued,
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
+		appwire.MethodSerfThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
+		appwire.MethodGoalSet,
 		appwire.MethodSerfAuthStatus,
+		appwire.MethodSerfAuthTest,
 		appwire.MethodSerfAuthLoginStart,
 		appwire.MethodSerfAuthLoginComplete,
 		appwire.MethodSerfAuthLogout,
@@ -9475,8 +9487,11 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodSerfLaunchGetLayer,
 		appwire.MethodSerfLaunchSetLayer,
 		appwire.MethodSerfLaunchTrustRepo,
+		appwire.MethodSerfUpgrade,
 		appwire.MethodModelList,
 		appwire.MethodSerfTasksList,
+		appwire.MethodSerfJobsList,
+		appwire.MethodSerfJobsOutput,
 		appwire.MethodSerfThreadTranscriptsList,
 		appwire.MethodSerfPathsComplete,
 		appwire.MethodSerfProjectsRecent,
@@ -9484,9 +9499,56 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodSerfHarnessesList,
 		appwire.MethodSerfCommandList,
 		appwire.MethodSerfSettingsOverview,
+		appwire.MethodSerfMarketplaceList,
+		appwire.MethodSerfMarketplaceAdd,
+		appwire.MethodSerfMarketplaceRemove,
+		appwire.MethodSerfMarketplaceRefresh,
+		appwire.MethodSerfMarketplaceBrowse,
+		appwire.MethodSerfPluginList,
+		appwire.MethodSerfPluginInstall,
+		appwire.MethodSerfPluginUpgrade,
+		appwire.MethodSerfPluginRemove,
+		appwire.MethodSerfPluginEnable,
+		appwire.MethodSerfPluginDisable,
+		appwire.MethodSerfPluginSetAutoUpgrade,
+		appwire.MethodSerfPluginCheckNow,
+	}
+
+	// The list is a lock, not a sample: nothing may be registered that it does
+	// not name, so a handler arriving without a test naming it fails here too.
+	registered := excludeHubMethods(web.appRPC.Router().Methods(), appwire.ConnectionMethodNames())
+	if missing, extra := setDiff(expected, registered); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("hub handler set differs from the set this test names:\n  named but NOT registered: %v\n  registered but NOT named: %v", missing, extra)
+	}
+
+	// notDispatched are named above but never called: their handlers act
+	// outside this process. serf/upgrade runs the real self-update (fetch and
+	// install over the running binary), and the marketplace, plugin and
+	// auto-upgrade handlers work against the plugin root — which, with no
+	// PluginRoot configured, is the developer's own plugins.DefaultRoot — and
+	// fetch its remote sources. app_plugins_test.go and
+	// app_plugin_autoupgrade_test.go drive those against fixture roots.
+	notDispatched := map[string]bool{
+		appwire.MethodSerfUpgrade:              true,
+		appwire.MethodSerfMarketplaceList:      true,
+		appwire.MethodSerfMarketplaceAdd:       true,
+		appwire.MethodSerfMarketplaceRemove:    true,
+		appwire.MethodSerfMarketplaceRefresh:   true,
+		appwire.MethodSerfMarketplaceBrowse:    true,
+		appwire.MethodSerfPluginList:           true,
+		appwire.MethodSerfPluginInstall:        true,
+		appwire.MethodSerfPluginUpgrade:        true,
+		appwire.MethodSerfPluginRemove:         true,
+		appwire.MethodSerfPluginEnable:         true,
+		appwire.MethodSerfPluginDisable:        true,
+		appwire.MethodSerfPluginSetAutoUpgrade: true,
+		appwire.MethodSerfPluginCheckNow:       true,
 	}
 
 	for _, method := range expected {
+		if notDispatched[method] {
+			continue
+		}
 		// We only care about the dispatch outcome, not the response body, so
 		// pass a nil out. A registered handler may succeed or reject the empty
 		// params with some other error; what it must never return is

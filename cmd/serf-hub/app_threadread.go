@@ -18,14 +18,7 @@ import (
 )
 
 func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
-	if cfg.Past == nil {
-		return appwire.Thread{}, false, nil
-	}
-	threadID, ok := localPastThreadID(params)
-	if !ok {
-		return appwire.Thread{}, false, nil
-	}
-	entry, ok := cfg.Past.Find(threadID)
+	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.Thread{}, false, nil
 	}

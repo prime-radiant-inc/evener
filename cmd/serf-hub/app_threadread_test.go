@@ -688,6 +688,42 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 	}
 }
 
+// TestPastThreadForRead_PastGateMisses pins every way the past gate declines
+// a read: a hub with no past index, params naming no thread at all, a ref
+// belonging to another source, and a thread id the index does not hold. All
+// four must report "no past thread" with an empty thread and no error, since
+// the callers (thread/read, thread/turns/list, the live-thread merge) treat
+// found=false as "nothing to add" and an error as a failed read.
+//
+// The foreign-ref case seeds the index with a session whose id IS the codex
+// ref's thread id: dropping the local-source check would answer another
+// source's caller out of local session state.
+func TestPastThreadForRead_PastGateMisses(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	emptyIndex := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
+	if _, err := emptyIndex.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		cfg    hubcore.WebConfig
+		params appwire.ThreadReadParams
+	}{
+		{"no past index", hubcore.WebConfig{}, appwire.ThreadReadParams{ThreadID: sessionID}},
+		{"no ref and no thread id", cfg, appwire.ThreadReadParams{}},
+		{"another source's ref", cfg, appwire.ThreadReadParams{Ref: "codex:" + sessionID}},
+		{"thread id absent from the index", hubcore.WebConfig{Past: emptyIndex}, appwire.ThreadReadParams{ThreadID: sessionID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			thread, found, err := pastThreadForRead(tc.cfg, tc.params)
+			if found || err != nil || !reflect.DeepEqual(thread, appwire.Thread{}) {
+				t.Fatalf("pastThreadForRead = (%+v, %v, %v), want the empty not-found miss", thread, found, err)
+			}
+		})
+	}
+}
+
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	full, ok := requirePastThreadForRead(t, cfg, params)
