@@ -31,6 +31,25 @@ loosely:
 If a scenario is genuinely simple, half of these can be one line each.
 Don't pad.
 
+## Citing a contract
+
+Cite a place in a file by a name that lives **inside** the file, never
+by a line number. A line number is invalidated by any edit to the file,
+silently: the citation still parses, still looks precise, and now points
+at an unrelated line.
+
+- **Prose (`.md`)** — the doc path in backticks, followed immediately by
+  the quoted section heading and/or the quoted phrase you are leaning
+  on: ``` `docs/job-control.md` "Nested jobs" ("the forwarded copy is a
+  drive signal") ```. Quotes may be separated by punctuation and the word
+  `and`; the run ends at the first other word, so ordinary prose quotes
+  later in the paragraph are not anchors.
+
+`TestScenarioDocAnchorsAppearInTheDocTheyName` in the root module
+resolves every quoted anchor against the doc it names, so a renamed
+heading or a reworded sentence fails loudly instead of leaving a
+citation that points at nothing.
+
 ## How to run
 
 Most scenarios assume:

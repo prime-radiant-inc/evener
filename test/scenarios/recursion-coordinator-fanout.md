@@ -267,7 +267,7 @@ default).**"); this card only runs with the raised config below.
   coordinator reported in `COORDINATOR_SPAWNED`; if the coordinator
   failed to report them, re-run rather than asserting absence against
   an unknown set.
-- **Drive-down is parent-cadence (design §3 / architecture.md
+- **Drive-down is parent-cadence (design §3 / `docs/architecture.md`
   "Drive-down").** The coordinator's notification turn fires at the
   ROOT's loop boundary (the root drives its direct child), so the
   coordinator may receive worker completions a beat after the workers
