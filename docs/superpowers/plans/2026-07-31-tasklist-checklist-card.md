@@ -13,7 +13,7 @@
 - All work happens in the `tasklist-checklist-card` worktree; frontend root is `cmd/serf-hub/frontend`.
 - Deterministic tests only (per `docs/testing.md`): no network, no provider credentials.
 - Icon grammar: 16x16 viewBox, `stroke="currentColor"`, strokeWidth 1.75, round caps/joins, `fill="none"`, square box, inline `display: block` style, `aria-hidden="true"`, `focusable="false"`.
-- Semantic color ONLY on checkbox glyphs (`--success` done, `--accent` started, `--ink-mid` added/cancelled); all text stays on the ink scale. This is a scoped, user-approved exception to the neutral-card rule documented in `taskcard.module.css`.
+- Semantic color ONLY on checkbox glyphs (`--alive` done (the wave-2 token set's green; `--success` was removed), `--accent` started, `--ink-mid` added/cancelled); all text stays on the ink scale. This is a scoped, user-approved exception to the neutral-card rule documented in `taskcard.module.css`.
 - Every CSS class referenced from TSX must be wrapped in `requireClass(styles.X, "<module>", "X")`.
 - Tests run from `cmd/serf-hub/frontend`: `npx vitest run <path>`; typecheck `npm run typecheck`; lint `npm run lint`.
 
@@ -85,7 +85,7 @@ Expected: FAIL — module `./taskCheck` does not exist.
 }
 
 .done {
-  color: var(--success);
+  color: var(--alive);
 }
 
 .cancelled {

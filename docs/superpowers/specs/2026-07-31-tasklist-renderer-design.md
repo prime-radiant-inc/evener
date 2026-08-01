@@ -39,7 +39,7 @@ Approved decisions (2026-07-31, approach B "checkbox metaphor"):
 
    | touch       | glyph                       | glyph color | label                    |
    |-------------|-----------------------------|-------------|--------------------------|
-   | `done`      | box + check                 | `--success` | struck through, low ink  |
+   | `done`      | box + check                 | `--alive` | struck through, low ink  |
    | `started`   | box + rightward arrow       | `--accent`  | full ink                 |
    | `added`     | box + faint centered plus   | mid ink     | full ink                 |
    | `cancelled` | box + ✕                     | mid ink     | struck through, low ink  |
