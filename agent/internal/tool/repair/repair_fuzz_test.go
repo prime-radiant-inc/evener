@@ -3,6 +3,7 @@ package repair
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -177,8 +178,8 @@ func FuzzRepairDiagnostics(f *testing.F) {
 			}
 		}
 
-		jsonMessage := ExplainJSONError(toolName, params, parseErr)
-		if jsonMessage != ExplainJSONError(toolName, params, parseErr) {
+		jsonMessage := ExplainJSONError(toolName, params, errors.New(parseErr), nil)
+		if jsonMessage != ExplainJSONError(toolName, params, errors.New(parseErr), nil) {
 			t.Fatalf("JSON explanation was not deterministic: %q", jsonMessage)
 		}
 		if !strings.Contains(jsonMessage, "JSON object") {

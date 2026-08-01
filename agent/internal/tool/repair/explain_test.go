@@ -1,6 +1,8 @@
 package repair
 
 import (
+	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,9 +39,48 @@ func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
 }
 
 func TestExplainJSONError_MentionsToolAndObject(t *testing.T) {
-	msg := ExplainJSONError("read_file", editParamsForExplain(), "unexpected end of JSON input")
+	msg := ExplainJSONError("read_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), nil)
 	if !strings.Contains(msg, "read_file") || !strings.Contains(msg, "JSON object") {
 		t.Fatalf("msg = %q", msg)
+	}
+}
+
+func TestExplainJSONError_ShowsTailWhenTruncated(t *testing.T) {
+	raw := []byte(`{"file_path": "/tmp/x", "content": "hello wor`)
+	msg := ExplainJSONError("write_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), raw)
+	// The excerpt is %q-quoted, so the raw text appears escaped.
+	if !strings.Contains(msg, `{\"file_path\": \"/tmp/x\", \"content\": \"hello wor`) {
+		t.Fatalf("msg omitted the failing input: %q", msg)
+	}
+	if !strings.Contains(msg, "ended with") {
+		t.Fatalf("msg did not mark the truncation point: %q", msg)
+	}
+}
+
+func TestExplainJSONError_ShowsWindowAroundOffset(t *testing.T) {
+	raw := []byte(`{"file_path": "/tmp/x", }`)
+	var v any
+	err := json.Unmarshal(raw, &v)
+	if err == nil {
+		t.Fatal("expected a parse error")
+	}
+	msg := ExplainJSONError("write_file", editParamsForExplain(), err, raw)
+	if !strings.Contains(msg, "near byte") || !strings.Contains(msg, ">>>") {
+		t.Fatalf("msg did not mark the failing offset: %q", msg)
+	}
+	if !strings.Contains(msg, "JSON object") {
+		t.Fatalf("msg dropped the coaching: %q", msg)
+	}
+}
+
+func TestExplainJSONError_CapsExcerptLength(t *testing.T) {
+	raw := []byte(`{"content": "` + strings.Repeat("x", 5000))
+	msg := ExplainJSONError("write_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), raw)
+	if len(msg) > 1000 {
+		t.Fatalf("msg not capped (%d bytes): %.200q...", len(msg), msg)
+	}
+	if !strings.Contains(msg, "...") {
+		t.Fatalf("truncated excerpt missing ellipsis: %q", msg)
 	}
 }
 

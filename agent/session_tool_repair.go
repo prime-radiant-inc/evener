@@ -41,7 +41,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			res.Changes = append(res.Changes, c...)
 			args = map[string]any{}
 			if err2 := json.Unmarshal(repaired, &args); err2 != nil {
-				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err2.Error())
+				// Show the model's own bytes and the original parse error
+				// (its offset refers to them, not the repaired form).
+				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)
 				return res
 			}
 		}
