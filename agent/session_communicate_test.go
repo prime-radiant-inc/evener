@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
 
@@ -584,6 +585,119 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	if len(inbox2) != 0 {
 		t.Fatalf("expected empty inbox on second call, got: %v", inbox2)
 	}
+}
+
+func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testing.T) {
+	t.Parallel()
+	const callID = "communicate_with_client_steering"
+	dir := t.TempDir()
+	reachedTool := make(chan struct{})
+	resumeTool := make(chan struct{})
+	checkpointReached := false
+
+	var requestErr error
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall(callID, "Initial work complete."))
+			},
+			func(req llm.Request) llm.Response {
+				requestErr = validateSteeredCommunicateHistory(req.Messages, callID, "commit them")
+				return toolCallResponse(communicateCall("communicate_after_steering", "Committed."))
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, newAnthropicProfile("k3"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{
+			execToolCheckpoint: func(name string) {
+				if name != "before_side_effects" || checkpointReached {
+					return
+				}
+				checkpointReached = true
+				close(reachedTool)
+				<-resumeTool
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	firstTurn := make(chan error, 1)
+	go func() {
+		_, runErr := sess.ProcessInput(ctx, "finish the current work", nil)
+		firstTurn <- runErr
+	}()
+
+	select {
+	case <-reachedTool:
+	case <-ctx.Done():
+		close(resumeTool)
+		t.Fatalf("communicate tool did not reach deterministic checkpoint: %v", ctx.Err())
+	}
+	_, steerErr := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer_while_communicating",
+		Input:            []appwire.InputItem{{Type: "text", Text: "commit them"}},
+	})
+	close(resumeTool)
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", steerErr)
+	}
+	if err := <-firstTurn; err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+
+	if _, err := sess.ProcessInput(ctx, "continue", nil); err != nil {
+		t.Fatalf("second ProcessInput: %v", err)
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+}
+
+func validateSteeredCommunicateHistory(messages []llm.Message, callID, steering string) error {
+	callIndex := -1
+	resultIndex := -1
+	steeringIndex := -1
+	resultCount := 0
+	for i, message := range messages {
+		if message.Role == llm.RoleUser && message.Text() == steering {
+			steeringIndex = i
+		}
+		for _, part := range message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+				callIndex = i
+			}
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				resultCount++
+				resultIndex = i
+				if !strings.Contains(fmt.Sprint(part.ToolResult.Content), `"accepted":true`) {
+					return fmt.Errorf("communicate result content = %q, want the real accepted result", part.ToolResult.Content)
+				}
+			}
+		}
+	}
+	if callIndex < 0 {
+		return fmt.Errorf("communicate call %q missing from request", callID)
+	}
+	if resultCount != 1 {
+		return fmt.Errorf("communicate results for %q = %d, want exactly 1", callID, resultCount)
+	}
+	if resultIndex != callIndex+1 {
+		return fmt.Errorf("communicate result index = %d, want immediately after call index %d", resultIndex, callIndex)
+	}
+	if steeringIndex <= resultIndex {
+		return fmt.Errorf("steering index = %d, want after communicate result index %d", steeringIndex, resultIndex)
+	}
+	return nil
 }
 
 func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing.T) {

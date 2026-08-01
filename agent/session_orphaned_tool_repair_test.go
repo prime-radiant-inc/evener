@@ -172,6 +172,74 @@ func TestRepairOrphanedToolResultsPreservesHookBeforeRealResult(t *testing.T) {
 	}
 }
 
+func TestRepairOrphanedToolResultsPreservesSteeringBeforeRealResult(t *testing.T) {
+	t.Parallel()
+	const callID = "call_with_steering"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        callID,
+					Name:      "communicate",
+					Type:      "function",
+					Arguments: json.RawMessage(`{"message":"done","end_turn":true}`),
+				},
+			}},
+		}),
+		schema.NewTurn(schema.TurnSteering, llm.User("commit them")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "communicate", `{"accepted":true,"end_turn":true}`, false)),
+	}
+
+	got, repairs := repairOrphanedToolResults(history)
+
+	if repairs != 0 {
+		t.Fatalf("repairs = %d, want 0; history=%s", repairs, turnKinds(got))
+	}
+	if gotKinds := turnKinds(got); gotKinds != "ASSISTANT,STEERING,TOOL_RESULTS" {
+		t.Fatalf("history = %s, want original order", gotKinds)
+	}
+	if results := countToolResultsInHistory(got, callID); results != 1 {
+		t.Fatalf("tool results for %s = %d, want exactly 1", callID, results)
+	}
+}
+
+func TestExpandHistoryProjectsToolResultBeforeInterleavedSteering(t *testing.T) {
+	t.Parallel()
+	const callID = "call_with_steering"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        callID,
+					Name:      "communicate",
+					Type:      "function",
+					Arguments: json.RawMessage(`{"message":"done","end_turn":true}`),
+				},
+			}},
+		}),
+		schema.NewTurn(schema.TurnSteering, llm.User("commit them")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "communicate", `{"accepted":true,"end_turn":true}`, false)),
+	}
+
+	messages := expandHistory(history, replayScope{})
+	if len(messages) != 3 {
+		t.Fatalf("projected messages = %d, want 3: %+v", len(messages), messages)
+	}
+	if messages[0].Role != llm.RoleAssistant || messages[1].Role != llm.RoleTool || messages[2].Role != llm.RoleUser {
+		t.Fatalf("projected roles = %s,%s,%s, want assistant,tool,user", messages[0].Role, messages[1].Role, messages[2].Role)
+	}
+	if messages[1].ToolCallID != callID {
+		t.Fatalf("projected tool result call ID = %q, want %q", messages[1].ToolCallID, callID)
+	}
+	if messages[2].Text() != "commit them" {
+		t.Fatalf("projected steering = %q, want commit them", messages[2].Text())
+	}
+}
+
 func validateRecoveredToolCallHistory(messages []llm.Message) error {
 	pending := map[string]string{}
 	results := map[string]int{}

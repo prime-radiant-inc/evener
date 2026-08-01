@@ -16,9 +16,9 @@ import (
 // interrupted-tool-call recovery core the session applies on restore — over
 // adversarial histories built from a byte-encoded op stream. A history is a mix
 // of assistant turns (with 0..N tool calls), tool-result turns resolving some of
-// the outstanding calls, user turns, and steering turns. Interleaving an
-// unresolved assistant call with any non-matching turn is exactly what leaves an
-// orphaned call for repair to synthesize a result for.
+// the outstanding calls, user turns, and steering turns. Steering and hook
+// telemetry may be recorded while a tool is running; crossing any true repair
+// boundary with a call still unresolved causes repair to synthesize a result.
 //
 // Oracles (beyond never-panic):
 //   - determinism: the same history repairs to the same (out, count);
@@ -43,6 +43,7 @@ func FuzzFc1RepairOrphanedToolResults(f *testing.F) {
 	f.Add([]byte{0x05, 0x0a})             // call then resolve
 	f.Add([]byte{0x09, 0x05, 0x00, 0x0a}) // two calls, one resolved late
 	f.Add([]byte{0x05, 0x07, 0x0a})       // call, hook completion, then resolve
+	f.Add([]byte{0x05, 0x03, 0x0a})       // call, steering, then resolve
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		history := fc1BuildHistory(data)
@@ -198,17 +199,17 @@ func fc1AssertPreBoundaryResults(t *testing.T, original, repaired []schema.Turn)
 }
 
 func fc1HasRealResultBeforeRepairBoundary(history []schema.Turn, callID string) bool {
-	// The repair switch keeps pending calls open only across HOOK_COMPLETED;
-	// user, steering, subsequent assistant, failure, and other default turns
-	// are true boundaries.
+	// Steering and hook completion can be recorded while the tool is running;
+	// user, subsequent assistant, failure, and other default turns are true
+	// repair boundaries.
 	for _, turn := range history {
 		switch turn.Kind {
 		case schema.TurnTool, schema.TurnToolResults:
 			if fc1LaterResultCount([]schema.Turn{turn}, callID) > 0 {
 				return true
 			}
-		case schema.TurnHookCompleted:
-			// Hook completion is presentational telemetry, not a repair boundary.
+		case schema.TurnHookCompleted, schema.TurnSteering:
+			// In-tool telemetry and steering are not repair boundaries.
 		case schema.TurnAssistant, schema.TurnFailure:
 			return false
 		default:

@@ -1057,18 +1057,53 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // the model: steering/checkpoint/summary turns pass through as-is, aggregated
 // tool-result turns are expanded into individual tool-result messages, and
 // TurnModelSwitch markers are dropped (presentational only, never sent).
+// Steering recorded while a tool is running remains chronological in semantic
+// history, but is deferred here until all results for that assistant turn have
+// been projected. Providers require tool results to immediately follow the
+// assistant message that requested them.
 // scope enforces the N4 cross-model replay-provenance rules: after a switch,
 // thinking and web_search blocks a target cannot accept are stripped from the
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
+	pendingToolCalls := map[string]struct{}{}
+	var deferredSteering []llm.Message
+
+	flushDeferredSteering := func() {
+		history = append(history, deferredSteering...)
+		deferredSteering = nil
+	}
+	startToolRound := func(message llm.Message) {
+		clear(pendingToolCalls)
+		for _, call := range assistantToolCalls(message) {
+			pendingToolCalls[call.ID] = struct{}{}
+		}
+	}
+	resolveToolResults := func(message llm.Message) {
+		for _, part := range message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
+				delete(pendingToolCalls, part.ToolResult.ToolCallID)
+			}
+		}
+		if len(pendingToolCalls) == 0 {
+			flushDeferredSteering()
+		}
+	}
+	endToolRound := func() {
+		flushDeferredSteering()
+		clear(pendingToolCalls)
+	}
+
 	for i, t := range historyTurns {
 		inFlight := scope.active() && i >= scope.InFlightFrom
-		if t.Kind == schema.TurnSteering {
-			history = append(history, t.Message)
-			continue
-		}
-		if t.Kind == schema.TurnToolResults {
+		switch t.Kind {
+		case schema.TurnSteering:
+			if len(pendingToolCalls) > 0 {
+				deferredSteering = append(deferredSteering, t.Message)
+			} else {
+				history = append(history, t.Message)
+			}
+		case schema.TurnToolResults:
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
@@ -1092,20 +1127,31 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 					})
 				}
 			}
-			continue
-		}
-		if t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary {
+			resolveToolResults(t.Message)
+		case schema.TurnTool:
+			history = append(history, scope.projectTurnMessage(t, inFlight))
+			resolveToolResults(t.Message)
+		case schema.TurnAssistant:
+			endToolRound()
+			message := scope.projectTurnMessage(t, inFlight)
+			history = append(history, message)
+			startToolRound(message)
+		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Compaction turns carry user-role messages; include as-is.
+			endToolRound()
 			history = append(history, t.Message)
-			continue
-		}
-		if t.Kind == schema.TurnModelSwitch || t.Kind == schema.TurnFailure || t.Kind == schema.TurnHookCompleted {
-			// Persisted switch/failure/hook markers: presentational only,
+		case schema.TurnHookCompleted:
+			// Presentational telemetry can appear inside a tool round.
+		case schema.TurnModelSwitch, schema.TurnFailure:
+			// Persisted switch/failure markers are presentational only and are
 			// never sent to the model.
-			continue
+			endToolRound()
+		default:
+			endToolRound()
+			history = append(history, scope.projectTurnMessage(t, inFlight))
 		}
-		history = append(history, scope.projectTurnMessage(t, inFlight))
 	}
+	flushDeferredSteering()
 	return history
 }
 
