@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race vet lint lint-naming lint-serffuzz lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -122,11 +122,41 @@ MEMCAP := scripts/run-capped.sh
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
+# SELFTEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin the
+# behaviour of serf's own tooling. Each is offline, deterministic and works only
+# in throwaway fixtures, and each is the ONLY thing that pins its script's
+# contract — run-module-lint-selftest.sh alone carries 166 assertions about the
+# aggregate lint runner. The fuzz-*-selftest suites are deliberately absent:
+# they already have their own entry points, and their cost (real git bisect,
+# real worktrees, real `go test`) is heavy and unmeasured.
+SELFTEST_SCRIPTS := run-module-lint disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send
+
+# selftest hangs off `make test` because a script selftest is a test, and NOT
+# off `make lint` because run-module-lint-selftest.sh drives a fixture
+# `make lint` of its own — putting the selftests there would have that fixture
+# reach back for scripts it does not have. Quiet on success like every other
+# gate here; a failing suite's whole log is replayed. The seven measured 31s,
+# 51s and 76s on three runs of a fleet-loaded box, but only ~15s of that is CPU
+# (5.7s user, 9.9s sys) — they are mostly waiting on other work, so they cost
+# the machine little even though they run before the Go waves start.
+selftest:
+	@set -u; fail=0; \
+	for s in $(SELFTEST_SCRIPTS); do \
+		log="$$(mktemp -t serf-selftest.XXXXXX)" || exit 1; \
+		if /usr/bin/time -p scripts/$$s-selftest.sh >"$$log" 2>&1; then \
+			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$log" | tail -1)"; \
+		else \
+			printf 'FAIL  %-26s\n' "$$s"; cat "$$log"; fail=1; \
+		fi; \
+		rm -f "$$log"; \
+	done; \
+	exit $$fail
+
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
-test:
+test: selftest
 	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
@@ -151,6 +181,21 @@ e2e-cover:
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
+# FUZZ_SEED_REPLAY replays every module's COMMITTED seed corpus (and saved
+# crashers) under the serffuzz tag. `go test -run '^Fuzz'` with no `-fuzz` does
+# not search, so this is deterministic. `make fuzz` runs it as one of its steps;
+# fuzz-seeds is the same work on its own.
+FUZZ_SEED_REPLAY = for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz -count=1 ./...") || exit 1; done
+
+# fuzz-seeds is the RUNTIME half of the tagged-source gate whose compile half is
+# `make lint-serffuzz`. It stays out of `make test` on measured cost: 144s
+# across the workspace (the root module ~39s and agent ~65s of that) against a
+# ~70s `make test`, for a class `make fuzz` and CI already replay. lint-serffuzz
+# catches a tagged call site stranded by a signature change in ~4s; this catches
+# the rest — a tagged seed that still compiles but no longer passes.
+fuzz-seeds:
+	@$(FUZZ_SEED_REPLAY)
+
 # fuzz runs every native FuzzXxx target's seed corpus plus saved crashers as
 # ordinary deterministic tests — `go test -run '^Fuzz'` with no `-fuzz` does not
 # random-search. It also replays every registered Rapid property surface with
@@ -166,7 +211,7 @@ fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'cd fuzz && go test -tags serffuzz ./...'
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c 'go test ./cmd/serf-fuzzcov ./cmd/serf-fuzz-harvest'
-	@for m in $(FUZZ_GO_MODULES); do (GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz -count=1 ./...") || exit 1; done
+	@$(FUZZ_SEED_REPLAY)
 	@set -eu; cap="$$(pwd)/$(MEMCAP)"; go_work="$(FUZZ_GOWORK)"; for target in $$(scripts/run-fuzz.sh --list | awk -F: '$$1 == "rapid" { print $$2 ":" $$3 ":" $$4 }'); do module=$${target%%:*}; rest=$${target#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; for seed in 1 2 3 5 8; do echo "=== rapid replay $$module:$$name seed $$seed ==="; (cd "$$module" && GOENV=off GOFLAGS= GOWORK="$$go_work" env -u RAPID_FAILFILE RAPID_SEED="$$seed" RAPID_CHECKS=100 RAPID_STEPS=30 RAPID_NOFAILFILE=true RAPID_LOG=false RAPID_V=false RAPID_DEBUG=false RAPID_DEBUGVIS=false RAPID_SHRINKTIME=30s "$$cap" go test -tags serffuzz -run "^$${name}\$$" -count=1 "$$pkg"); done; done
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" $(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
 
@@ -348,6 +393,17 @@ endef
 lint-naming:
 	$(call run_quiet_lint,go run ./cmd/serf-namingcheck)
 
+# lint-serffuzz is the compile floor for the //go:build serffuzz sources. Every
+# other gate is tag-free — `make test`, `make lint`, `make vet` and
+# `go build ./...` never compile those 250 files — so a production signature
+# change that strands a tagged call site rots there until someone runs
+# `make fuzz` by hand. `go vet` type-checks each module's test packages under
+# the tag, which is what catches a stranded call site. Running the corpora
+# themselves is 144s and stays in `make fuzz` / `make fuzz-seeds`; this pass is
+# ~4s warm across the workspace, which is why it can sit in the gate.
+lint-serffuzz:
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags serffuzz ./...) || exit 1; done)
+
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a serf-internal type — keeping them externally importable.
 lint-internal:
@@ -375,7 +431,7 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md || { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }; })
 
-lint: lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan
+lint: lint-naming lint-serffuzz lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 clean:
 	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck serf-fuzzcov

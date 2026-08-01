@@ -3,7 +3,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"strings"
 	"testing"
+
+	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/internal/plugins"
 )
 
 type fuzzErrorWriter struct{}
@@ -19,7 +24,18 @@ func FuzzRun(f *testing.F) {
 		f.Add(subcommand, false)
 	}
 	f.Add("unknown", true)
+	// "plugins" is the one seeded subcommand that needs no selector, so it runs
+	// its health check for real against the DEFAULT store root: the developer's
+	// own ~/.config/serf/plugins. Pinning the config home lands that read in a
+	// fixture instead, which keeps the target off the machine's live state and
+	// makes its result reproducible. The assertion in the body fails the run if
+	// the pin is ever lost.
+	fixture := f.TempDir()
+	f.Setenv(envvars.XDGConfigHome.Name, fixture)
 	f.Fuzz(func(t *testing.T, subcommand string, failWrites bool) {
+		if root := plugins.DefaultRoot(); !strings.HasPrefix(root, fixture+string(os.PathSeparator)) {
+			t.Fatalf("plugin store root %q is outside the fixture %q", root, fixture)
+		}
 		if len(subcommand) > 256 {
 			return
 		}
