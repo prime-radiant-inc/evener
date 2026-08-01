@@ -149,6 +149,10 @@ FAKE_MAKE
 	chmod +x "$bin/make"
 }
 
+# MAKE is set explicitly rather than left to the runner's `${MAKE:-make}`
+# default: `make selftest` exports MAKE into every recipe, so an inherited one
+# would send the frontend stream to the real make in a fixture with no Makefile
+# and this suite would pass standalone while failing under the gate that runs it.
 run_tests() {
 	modules="$1"
 	output="$2"
@@ -156,7 +160,7 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
-			MODULES="$modules" AGENT_SHARDS=0 "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
