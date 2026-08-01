@@ -44,6 +44,32 @@ export function formatShellCommand(raw: string): ShellCommandLine[] {
       continue;
     }
 
+    if (comment) {
+      index += 1;
+      continue;
+    }
+
+    if (quote !== undefined) {
+      if (quote === "'") {
+        if (character === quote) quote = undefined;
+        index += 1;
+        continue;
+      }
+      if (escaped) {
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+
     if (escaped) {
       escaped = false;
       index += 1;
@@ -52,17 +78,6 @@ export function formatShellCommand(raw: string): ShellCommandLine[] {
 
     if (character === "\\") {
       escaped = true;
-      index += 1;
-      continue;
-    }
-
-    if (comment) {
-      index += 1;
-      continue;
-    }
-
-    if (quote !== undefined) {
-      if (character === quote) quote = undefined;
       index += 1;
       continue;
     }

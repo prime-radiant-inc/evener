@@ -67,6 +67,7 @@ describe("formatShellCommand", () => {
     },
     {
       name: "source continuation is retained",
+      // This raw fixture contains two runtime backslashes; both must survive the line split.
       raw: 'printf "left\\\\\nright" && echo done',
       want: [
         { text: 'printf "left\\\\', indent: 0 },
@@ -109,5 +110,16 @@ describe("formatShellCommand", () => {
       { text: "one &&", indent: 0 },
       { text: "two", indent: 0 },
     ]);
+  });
+
+  test("a backslash in single quotes does not protect the closing quote", () => {
+    const raw = "printf '%s' 'a\\' ; echo done";
+    const got = formatShellCommand(raw);
+
+    expect(got).toEqual([
+      { text: "printf '%s' 'a\\' ; ", indent: 0 },
+      { text: "echo done", indent: 2 },
+    ]);
+    expect(sourceWithoutNewlines(got)).toBe(raw);
   });
 });
