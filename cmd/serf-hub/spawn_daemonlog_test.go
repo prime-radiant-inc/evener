@@ -258,6 +258,45 @@ func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
 	readEventually(t, logPath, "daemon says this on stderr")
 }
 
+// removeIfPending's guard is the only thing between a future caller — the
+// resume failure path is the obvious candidate, and its log is the SESSION's,
+// holding every earlier run of it — and deleting an operator's account of a
+// daemon that ran. The spawn paths that call it today are all pre-adopt, so
+// nothing else in this package can hold that guard to its name. Assert the
+// contract directly, in all three states a log can be in.
+func TestRemoveIfPendingSparesALogASessionOwns(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "run")
+	open := func(sessionID string) *daemonLog {
+		t.Helper()
+		l, err := openDaemonLog(runDir, sessionID)
+		if err != nil {
+			t.Fatalf("openDaemonLog(%q): %v", sessionID, err)
+		}
+		l.close()
+		return l
+	}
+
+	named := open("033z7k96Nj0LLiLImAqa9s")
+	named.removeIfPending()
+	if _, err := os.Stat(named.path); err != nil {
+		t.Fatalf("a log opened under a session's own name was reaped: %v", err)
+	}
+
+	adopted := open("")
+	adopted.adopt("01JADOPTEDSESSIONID000")
+	adopted.removeIfPending()
+	if _, err := os.Stat(adopted.path); err != nil {
+		t.Fatalf("a log a session has adopted was reaped: %v", err)
+	}
+
+	orphan := open("")
+	orphan.removeIfPending()
+	if _, err := os.Stat(orphan.path); !os.IsNotExist(err) {
+		t.Fatalf("a log no session ever claimed survived removeIfPending (stat err=%v)", err)
+	}
+}
+
 // A session id reaches the hub from a client on the resume path, so the log
 // file it names has to stay inside the log directory no matter what the id
 // says.
