@@ -357,7 +357,7 @@ func fuzzSessionInitFaultBoundaries(t *testing.T) {
 		sess.Close()
 	})
 
-	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
+	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "watch_end_notices", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
 		point := point
 		t.Run("restore-"+point, func(t *testing.T) {
 			cfg := sierRestoreConfig(t.TempDir(), clk)
@@ -375,7 +375,7 @@ func fuzzSessionInitFaultBoundaries(t *testing.T) {
 		})
 	}
 
-	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
+	for _, point := range []string{"reconcile_lost_jobs", "recover_terminal", "watch_end_notices", "retry_watch_sends", "arm_notifications", "recover_notifications"} {
 		want := point
 		s := newSession(t)
 		s.cfg.testOnly.sessionInitFault = sessionInitFaultAt(want, injected)

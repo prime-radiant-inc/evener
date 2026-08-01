@@ -52,6 +52,13 @@ type WatchView struct {
 	StillPending       int  `json:"still_pending"`
 	Coalesced          bool `json:"coalesced"`
 
+	// EndNotices counts the settled teardown frames a watch sent to say it ended
+	// without ever firing. They are kept OUT of the delivery counts above for the
+	// reason the runtime keeps them out of its own: "deliveries" answers whether
+	// the condition ever produced anything, and zero is exactly what an end
+	// notice exists to explain.
+	EndNotices int `json:"end_notices,omitempty"`
+
 	// Breaker telemetry, read from the runtime's stamps (never re-derived from the
 	// provenance Chain). Under the inform+breaker policy self-influence is normal;
 	// what matters is the deepest stamped depth and whether the runaway fuse fired.
@@ -70,6 +77,7 @@ type DeliveryView struct {
 	CoalescedCount     int                `json:"coalesced_count,omitempty"`
 	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
 	SelfInfluenceDepth int                `json:"self_influence_depth,omitempty"`
+	EndNotice          bool               `json:"end_notice,omitempty"`
 	Provenance         *provenance.Causal `json:"provenance,omitempty"`
 }
 
@@ -180,14 +188,17 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 			CoalescedCount:     ws.CoalescedCount,
 			DiagnosticReason:   ws.DiagnosticReason,
 			SelfInfluenceDepth: ws.SelfInfluenceDepth,
+			EndNotice:          ws.EndNotice,
 			Provenance:         ws.Provenance,
 		}
-		switch d.kind {
-		case "delivered":
+		switch {
+		case ws.EndNotice:
+			v.EndNotices++
+		case d.kind == "delivered":
 			v.Delivered++
-		case "dropped":
+		case d.kind == "dropped":
 			v.Dropped++
-		case "evicted":
+		case d.kind == "evicted":
 			v.Evicted++
 		}
 		if ws.SelfInfluenceDepth > v.MaxSelfInfluenceDepth {
@@ -198,8 +209,11 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 		}
 		v.Deliveries = append(v.Deliveries, dv)
 	}
-	v.DistinctDeliveries = len(deliveries)
-	v.Coalesced = v.PendingLines > v.DistinctDeliveries
+	// Settled end notices are frames, so they count against the raw pending lines
+	// for the coalescing verdict, but they are not deliveries and never join the
+	// delivery count.
+	v.DistinctDeliveries = len(deliveries) - v.EndNotices
+	v.Coalesced = v.PendingLines > len(deliveries)
 	return v
 }
 
@@ -293,6 +307,9 @@ func RenderWatches(r WatchReport) string {
 			b.WriteString("  [latest-wins coalescing collapsed — expected]")
 		}
 		b.WriteString("\n")
+		if w.EndNotices > 0 {
+			fmt.Fprintf(&b, "  end notices: %d — the watch ended without ever firing and said so (teardown, not a condition fire)\n", w.EndNotices)
+		}
 		if w.StillPending > 0 {
 			fmt.Fprintf(&b, "  still-pending (unsettled) frames: %d\n", w.StillPending)
 		}
@@ -306,6 +323,9 @@ func RenderWatches(r WatchReport) string {
 		}
 		for _, d := range w.Deliveries {
 			fmt.Fprintf(&b, "  · %s %s", dash(d.DeliveryID), d.Terminal)
+			if d.EndNotice {
+				b.WriteString(" [end notice]")
+			}
 			if d.TriggerIdentity != "" || d.TriggerReason != "" {
 				fmt.Fprintf(&b, "  trigger=%s/%s", dash(d.TriggerIdentity), dash(d.TriggerReason))
 			}

@@ -205,6 +205,12 @@ type WatchSendState struct {
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`
 	Provenance         *provenance.Causal `json:"provenance,omitempty"`
+	// EndNotice marks the teardown frame a watch sends when it ends without ever
+	// having fired: the watch is telling its watcher the condition can no longer
+	// match. It is not a condition fire, and the runtime does not count it as a
+	// delivery, so readers of the log must not either. Marked at the source
+	// because the distinction is otherwise only legible in the trigger prose.
+	EndNotice bool `json:"end_notice,omitempty"`
 }
 
 // WatchSendRecord is the folded durable state for pending watch-send frames.
