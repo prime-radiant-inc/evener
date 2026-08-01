@@ -444,7 +444,7 @@ expect_failure() {
 
 echo '== exact all-module replay and merge =='
 reset_logs
-out="$(run_runner GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h 2>&1)"
+out="$(run_runner GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE="$work/ambient-failfile" RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h 2>&1)"
 has "$out" 'account package-local profiles' 'successful replay reaches global accounting'
 has "$(cat "$registry_log")" $'registry\t'"$repo/go.work"$'\tgoenv=off\tgoflags=' 'registry checker inherits controlled Go workspace environment'
 
@@ -766,7 +766,7 @@ has "$(cat "$json_failure_err")" 'global coverage accounting failed' 'JSON accou
 echo '== Make rapid replay pins the full Rapid environment =='
 reset_logs
 set +e
-(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE=/tmp/ambient RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h make fuzz) >"$work/make.out" 2>"$work/make.err"
+(cd "$repo" && PATH="$fake_bin:$PATH" FAKE_REPO="$repo" FAKE_GO_LOG="$go_log" GOENV="$work/ambient-goenv" GOFLAGS='-coverpkg=./... -shuffle=on -mod=mod' RAPID_STEPS=999 RAPID_FAILFILE="$work/ambient-failfile" RAPID_NOFAILFILE=false RAPID_LOG=true RAPID_V=true RAPID_DEBUG=true RAPID_DEBUGVIS=true RAPID_SHRINKTIME=1h make fuzz) >"$work/make.out" 2>"$work/make.err"
 last_status=$?
 set -e
 if [ "$last_status" -eq 0 ]; then

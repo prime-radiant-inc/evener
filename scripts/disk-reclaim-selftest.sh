@@ -28,6 +28,17 @@ bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; 
 work="$(mktemp -d -t disk-reclaim-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
+# The stall scenarios (13 and 17) spawn a probe that blocks, then find it again
+# by its COMMAND LINE with `pgrep -f` / `pkill -f`. That command line therefore
+# has to name this run and no other: a fixed `sleep 987654` is one string every
+# concurrent selftest shares, so run A's poll sees run B's probe and calls it an
+# orphan, and run A's cleanup kills the probe run B is still polling for (kata
+# qw8e). $$ is unique among live processes, and zero-padding it to a fixed width
+# keeps one run's duration from being a SUBSTRING of another's — `pgrep -f`
+# matches anywhere in the command line, so `sleep 91234` would find `sleep
+# 9123456` too.
+probe_run_id="$(printf '%05d' "$(($$ % 100000))")"
+
 # Point every run at a throwaway build cache that does not exist. The report
 # path `du -sh`s GOCACHE whenever it is a real directory, and on a machine
 # whose cache holds a couple of million inodes that is ~32s PER RUN — the
@@ -344,7 +355,7 @@ bounded() { # seconds command...
 # SERF_GOCACHE_PROBE_CMD stands in for the `mkdir -p $GOCACHE` that would block.
 # Everything the scenario asserts on — the bound, the kill, the message, the
 # exit code — is the real thing.
-stall_probe="sleep 987654" # a duration nothing else on this machine runs
+stall_probe="sleep 9${probe_run_id}1" # this run's probe, and nothing else on the machine
 stall_start=$SECONDS
 (cd "$repo" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
 	GOCACHE="$work/wedged-gocache" SERF_DISK_MIN_FREE_GB=0 \
@@ -559,7 +570,7 @@ fi
 # on demand, so SERF_GOCACHE_PROBE_CMD stands in for the touch that would
 # block. Everything asserted here — the bound, the kill, the line, and the rest
 # of the report arriving after it — is the real thing.
-report_stall_probe="sleep 987655" # a duration nothing else on this machine runs
+report_stall_probe="sleep 9${probe_run_id}2" # this run's probe, and nothing else on the machine
 report_stall_start=$SECONDS
 (cd "$repo2" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$report_stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
 	GOCACHE="$samevol_cache" bash "$script" --into main) >"$work/report-stall.out" 2>&1

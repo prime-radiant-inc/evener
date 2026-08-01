@@ -2,6 +2,7 @@ package serf_test
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -79,6 +80,19 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 		// it must survive whatever rule replaced the hand-written warnings.
 		"`pkill -f 'serf serve.*<session_id>'` — kill mid-life.",
 	},
+	"scripts/disk-reclaim-selftest.sh": {
+		// The comment over `probe_run_id`, which is where the rule below is
+		// written down for the next author of this script.
+		"# by its COMMAND LINE with `pgrep -f` / `pkill -f`. That command line therefore",
+		// Cleanup for the run's OWN stall probe, after the assertion that it
+		// should already be dead has failed. The pattern is what makes this safe:
+		// the probe's duration carries this run's zero-padded pid, so it cannot
+		// match a concurrent selftest's probe. Before kata qw8e both runs spawned
+		// a fixed `sleep 987654` and this line reaped the other run's probe while
+		// that run was still polling for it.
+		`pkill -f "$stall_probe"`,
+		`pkill -f "$report_stall_probe"`,
+	},
 	"test/scenarios/model-switch-providers-live.md": {
 		"never a `pkill -f 'serf serve'` pattern, which would also kill a",
 	},
@@ -93,7 +107,7 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 	},
 }
 
-// TestScenarioCardsNeverPatternKillAProcess makes the corpus's most-repeated
+// TestNoCardOrScriptPatternKillsAProcess makes the corpus's most-repeated
 // convention mechanical. Thirteen cards plus docs/agentic-testing.md warn in
 // prose against `pkill -f`, and prose is why two cards shipped the instruction
 // anyway (kata pcev) and went unnoticed until an unrelated kata happened to
@@ -105,33 +119,56 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 // the box at once. Kill by a pid the card recorded — `$HUBPID`,
 // `$run/hub.pid`, `$tmpdir/login.pid` — per docs/agentic-testing.md's Setup
 // checklist.
-func TestScenarioCardsNeverPatternKillAProcess(t *testing.T) {
+//
+// scripts/*.sh is the second corpus, added by kata qw8e. A script has the same
+// reach as a card and gets run more often, and disk-reclaim-selftest.sh was
+// carrying the class live: it killed its stall probe by the fixed pattern
+// `sleep 987654`, which two concurrent selftests both spawn, so one run's
+// cleanup reaped the other's probe while that run was still polling for it.
+func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 	var findings []string
-	for _, path := range scenarioCardFiles(t) {
+	scriptMatches := 0
+	for _, path := range append(scenarioCardFiles(t), auditedShellScripts(t)...) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		allowed := scenarioPatternKillAllowedMentions[path]
 		for i, line := range strings.Split(string(raw), "\n") {
-			if !scenarioPatternKillPattern.MatchString(line) || lineIsAllowed(line, allowed) {
+			if !scenarioPatternKillPattern.MatchString(line) {
+				continue
+			}
+			if filepath.Dir(path) == scriptDir {
+				scriptMatches++
+			}
+			if lineIsAllowed(line, allowed) {
 				continue
 			}
 			findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 		}
 	}
+	// Clean corpus and dead needle are the same green, and only a floor on
+	// matches tells them apart (scenariofixture_audit_test.go). scripts/ carries
+	// exactly the two sanctioned kills below, so zero is not "the scripts are
+	// clean" — it is "this audit stopped reading the scripts".
+	if scriptMatches == 0 {
+		t.Fatalf("the pattern-kill needle matched nothing across %s/*.sh, where "+
+			"disk-reclaim-selftest.sh reaps its own stall probes with `pkill -f`. "+
+			"Zero matches means the pattern or the file set is dead and the script "+
+			"half of this audit is checking nothing", scriptDir)
+	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
-		t.Fatalf("scenario cards must never kill a process by name — `pkill -f` and "+
-			"`killall` signal every match on the box, so the card reaches into any "+
-			"concurrent agent's run: their hub mid-scenario, their login flow "+
-			"mid-poll, the producer whose output they are about to read (kata pcev). "+
-			"Kill by a pid the card recorded instead (`$HUBPID`, `$run/hub.pid`, "+
-			"`$tmpdir/login.pid` — docs/agentic-testing.md's Setup checklist). If "+
-			"the line WARNS against a pattern kill rather than performing one, or a "+
-			"ruling says this pattern cannot match another run, add it to "+
-			"scenarioPatternKillAllowedMentions and cite the ruling:\n%s",
-			strings.Join(findings, "\n"))
+		t.Fatalf("a scenario card or a script in %s must never kill a process by "+
+			"name — `pkill -f` and `killall` signal every match on the box, so it "+
+			"reaches into any concurrent agent's run: their hub mid-scenario, their "+
+			"login flow mid-poll, the producer whose output they are about to read "+
+			"(kata pcev). Kill by a pid the run recorded instead (`$HUBPID`, "+
+			"`$run/hub.pid`, `$tmpdir/login.pid` — docs/agentic-testing.md's Setup "+
+			"checklist). If the line WARNS against a pattern kill rather than "+
+			"performing one, or the pattern provably carries something unique to "+
+			"this run, add it to scenarioPatternKillAllowedMentions and say why:\n%s",
+			scriptDir, strings.Join(findings, "\n"))
 	}
 }
 
