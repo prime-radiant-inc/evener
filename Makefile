@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race vet lint lint-naming lint-serffuzz lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race vet lint lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -143,7 +143,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # SELFTEST_SCRIPTS are the scripts/<name>-selftest.sh suites that pin the
 # behaviour of serf's own tooling. Each is offline, deterministic and works only
 # in throwaway fixtures, and each is the ONLY thing that pins its script's
-# contract — run-module-lint-selftest.sh alone carries 166 assertions about the
+# contract — run-module-lint-selftest.sh alone carries 167 assertions about the
 # aggregate lint runner. The fuzz-*-selftest suites are deliberately absent:
 # they already have their own entry points, and their cost (real git bisect,
 # real worktrees, real `go test`) is heavy and unmeasured.
@@ -429,6 +429,18 @@ lint-naming:
 lint-serffuzz:
 	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags serffuzz ./...) || exit 1; done)
 
+# lint-eval is the same compile floor for the //go:build eval sources: the
+# live-provider eval suites (context-compaction quality, forced notes). This tag
+# never had a floor at all and duly rotted — a []string that became a
+# []summarizationRoute in June stranded the comparison eval's judge, and nothing
+# said so for six weeks. RUNNING these is not gate-shaped at any price: they
+# spend real money against a real provider, so compilation is the whole gate.
+# FUZZ_GO_MODULES is the full workspace list, and the floor wants all of it: eval
+# sources sit only under agent/ today, and a floor is worth nothing in the module
+# where the next one lands. ~3.5s warm, the same order as the serffuzz pass.
+lint-eval:
+	$(call run_quiet_lint,for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...) || exit 1; done)
+
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a serf-internal type — keeping them externally importable.
 lint-internal:
@@ -456,7 +468,7 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md || { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }; })
 
-lint: lint-naming lint-serffuzz lint-internal lint-docs lint-golangci lint-generated secret-scan
+lint: lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 clean:
 	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck serf-fuzzcov

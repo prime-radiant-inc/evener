@@ -88,18 +88,25 @@ Delete one declaration at a time so a failure names the culprit:
 go build ./... && go vet ./...
 ```
 
-Remember that a build tag hides a whole compilation unit, and that
-**`make lint` does not look inside the tagged fuzz builds**. Nothing on
-its path passes a tag: `scripts/run-module-lint.sh` runs a bare
-`golangci-lint run ./...` per module and `.golangci.yml` sets no
-`build-tags`, so a `//go:build serffuzz` file is not part of any package
-it analyses. Renaming a test that `cmd/serf-tui/root_factories_fuzz_test.go`
-replays by function value left that build broken while `make lint`
-returned 0; only `make fuzz`, which does pass `-tags serffuzz`, would
-have caught it. After any rename, add:
+Remember that a build tag hides a whole compilation unit. `make lint`
+now type-checks the two tagged trees for you — `lint-serffuzz` and
+`lint-eval` each run `go vet -tags <tag> ./...` across every module — so
+a rename that strands a tagged call site fails the gate. Before those
+floors existed it did not: renaming a test that
+`cmd/serf-tui/root_factories_fuzz_test.go` replays by function value left
+that build broken while `make lint` returned 0, and a `[]string` that
+became a `[]summarizationRoute` stranded a `//go:build eval` caller for
+six weeks.
+
+**`golangci-lint` still does not look inside a tagged file.**
+`scripts/run-module-lint.sh` runs a bare `golangci-lint run ./...` per
+module and `.golangci.yml` sets no `build-tags`, so the lint rules
+proper — unused, staticcheck, the rest — never see a `//go:build
+serffuzz` or `//go:build eval` source. The floors are type-checking, not
+linting. When a tagged file needs the full treatment, run it by hand:
 
 ```
-go vet -tags serffuzz ./...
+golangci-lint run --build-tags serffuzz ./...
 ```
 
 ## `gofmt -r` is a blunt instrument
