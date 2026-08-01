@@ -126,9 +126,15 @@ export interface StackHostProps {
   // — the integrator — passes <Rail/> here; StackHost itself stays
   // rail-agnostic, exactly like TreeDrawer.
   railSlot?: ReactNode;
+  // True while the shell has parsed the address bar's route but cannot place
+  // it yet — a /s/{ref} deep link waits for /api/tree before it can tell a
+  // nested ref from a top-level one (AppShell's openRouteAsPane). AppShell
+  // owns that condition and passes it down; StackHost's only duty is not to
+  // publish a URL over a route in that state. See the URL-sync effect.
+  routeDeferred?: boolean;
 }
 
-export function StackHost({ railSlot }: StackHostProps = {}) {
+export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
@@ -218,11 +224,20 @@ export function StackHost({ railSlot }: StackHostProps = {}) {
   // pathname, so this never produces a redundant history entry on mount
   // when AppShell's own routing glue already put the address bar here
   // first (the common case in the real app).
+  //
+  // routeDeferred suspends the sync (kata bbsv): a deep-linked session route
+  // takes a beat to place (it waits on /api/tree, which cannot resolve inside
+  // the first commit), and the backstop below fills that beat with welcome.
+  // Publishing welcome's "/" then would overwrite the very deep link the
+  // shell is still working on, discarding it before the tree it waits for
+  // arrives. The address bar already names where we are going, so leaving it
+  // alone is also the honest reading of "always name the visible pane".
   useEffect(() => {
+    if (routeDeferred) return;
     if (!focusedPane) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);
-  }, [focusedPane]);
+  }, [focusedPane, routeDeferred]);
 
   // Backstop, same reasoning as DockHost's own onReady fallback: a blank
   // stack with no chrome of its own to open a new pane from is a dead end.

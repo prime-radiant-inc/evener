@@ -1145,3 +1145,47 @@ test("mobile: the shell content frame drops its padding so the workspace is full
   expect(contentRule![1]).toContain("padding: 0");
   expect(contentRule![1]).toContain("gap: 0");
 });
+
+// --- kata bbsv: a mobile deep link outlives the wait for the tree --------
+
+// A /s/{ref} route cannot be placed until /api/tree says whether the ref is
+// nested (openRouteAsPane defers it), and no fetch can resolve inside the
+// first commit - so on mobile the shell always spends a beat with the deep
+// link parsed but unplaced. StackHost fills an empty stack with welcome and
+// publishes the focused pane's URL, which used to overwrite the address bar
+// with "/" during exactly that beat: the deep link was gone before the tree
+// it was waiting for ever landed, and no later serf/tree/changed push could
+// name it again.
+test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
+  let resolveTree!: (value: Response) => void;
+  const treePromise = new Promise<Response>((resolve) => {
+    resolveTree = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => (url === "/api/tree" ? treePromise : Promise.resolve(jsonResponse({})))),
+  );
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+
+  window.history.pushState({}, "", "/s/local:s1");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  // The mobile host has settled on its own welcome fallback with the tree
+  // still in flight - the whole window in which the deep link was lost.
+  await screen.findByText("No session open");
+  expect(window.location.pathname).toBe("/s/local:s1");
+
+  resolveTree(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
+  // And the address bar now names it in paneToURL's own canonical form.
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3As1"));
+});
