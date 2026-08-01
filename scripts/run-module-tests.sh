@@ -72,6 +72,21 @@ else
 	WAVE2=${WAVE2:-}
 fi
 
+# The frontend stream reports and logs under the fixed name "web", so scheduling
+# a Go module of the same name hands one name two owners: two verdict lines
+# under it, two streams writing one log file, and a failure whose output the
+# other stream overwrites before anyone reads it (kata mjzx). The two are
+# genuinely ambiguous, so refuse the run rather than report it twice. Checked
+# against the waves, not MODULES, because WAVE1/WAVE2 override MODULES and both
+# routes reach the same collision.
+for m in $WAVE1 $WAVE2; do
+	if [ "$WEB" -ne 0 ] && [ "$m" = "web" ]; then
+		echo "run-module-tests.sh: 'web' is the frontend stream's name, not a Go module." >&2
+		echo "run-module-tests.sh: run 'make test-web' for the frontend alone, or pass WEB=0 to test a Go module named web." >&2
+		exit 2
+	fi
+done
+
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
 # sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
@@ -97,6 +112,7 @@ fuzz_test_skip='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|ToolArgsA
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
+failed_modules=()
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
@@ -181,7 +197,7 @@ run_wave() {
 		if wait "${pids[$i]}"; then
 			printf 'PASS  %-8s %s\n' "$m" "$(awk '/^real /{print $2"s"}' "$log" | tail -1)"
 		else
-			printf 'FAIL  %-8s\n' "$m"; fail=1
+			printf 'FAIL  %-8s\n' "$m"; fail=1; failed_modules+=("$m")
 		fi
 	done
 }
@@ -189,7 +205,6 @@ run_wave() {
 # Start the frontend gate first so it runs across both Go waves. It is joined
 # after wave 2, so its cost is hidden unless it outlives the Go work.
 web_pid=""
-web_failed=0
 if [ "$WEB" -ne 0 ]; then
 	/usr/bin/time -p "${MAKE:-make}" test-web >"$(logpath web)" 2>&1 &
 	web_pid="$!"
@@ -202,25 +217,28 @@ if [ -n "$web_pid" ]; then
 	if wait "$web_pid"; then
 		printf 'PASS  %-8s %s\n' "web" "$(awk '/^real /{print $2"s"}' "$(logpath web)" | tail -1)"
 	else
-		printf 'FAIL  %-8s\n' "web"; fail=1; web_failed=1
+		printf 'FAIL  %-8s\n' "web"; fail=1; failed_modules+=("web")
 	fi
 fi
 
 if [ "$fail" -ne 0 ]; then
 	echo
 	echo "=== failing module output ==="
-	for m in $WAVE1 $WAVE2; do
+	# Dump by verdict, not by matching failure markers in the log. A module can
+	# fail with no `go test` marker anywhere in its output — a build error, a
+	# missing directory, a killed process — and marker matching dropped exactly
+	# those, leaving the verdicts with the most to explain with nothing at all
+	# behind them (kata mjzx). The web gate's output is vitest/tsc/biome rather
+	# than `go test`, and reads the same way here.
+	for m in ${failed_modules[@]+"${failed_modules[@]}"}; do
 		log="$(logpath "$m")"
-		[ -f "$log" ] || continue
-		if grep -qE "^(FAIL|--- FAIL|panic:)" "$log"; then
-			echo "----- $m -----"; cat "$log"
+		echo "----- $m -----"
+		if [ -f "$log" ]; then
+			cat "$log"
+		else
+			echo "(no output captured: $log is missing)"
 		fi
 	done
-	# The web gate's output is vitest/tsc/biome, not `go test`, so it is dumped
-	# on its own exit status rather than by matching Go failure markers.
-	if [ "$web_failed" -ne 0 ]; then
-		echo "----- web -----"; cat "$(logpath web)"
-	fi
 	echo
 	echo "full logs: $logdir"
 fi
