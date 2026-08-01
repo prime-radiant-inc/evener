@@ -22,6 +22,7 @@ import (
 func TestScenarioTranscriptFixturesCarryTheFormatVersion(t *testing.T) {
 	want := `"format_version":` + strconv.Itoa(transcript.FormatVersion)
 	var findings []string
+	matched := 0
 	for _, path := range scenarioCardFiles(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -31,11 +32,20 @@ func TestScenarioTranscriptFixturesCarryTheFormatVersion(t *testing.T) {
 			if !strings.Contains(line, `"kind":"header"`) {
 				continue
 			}
+			matched++
 			if strings.Contains(line, want) {
 				continue
 			}
 			findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 		}
+	}
+	// A corpus audit is green either because the corpus is clean or because
+	// its needle stopped matching anything; only a floor on matches tells the
+	// two apart. The corpus carries hand-written header fixtures today, so
+	// zero matches means the detector broke, not that the fixtures left.
+	if matched == 0 {
+		t.Fatalf("the header-line needle matched nothing across the corpus — " +
+			"the detector is dead and this audit is checking nothing")
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
