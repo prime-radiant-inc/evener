@@ -27,7 +27,10 @@ import (
 )
 
 const serfLaunchCheckTimeout = 30 * time.Second
-const daemonLaunchStderrLimit = 64 * 1024
+
+// daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
+// quoted back to the operator as the reason it would not start.
+const daemonLaunchOutputLimit = 64 * 1024
 
 var (
 	spawnMkdirAll                    = os.MkdirAll
@@ -301,6 +304,12 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 // Caller does NOT manage the subprocess lifecycle — the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
 func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
+	return spawnDaemon(ctx, serfBinary, runDir, req, timeout, os.Stderr)
+}
+
+// spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
+// hub's own stderr in production.
+func spawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
@@ -311,15 +320,21 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	// rendezvous wait below; on timeout we kill the process explicitly.
 	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
-	var stderr tailBuffer
-	stderr.limit = daemonLaunchStderrLimit
-	cmd.Stdout = os.Stderr // forward to hub stderr for now
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	// A fresh spawn cannot name the log after its session yet: the daemon mints
+	// the id and reports it through rendezvous, so the file is adopted below.
+	dlog, err := openDaemonLog(runDir, "")
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	dlog.attach(cmd)
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		dlog.close()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	// The child holds its own descriptor from here on.
+	dlog.close()
 	exited := make(chan error, 1)
 	go func() {
 		exited <- cmd.Wait()
@@ -330,8 +345,10 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("daemon spawn", err), err, stderr.String())
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("daemon spawn", err), err, dlog.tail(daemonLaunchOutputLimit))
 	}
+	dlog.adopt(entry.SessionID)
+	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }
 
@@ -358,6 +375,12 @@ func WithStartedAfter(t time.Time) WaitOption {
 // id the session had before it exited. (A fresh session_id is minted only
 // by /clear, which is a distinct operation.)
 func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
+	return resumeDaemon(ctx, serfBinary, runDir, req, timeout, os.Stderr)
+}
+
+// resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
+// hub's own stderr in production.
+func resumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
@@ -367,14 +390,20 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	// rendezvous wait below; on timeout we kill the process explicitly.
 	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
-	var stderr tailBuffer
-	stderr.limit = daemonLaunchStderrLimit
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	// A resume keeps its session's id, so it keeps — and appends to — that
+	// session's own log.
+	dlog, err := openDaemonLog(runDir, req.SessionID)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	dlog.attach(cmd)
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		dlog.close()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	// The child holds its own descriptor from here on.
+	dlog.close()
 	exited := make(chan error, 1)
 	go func() {
 		exited <- cmd.Wait()
@@ -384,8 +413,9 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", err), err, stderr.String())
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", err), err, dlog.tail(daemonLaunchOutputLimit))
 	}
+	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }
 
