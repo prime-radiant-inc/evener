@@ -89,8 +89,13 @@ type jobManager struct {
 	// for the same key inherits it and a clear-and-recreate loop cannot reset
 	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
 	// in-memory like the volume-budget counter. Guarded by jm.mu.
-	watchLineage           map[watchKey][]string
-	watchLineageOrder      []watchKey
+	watchLineage      map[watchKey][]string
+	watchLineageOrder []watchKey
+	// watchesLostAtRestore holds the durable records of the watches this restore
+	// ended (clearUnrestoredActiveWatches), owed one end notice each by
+	// noticeUnrestoredWatchEnds. Written once at construction, read once in the
+	// restore sequence, both before the manager is shared.
+	watchesLostAtRestore   []*jobstore.WatchRecord
 	closing                bool
 	appendEvent            func(jobstore.Event) error
 	appendEvents           func([]jobstore.Event) error
@@ -1199,7 +1204,21 @@ func (jm *jobManager) clearUnrestoredActiveWatches() error {
 	if err != nil {
 		return err
 	}
-	return jm.appendJobEvents(watchClearEventsForRecords(watches, jm.now(), "runtime_lost", includeAllWatchRecords))
+	cleared := watchClearEventsForRecords(watches, jm.now(), "runtime_lost", includeAllWatchRecords)
+	if err := jm.appendJobEvents(cleared); err != nil {
+		return err
+	}
+	// Nothing has told these watchers their watch is gone. This runs inside the
+	// constructor, before the session wires the notification and send rails and
+	// before reconcileLostJobs makes the targets' terminal outcomes durable, so
+	// the end notice is left to noticeUnrestoredWatchEnds later in the restore
+	// sequence; the records are what it has to speak from.
+	for _, event := range cleared {
+		if watch := watches[event.WatchID]; watch != nil {
+			jm.watchesLostAtRestore = append(jm.watchesLostAtRestore, watch)
+		}
+	}
+	return nil
 }
 
 func includeAllWatchRecords(*jobstore.WatchRecord) bool { return true }

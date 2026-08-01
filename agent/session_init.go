@@ -583,6 +583,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := s.restoreSideEffect("recover_terminal", jm.recoverForwardedTerminalEvents); err != nil {
 			return nil, fmt.Errorf("nested job recovery: %w", err)
 		}
+		// After the reconcile, so a target lost with the runtime is already
+		// terminal when its watch's end notice names the outcome.
+		if err := s.restoreSideEffect("watch_end_notices", jm.noticeUnrestoredWatchEnds); err != nil {
+			return nil, fmt.Errorf("watch end notices: %w", err)
+		}
 	}
 
 	// Restore persisted goal state before initSessionState so the goal store is
@@ -1490,6 +1495,11 @@ func (s *Session) runDeferredRestoreSideEffects() error {
 	}
 	if err := s.restoreSideEffect("recover_terminal", s.jobManager.recoverForwardedTerminalEvents); err != nil {
 		return fmt.Errorf("nested job recovery: %w", err)
+	}
+	// After the reconcile, so a target lost with the runtime is already terminal
+	// when its watch's end notice names the outcome.
+	if err := s.restoreSideEffect("watch_end_notices", s.jobManager.noticeUnrestoredWatchEnds); err != nil {
+		return fmt.Errorf("watch end notices: %w", err)
 	}
 	if err := s.restoreSideEffect("retry_watch_sends", func() error { return s.retryRestoredPendingWatchSends(context.Background()) }); err != nil {
 		return fmt.Errorf("watch send retry: %w", err)

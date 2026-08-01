@@ -2785,6 +2785,96 @@ func watchEverDelivered(cfg *watchConfig) bool {
 	return cfg != nil && (cfg.deliveries > 0 || cfg.nextUpdateSeq > 0)
 }
 
+// noticeUnrestoredWatchEnds is the restart-side half of the end-notice contract
+// completeExpiredJobWatchesLocked keeps on the live path: a watch whose target
+// went terminal without it ever firing tells its watcher once, instead of ending
+// in a silence the watcher waits out. Here the watch died with the runtime, so
+// there is no live config to deliver from and only the durable registry to speak
+// from, which bounds what the notice can honestly cover:
+//
+//   - The send rail only. A no-send watch notifies its owner session, and that
+//     session hears the target's own job-stopped notification on this same
+//     restore; the registry also records no per-fire evidence for that rail, so
+//     restore cannot tell a watch that already matched from one that never did
+//     and would risk telling it "condition never matched" untruthfully.
+//   - A terminal target only. The notice explains why the condition can never
+//     match, and that explanation is the target's terminal outcome.
+//   - Never fired, proven durably: any watch-send frame ever persisted for this
+//     watch generation, settled or still pending, means it already spoke.
+//
+// It must run AFTER reconcileLostJobs so a target lost with the runtime is
+// already terminal, and it is idempotent — the notice it appends is itself a
+// watch-send frame, so a repeat pass reads that watch as having spoken.
+func (jm *jobManager) noticeUnrestoredWatchEnds() error {
+	if len(jm.watchesLostAtRestore) == 0 {
+		return nil
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+	stored, err := jm.store.LoadEvents()
+	if err != nil {
+		return err
+	}
+	spoke := watchGenerationsThatSpoke(stored)
+	for _, watch := range jm.watchesLostAtRestore {
+		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
+			continue
+		}
+		rec := recs[watch.Target]
+		if rec == nil || !rec.Status.IsTerminal() {
+			continue
+		}
+		// A detached config, like the one restoreWatchSendPendingFrom rebuilds for
+		// a pending frame: enough identity for the send rail to route and settle
+		// this one frame, and never registered in jm.watches.
+		cfg := &watchConfig{
+			id:           watch.WatchID,
+			watchID:      watch.WatchID,
+			sourcePublic: watchPublicSource("", watch.Target),
+			target:       watch.Target,
+			send:         &watchSendArgs{To: watch.SendTo},
+			generation:   watch.Generation,
+			pending:      make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+		}
+		trigger := watchEndedUnfiredMessage(watch.Target, rec.Status, rec.Reason, rec.OutputBytes)
+		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, watch.Target)}
+		jm.mu.Lock()
+		delivery := jm.watchSendSnapshot(cfg, watch.Target, trigger, root)
+		delivery.allowAfterTerminalExpiry = true
+		jm.rememberDetachedPendingLocked(cfg)
+		jm.mu.Unlock()
+		// Teardown, not a condition fire: no delivery count and no self-influence
+		// depth, for the reasons the live notice records.
+		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	}
+	return nil
+}
+
+// watchFrameOrigin identifies the watch config a durable watch-send frame came
+// from. The generation is part of it because a replaced watch reuses neither id
+// nor generation, and a frame from a predecessor says nothing about its successor.
+type watchFrameOrigin struct {
+	watchID    string
+	generation string
+}
+
+// watchGenerationsThatSpoke folds the durable evidence that a watch put a frame
+// on its own channel: every persisted watch-send frame, pending or settled. It
+// is the restore-side reading of watchEverDelivered, which asks the same
+// question of a live config's counters.
+func watchGenerationsThatSpoke(stored []jobstore.Event) map[watchFrameOrigin]bool {
+	spoke := make(map[watchFrameOrigin]bool)
+	for _, event := range stored {
+		if event.WatchSend == nil {
+			continue
+		}
+		spoke[watchFrameOrigin{watchID: event.WatchSend.Key.WatchID, generation: event.WatchSend.Key.WatchGeneration}] = true
+	}
+	return spoke
+}
+
 // terminalJobFactsLocked reads the watched job's terminal outcome for the
 // end-notice text. The caller holds jm.mu and runs inside the finalize path,
 // before the run record is deleted, so the terminal is still reachable.
