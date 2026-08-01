@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race vet lint lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -153,7 +153,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-SELFTEST_SCRIPTS := run-module-lint run-module-tests disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+SELFTEST_SCRIPTS := run-module-lint run-module-tests merge-approval-gate disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # selftest hangs off `make test` because a script selftest is a test. The runner
 # starts this wave after protected wave one. It stays off `make lint` because
@@ -193,6 +193,13 @@ test:
 
 test-short:
 	@$(MAKE) test
+
+# merge-approval-gate is the canonical serial post-merge gate. Keep the
+# explicit expansion in docs/testing.md for diagnosis and evidence.
+merge-approval-gate:
+	@$(MAKE) lint
+	@$(MAKE) build
+	@ROOT_FULL=1 $(MAKE) test
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
 # leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra

@@ -35,7 +35,13 @@ a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
 ## Post-Merge Gate
 
-Run the post-merge gate serially from the repository root:
+Run the canonical post-merge gate from the repository root:
+
+```sh
+make merge-approval-gate
+```
+
+For diagnosis and evidence, that target expands serially to:
 
 ```sh
 make lint
@@ -53,6 +59,8 @@ retired standalone `go test ./...` also ran the ordinary unit tests in
 those tests, is explicitly owned and run by `make fuzz`. Ordinary `make test`
 remains the default local command and keeps the root wave in short mode unless
 `ROOT_FULL=1` is explicitly set.
+The canonical target does not run fuzzing; use `make fuzz` separately for that
+coverage.
 
 ## Proving a Type Survives a Round Trip
 
