@@ -150,6 +150,29 @@ func TestBgNotEqualText(t *testing.T) {
 	}
 }
 
+// TestStateIdleIsDistinguishableFromTextDim pins the two tones apart in every
+// theme. They carry different meanings — StateIdle marks a state the session
+// is actually in (credential badges, session rows), TextDim is de-emphasised
+// chrome and the fallback for "no state to report" — so a badge that swaps one
+// for the other has to visibly change.
+//
+// Near-identical is defined here as a WCAG contrast ratio below 1.4 between
+// the two tones. That is the palette's own floor for a step it asks the eye to
+// make: the smallest deliberate gap between adjacent text tiers is dark
+// TextDim→TextGhost at 1.42, and light TextDim→StateIdle already sits at 1.65.
+// The dark theme shipped its pair at 1.07 — two greys separated by six points
+// of green and six of blue, which no eye reads as different.
+func TestStateIdleIsDistinguishableFromTextDim(t *testing.T) {
+	const minSeparation = 1.4
+	for name, th := range Themes() {
+		ratio := contrastRatio(string(th.StateIdle), string(th.TextDim))
+		if ratio < minSeparation {
+			t.Errorf("theme %q: StateIdle %s and TextDim %s differ by only %.2f:1 (need ≥%.1f); the two read as one grey",
+				name, th.StateIdle, th.TextDim, ratio, minSeparation)
+		}
+	}
+}
+
 // TestTextTiersMeetMinContrast guards against the text tiers regressing
 // back to unreadable values. Thresholds:
 //   - Text:      ≥7.0  (WCAG AAA body)
