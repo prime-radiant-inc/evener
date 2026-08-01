@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,7 @@ type CodexLauncher struct {
 	Running     map[string]*LaunchedCodex
 	Sources     map[string]appsource.Source
 	client      *http.Client
+	logOutput   io.Writer
 	process     func(string, ...string) launchProcess
 	newTicker   func(time.Duration) launchTicker
 	withTimeout func(context.Context, time.Duration) (context.Context, context.CancelFunc)
@@ -107,6 +109,9 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 		Running: map[string]*LaunchedCodex{},
 		Sources: map[string]appsource.Source{},
 		client:  http.DefaultClient,
+		// The hub's own log: a launched app-server's output has nowhere else
+		// to go, since the hub holds both its pipes to scan them.
+		logOutput: os.Stderr,
 		process: func(name string, args ...string) launchProcess {
 			return &execLaunchProcess{cmd: exec.CommandContext(context.Background(), name, args...)}
 		},
@@ -241,8 +246,9 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	if err := process.Start(); err != nil {
 		return nil, appwire.HubLaunchError("start codex app-server: " + err.Error())
 	}
-	go scanCodexEndpoint(stdout, endpoints)
-	go scanCodexEndpoint(stderr, endpoints)
+	prefix := codexLogPrefix(cfg.ID)
+	go scanCodexEndpoint(stdout, endpoints, l.logOutput, prefix)
+	go scanCodexEndpoint(stderr, endpoints, l.logOutput, prefix)
 	// exitErr is published before close(exited); a receive on exited
 	// happens-after the close, so reading exitErr after the receive is race-free.
 	exited := make(chan struct{})
@@ -274,9 +280,37 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 		case <-ticker.C():
 		case <-waitCtx.Done():
 			_ = process.Kill()
-			return nil, appwire.HubLaunchError("codex app-server timed out waiting for ready")
+			return nil, codexReadyWaitError(waitCtx)
 		}
 	}
+}
+
+// codexReadyWaitError says which way a ready-wait that never saw the
+// app-server come up was stopped. Its context is done for two unrelated
+// reasons — the launch's readiness budget elapsed, or the caller went away —
+// and only the first is a timeout. Calling the second one sends an operator
+// triaging it after a slow machine or a too-short launch timeout, when nothing
+// was slow and nobody is waiting for the app-server any more (kata f9hr).
+//
+// The wait runs under the caller's context on every hub path that reaches it:
+// EnsureSource is called from thread lifecycle handlers carrying a live
+// request context — r.Context() on the REST spawn, the websocket connection's
+// ctx (which the keepalive cancels) on the RPC one — so a client that drops
+// mid-launch lands here.
+//
+// ctx.Err() separates the two outright, the same way the daemon path's
+// launchCheckWaitError does: Canceled is the caller walking away,
+// DeadlineExceeded is time genuinely running out — the launch's own budget, or
+// a deadline the caller brought with it.
+//
+// Both stay an appwire.HubLaunchError, the discriminator clients read to
+// headline the failure as a session that would not start. The label changes;
+// the family of failure does not.
+func codexReadyWaitError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return appwire.HubLaunchError("codex app-server launch canceled waiting for ready")
+	}
+	return appwire.HubLaunchError("codex app-server timed out waiting for ready")
 }
 
 func buildCodexLaunchArgs(binary string, configured []string, listen string) []string {
@@ -310,12 +344,29 @@ func codexLaunchEnv(overrides map[string]string) []string {
 	return env
 }
 
-func scanCodexEndpoint(r io.Reader, endpoints chan<- string) {
+// codexLogPrefix attributes a forwarded line to the launch that produced it,
+// so one hub log carrying several app-servers says which one spoke.
+func codexLogPrefix(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "[codex]"
+	}
+	return "[codex:" + id + "]"
+}
+
+func scanCodexEndpoint(r io.Reader, endpoints chan<- string, out io.Writer, prefix string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		if endpoint, ok := ParseCodexEndpoint(scanner.Text()); ok {
+		line := scanner.Text()
+		if endpoint, ok := ParseCodexEndpoint(line); ok {
 			endpoints <- endpoint
+			continue
 		}
+		// Everything else is the app-server talking to whoever launched it —
+		// a bind failure, a crash, a warning — and the hub log is the only
+		// place it can land: the hub holds both pipes to scan them, so a line
+		// dropped here is a line nobody will ever see.
+		_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
 	}
 }
 
