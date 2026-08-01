@@ -47,7 +47,12 @@
 # Both need a human: a scratch checkout can hold a never-pushed experiment.
 #
 # Usage:
-#   scripts/disk-reclaim.sh                 # report only, changes nothing
+#   scripts/disk-reclaim.sh                 # report only, changes nothing. Its
+#                                           # touches of the GOCACHE volume are
+#                                           # bounded the same way --check's
+#                                           # are, so a stalled volume is named
+#                                           # in the report instead of
+#                                           # swallowing it (kata 6jxs).
 #   scripts/disk-reclaim.sh --cache         # also empty the Go build cache
 #   scripts/disk-reclaim.sh --worktrees     # also remove MERGED worktrees
 #   scripts/disk-reclaim.sh --all           # both
@@ -124,6 +129,73 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$repo_root" || exit 1
 
+# Long enough for a sleeping external disk to spin up and answer, and three
+# orders of magnitude below what a real stall costs.
+gocache_probe_timeout=${SERF_GOCACHE_PROBE_TIMEOUT:-10}
+
+# Runs one command that touches the GOCACHE volume, bounded. Prints whatever
+# the command wrote (stdout and stderr together) and returns its exit status —
+# or prints nothing and returns 124, the code timeout(1) uses, if it never
+# answered. timeout(1) itself is not on a stock macOS.
+#
+# Every touch of that path goes through here except the report's one `du`,
+# which says at its call site why it cannot be bounded. The build-cache
+# volume's worst failure is not being gone, it is STALLING while still
+# mounted: nothing fails, everything blocks. `mkdir`, `[ -d ]`, `df` and `du`
+# all block against it, and so does every go command that touches the cache —
+# four go processes were found sleeping 12-23 HOURS on one such stall, on a
+# volume that answered `ls` instantly by the time anyone looked (kata r07s).
+# Unbounded, --check handed that hang to every test run on the machine (kata
+# r07s) and the report printed its first line and then nothing at all (6jxs).
+gocache_probe() { # seconds command...
+	local limit="$1" out pid polls status
+	shift
+	out=$(mktemp "${TMPDIR:-/tmp}/disk-reclaim-gocache-probe.XXXXXX") || return 125
+	# Backgrounded as a plain command so $! is the probe process itself and not
+	# a wrapper shell: the kill below has to reach whatever is actually blocked
+	# on the volume. Its output goes to a FILE and never to this function's own
+	# stdout, so a probe that outlives the kill cannot hold a caller's command
+	# substitution open — which would be the very hang this bound exists to end.
+	#
+	# SERF_GOCACHE_PROBE_CMD replaces the probe. No filesystem can be made to
+	# stall on demand, so this is the seam disk-reclaim-selftest.sh uses to pin
+	# the stall outcome; nothing else sets it.
+	if [ -n "${SERF_GOCACHE_PROBE_CMD:-}" ]; then
+		# shellcheck disable=SC2086 # the seam is a command line, not one word
+		$SERF_GOCACHE_PROBE_CMD >"$out" 2>&1 &
+	else
+		"$@" >"$out" 2>&1 &
+	fi
+	pid=$!
+	# Wait for the probe's own answer, 20 polls a second: an awake volume
+	# answers inside the first one, and that is what this costs on every test
+	# invocation across the fleet.
+	polls=$((limit * 20))
+	while [ "$polls" -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
+		sleep 0.05
+		polls=$((polls - 1))
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		# Kill it rather than wait on it. A process blocked on a stalled volume
+		# can outlive the signal, and waiting here for it to die would be that
+		# same hang again; leaving it alive would keep the blocked I/O open with
+		# nobody watching.
+		kill -KILL "$pid" 2>/dev/null
+		# bash announces a signal-killed background job on stderr the next time
+		# it forks, which would staple a "Killed: 9" line onto the caller's
+		# diagnosis. Dropping the job from bash's own table leaves the kill
+		# exactly as it is and the diagnosis alone.
+		disown "$pid" 2>/dev/null
+		rm -f "$out"
+		return 124
+	fi
+	wait "$pid"
+	status=$?
+	cat "$out"
+	rm -f "$out"
+	return "$status"
+}
+
 if [ "$CHECK_ONLY" = 1 ]; then
 	# Deliberately does none of the reporting below: this runs on every single
 	# test invocation across the fleet (wired into run-module-tests.sh), so it
@@ -144,13 +216,12 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	# itself does (mkdir -p; a no-op if the path already exists) so the
 	# diagnosis lands here instead.
 	#
-	# That probe is BOUNDED, because the volume's other failure mode is worse
-	# than being gone: when it STALLS, mkdir does not fail, it blocks — and so
-	# does every go command that touches the cache, invisibly, for as long as
-	# the stall lasts. Four go processes were found sleeping 12-23 HOURS on one
-	# such stall, on a volume that answered `ls` instantly by the time anyone
-	# looked (kata r07s). An unbounded probe would inherit that hang and hand
-	# it to every test run on the machine, which is the opposite of the job.
+	# That probe goes through gocache_probe, which BOUNDS it, because the
+	# volume's other failure mode is worse than being gone: when it STALLS,
+	# mkdir does not fail, it blocks — and so does every go command that
+	# touches the cache, invisibly, for as long as the stall lasts (kata r07s).
+	# An unbounded probe would inherit that hang and hand it to every test run
+	# on the machine, which is the opposite of the job.
 	#
 	# SERF_SKIP_GOCACHE_CHECK=1 skips this whole block. Used only by
 	# disk-reclaim-selftest.sh's floor-only scenario, to keep that scenario's
@@ -163,49 +234,11 @@ if [ "$CHECK_ONLY" = 1 ]; then
 		# directory until something needs to read or write the cache.
 		gocache=$(go env GOCACHE 2>/dev/null)
 		if [ -n "$gocache" ]; then
-			# Long enough for a sleeping external disk to spin up and answer,
-			# and three orders of magnitude below what a real stall costs.
-			probe_timeout=${SERF_GOCACHE_PROBE_TIMEOUT:-10}
-			probe_out=$(mktemp "${TMPDIR:-/tmp}/disk-reclaim-gocache-probe.XXXXXX")
-			trap 'rm -f "$probe_out"' EXIT
-			# Backgrounded as a plain command so $! is the probe process
-			# itself and not a wrapper shell: the kill below has to reach
-			# whatever is actually blocked on the volume.
-			#
-			# SERF_GOCACHE_PROBE_CMD replaces the probe. No filesystem can be
-			# made to stall on demand, so this is the seam
-			# disk-reclaim-selftest.sh uses to pin the stall outcome; nothing
-			# else sets it.
-			if [ -n "${SERF_GOCACHE_PROBE_CMD:-}" ]; then
-				# shellcheck disable=SC2086 # the seam is a command line, not one word
-				$SERF_GOCACHE_PROBE_CMD >"$probe_out" 2>&1 &
-			else
-				mkdir -p "$gocache" >"$probe_out" 2>&1 &
-			fi
-			probe_pid=$!
-			# Wait for the probe's own answer, 20 polls a second: an awake
-			# volume answers inside the first one, and that is what this costs
-			# on every test invocation across the fleet.
-			probe_polls=$((probe_timeout * 20))
-			while [ "$probe_polls" -gt 0 ] && kill -0 "$probe_pid" 2>/dev/null; do
-				sleep 0.05
-				probe_polls=$((probe_polls - 1))
-			done
-			if kill -0 "$probe_pid" 2>/dev/null; then
-				# Kill it rather than wait on it. A process blocked on a
-				# stalled volume can outlive the signal, and waiting here for
-				# it to die would be the very hang this bound exists to end;
-				# leaving it alive would keep the blocked I/O open with nobody
-				# watching.
-				kill -KILL "$probe_pid" 2>/dev/null
-				# bash announces a signal-killed background job on stderr the
-				# next time it forks, which would staple a "Killed: 9" line
-				# onto the diagnosis below. Dropping the job from bash's own
-				# table leaves the kill exactly as it is and the diagnosis
-				# alone on stderr.
-				disown "$probe_pid" 2>/dev/null
+			probe_err=$(gocache_probe "$gocache_probe_timeout" mkdir -p "$gocache")
+			probe_status=$?
+			if [ "$probe_status" -eq 124 ]; then
 				cat >&2 <<-MSG
-					disk-reclaim: GOCACHE at "$gocache" did not answer in ${probe_timeout}s — the volume it lives on is STALLED (kata r07s).
+					disk-reclaim: GOCACHE at "$gocache" did not answer in ${gocache_probe_timeout}s — the volume it lives on is STALLED (kata r07s).
 					A stalled build-cache volume fails nothing; it blocks. Every go command that
 					touches the cache waits on it without saying so — measured at 12 to 23 hours,
 					looking like anything except its cause.
@@ -215,10 +248,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
 				MSG
 				exit 1
 			fi
-			wait "$probe_pid"
-			probe_status=$?
 			if [ "$probe_status" -ne 0 ]; then
-				probe_err=$(cat "$probe_out")
 				cat >&2 <<-MSG
 					disk-reclaim: GOCACHE is set to "$gocache" but it could not be created — kata 98x9.
 					  $probe_err
@@ -233,7 +263,14 @@ if [ "$CHECK_ONLY" = 1 ]; then
 			# first place (kata 98x9) — warn so a machine that never ran
 			# setup-gocache.sh, or had it reset by a Go toolchain reinstall, does
 			# not silently regress to the original failure mode.
-			gocache_dev=$(df -P "$gocache" 2>/dev/null | awk 'NR==2 {print $1}')
+			#
+			# Bounded like the probe above: this is a SECOND touch of the same
+			# path, and a volume that answered the probe can stall before it.
+			# An unanswered df leaves gocache_dev empty, which reads as "not the
+			# same volume" — the quiet direction, and the right one for a drift
+			# warning when the probe has already passed.
+			gocache_df=$(gocache_probe "$gocache_probe_timeout" df -P "$gocache")
+			gocache_dev=$(awk 'NR==2 {print $1}' <<<"$gocache_df")
 			repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
 			if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
 				echo "disk-reclaim: warning: GOCACHE ($gocache) is on the same volume as this checkout — kata 98x9. Run scripts/setup-gocache.sh to move it to a bigger volume." >&2
@@ -325,16 +362,47 @@ echo "disk-reclaim: $(free_report)"
 # inodes, on an external volume by design — scripts/setup-gocache.sh), spent to
 # print a number that answers no question the report is asking. `df` of its
 # volume is the fact that does matter about an off-volume cache, and is free.
+#
+# Every `df` here goes through gocache_probe, and so does the `[ -d ]` they
+# replace. This is the mode a human runs when something is ALREADY wrong, so a
+# stalled build-cache volume has to be named here — unbounded, those three
+# touches swallowed the whole rest of the report instead: "disk-reclaim: NNG
+# free of ..." and then nothing at all, for as long as the stall lasted, with
+# the volume that caused it unnamed (kata 6jxs).
 gocache=$(go env GOCACHE 2>/dev/null)
-if [ -n "$gocache" ] && [ -d "$gocache" ]; then
-	gocache_dev=$(df -P "$gocache" 2>/dev/null | awk 'NR==2 {print $1}')
-	repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
-	if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
-		echo "  go build cache   $(du -sh "$gocache" 2>/dev/null | cut -f1)	$gocache"
-		echo "                   on this volume, so --cache frees exactly that here"
-	else
+if [ -n "$gocache" ]; then
+	# This df stands in for the `[ -d "$gocache" ]` that used to guard the
+	# block as well: df fails on a path that is not there, which is what an
+	# unmounted volume looks like, and the report stays silent about the cache
+	# in that case exactly as it did before.
+	gocache_df=$(gocache_probe "$gocache_probe_timeout" df -P "$gocache")
+	gocache_probe_status=$?
+	if [ "$gocache_probe_status" -eq 124 ]; then
 		echo "  go build cache   $gocache"
-		echo "                   on another volume ($(df -h "$gocache" 2>/dev/null | awk 'NR==2 {print $4}') free there), so --cache cannot move this floor"
+		echo "                   VOLUME STALLED: no answer in ${gocache_probe_timeout}s, so it is not sized here — kata 6jxs."
+		echo "                   Every go command touching this cache is blocked on it too; wake or remount the volume."
+	elif [ "$gocache_probe_status" -eq 0 ]; then
+		gocache_dev=$(awk 'NR==2 {print $1}' <<<"$gocache_df")
+		repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
+		if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
+			# The one touch deliberately left unbounded. `du` of a real cache
+			# is 32.6s of honest work on the machine that was measured on, so
+			# any bound tight enough to name a stall would call a healthy walk
+			# of a 2M-inode tree stalled instead. It runs only for a cache on
+			# THIS volume, which the df above and this report's own opening
+			# free-space line have both just read successfully.
+			echo "  go build cache   $(du -sh "$gocache" 2>/dev/null | cut -f1)	$gocache"
+			echo "                   on this volume, so --cache frees exactly that here"
+		else
+			# Third touch of the same path, bounded for the same reason as the
+			# first two: the volume can stall between them. No answer costs the
+			# free-space figure and nothing else.
+			gocache_free_df=$(gocache_probe "$gocache_probe_timeout" df -h "$gocache")
+			gocache_free=$(awk 'NR==2 {print $4}' <<<"$gocache_free_df")
+			[ -n "$gocache_free" ] || gocache_free="unknown"
+			echo "  go build cache   $gocache"
+			echo "                   on another volume ($gocache_free free there), so --cache cannot move this floor"
+		fi
 	fi
 fi
 
