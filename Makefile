@@ -141,15 +141,20 @@ SELFTEST_SCRIPTS := run-module-lint disk-reclaim web-preflight report-orphaned-w
 # the machine little even though they run before the Go waves start.
 selftest:
 	@set -u; fail=0; \
+	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
 	for s in $(SELFTEST_SCRIPTS); do \
-		log="$$(mktemp -t serf-selftest.XXXXXX)" || exit 1; \
-		if /usr/bin/time -p scripts/$$s-selftest.sh >"$$log" 2>&1; then \
-			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$log" | tail -1)"; \
-		else \
-			printf 'FAIL  %-26s\n' "$$s"; cat "$$log"; fail=1; \
-		fi; \
-		rm -f "$$log"; \
+		{ /usr/bin/time -p scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1; \
+		  echo $$? >"$$dir/$$s.status"; } & \
 	done; \
+	wait; \
+	for s in $(SELFTEST_SCRIPTS); do \
+		if [ "$$(cat "$$dir/$$s.status" 2>/dev/null || echo 1)" = 0 ]; then \
+			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$dir/$$s.log" | tail -1)"; \
+		else \
+			printf 'FAIL  %-26s\n' "$$s"; cat "$$dir/$$s.log"; fail=1; \
+		fi; \
+	done; \
+	rm -rf "$$dir"; \
 	exit $$fail
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
