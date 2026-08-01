@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -424,12 +425,7 @@ func auditedShellScripts(t *testing.T) []string {
 }
 
 func isAuditedShellScript(path string) bool {
-	for _, dir := range auditedShellScriptDirs {
-		if filepath.Dir(path) == dir {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(auditedShellScriptDirs, filepath.Dir(path))
 }
 
 // containsWholePort9180 reports whether line contains the digits 9180 as a
