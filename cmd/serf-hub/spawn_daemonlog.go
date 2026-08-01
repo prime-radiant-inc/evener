@@ -107,9 +107,20 @@ var daemonLogTrimNotice = fmt.Sprintf(
 // an operator is reading the file for is the one run whose bytes must always
 // all be there. Only earlier runs are ever dropped.
 //
-// The retained tail goes to a temp file that replaces path by rename, so a trim
-// interrupted anywhere leaves the whole untrimmed log rather than a piece of
-// one. Every failure arm does the same: leave the log as it is and let the
+// The retained tail goes to a temp file that replaces path by rename, and not
+// in place, for two reasons. A trim interrupted anywhere then leaves the whole
+// untrimmed log rather than a piece of one. And a second daemon can still hold
+// a descriptor on this file — a resume spawns a replacement for an older daemon
+// that is healthy but unroutable through the current local source, by design
+// (hubThreadResume) — whose descriptor came from os.CreateTemp on the pending
+// path and so tracks an offset instead of appending. Truncating under it would
+// put its next write back at that offset, punching a hole of NUL bytes and
+// re-inflating the file past the cap it was just brought under. A rename leaves
+// that daemon writing to the old inode: its remaining output is lost, which is
+// the smaller loss and the only one that does not corrupt the log the live
+// daemon is writing.
+//
+// Every failure arm does the same thing: leave the log as it is and let the
 // launch append to it. A daemon that logs too much beats a daemon that will not
 // start, and this is the caller that would otherwise have to refuse.
 func trimDaemonLog(path string) {
