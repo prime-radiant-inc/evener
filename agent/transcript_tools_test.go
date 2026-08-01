@@ -107,7 +107,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 }
 
 func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
-	for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
+	for _, name := range jobRefRejectedParams {
 		t.Run(name, func(t *testing.T) {
 			value := any(float64(1))
 			if name == "range" {
