@@ -33,17 +33,18 @@ observer's terminal `communicate(end_turn:true)` callback — see
    >    frame', read the delivery_id and, from the frame's event block,
    >    the job_id, job_type, status and output_bytes. If the frame ends
    >    with a 'read with:' line, make exactly that call and read the
-   >    worker's report out of the returned content. Finish with
-   >    communicate end_turn true and message exactly HANDOFF_PACKAGE
-   >    delivery=<delivery_id> job=<job_id> status=<status>
-   >    bytes=<output_bytes> owner=release-team artifact=<the
-   >    artifact=... value from the worker's report>. Do not call
-   >    job_status or any other tool."
+   >    worker's report out of the returned content. Then call job_status
+   >    once with that same job_id — it is EXPECTED to fail; do not retry
+   >    it. Finish with communicate end_turn true and message exactly
+   >    HANDOFF_PACKAGE delivery=<delivery_id> job=<job_id>
+   >    status=<status> bytes=<output_bytes> owner=release-team
+   >    artifact=<the artifact=... value from the worker's report>. Use
+   >    no other tools."
    > 2. After the delegate result reports `watching: true`, capture the
    >    watch_id from its `watches` entry, then start a worker delegate
    >    with `max_wait_ms` 90000 and task: "Communicate exactly
    >    HANDOFF_WORKER_RESULT artifact=summary status=ready." Capture
-   >    the worker's job_id and transcript_ref.
+   >    the worker's job_id.
    > 3. When the HANDOFF_PACKAGE observer callback arrives, call
    >    `job_watch` with operation "clear" and the observer's watch_id,
    >    then communicate exactly SCENARIO_DONE handoff-packager.
@@ -89,8 +90,9 @@ observer's terminal `communicate(end_turn:true)` callback — see
   that read, and reports it through one terminal
   `communicate(end_turn=true)`, which reaches the parent as an
   `Observer callback:` block.
-- **Nothing else about that job opens up.** `job_status` on the same
-  job_id still fails, now naming the sanctioned read:
+- **Nothing else about that job opens up.** The observer's own
+  `job_status` call on the same job_id fails — visible in its transcript
+  — and the failure now names the sanctioned read:
   `job "job_..." belongs to another session; read its output with
   read_transcript(transcript_ref="job:job_...")`. Status stays denied
   because a delegate job's status projects its SESSION `transcript_ref`,
@@ -100,7 +102,7 @@ observer's terminal `communicate(end_turn:true)` callback — see
   `job_stop`.
 
   Falsification: `job_status` SUCCEEDS on the worker's job, or its
-  failure text is the plain
+  failure text is still the plain
   `job "job_..." not found — use job_list to see this session's jobs`
   (the grant never minted, so the read above cannot have worked either).
 - **The observer's OWN callback jobs mint nothing.** A `source:"parent"`
@@ -121,6 +123,8 @@ go run ./cmd/serf-doctor tree "$SID" --observers
 go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:40
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count read_transcript
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_status
 ```
 
 ## Sharp edges
