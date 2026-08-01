@@ -133,7 +133,14 @@ set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
 case "${1:-}" in
-	list) printf 'primeradiant.com/serf/%s\n' "$module"; exit 0 ;;
+	list)
+		if [ "${FAKE_LIST_FAIL:-0}" -ne 0 ]; then
+			printf 'go: cannot load module\n' >&2
+			exit 1
+		fi
+		printf 'primeradiant.com/serf/%s\n' "$module"
+		exit 0
+		;;
 esac
 printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/calls"
 printf 'go-stdout:%s\n' "$module"
@@ -336,6 +343,13 @@ assert_one_verdict_per_name "$out" "missing-module run reports no name twice"
 assert_dump_nonempty "$out" "a missing module directory dumps its reason"
 assert_has "$out" "----- nosuch -----" "the missing module is named in the failure dump"
 assert_has "$out" "No such file or directory" "the missing module's own diagnostic reaches the reader"
+
+new_case
+out="$case_dir/root-package-discovery-failure.out"
+if FAKE_LIST_FAIL=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a root package-discovery failure exits nonzero"; else bad "a root package-discovery failure unexpectedly exits zero"; fi
+assert_has "$out" "go: cannot load module" "a root package-discovery diagnostic reaches the reader"
+assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery failure does not fall into an empty-array error"
 
 new_case
 out="$case_dir/web-failure.out"
