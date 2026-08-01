@@ -549,6 +549,41 @@ test("the sync resumes on the pane that lands once the route is no longer deferr
   expect(window.location.pathname).toBe("/s/local%3Aref_placed");
 });
 
+// kata 098n. /thread/{ref} and /s/{ref} both resolve to the SAME session pane
+// (routing.ts), but only the former turns single-pane mode on
+// (singlePane.ts's isSinglePaneRoute, read by AppShell off the pathname).
+// paneToURL can only ever serialize a session pane back to /s/{ref}, so
+// publishing it over a /thread route rewrites a share link into a URL that
+// means something else - chrome-stripped becomes ordinary shell. Desktop's
+// DockHost writes no URL at all and so leaves the mode alone for the whole
+// visit; the sync matches that here rather than inventing a mobile-only
+// rewrite.
+test("kata 098n: a /thread share link is left alone when it already names the focused pane", async () => {
+  window.history.pushState({}, "", "/thread/local%3Aref_shared");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_shared" });
+
+  render(<StackHost />);
+  await screen.findByRole("heading", { name: "local:ref_shared" });
+
+  expect(window.location.pathname).toBe("/thread/local%3Aref_shared");
+});
+
+// The other half: the guard is about THIS pane's own URL, not about /thread
+// routes in general. Focusing a DIFFERENT session from a /thread route still
+// publishes - otherwise the address bar would be stuck naming a pane that is
+// no longer on screen, which is the exact failure the sync exists to prevent.
+test("kata 098n: focusing a different session from a /thread route still publishes its URL", async () => {
+  window.history.pushState({}, "", "/thread/local%3Aref_shared");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_shared" });
+  render(<StackHost />);
+  await screen.findByRole("heading", { name: "local:ref_shared" });
+
+  workspaceStore.getState().openPane("session", { ref: "local:ref_other" });
+  await screen.findByRole("heading", { name: "local:ref_other" });
+
+  expect(window.location.pathname).toBe("/s/local%3Aref_other");
+});
+
 test("mounting already at the focused pane's own URL does not dispatch a redundant popstate", async () => {
   // The pane's OWN url, i.e. exactly what paneToURL emits - percent-encoded,
   // since a ref carries a ":" that does not survive a path segment raw.

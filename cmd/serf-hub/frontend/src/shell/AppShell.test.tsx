@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
@@ -1148,6 +1149,23 @@ test("mobile: the shell content frame drops its padding so the workspace is full
 
 // --- kata bbsv: a mobile deep link outlives the wait for the tree --------
 
+// jsdom implements no matchMedia at all (useIsMobile.test.ts's own header
+// comment documents the probe), so a mobile-layout test installs one: the
+// mobile query matches, every other query does not. Only useIsMobile reads
+// this surface, and only ever at mount here - no test in this file crosses
+// the breakpoint mid-run, so the listeners are inert stubs.
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+}
+
 // A /s/{ref} route cannot be placed until /api/tree says whether the ref is
 // nested (openRouteAsPane defers it), and no fetch can resolve inside the
 // first commit - so on mobile the shell always spends a beat with the deep
@@ -1165,15 +1183,7 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
     "fetch",
     vi.fn((url: string) => (url === "/api/tree" ? treePromise : Promise.resolve(jsonResponse({})))),
   );
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((media: string) => ({
-      media,
-      matches: media === "(max-width: 899px)",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    })),
-  );
+  installMobileViewport();
 
   window.history.pushState({}, "", "/s/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -1188,4 +1198,56 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   // And the address bar now names it in paneToURL's own canonical form.
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3As1"));
+});
+
+// --- kata 098n: a /thread share link is not rewritten into /s ------------
+
+// A /thread/{ref} share link is a single-pane route: isSinglePaneRoute
+// (singlePane.ts) keys the chrome-stripped layout off the PATHNAME, so the
+// mode survives only as long as the address bar keeps naming it. On mobile
+// StackHost publishes the focused pane's URL, and a session pane serializes
+// back to /s/{ref} - so the share link used to be rewritten out from under
+// the user the moment the routed pane took focus, silently turning
+// single-pane mode off. Desktop never rewrites it (DockHost writes no URL at
+// all), which is the behaviour this pins mobile to.
+test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its single-pane chrome", async () => {
+  installMobileViewport();
+  window.history.pushState({}, "", "/thread/local:s1");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/thread/local:s1"));
+  expect(document.querySelector("[data-single-pane]")).not.toBeNull();
+});
+
+// --- kata p5w9: one boot, one GET /api/tree ------------------------------
+
+// A desktop boot has TWO unconditional mount-time tree fetchers -
+// initNotifications()'s baseline (run at AppShell.tsx's module evaluation, so
+// it fires on every host, including the mobile one where no rail mounts) and
+// the rail's own mount effect - and used to issue a full GET /api/tree from
+// each, milliseconds apart, for the same snapshot. Plus a third: AppShell
+// publishes serverInfo through connectionStore once its connect() resolves,
+// which the reconnect subscriber read as a new connection.
+//
+// The notifications engine is a module singleton already initialized by
+// AppShell.tsx's own import, so a REAL boot is modelled by resetting and
+// re-initializing it here - and it is deliberately left initialized
+// afterwards, exactly as module evaluation leaves it for every other test in
+// this file.
+test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve(jsonResponse(url === "/api/tree" ? TREE_RESPONSE_WITH_NESTED_SESSION : {})),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  resetNotificationsForTests();
+  initNotifications();
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await screen.findByText("No session open");
+  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
+
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/tree")).toHaveLength(1);
 });

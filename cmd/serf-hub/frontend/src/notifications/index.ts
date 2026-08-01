@@ -110,10 +110,17 @@ export function initNotifications(): void {
 
   // Reconnect: on reaching "ready" AFTER a prior "ready", re-fetch the tree so
   // counts re-sync and the next snapshot re-baselines silently.
+  //
+  // Only a TRANSITION into "ready" is a connection event. Any other change to
+  // this store republishes the same "ready" to every subscriber - AppShell
+  // sets serverInfo through it the moment its own connect() promise resolves,
+  // on every single boot - and reading that as a reconnect cost a pointless
+  // extra GET /api/tree and a needless re-baseline of the attention snapshot
+  // (kata p5w9).
   sawReady = connectionStore.getState().state === "ready";
   subscriptions.push(
-    connectionStore.subscribe((state) => {
-      if (state.state !== "ready") return;
+    connectionStore.subscribe((state, prev) => {
+      if (state.state !== "ready" || prev.state === "ready") return;
       if (!sawReady) {
         sawReady = true;
         return;
@@ -131,7 +138,10 @@ export function initNotifications(): void {
 
   // Ensure attention data exists even where the rail never mounts to fetch it
   // (e.g. the mobile drawer) — mirrors the legacy's own baseline fetch.
-  void treeStore.getState().refresh();
+  // ensureLoaded, not refresh: the duty is "a tree exists", and on a desktop
+  // boot the rail asks for the same thing at the same moment, so this shares
+  // that one request instead of issuing a second identical GET (kata p5w9).
+  void treeStore.getState().ensureLoaded();
 }
 
 // resetNotificationsForTests unwinds every store subscription and resets the

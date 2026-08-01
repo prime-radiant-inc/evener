@@ -41,7 +41,8 @@ import { type ReactNode, Suspense, useEffect, useRef } from "react";
 import { Chevron, IconButton } from "../../widgets";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
-import { navigate, paneToURL } from "../routing";
+import { navigate, paneToURL, urlToPane } from "../routing";
+import { isSinglePaneRoute } from "../singlePane";
 import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
@@ -82,6 +83,27 @@ function popValidBackTarget(
       return candidate;
   }
   return undefined;
+}
+
+// True when `pathname` is a SINGLE-PANE route that already names this exact
+// pane - today that is only /thread/{ref}, the share link (singlePane.ts).
+//
+// /thread/{ref} and /s/{ref} resolve to the same session pane (routing.ts),
+// but only /thread turns single-pane mode on: AppShell reads
+// isSinglePaneRoute off the PATHNAME to strip the shell's chrome, so the mode
+// lives entirely in the address bar. paneToURL can only ever serialize a
+// session pane back to /s/{ref}, so publishing it over a /thread route
+// rewrites a URL a user was given into one that means something else. Desktop
+// never does that (DockHost writes no URL at all, so single-pane mode holds
+// for the whole visit); this is the sync declining to invent a mobile-only
+// rewrite, not a mobile special case.
+//
+// Params compare by JSON, the same plain structural equality workspace.ts's
+// own sameParams uses for these small always-JSON-safe param bags.
+function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
+  if (!isSinglePaneRoute(pathname)) return false;
+  const route = urlToPane(pathname);
+  return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
 }
 
 // Module-level, not component state: popstate is a window-level browser
@@ -232,9 +254,13 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // shell is still working on, discarding it before the tree it waits for
   // arrives. The address bar already names where we are going, so leaving it
   // alone is also the honest reading of "always name the visible pane".
+  //
+  // A single-pane route that already names the focused pane is left alone for
+  // the same reason, one step further: see singlePaneRouteNames above.
   useEffect(() => {
     if (routeDeferred) return;
     if (!focusedPane) return;
+    if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);
   }, [focusedPane, routeDeferred]);
