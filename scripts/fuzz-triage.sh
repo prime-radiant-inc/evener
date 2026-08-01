@@ -422,13 +422,16 @@ promote_corpus() {
 		mkdir -p "$dest"
 
 		# Index the committed seeds by content hash so a cache entry Go already has
-		# (under a different filename) is not re-committed as a duplicate.
-		local -A have=()
+		# (under a different filename) is not re-committed as a duplicate. The
+		# index is a newline-delimited list, not an associative array: bash 3.2
+		# (the stock macOS bash `env bash` finds) has none, and a hex hash used
+		# as an indexed subscript is evaluated as arithmetic and overflows.
+		local have=$'\n'
 		local f h
 		for f in "$dest"/*; do
 			[ -f "$f" ] || continue
 			h="$(content_hash "$f")"
-			[ -n "$h" ] && have["$h"]=1
+			[ -n "$h" ] && have="$have$h"$'\n'
 		done
 
 		# Walk candidates smallest-first; dedup by content, drop oversized, cap count.
@@ -439,11 +442,11 @@ promote_corpus() {
 			[ "$((sz))" -le "$max_seed_bytes" ] || continue
 			h="$(content_hash "$path")"
 			[ -n "$h" ] || continue
-			[ -n "${have[$h]:-}" ] && continue
+			case "$have" in *$'\n'"$h"$'\n'*) continue ;; esac
 			base="$(basename "$path")"
 			[ -e "$dest/$base" ] && continue
 			cp "$path" "$dest/$base"
-			have["$h"]=1
+			have="$have$h"$'\n'
 			copied=$((copied + 1))
 		done < <(for f in "$cachedir"/*; do
 				[ -f "$f" ] && printf '%s\t%s\n' "$(wc -c <"$f" | tr -d ' ')" "$f"
@@ -471,9 +474,15 @@ snap_before="$(git_repo status --porcelain --untracked-files=all 2>/dev/null || 
 run_search
 snap_after="$(git_repo status --porcelain --untracked-files=all 2>/dev/null || true)"
 
-mapfile -t discovered < <(new_untracked "$snap_before" "$snap_after")
+# A while-read loop, not mapfile: macOS ships bash 3.2 and `env bash` is that
+# bash on a stock machine, so bash-4 builtins here mean the tool has never run
+# where the fuzz corpora live.
+discovered=()
+while IFS= read -r discovered_path; do
+	discovered+=("$discovered_path")
+done < <(new_untracked "$snap_before" "$snap_after")
 found_any=false
-for path in "${discovered[@]}"; do
+for path in ${discovered[@]+"${discovered[@]}"}; do
 	[ -n "$path" ] || continue
 	case "$path" in
 		*/testdata/fuzz/*/*) handle_native "$path"; found_any=true ;;
