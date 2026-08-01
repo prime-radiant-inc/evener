@@ -368,7 +368,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
-	app.WaitFor("Select a user turn, then press f to fork.", "f: fork selected user turn")
+	app.WaitFor("Select a user message, then press f to fork.", "f: fork selected user message")
 	app.SendKeys("i")
 	app.WaitFor("enter send")
 
@@ -485,8 +485,8 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
-	// Browse-mode fork: k/j move the selection cursor across turns (auto-
-	// scrolling to keep it visible) so a user turn can be reached and forked.
+	// Browse-mode fork: k/j move the selection cursor across rows (auto-
+	// scrolling to keep it visible) so a user message can be reached and forked.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -497,9 +497,9 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("serf / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user turn", "▶ ▍ initial answer")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user message", "▶ ▍ initial answer")
 	app.SendKeys("f")
-	app.WaitFor("Select a user turn to fork.")
+	app.WaitFor("Select a user message to fork.")
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
 	}
@@ -507,7 +507,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("enter send")
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose")
-	// These k presses must move the browse cursor up to the user turn.
+	// These k presses must move the browse cursor up to the user message.
 	app.SendKeys("k")
 	app.WaitFor("▶ ▍ initial answer")
 	app.SendKeys("k")
@@ -544,7 +544,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.WaitFor("serf / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user turn")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
 	app.SendKeys("k")
 	app.SendKeys("k")
 	app.SendKeys("f")
@@ -614,7 +614,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	app.WaitFor(
 		"Command palette",
 		"/clear  clear current session  disabled: source does not advertise clear",
-		"/fork  browse and fork a user turn  disabled: source does not advertise fork",
+		"/fork  browse and fork a user message  disabled: source does not advertise fork",
 		"/shutdown  stop this resumable session  disabled: source does not advertise shutdown",
 	)
 	app.SendKeys("Escape")

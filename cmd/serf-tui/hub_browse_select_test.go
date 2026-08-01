@@ -10,10 +10,10 @@ import (
 func key(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
 // TestHubModelBrowseKJMovesSelectionAndReachesFork is the regression test for the
-// browse-mode fork bug: k/j must move the browse cursor across turns (auto-
-// scrolling to keep it visible) so a user turn can be selected and forked. Before
-// the fix, k/j only scrolled the viewport and browseSelected was pinned to the
-// trailing message, so f never reached a user turn.
+// browse-mode fork bug: k/j must move the browse cursor across rows (auto-
+// scrolling to keep it visible) so a user message can be selected and forked.
+// Before the fix, k/j only scrolled the viewport and browseSelected was pinned
+// to the trailing message, so f never reached a user message.
 func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
@@ -45,20 +45,20 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 		t.Fatal("fork must not start on a non-user message")
 	}
 
-	// k walks the cursor up to the first user turn.
+	// k walks the cursor up to the first user message.
 	for range 3 {
 		updated, _ = m.Update(key("k"))
 		m = updated.(hubModel)
 	}
 	if m.browseSelected != 0 {
-		t.Fatalf("after 3×k selection=%d, want 0 (first user turn)", m.browseSelected)
+		t.Fatalf("after 3×k selection=%d, want 0 (first user message)", m.browseSelected)
 	}
 
-	// f on the selected user turn starts a fork draft — fork is reachable.
+	// f on the selected user message starts a fork draft — fork is reachable.
 	updated, _ = m.Update(key("f"))
 	m = updated.(hubModel)
 	if m.forkDraft == nil {
-		t.Fatal("f on a selected user turn must start a fork draft")
+		t.Fatal("f on a selected user message must start a fork draft")
 	}
 	if m.forkDraft.EntryIndex != 1 {
 		t.Fatalf("fork draft entry index=%d, want 1", m.forkDraft.EntryIndex)
