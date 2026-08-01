@@ -30,7 +30,10 @@ Driver: tmux send-keys / capture-pane.
 - `serf-hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/agentic-testing.md`). Token at
-  `$HOME/.serf/auth-token`.
+  `$HOME/.serf/auth-token`. The pane captures below land in that
+  checklist's own `$run` directory, never a fixed `/tmp/pane-*.txt`
+  that a second agent running this card would overwrite between this
+  card's capture and its grep (kata `k2rx`).
 - `./serf-tui` built fresh from this branch.
 - Anthropic OAuth or API key configured for
   `anthropic/claude-haiku-4-5-20251001`.
@@ -82,34 +85,34 @@ Driver: tmux send-keys / capture-pane.
    tmux send-keys -t "$TMUX_SESSION" -l "Change of plans: write only a single haiku instead of the essay."
    tmux send-keys -t "$TMUX_SESSION" C-s
    # Capture immediately — should see the ⠋ pending prefix.
-   tmux capture-pane -t "$TMUX_SESSION" -p > /tmp/pane-pending.txt
+   tmux capture-pane -t "$TMUX_SESSION" -p > "$run/pane-pending.txt"
    ```
 
 5. **Wait for reconcile** — the daemon ack + appwire round-trip
    for `serf/steering/injected` typically lands within 1-2 s:
    ```
    sleep 3
-   tmux capture-pane -t "$TMUX_SESSION" -p > /tmp/pane-reconciled.txt
+   tmux capture-pane -t "$TMUX_SESSION" -p > "$run/pane-reconciled.txt"
    ```
 
 ## Expected
 
-- **/tmp/pane-pending.txt** contains a line with the faint `⠋ `
+- **$run/pane-pending.txt** contains a line with the faint `⠋ `
   prefix (UTF-8 `e2 a0 8b`) followed by `↻ Change of plans: …`.
   No `✗` glyph anywhere in the pane.
   ```
-  grep -q '⠋' /tmp/pane-pending.txt
-  ! grep -q '✗' /tmp/pane-pending.txt
+  grep -q '⠋' "$run/pane-pending.txt"
+  ! grep -q '✗' "$run/pane-pending.txt"
   ```
-- **/tmp/pane-reconciled.txt** no longer contains the `⠋ ` prefix
+- **$run/pane-reconciled.txt** no longer contains the `⠋ ` prefix
   on the steer text. A `↻ Change of plans: …` line (the
   authoritative steering chip, rendered by the same `↻ ` prefix
   by the `case transcript.MsgSteering:` branch of `RenderMessage`,
   `cmd/serf-tui/internal/msgrender/message.go:235` — there is no
   `msgSteering` identifier) is present.
   ```
-  ! grep -q '⠋' /tmp/pane-reconciled.txt
-  grep -q '↻ Change of plans' /tmp/pane-reconciled.txt
+  ! grep -q '⠋' "$run/pane-reconciled.txt"
+  grep -q '↻ Change of plans' "$run/pane-reconciled.txt"
   ```
 - Transcript on disk records exactly one new `kind=STEERING` entry
   whose text matches the typed steer:
@@ -142,7 +145,7 @@ tmux send-keys -t "$TMUX_SESSION" "i"
 tmux send-keys -t "$TMUX_SESSION" C-c C-c
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 rm -rf "$WORKDIR"
-rm -f /tmp/pane-pending.txt /tmp/pane-reconciled.txt
+rm -f "$run/pane-pending.txt" "$run/pane-reconciled.txt"
 ```
 
 ## Sharp edges

@@ -14,7 +14,13 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
 
 ## Pre-state
 
-- Built serf binary (`go build -o /tmp/serf ./cmd/serf` if absent).
+- Built serf binary, into this run's own directory — never a fixed
+  `/tmp/serf` that a second card running at the same time would
+  overwrite mid-run (kata `k2rx`):
+  ```bash
+  run=$(mktemp -d -t serf-e2e-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  ```
 - Creds exported into the child env:
   ```bash
   set -a; . "$PWD/.env"; set +a
@@ -34,7 +40,7 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
    one tool result exceeds the per-result line clamp (300 runes) and gets
    marked `[truncated]` in the condensed view:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Do these steps in order, one tool call at a time: (1) create a file count.py that prints the numbers 1 through 200 each on its own line; (2) run it with python3 and let the full output through; (3) create a file hello.txt containing the word hello; (4) cat hello.txt; (5) report what you did. Do not combine steps."
    ```
    Wait for exit 0. This yields multiple ASSISTANT/tool turns, one of
@@ -43,7 +49,7 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
 3. **Session B — outline, then range, then expand.** Drive the full loop
    in one run:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$proj" \
      "Find the earlier session in this project that ran a script printing the numbers 1 to 200 (use find_session_transcripts) and retain its transcript_ref. Then: (1) call read_session_transcript on it with format outline and report the Turn number of the line that ran count.py and whether that line is marked [truncated]; (2) call read_session_transcript again with a range that spans a few turns around that Turn (e.g. if the outline shows it at Turn 6, use range '4-8') and confirm those turns render; (3) call read_session_transcript once more with expand_turn set to that same Turn number and report expansion.representation, bytes_returned, total_bytes, and whether a continuation was returned. Confirm the exact expansion contains the full 1..200 output. This small fixture must fit in the default 16 KiB page, so report a failure if bytes_returned differs from total_bytes or a continuation is present. Quote the Turn numbers you used at each step."
    ```
 
@@ -82,7 +88,7 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
 ## Cleanup
 
 ```bash
-rm -rf "$proj"
+rm -rf "$proj" "$run"
 ```
 
 ## Sharp edges

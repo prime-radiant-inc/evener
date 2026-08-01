@@ -48,8 +48,11 @@ reported as supervision loss, never as command failure (line 1001).
 
    `kill -9` is deliberate: a graceful SIGTERM may run shutdown paths;
    the card asserts crash durability. Confirm the process is gone.
-4. Record the pre-restart facts: copy `$JOBS` aside
-   (`cp "$JOBS" /tmp/jobs-before-restart.jsonl`) and note the last
+4. Record the pre-restart facts: copy `$JOBS` into this run's own
+   directory (`cp "$JOBS" "$run/jobs-before-restart.jsonl"` — never a
+   fixed `/tmp` name, which a second agent running this card would
+   overwrite between this copy and the comparison, kata `k2rx`) and
+   note the last
    retained line of the output log
    (`tail -2 "sessions/$SID/jobs/$JOB.log"`).
 5. OPERATOR-STEP (the restart): resume the session by sending a new
@@ -130,7 +133,7 @@ reported as supervision loss, never as command failure (line 1001).
   anything lingers.
 - Shut down the resumed session (`POST /s/$SID/shutdown`); remove the
   stale rendezvous files of the killed PIDs under `$HOME/.serf/run/` if
-  present; `rm -rf "$tmpdir" /tmp/jobs-before-restart.jsonl`.
+  present; `rm -rf "$tmpdir"` and `rm -f "$run/jobs-before-restart.jsonl"`.
 
 ## Sharp edges
 

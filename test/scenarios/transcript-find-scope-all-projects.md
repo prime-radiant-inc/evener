@@ -13,7 +13,13 @@ then from a serf run in a **different** project dir Y (sharing the same
 
 ## Pre-state
 
-- Built serf binary (`go build -o /tmp/serf ./cmd/serf` if absent).
+- Built serf binary, into this run's own directory — never a fixed
+  `/tmp/serf` that a second card running at the same time would
+  overwrite mid-run (kata `k2rx`):
+  ```bash
+  run=$(mktemp -d -t serf-e2e-XXXXXX)
+  go build -o "$run/serf" ./cmd/serf
+  ```
 - Creds exported into the child env:
   ```bash
   set -a; . "$PWD/.env"; set +a
@@ -45,7 +51,7 @@ root ⇒ `all_projects` can reach X from Y.
    shared state root:
    ```bash
    marker="cross-proj-$(date +%s)"
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$dirX" --state-dir "$state" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$dirX" --state-dir "$state" \
      "Create a file flag.txt containing exactly: ${marker}. Read it back with cat and report the marker."
    ```
    Wait for exit 0. Confirm two distinct buckets exist under the shared
@@ -54,13 +60,13 @@ root ⇒ `all_projects` can reach X from Y.
 2. **Session in project Y — default scope must MISS X.** Same state
    root, different dir:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$dirY" --state-dir "$state" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$dirY" --state-dir "$state" \
      "Call find_session_transcripts with query '${marker}' and the DEFAULT scope (do not set scope). Report how many matches came back. Then explain in one line whether a session from a different project directory would be visible at the default scope."
    ```
 
 3. **Session in project Y — all_projects must FIND X.** Another Y run:
    ```bash
-   /tmp/serf --model oai-work/gpt-5.5 --dir "$dirY" --state-dir "$state" \
+   "$run/serf" --model oai-work/gpt-5.5 --dir "$dirY" --state-dir "$state" \
      "Call find_session_transcripts with query '${marker}' AND scope set to 'all_projects'. Report: (a) the number of matches, (b) the transcript_ref of the match and whether it is a local: ref or a proj: ref, (c) the scope_applied value on the response. Then call read_session_transcript on that ref and report the marker the matched session wrote."
    ```
 
@@ -95,7 +101,7 @@ root ⇒ `all_projects` can reach X from Y.
 ## Cleanup
 
 ```bash
-rm -rf "$state" "$dirX" "$dirY"
+rm -rf "$state" "$dirX" "$dirY" "$run"
 ```
 
 ## Sharp edges

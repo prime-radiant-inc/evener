@@ -48,9 +48,11 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
    `$tmpdir/serf/auth/openai.json`.
 
 2. **Spawn the device login in the background**, capturing
-   stdout+stderr together:
+   stdout+stderr together into this run's own state dir — never a
+   fixed `/tmp/login-out.txt`, which a second agent running this card
+   would truncate out from under step 3's `grep` (kata `k2rx`):
    ```bash
-   ./serf openai login --device > /tmp/login-out.txt 2>&1 &
+   ./serf openai login --device > "$tmpdir/login-out.txt" 2>&1 &
    PID=$!
    echo "$PID" >"$tmpdir/login.pid"   # so a later shell can kill it by pid, not by pattern
    ```
@@ -60,7 +62,7 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
    `PollDeviceAuth` (plus the concurrent-login watcher goroutine)
    is now running:
    ```bash
-   until grep -q "device_code=" /tmp/login-out.txt; do sleep 0.5; done
+   until grep -q "device_code=" "$tmpdir/login-out.txt"; do sleep 0.5; done
    ```
    Typical: device code appears within ~1–2s.
 
@@ -111,7 +113,7 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 6. **Inspect the captured stdout+stderr** for the
    concurrent-login signal:
    ```bash
-   cat /tmp/login-out.txt
+   cat "$tmpdir/login-out.txt"
    ```
 
 ## Expected
@@ -151,8 +153,10 @@ happy-path round trip), `auth-device-autodetect.md` (mode picker),
 ```bash
 rm -rf "$tmpdir"
 unset XDG_STATE_HOME
-rm -f /tmp/login-out.txt
 ```
+
+The captured stdout+stderr lives at `$tmpdir/login-out.txt`, so the
+one removal covers it.
 
 The `kill $PID` step is NOT needed here — the process exits on
 its own once the watcher fires. If the test fails and the process
