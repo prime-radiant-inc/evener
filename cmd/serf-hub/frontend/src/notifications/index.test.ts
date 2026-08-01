@@ -171,6 +171,18 @@ describe("initNotifications lifecycle", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/tree", expect.anything());
     expect(treeStore.getState().tree).not.toBeNull();
   });
+
+  // kata p5w9. The baseline's duty is "a tree exists", not "fetch again" - so
+  // where the rail HAS already loaded one (the desktop boot, where both run),
+  // it must not issue a second identical GET milliseconds after the first.
+  test("does not re-fetch a tree that is already loaded", async () => {
+    treeStore.setState({ tree: treeOf([]) });
+
+    initNotifications();
+    await tick();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("counts apply unconditionally", () => {
@@ -279,5 +291,26 @@ describe("reconnect re-baselines silently", () => {
       tree: treeOf([node("local:a", "awaiting"), node("local:b", "awaiting"), node("local:c", "awaiting")]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  // kata p5w9. Only a TRANSITION into "ready" is a (re)connection. AppShell
+  // publishes serverInfo through connectionStore once its own connect()
+  // promise resolves, which is an ordinary store change with the state still
+  // "ready" - reading that as a reconnect made every boot issue an extra,
+  // pointless GET /api/tree (and re-baseline the attention snapshot for no
+  // reason). The kata's own probe saw the third call and put it down to the
+  // FakeClient; it is the real boot sequence, and it happens in the browser
+  // too.
+  test("a serverInfo update on an already-ready connection is not read as a reconnect", async () => {
+    initNotifications();
+    await tick();
+    connectionStore.getState().connect(new FakeClient("ready")); // the initial connect
+    await tick();
+    const callsAfterConnect = fetchMock.mock.calls.length;
+
+    connectionStore.setState({ serverInfo: { name: "serf-hub", version: "1.0.0" } });
+    await tick();
+
+    expect(fetchMock.mock.calls.length).toBe(callsAfterConnect);
   });
 });

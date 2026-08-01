@@ -342,6 +342,25 @@ describe("initial load", () => {
     renderRail();
     await screen.findByText(/no sessions yet/i);
   });
+
+  // kata p5w9. This effect's duty is "the rail has data", not "fetch again":
+  // the tree it renders is kept current by serf/tree/changed pushes, so a
+  // remount with one already loaded has nothing to go and get. Mobile makes
+  // that routine - the rail lives inside TreeDrawer's sheet, which renders
+  // null while closed, so every drawer OPEN is a fresh mount - and on desktop
+  // it is half of the duplicate boot fetch (initNotifications()'s baseline is
+  // the other half).
+  test("a remount with a tree already loaded issues no second request", async () => {
+    const { unmount } = renderRail();
+    await screen.findByText("Live session");
+    expect(treeGetCallCount()).toBe(1);
+
+    unmount();
+    renderRail();
+    await screen.findByText("Live session");
+
+    expect(treeGetCallCount()).toBe(1);
+  });
 });
 
 describe("sections", () => {

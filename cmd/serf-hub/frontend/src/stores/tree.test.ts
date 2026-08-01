@@ -216,6 +216,76 @@ describe("refresh", () => {
   });
 });
 
+// kata p5w9. Two independent mount-time callers want the same thing - "a tree
+// exists" - and on a desktop boot both run: initNotifications()'s baseline
+// (AppShell's module evaluation, every host) and the rail's own mount effect.
+// refresh() cannot collapse them, because a refresh() caller is reacting to a
+// change an already-issued request may predate; ensureLoaded() is the seam
+// that can.
+describe("ensureLoaded", () => {
+  test("two concurrent callers share ONE GET /api/tree", async () => {
+    let resolveFetch!: (value: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+
+    const first = treeStore.getState().ensureLoaded();
+    const second = treeStore.getState().ensureLoaded();
+    resolveFetch(jsonResponse(EMPTY_WIRE_TREE));
+
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(treeStore.getState().tree).toEqual(NORMALIZED_EMPTY_TREE);
+  });
+
+  test("issues no request at all once a tree is loaded", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    await treeStore.getState().refresh();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    expect(await treeStore.getState().ensureLoaded()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a failed load is not cached - the next caller gets a real retry", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("network down"));
+    expect(await treeStore.getState().ensureLoaded()).toBe(false);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    expect(await treeStore.getState().ensureLoaded()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(treeStore.getState().tree).toEqual(NORMALIZED_EMPTY_TREE);
+  });
+
+  // The guarantee the dedup must NOT eat: serf/tree/changed (and a reconnect)
+  // call refresh() because something changed, and a request already in flight
+  // may have been issued before that change. Joining it would silently drop
+  // the update, so refresh() always issues its own.
+  test("refresh() still issues its own request while an ensureLoaded is in flight", async () => {
+    let resolveFirst!: (value: Response) => void;
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ ...EMPTY_WIRE_TREE, generated_at: "after-the-change" }));
+
+    const loading = treeStore.getState().ensureLoaded();
+    const changed = treeStore.getState().refresh();
+
+    expect(await changed).toBe(true);
+    resolveFirst(jsonResponse(EMPTY_WIRE_TREE));
+    await loading;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(treeStore.getState().tree?.generated_at).toBe("after-the-change");
+  });
+});
+
 describe("reconcileProjectDelete", () => {
   test("filters deleted sessions while retaining skipped and unmentioned rows", () => {
     const deleted: TreeNode = {

@@ -267,8 +267,20 @@ export interface TreeStoreState {
   // fresh /api/tree stub is worse than what's already loaded, not better.
   projectDetails: Map<string, TreeProject>;
   // true means this call's response became authoritative; false means the
-  // request failed or was superseded by a newer refresh.
+  // request failed or was superseded by a newer refresh. ALWAYS issues its
+  // own request - see inflightRefresh below for why it never joins one.
   refresh(): Promise<boolean>;
+  // "Make sure a tree exists", for the mount-time callers that want data
+  // present rather than data re-fetched: resolves straight away when one is
+  // already loaded, joins an in-flight refresh when there is one, and
+  // otherwise starts a refresh. Two callers run on every desktop boot -
+  // initNotifications()'s baseline (AppShell's module evaluation, so it runs
+  // on every host, including the mobile one where no rail ever mounts) and
+  // the rail's own mount effect - and this is what collapses them into ONE
+  // GET /api/tree instead of two identical ones milliseconds apart (kata
+  // p5w9). A FAILED load is not cached: the next caller gets a real retry,
+  // the same rule settingsOverview.ts's own fetch() follows.
+  ensureLoaded(): Promise<boolean>;
   loadProjectDetail(key: string): Promise<void>;
   loadProjectPage(key: string, tier: TreeTier, offset: number, limit: number): Promise<void>;
   reconcileProjectDelete(key: string, deletedIDs: string[], skippedIDs: string[]): void;
@@ -276,6 +288,15 @@ export interface TreeStoreState {
 
 let refreshGeneration = 0;
 const projectMutationGenerations = new Map<string, number>();
+
+// The refresh() currently in flight, if any - what ensureLoaded() joins
+// instead of issuing a second identical GET. refresh() itself deliberately
+// never joins it: every refresh() caller is reacting to something that just
+// changed (a serf/tree/changed push, a reconnect), and a request already in
+// flight may have been issued BEFORE that change, so joining it would drop
+// the update with nothing left to re-fetch it. refreshGeneration decides
+// which response wins; this decides whether to ask at all.
+let inflightRefresh: Promise<boolean> | null = null;
 
 function sessionIDMatches(node: TreeNode, id: string): boolean {
   if (node.ref === id || node.session_id === id) return true;
@@ -330,25 +351,42 @@ function reconcileProjectList(
   });
 }
 
-export const treeStore = createStore<TreeStoreState>((set) => ({
+export const treeStore = createStore<TreeStoreState>((set, get) => ({
   tree: null,
   loading: false,
   error: null,
   projectDetails: new Map(),
 
-  async refresh() {
-    const generation = ++refreshGeneration;
-    set({ loading: true, error: null });
-    try {
-      const tree = await fetchTree();
-      if (generation !== refreshGeneration) return false;
-      set({ tree, loading: false, error: null });
-      return true;
-    } catch (err) {
-      if (generation !== refreshGeneration) return false;
-      set({ loading: false, error: errorText(err) });
-      return false;
-    }
+  refresh() {
+    const run = (async (): Promise<boolean> => {
+      const generation = ++refreshGeneration;
+      set({ loading: true, error: null });
+      try {
+        const tree = await fetchTree();
+        if (generation !== refreshGeneration) return false;
+        set({ tree, loading: false, error: null });
+        return true;
+      } catch (err) {
+        if (generation !== refreshGeneration) return false;
+        set({ loading: false, error: errorText(err) });
+        return false;
+      }
+    })();
+    // Published only after the call above has already bumped the generation
+    // and set loading - both synchronous, so nothing can observe a half-
+    // started refresh. Cleared only if this is still the latest one, so a
+    // slower predecessor settling later never retires its successor's marker.
+    inflightRefresh = run;
+    const clear = () => {
+      if (inflightRefresh === run) inflightRefresh = null;
+    };
+    void run.then(clear, clear);
+    return run;
+  },
+
+  ensureLoaded() {
+    if (get().tree !== null) return Promise.resolve(true);
+    return inflightRefresh ?? get().refresh();
   },
 
   async loadProjectDetail(key) {
@@ -498,6 +536,7 @@ if (initialClient) attachNotifications(initialClient);
 export function resetTreeStoreForTests(): void {
   wiredClient = null;
   refreshGeneration = 0;
+  inflightRefresh = null;
   projectMutationGenerations.clear();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;

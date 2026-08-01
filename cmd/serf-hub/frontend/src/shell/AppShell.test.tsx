@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
@@ -1217,4 +1218,36 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   await waitFor(() => expect(window.location.pathname).toBe("/thread/local:s1"));
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
+});
+
+// --- kata p5w9: one boot, one GET /api/tree ------------------------------
+
+// A desktop boot has TWO unconditional mount-time tree fetchers -
+// initNotifications()'s baseline (run at AppShell.tsx's module evaluation, so
+// it fires on every host, including the mobile one where no rail mounts) and
+// the rail's own mount effect - and used to issue a full GET /api/tree from
+// each, milliseconds apart, for the same snapshot. Plus a third: AppShell
+// publishes serverInfo through connectionStore once its connect() resolves,
+// which the reconnect subscriber read as a new connection.
+//
+// The notifications engine is a module singleton already initialized by
+// AppShell.tsx's own import, so a REAL boot is modelled by resetting and
+// re-initializing it here - and it is deliberately left initialized
+// afterwards, exactly as module evaluation leaves it for every other test in
+// this file.
+test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve(jsonResponse(url === "/api/tree" ? TREE_RESPONSE_WITH_NESTED_SESSION : {})),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  resetNotificationsForTests();
+  initNotifications();
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await screen.findByText("No session open");
+  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
+
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/tree")).toHaveLength(1);
 });

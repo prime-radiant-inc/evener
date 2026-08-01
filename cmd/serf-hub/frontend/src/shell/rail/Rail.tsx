@@ -226,8 +226,16 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // common case allocates nothing and every downstream memo stays stable.
   const tree = fetchedTree === null ? null : applyPending(fetchedTree, pending);
 
+  // ensureLoaded, not refresh: the duty here is "the rail has data", and the
+  // tree it renders is kept current by serf/tree/changed pushes, so a mount
+  // with one already loaded has nothing to go and get. Sharing the store's
+  // in-flight request is what collapses a desktop boot's two identical GET
+  // /api/tree - this and initNotifications()'s baseline, fired milliseconds
+  // apart - into one, and stops every mobile drawer OPEN (which remounts this
+  // component, since TreeDrawer's sheet renders null while closed) from
+  // re-fetching (kata p5w9).
   useEffect(() => {
-    void treeStore.getState().refresh();
+    void treeStore.getState().ensureLoaded();
   }, []);
 
   // Every disclosure in the rail funnels through here - project rows, subagent
