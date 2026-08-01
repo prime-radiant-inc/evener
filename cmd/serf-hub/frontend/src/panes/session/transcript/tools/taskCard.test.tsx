@@ -55,14 +55,26 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByText("check the thing")).toBeTruthy();
 });
 
-test("the progress head reads <done> / <total> from the tool output footer", () => {
+test("the progress head reads '<done> of <total> done' from the tool output footer", () => {
   renderItem(
     taskItem(
       { action: "update", updates: [{ id: 3, status: "done" }] },
       "Updated 3→done. Progress: 3/3 tasks complete.",
     ),
   );
-  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 / 3");
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+});
+
+test("the count appears exactly once - the tool-row summary is just 'Tasks'", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "done" }] },
+      "Updated 3→done. Progress: 3/3 tasks complete.",
+    ),
+  );
+  expect(screen.getAllByTestId("task-card-progress")).toHaveLength(1);
+  expect(screen.queryByText(/Tasks ·/)).toBe(null);
+  expect(screen.getByText("Tasks")).toBeTruthy();
 });
 
 test("a completed update renders a flagged touched-done row", () => {

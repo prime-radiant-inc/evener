@@ -208,7 +208,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.done} / {progress.total}
+            {progress.done} of {progress.total} done
           </span>
           <Meter
             label={`Task progress: ${progress.done} of ${progress.total} complete`}
@@ -232,10 +232,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "task_list",
   icon: "tasks",
-  summary(item: ItemModel) {
-    const progress = parseProgress(item.output);
-    return progress ? `Tasks · ${progress.done} / ${progress.total}` : "Tasks";
-  },
+  summary: () => "Tasks",
   body: TaskCardBody,
   // The card is a header, not a fold-to-open tool row - open it at settle so a
   // task change is visible without a click, the way the legacy always-visible
