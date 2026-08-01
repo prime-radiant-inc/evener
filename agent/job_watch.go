@@ -1044,29 +1044,20 @@ func normalizedWatchConfigHash(a watchArgs) string {
 		Events:             canonicalWatchEvents(a.Events),
 		Every:              a.Every,
 		EventFilter:        watchEventFilterSnapshot(a.EventFilter),
+		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
+		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
 		snapshot.SendMessage = a.Send.Message
 		snapshot.IncludeExcerpt = a.Send.IncludeExcerpt
 	}
-	receiverSessionID := strings.TrimSpace(a.ReceiverSessionID)
-	receiverDelegateID := strings.TrimSpace(a.ReceiverDelegateID)
-	var payload any = snapshot
-	if receiverSessionID != "" || receiverDelegateID != "" {
-		payload = struct {
-			jobstore.WatchConfigSnapshot
-			ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
-			ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
-		}{
-			WatchConfigSnapshot: snapshot,
-			ReceiverSessionID:   receiverSessionID,
-			ReceiverDelegateID:  receiverDelegateID,
-		}
-	}
-	// payload contains only strings, ints, bools, and slices of strings, so the
-	// standard encoder cannot fail.
-	b, _ := json.Marshal(payload)
+	// snapshot contains only strings, ints, bools, and slices of strings, so the
+	// standard encoder cannot fail. The receiver fields are hashed in place rather
+	// than beside the snapshot: they are part of the same configured identity, and
+	// because they sit last in the struct the encoding is byte-identical to the
+	// wrapper form, so hashes already written to jobs.jsonl still match.
+	b, _ := json.Marshal(snapshot)
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
@@ -1708,6 +1699,8 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		Events:             append([]string(nil), cfg.events...),
 		Every:              cfg.triggerEvery,
 		EventFilter:        watchEventFilterSnapshot(cfg.eventFilter),
+		ReceiverSessionID:  cfg.receiverSessionID,
+		ReceiverDelegateID: cfg.receiverDelegateID,
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To

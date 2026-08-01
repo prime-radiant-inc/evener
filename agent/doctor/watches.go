@@ -30,6 +30,14 @@ type WatchView struct {
 	Active           bool   `json:"active"`
 	EndReason        string `json:"end_reason,omitempty"`
 
+	// Receiver identity: WHO this watch reports to. A cross-session receiver watch
+	// installs on the OWNER's manager, so owner and visible both name the owner and
+	// neither answers "who is watching" — the question an operator asks first when a
+	// watch's read grant or delivery is missing. Empty means the owner watches for
+	// itself, or the row predates the registry carrying the field.
+	ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
+
 	// TargetJob is the state of the watched JOB, joined from the same jobs.jsonl
 	// fold — the answer to "why didn't my watch fire". A target that was already
 	// terminal, or that produced no output, could never match its condition, and
@@ -170,6 +178,8 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 		v.Condition = rec.Condition
 		v.Active = rec.Active
 		v.EndReason = rec.EndReason
+		v.ReceiverSessionID = rec.ReceiverSessionID
+		v.ReceiverDelegateID = rec.ReceiverDelegateID
 	}
 
 	deliveries := make([]settledDelivery, 0, len(settledByID))
@@ -300,6 +310,11 @@ func RenderWatches(r WatchReport) string {
 		}
 		if w.OwnerSessionID != "" || w.VisibleSessionID != "" {
 			fmt.Fprintf(&b, "  owner=%s  visible=%s\n", dash(w.OwnerSessionID), dash(w.VisibleSessionID))
+		}
+		// Printed only when there is a receiver, so an owner's own watch reads as
+		// before and a receiver watch is visibly a different animal on sight.
+		if w.ReceiverSessionID != "" || w.ReceiverDelegateID != "" {
+			fmt.Fprintf(&b, "  receiver session=%s  receiver delegate=%s\n", dash(w.ReceiverSessionID), dash(w.ReceiverDelegateID))
 		}
 		fmt.Fprintf(&b, "  deliveries: %d distinct (%d delivered, %d dropped, %d evicted) from %d pending lines",
 			w.DistinctDeliveries, w.Delivered, w.Dropped, w.Evicted, w.PendingLines)

@@ -235,7 +235,7 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 				e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
 				continue
 			}
-			watches[e.WatchID] = &WatchRecord{
+			rec := &WatchRecord{
 				WatchID:          e.WatchID,
 				Generation:       e.Watch.Generation,
 				OwnerSessionID:   e.Watch.OwnerSessionID,
@@ -247,6 +247,13 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 				Deliveries:       e.Watch.Deliveries,
 				Active:           true,
 			}
+			// The receiver rides the config snapshot, which rows written before it
+			// existed do not have; those fold to an empty receiver, not a fold error.
+			if e.Watch.Config != nil {
+				rec.ReceiverSessionID = e.Watch.Config.ReceiverSessionID
+				rec.ReceiverDelegateID = e.Watch.Config.ReceiverDelegateID
+			}
+			watches[e.WatchID] = rec
 		case EventWatchCleared:
 			if e.Watch.Generation == "" {
 				continue

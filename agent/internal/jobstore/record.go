@@ -157,6 +157,12 @@ type WatchRecord struct {
 	Deliveries       int    `json:"deliveries,omitempty"`
 	Active           bool   `json:"active"`
 	EndReason        string `json:"end_reason,omitempty"`
+	// Receiver identity, folded out of the registration's config snapshot: WHO
+	// this watch reports to, which owner/visible cannot say because a receiver
+	// watch installs on the owner's manager and names the owner in both. Empty on
+	// an owner's own watch and on any row written before the snapshot carried it.
+	ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
 }
 
 type WatchConfigSnapshot struct {
@@ -169,6 +175,14 @@ type WatchConfigSnapshot struct {
 	SendTo             string                    `json:"send_to,omitempty"`
 	SendMessage        string                    `json:"send_message,omitempty"`
 	IncludeExcerpt     bool                      `json:"include_excerpt,omitempty"`
+	// Receiver identity is part of the watch's configured identity — two watches
+	// that differ only in who receives them are different watches — so it belongs
+	// in the hashed snapshot rather than beside it. These stay LAST because the
+	// config hash is the snapshot's JSON encoding: appending here reproduces the
+	// exact bytes the hash was computed over when they rode a wrapper struct, so
+	// every already-durable config hash keeps matching.
+	ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
 }
 
 type WatchEventFilterSnapshot struct {
