@@ -120,7 +120,7 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.authStatusSeen, m.detail.Profile, m.detail.Model = false, "", "plain-model"
 		_ = m.sessionAuthReadinessLabel()
 		m.err = errors.New("session error")
-		m.forkDraft = &hubForkDraft{Turn: 2}
+		m.forkDraft = &hubForkDraft{EntryIndex: 2}
 		m.session.messages = []transcript.ChatMessage{
 			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{JobID: "job", Status: "running"}}},
 			{Kind: transcript.MsgUser, Text: "hello"},

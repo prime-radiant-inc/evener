@@ -206,9 +206,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			draft := *m.forkDraft
 			m.forkDraft.Submitting = true
-			m.addSessionSystem(fmt.Sprintf("Forking from turn %d...", draft.Turn))
+			m.addSessionSystem(fmt.Sprintf("Forking from transcript position %d...", draft.EntryIndex))
 			return m, sendHubFork(m.client, draft.Ref, hubForkRequest{
-				Turn:          draft.Turn,
+				EntryIndex:    draft.EntryIndex,
 				EditedMessage: text,
 				Label:         draft.Label,
 			})

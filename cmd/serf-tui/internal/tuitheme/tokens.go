@@ -116,10 +116,16 @@ var darkTheme = Theme{
 	// Calm state palette (palette v2): needs-you moves onto the old
 	// processing slate-blue; working moves onto the old idle sage-green;
 	// idle gets a fresh neutral gray. Warning/ended/error/subagent unchanged.
+	// Idle is that gray one tier lighter than the value it shipped at
+	// (#767c82, each channel +0x19): dark's TextDim is #76767c, so the old
+	// idle sat 1.07:1 from the chrome tone it has to be told apart from and
+	// every configured-vs-chrome badge read flat. On a dark ground the more
+	// present tone is the lighter one, and going the other way would collide
+	// with StateEnded instead.
 	StateAwaiting:  lipgloss.Color("#6b9ec8"),
 	StateWorking:   lipgloss.Color("#88a878"),
 	StateWarning:   lipgloss.Color("#c4a06a"),
-	StateIdle:      lipgloss.Color("#767c82"),
+	StateIdle:      lipgloss.Color("#8f959b"),
 	StateEnded:     lipgloss.Color("#5e5e64"),
 	StateSubagent:  lipgloss.Color("#a8927a"),
 	StateError:     lipgloss.Color("#d16969"),

@@ -60,8 +60,11 @@ type hubRow struct {
 }
 
 type hubForkDraft struct {
-	Ref          appwire.Ref
-	Turn         int
+	Ref appwire.Ref
+	// EntryIndex is the divergence position: the selected row's
+	// transcript.ChatMessage.TranscriptEntryIndex, never a turn id or turn
+	// index. thread/fork cuts the child at that entry.
+	EntryIndex   int
 	OriginalText string
 	Label        string
 	Submitting   bool
