@@ -439,10 +439,21 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // batch envelope - the primary Send action inside it stays --accent (blue),
 // which is not gated at all, per the amber-owns-the-container/blue-owns-
 // the-action split the mockup settled on.
+//
+// tasklist-checklist-card: panes/session/transcript/tools/taskcheck.module.css
+// earns the same exception for the same structural reason - it lives under
+// panes/session/transcript/tools/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its one semantic reach (--alive on the done
+// glyph) is the user-approved exception to the transcript card's neutral-
+// color house rule (docs/superpowers/specs/2026-07-31-tasklist-renderer-
+// design.md): the glyph alone carries subtle semantic colour so a row's
+// state reads at a glance; every piece of TEXT on the card stays on the
+// ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/Rail.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
+  "panes/session/transcript/tools/taskcheck.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
