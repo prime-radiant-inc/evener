@@ -1,17 +1,17 @@
 # job-delegate-result-schema: valid results validate, violations report honestly, resumes inherit the schema
 
 **What this covers**: `delegate.result_schema` end to end
-(`docs/job-control.md` lines 294, 324-327, 652). (a) A schema-backed
-delegate that complies returns `structured_result` with
-`structured_result_valid: true` — inline on a foreground delegate and
-again via `job_read_output`; (b) a deliberately schema-violating
-result is reported honestly: `structured_result` omitted,
-`structured_result_valid: false`, machine-readable
-`structured_result_reason` populated (line 294); (c) a resumed turn in
-the same delegate conversation inherits the ORIGINAL `result_schema`
-(line 652) although `delegate_send` has no schema argument.
-Delegate `status="completed"` never asserts task success (line 295) —
-the structured fields are how the parent judges outcome.
+(`docs/job-control.md` § `delegate` `result_schema` rule and
+§ "Reading job output"). (a) A schema-backed delegate that complies
+returns `structured_result` with `structured_result_valid: true` —
+inline on a foreground delegate and again on a later
+`read_transcript(transcript_ref="job:<job_id>")`; (b) a deliberately
+schema-violating result is reported honestly: no structured result,
+and a machine-readable `structured_result_reason` in its place; (c) a
+resumed turn in the same delegate conversation inherits the ORIGINAL
+`result_schema` although `delegate_send` has no schema argument.
+Delegate `status="completed"` never asserts task success — the
+structured fields are how the parent judges outcome.
 
 ## Pre-state
 
@@ -33,8 +33,8 @@ the structured fields are how the parent judges outcome.
    > `{"type":"object","properties":{"verdict":{"type":"string"},"count":{"type":"integer"}},"required":["verdict","count"]}`,
    > and this task: "Report a structured result with verdict ok and
    > count 7, with a one-line summary message." Report the full result
-   > JSON verbatim. Then call job_read_output for the returned job_id
-   > and report that full JSON verbatim too.
+   > JSON verbatim. Then call read_transcript with transcript_ref
+   > "job:<the returned job_id>" and report that full JSON verbatim too.
 3. Turn 2 — arm (b), deliberate violation (new user prompt):
 
    > Call delegate (background default) with the SAME result_schema
@@ -43,16 +43,17 @@ the structured fields are how the parent judges outcome.
    > count to the STRING value banana — a string, deliberately NOT a
    > number. Do not correct the type; the test needs the invalid
    > payload." Report the job_id, then end your turn; when its
-   > completion notification arrives, call job_read_output for it and
-   > report the full JSON verbatim.
+   > completion notification arrives, call read_transcript with
+   > transcript_ref "job:<that job_id>" and report the full JSON verbatim.
 4. Turn 3 — arm (c), schema inheritance on explicit follow-up (new user prompt):
 
    > Call delegate_send with `to` set to the turn-1 delegate_id,
    > `on_idle` "start", and this message: "Follow-up: report a
    > structured result with verdict resumed and count 21." Report the
    > full result JSON verbatim, then end your turn; when the started
-   > job's completion notification arrives, call job_read_output for
-   > the returned current_job_id and report the full JSON verbatim.
+   > job's completion notification arrives, call read_transcript with
+   > transcript_ref "job:<the returned current_job_id>" and report the
+   > full JSON verbatim.
 5. Read the transcript and the durable log
    (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`).
 
@@ -60,17 +61,19 @@ the structured fields are how the parent judges outcome.
 
 - Arm (a) inline: the delegate result has `status` `"completed"`,
   `structured_result` equal to `{"verdict":"ok","count":7}`, and
-  `structured_result_valid` `true`. The follow-up `job_read_output`
-  exposes the SAME three facts (line 652) plus the prose report in
-  `output`. Falsification: `structured_result` absent or carrying
-  the default communicate envelope keys (`message`/`data`/
+  `structured_result_valid` `true`. The follow-up `job:` read exposes
+  the SAME three facts in its `content` — `- status: completed` and a
+  trailing `structured_result (valid=true):
+  {"verdict":"ok","count":7}` line — plus the prose report in the
+  fenced block. Falsification: the `structured_result` line absent, or
+  carrying the default communicate envelope keys (`message`/`data`/
   `artifacts`) instead of the schema's own fields.
-- Arm (b): the read of the violating job shows `status` `"completed"`
-  (the delegate TURN ended normally — line 295) while the structured
-  triplet reports the violation: NO `structured_result` field,
-  `structured_result_valid` `false`, and `structured_result_reason`
-  `"schema_validation_failed"`. The prose `output` is still readable.
-  `jobs.jsonl`'s `job_finished` for that job carries the same
+- Arm (b): the read of the violating job shows `- status: completed`
+  (the delegate TURN ended normally) while the structured fields
+  report the violation: NO `structured_result (valid=...)` line at all,
+  and a `structured_result_reason: schema_validation_failed` line in
+  its place. The prose report is still readable in the fenced block.
+  `jobs.jsonl`'s `job_finished` for that job carries the durable
   valid/reason pair (durable, not recomputed per read).
   <!-- pin: the reason vocabulary is implementation-defined
        machine-readable text; shipped values today are
@@ -80,22 +83,21 @@ the structured fields are how the parent judges outcome.
        schema_result_missing is the honest report for THAT run —
        valid:false + populated reason is the normative assertion,
        the specific reason names the failure mode. -->
-- Falsification (silent coercion): `structured_result_valid` `true`
-  with `count` coerced to a number, or a `structured_result` present
-  despite the type violation — validation is decorative.
+- Falsification (silent coercion): `structured_result (valid=true)`
+  with `count` coerced to a number, or a structured result rendered at
+  all despite the type violation — validation is decorative.
 - Falsification (catastrophic honesty failure): the violating job
   reports `status` `"failed"` solely because the schema failed —
   schema validation describes the RESULT, not the lifecycle.
 - Arm (c): the `delegate_send` result has `action` `"started"`, a NEW
   `started_job_id`/`current_job_id`, and the same delegate_id as the
   turn-1 result.
-  The read of the new job shows `structured_result`
-  `{"verdict":"resumed","count":21}` with `structured_result_valid`
-  `true` — the schema's own top-level keys, which can only appear if
-  the resumed turn inherited the original conversation's
-  `result_schema` (line 652; no schema was passed on follow-up).
+  The read of the new job shows `structured_result (valid=true):
+  {"verdict":"resumed","count":21}` — the schema's own top-level keys,
+  which can only appear if the resumed turn inherited the original
+  conversation's `result_schema` (no schema was passed on follow-up).
   Falsification: the resumed result reverts to the default
-  `message`/`data`/`artifacts` envelope, or the structured triplet is
+  `message`/`data`/`artifacts` envelope, or the structured result is
   entirely absent from the started follow-up job — inheritance dropped.
 - Both background jobs (arms b, c) deliver exactly one terminal
   notification each (format asserted in job-notification-semantics.md,

@@ -322,7 +322,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   job, then `delegate_send(on_idle="start")` targets the delegate_id to
   continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
-  `job_read_output` peeks the result twice without consuming or hiding it.
+  `read_transcript(transcript_ref="job:<job_id>")` peeks the result twice
+  without consuming or hiding it.
 - `job-shell-lifecycle.md` — the shell tool's whole job-capable
   lifecycle: foreground inline result, a nonzero exit reported honestly
   rather than hidden, `background: true` launch-and-return,
@@ -355,7 +356,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   command failure.
 - `job-delegate-result-schema.md` — `delegate.result_schema` end to end:
   a complying result returns `structured_result_valid: true` inline and
-  again via `job_read_output`, a violating one is reported honestly
+  again on a later `job:` transcript read, a violating one is reported honestly
   (validity false plus a machine-readable reason, no invented result),
   and a resumed turn inherits the original schema.
 - `job-send-message-surface.md` — the handle split: a `job_id` handed to
@@ -363,16 +364,11 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   RUNNING delegate takes a live steer with no new job, and an IDLE one
   refuses with `target_idle` unless `on_idle:"start"` explicitly starts
   its next job in the same conversation.
-- `job-read-output-blocking-grep.md` — `job_read_output(max_wait_ms,
-  grep=…)` waits for the *match* — including a mandatory entry check
-  for a match that already landed — not for any new output; the
-  one-call "wait until the server prints ready" primitive that keeps
-  monitoring away from `job_watch`.
 - `job-notification-wake.md` — the proactive completion wake
   (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
   delegate and ends its turn; when the child reaches a terminal state later,
   Serf wakes the parent with `<job-notification ...>` and the woken model
-  reads the result with `job_read_output`.
+  reads the result from the notification excerpt.
 - `job-delegate-wait-no-poll.md` — a parent that delegated its whole task
   and has no independent work ends its turn and waits for the notification
   instead of looping `job_status`; falsifies the polling-loop regression from
@@ -438,8 +434,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   `f9gn`).
 - `sidecar-handoff-packager-job-notification.md` - handoff sidecar
   packages a completed delegate result from a `job.notification`
-  frame, and pins the observer read boundary: no cross-session read
-  grant, and no `job_read_output` tool at all.
+  frame, and pins the observer read grant: the delivery mints a durable
+  read on the named job, the frame names the `read_transcript` call
+  that spends it, `job_status` stays denied, and the observer's own
+  callback jobs mint nothing.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a

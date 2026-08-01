@@ -85,8 +85,8 @@ below.
    > Report verbatim the text of EVERY job-notification block that has
    > rendered on YOUR rail so far this session (the
    > `<job-notification ...>` frames you were woken with). Then call
-   > job_read_output for COORD and report the full JSON. Then end your
-   > turn.
+   > job_status for COORD and report the full JSON, including its
+   > transcript_ref. Then end your turn.
 5. Turn 4 — cascade stop (new user prompt; run a SECOND fan-out first
    so there is a live subtree to fell, since turn-1's workers are
    short-lived):
@@ -111,8 +111,8 @@ below.
 6. Read the durable logs and the transcripts:
    - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
    - the coordinator's transcript via its `transcript_ref` (from the
-     turn-1 / job_read_output result) and the descendant `jobs.jsonl`
-     under each child session dir.
+     turn-1 delegate result / the turn-3 `job_status` result) and the
+     descendant `jobs.jsonl` under each child session dir.
 
 ## Expected
 

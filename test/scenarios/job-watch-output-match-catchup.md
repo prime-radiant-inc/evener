@@ -134,6 +134,6 @@ Phase 5.2.
   `replaced_existing` should not be true on the second catch-up call.
   If it is, the one-shot leaked into the watch table — record what
   ships.
-- `job_read_output` no longer exists (retired by `cf84923c6`); use
-  `job_status` for lifecycle and `read_transcript` for the tool
-  result's retained output.
+- Use `job_status` for lifecycle and
+  `read_transcript(transcript_ref="job:<job_id>")` for the job's
+  retained output; there is no other job-output read.

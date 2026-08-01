@@ -71,13 +71,13 @@ IS the test, asserted on the coordinator's own transcript.
    coordinator's own terminal notification has rendered):
 
    > Report verbatim EVERY `<job-notification ...>` frame that has
-   > rendered on YOUR rail this session. Then call job_read_output for
+   > rendered on YOUR rail this session. Then call job_status for
    > COORD and report the full JSON (including its `transcript_ref`).
    > Then end your turn.
 5. Inspect the COORDINATOR's transcript directly (ground truth — the
    UI rail can't show the coordinator's own turns):
    - resolve the coordinator's `transcript_ref` from step 4 /
-     `job_read_output(COORD)`;
+     `job_status(COORD)`;
    - `read_session_transcript` (or read the coordinator session's
      `*.transcript.jsonl` under
      `$HOME/.local/state/serf/projects/.../sessions/<coord-sid>/`).

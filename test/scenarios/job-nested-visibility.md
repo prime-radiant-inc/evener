@@ -14,11 +14,10 @@ line 1003); (d) after the delegate is finished and the nested job is
 terminal, the forwarded job's retained output is STILL readable by the
 parent — the forwarded-output promise (line 940; design spec
 2026-06-08 §3.4: mirroring or durable routing metadata, model-
-invisible). The cross-store read GRANT flavor is not covered by any
-live card: the shapes that mint an observer read grant are unreachable
-through the public tool surface, and `sidecar-handoff-packager-job-
-notification.md` pins that boundary instead (kata `f9gn` retired
-job-watch-sidecar-observer.md over it).
+invisible). The cross-store read GRANT flavor — an observer reading a
+job it does not own, through the grant a `job.notification` delivery
+mints — is covered by
+`sidecar-handoff-packager-job-notification.md`, not here.
 
 ## Pre-state
 
@@ -46,12 +45,13 @@ job-watch-sidecar-observer.md over it).
    >    and type.
    > 2. Call job_list with include_nested true and report every
    >    job_id, type, status, parent_job_id, and owner_session_id.
-   > 3. Call job_read_output with the NESTED shell job's job_id (from
-   >    step 2 / the delegate's report). Report the full JSON.
+   > 3. Call read_transcript with transcript_ref "job:<the NESTED
+   >    shell job's job_id>" (from step 2 / the delegate's report).
+   >    Report the full JSON.
    > 4. Call job_stop with that nested job_id and max_wait_ms 5000.
    >    Report the full JSON.
-   > 5. Call job_read_output for the nested job_id one more time.
-   >    Report the full JSON.
+   > 5. Call read_transcript for the same "job:<nested job_id>" ref one
+   >    more time. Report the full JSON.
    > 6. End your turn.
 4. Read the parent's durable log
    (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`)
@@ -78,8 +78,9 @@ job-watch-sidecar-observer.md over it).
 - The nested job OUTLIVES its creating delegate: the delegate is
   `completed` while the nested job still runs — background jobs are
   not tied to the creating turn (line 9).
-- Arm (b): the step-3 read returns `status` `"running"` and `output`
-  containing `NEST_TOKEN_1` — the parent read its output through the
+- Arm (b): the step-3 read returns a `# Shell Job job_...` envelope
+  with `- status: running` and a fenced block containing
+  `NEST_TOKEN_1` — the parent read its output through the
   parent-visible id with no extra handle. Falsification:
   `target_not_found`/`not found` or empty content while the child
   store holds bytes (forwarded-output routing broken, line 940).
@@ -95,13 +96,13 @@ job-watch-sidecar-observer.md over it).
   `:76-78` is unrelated descendant-walk code).
 - Arm (d): the step-5 read — AFTER the delegate finished (long since
   terminal) and the nested job itself is now terminal — still returns
-  the retained output: `status` `"cancelled"`, `output` containing
-  `NEST_TOKEN_1` and NOT `NEST_TOKEN_2` (never printed; the sleep was
-  cut short). The forwarded job's output remains readable by the
-  parent after both lifetimes ended (line 940). Falsification: the
-  read degrades to `not found` or `output_unavailable` once the jobs
-  are terminal while retention obviously still holds (fresh session,
-  tiny output).
+  the retained output: `- status: cancelled`, with the fenced block
+  containing `NEST_TOKEN_1` and NOT `NEST_TOKEN_2` (never printed; the
+  sleep was cut short). The forwarded job's output remains readable by
+  the parent after both lifetimes ended (line 940). Falsification: the
+  read degrades to `not found` or an empty block once the jobs are
+  terminal while retention obviously still holds (fresh session, tiny
+  output).
 - Durable forwarding: the parent's `jobs.jsonl` contains forwarded
   `job_started` and `job_finished` events for the nested job_id with
   `parent_job_id` = the delegate job and `owner_session_id` = the

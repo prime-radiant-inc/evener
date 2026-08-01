@@ -20,13 +20,13 @@ this rewrite exists to remove. Why it cannot:
   `output_match` access is NOT to be added. That ruling stands, and this
   card is repaired against the existing mechanism rather than around it.
 - The ruling's suggested repair — wake on `job.notification`, then read
-  the referenced job through a frame-granted `job_read_output` — is not
-  reachable either, for two reasons proven live and pinned by
-  `sidecar-handoff-packager-job-notification.md`: session-source watches
-  mint no read grant, and `job_read_output` was retired from the
-  model-facing tool registry entirely (commit `cf84923c6`, 2026-06-23).
-  A `job.notification` frame carries `status` and `output_bytes`, never
-  the failing text.
+  the referenced job through the frame's read grant — does not carry a
+  MID-RUN signature. That frame is built from a job's terminal payload,
+  so it names `status` and `output_bytes` (never the failing text) and
+  arrives only once the job is over; the grant it mints is terminal-only
+  for the same reason (`watchGrantableJob` accepts `JobFinishedData`
+  alone, `agent/job_watch.go:3350`). That shape is what
+  `sidecar-handoff-packager-job-notification.md` covers.
 - What DOES carry the failing text across the session boundary is an
   `assistant.tool` frame: it includes the tool's own `output` (or
   `error`) up to 1000 characters (`writeAssistantToolWatchEvent`,
@@ -84,11 +84,14 @@ this rewrite exists to remove. Why it cannot:
   parent receives it as an `Observer callback:` block.
 - The observer does not attempt to edit files or rerun tests.
 - Falsification (boundary): the observer resolves the parent's job at
-  all. `job_status(job_id=<a parent job>)` from the observer must fail
-  `job "job_..." not found — use job_list to see this session's jobs`,
-  and `job_read_output` must not exist. Success on either means
-  cross-session observer reads were added and this card's premise needs
-  re-deriving.
+  all. From the observer, both `job_status(job_id=<a parent job>)` and
+  `read_transcript(transcript_ref="job:<that job_id>")` must fail
+  `job "job_..." not found — use job_list to see this session's jobs`:
+  an `assistant.tool` delivery mints no read grant, so the observer is
+  a stranger to that job and gets the stranger error verbatim. Success
+  on either — or a `job_status` failure that instead names a sanctioned
+  `read_transcript` call — means this delivery minted a grant and the
+  card's premise needs re-deriving.
 - Falsification (dead trigger): a `job_watch` create with
   `output_match` against a parent-owned job_id fails
   `target_not_found` — the observer's own store has no such job. If it
@@ -111,7 +114,8 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
 - The command must run in the FOREGROUND. A `background: true` shell
   call returns a job handle immediately, so the `assistant.tool` frame
   carries the handle rather than the failure text, and the output only
-  ever exists inside a job the observer cannot read.
+  ever exists inside a job this observer never gains a grant on — an
+  `assistant.tool` delivery mints none.
 - Keep the signature short: the frame's `output:` is capped at 1000
   characters and flagged `output_truncated: true` past that.
 - `event_filter` with `tool_name` but no `status` matches both `ok` and

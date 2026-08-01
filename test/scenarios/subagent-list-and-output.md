@@ -1,4 +1,4 @@
-# subagent-list-and-output: job_list enumerates a delegate and job_read_output peeks it
+# subagent-list-and-output: job_list enumerates a delegate and a job: transcript read peeks it
 
 **What this covers**: the job-control read path for delegate jobs. A parent
 starts a delegate, lists jobs, reads the delegate output, and reads it a second
@@ -14,8 +14,8 @@ time to prove output inspection is non-consuming.
    > message: RESULT=hello-from-child." Capture the returned `job_id`.
    > Then call `job_list` and report the full JSON. Confirm the job appears
    > with type `delegate`, status, and `transcript_ref`.
-   > Then call `job_read_output` for that `job_id` twice and report whether
-   > both reads return the delegate result.
+   > Then call `read_transcript` with transcript_ref "job:<job_id>" twice and
+   > report whether both reads return the delegate result.
 
 ## Expected
 
@@ -29,8 +29,10 @@ time to prove output inspection is non-consuming.
   task text lives on the internal `JobRecord.Task`
   (`agent/internal/jobstore/record.go:234`), exposed under no JSON key here —
   read the child transcript for it.
-- Both `job_read_output` calls return the result text. The second read must not
-  fail or hide the output.
+- Both `read_transcript(transcript_ref="job:<job_id>")` calls return the same
+  envelope, whose `content` is a `# Delegate Job job_...` heading, a `- status:`
+  line, `- total_bytes:`, and the result text in a fenced block. The second read
+  must not fail or hide the output.
 - If the delegate transcript is needed for audit, the parent uses
-  `read_session_transcript` with the `transcript_ref`; `job_read_output` is only
+  `read_session_transcript` with the `transcript_ref`; the `job:` ref is only
   for invocation output and final reports.

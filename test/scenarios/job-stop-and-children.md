@@ -36,8 +36,9 @@ is asserted in depth by job-nested-visibility.md.
    >    printed.
    > 3. Call job_stop with that job_id and max_wait_ms 5000. Report the
    >    full result JSON verbatim.
-   > 4. Call job_read_output for the same job_id. Report the full JSON
-   >    verbatim.
+   > 4. Call read_transcript with transcript_ref "job:<the same job_id>"
+   >    and report the full JSON verbatim. Then call job_status for that
+   >    job_id and report the full JSON verbatim.
    > 5. End your turn.
 3. Turn 2 — arm (c), delegate with a nested job (new user prompt):
 
@@ -70,11 +71,12 @@ Turn 1:
   regression): the result says `running` with reason `stop_pending`
   although the job is a plain interruptible sleep that confirms
   cancellation in well under the 5s bound.
-- Output survives the stop: the step-4 read returns `status`
-  `"cancelled"`, `reason` `"stopped_by_parent"`, and `output`
-  containing `STOP_RETAIN_TOKEN`. Falsification: `job ... not found`,
-  empty content, or `output_unavailable` — stop deleted or hid history
-  (violates lines 750-751).
+- Output survives the stop: the step-4 `job:` read returns
+  `- status: cancelled` with a fenced block containing
+  `STOP_RETAIN_TOKEN`, and the `job_status` call reports
+  `"status":"cancelled"` / `"reason":"stopped_by_parent"`.
+  Falsification: `job ... not found`, an empty block, or a read error —
+  stop deleted or hid history (violates lines 750-751).
 - `jobs.jsonl` has exactly one `job_finished` for the job with
   `status:"cancelled"`, `reason:"stopped_by_parent"`.
 
