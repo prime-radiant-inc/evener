@@ -14,8 +14,9 @@ hidden (`failed` / `exit_nonzero`); (c) `background: true` launch-and-return —
 (e) complete-or-handle + the output window (spec §0.6 + the
 context-managed-output change): a fast chatty command whose output exceeds the
 8 KiB ride-whole budget returns `completed` + `job_id` + a small peek tail +
-`output_status:"windowed"` + `total_bytes`, and the full output is reachable via
-`job_read_output`; a fast quiet command is ephemeral (`output_status:"all_retained"`).
+`output_status:"windowed"` + `total_bytes`, and the retained log is reachable via
+`read_transcript(transcript_ref="job:<job_id>")`; a fast quiet command is
+ephemeral (`output_status:"all_retained"`).
 Terminal-notification cardinality/format is job-notification-semantics.md.
 
 ## Pre-state
@@ -48,7 +49,9 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    >    command: `sh -c 'echo RUNAWAY_START_71; exec sleep 31415'`.
    >    Report the full result JSON verbatim.
    > 2. Run the foreground shell command `sleep 30` to let the job settle.
-   > 3. Call job_read_output for the step-1 job_id and report the full JSON.
+   > 3. Call read_transcript with transcript_ref "job:<the step-1 job_id>"
+   >    and report the full JSON. Then call job_status for that job_id and
+   >    report the full JSON.
    > 4. End your turn.
 4. Turn 3 — arm (e) complete-or-handle + output window (new user prompt):
 
@@ -56,9 +59,10 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    > 1. Run the shell tool with command:
    >    `yes COH_CHATTY_LINE | head -100000` (produces ~1.8MB of output,
    >    finishes in well under the session timeout). Report the full result JSON.
-   > 2. If the step-1 result had a job_id, call job_read_output for it with
-   >    head_lines 200 and report total_bytes, dropped_bytes, output_status,
-   >    and whether the output starts with COH_CHATTY_LINE.
+   > 2. If the step-1 result had a job_id, call read_transcript with
+   >    transcript_ref "job:<that job_id>" and report total_bytes, any
+   >    dropped_bytes, meta.truncated, and whether the fenced output block
+   >    starts with COH_CHATTY_LINE.
    > 3. Run the shell tool with command: `sh -c 'exit 0'` (fast quiet, no
    >    output). Report the full result JSON.
    > 4. Call job_list with no filters and report whether any job_id from
@@ -97,8 +101,9 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   `timed_out:true` foreground-timeout promotion shape.
 - Arm (d): the step-1 result is the background launch shape (`job_id`,
   `running`, `running_in_background:true`). The `max_runtime_ms 5000` kills
-  the command ~5s after it started; the step-3 read of that job shows
-  `status` `"stopped"`, `reason` `"run_timeout"`. The runaway is actually
+  the command ~5s after it started; the step-3 reads of that job show
+  `- status: stopped` (the `job:` read) and `"status":"stopped"` /
+  `"reason":"run_timeout"` (`job_status`). The runaway is actually
   dead: the exact-args liveness check counts zero `sleep 31415` processes.
   `jobs.jsonl` has one `job_finished` for it with `status:"stopped"`,
   `reason:"run_timeout"`. Falsification: the job is still `running` past
@@ -110,14 +115,17 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
     exceeded the 8 KiB ride-whole budget), `status` `"completed"`,
     `truncated` `true`, `output_status` `"windowed"`, `total_bytes` ≫ the
     inline peek, and a small head+tail digest of the output inline. The
-    step-2 `job_read_output` (head_lines 200) returns `output` beginning
-    with `COH_CHATTY_LINE`, `dropped_bytes` `0` (≪ 8 MiB retained), and
-    `output_status` `"windowed"` — proving the head is reachable and nothing
-    was evicted. The kept job emits NO terminal notification (synchronous
-    completion needs no duplicate notification). Falsification: no `job_id`
-    (the megabyte was silently dropped); the full ~1.8MB rode inline (the
-    window was not applied); `output_status` absent; or `job_read_output`
-    cannot reach the head.
+    step-2 `job:` read returns a `# Shell Job job_...` envelope whose
+    `- total_bytes:` matches the inline `total_bytes`, carries NO
+    `- dropped_bytes:` line (≪ 8 MiB retained, nothing evicted), whose fenced
+    block begins with `COH_CHATTY_LINE`, and whose `meta.truncated` is `true`
+    with an `_… N characters elided from this oversized turn; additional
+    output is not available from this transcript view …_` marker between head
+    and tail — the 200,000-byte envelope cap, not an eviction. Falsification:
+    no `job_id` (the megabyte was silently dropped); the full ~1.8MB rode
+    inline (the window was not applied); `output_status` absent; a
+    `- dropped_bytes:` line (retention lost bytes it should still hold); or
+    the `job:` read cannot reach the head.
   - Turn-3 step-3 (fast quiet command): the result has NO `job_id`,
     `status` `"completed"`, `reason` `"exit_zero"`, `output_status`
     `"all_retained"` — ephemeral. Falsification: a `job_id` present for a quiet
@@ -129,8 +137,9 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 - `timed_out` discipline: `timed_out` means the foreground WAIT expired,
   never the `max_runtime_ms` kill. With `background:true` (arms c, d) the
   initial result has no foreground wait, so `timed_out` is `false`/absent.
-  In the terminal `job_read_output` of arm (d) the record shows the
-  finalized `stopped`/`run_timeout` state. Falsification: `timed_out`
+  In arm (d)'s terminal reads the record shows the finalized
+  `stopped`/`run_timeout` state (`- status: stopped` in the `job:` read,
+  status plus `reason` in `job_status`). Falsification: `timed_out`
   present and `true` in any background-launch result.
 
 ## Cleanup

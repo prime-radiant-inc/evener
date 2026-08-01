@@ -420,14 +420,14 @@ alone. Audit the parent and observer transcripts:
 go run ./cmd/serf-doctor tree "$SID" --state-dir "$state" --observers
 go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
 go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count job_list
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count job_read_output
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count read_transcript
 go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
 go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
 ```
 
 For the happy path, the parent should use the current delegate result,
 watch result, watched event result, and observer callback as working
-signals. `job_list` and `job_read_output` should be zero before the
+signals. `job_list` and `read_transcript` should be zero before the
 callback unless the scenario is explicitly testing diagnosis. A later
 terminal notification from the observer delegate is confirmation; it is
 not the signal the parent should poll for.
@@ -961,7 +961,7 @@ For sidecar fluency, record these separately from pass/fail:
   it before the observer's first `*_READY` turn has finished, so the
   real frame is consumed by setup behavior.
 - **Parent polling wait**: after installing a watch and triggering it,
-  the parent polls with `job_list`, `job_read_output`, or transcript
+  the parent polls with `job_list`, `job_status`, or transcript
   tools to wait for the observer. The fluent path is to continue from
   the observer's `communicate(end_turn=true)` callback.
 - **Tool churn**: the observer uses `job_list`, `read_session_transcript`,

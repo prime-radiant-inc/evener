@@ -34,8 +34,8 @@ same conversation and returns `started_job_id`/`current_job_id`.
    >    delegate_id and message "Mid-task instruction: include
    >    STEER_MARK_88." Report the full result JSON verbatim.
    > 4. Say STEER_SENT and end your turn. When JA's completion
-   >    notification arrives, call job_read_output for JA and report
-   >    the full JSON.
+   >    notification arrives, call read_transcript with transcript_ref
+   >    "job:JA" and report the full JSON.
 3. Turn 2 — idle default failure and explicit start:
 
    > Do these steps in order.
@@ -51,8 +51,8 @@ same conversation and returns `started_job_id`/`current_job_id`.
    >    `on_idle` "start", `max_wait_ms` 120000, and message "Reply via
    >    communicate with exactly the codeword you were told earlier,
    >    and nothing else." Report the full result JSON verbatim.
-   > 4. Call job_read_output for the returned `current_job_id` and
-   >    report the full JSON.
+   > 4. Call read_transcript with transcript_ref "job:<the returned
+   >    current_job_id>" and report the full JSON.
 4. Read the parent transcript, the child transcript (by JB's
    `transcript_ref` via `read_session_transcript` or on disk), and
    `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
@@ -76,7 +76,7 @@ same conversation and returns `started_job_id`/`current_job_id`.
 - Explicit start: the turn-2 step-3 result has `action` `"started"`, a
   NEW `started_job_id`/`current_job_id` different from JB, the same
   `delegate_id`, and the same `transcript_ref` as JB. The result or
-  follow-up `job_read_output` contains `AZURE_FALCON`, a fact present
+  follow-up `job:` read contains `AZURE_FALCON`, a fact present
   only in the prior turn's context — retention proven, not assumed.
   Falsification: the codeword is missing, the transcript ref changes,
   or the call starts from a blank conversation.
@@ -94,4 +94,5 @@ same conversation and returns `started_job_id`/`current_job_id`.
   expected path is stable under normal hub latency.
 - A `max_wait_ms` on a live steer cannot wait for the next delegate
   reply; live steers return on delivery. Use the terminal notification
-  and `job_read_output` to inspect the eventual result.
+  and `read_transcript(transcript_ref="job:<job_id>")` to inspect the
+  eventual result.

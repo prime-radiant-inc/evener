@@ -6,8 +6,8 @@ records even though running processes do not (lines 9, 89). Restart
 reconciliation (lines 984-1005): a `running` record with no live
 runtime is finalized exactly once as `stopped`/`runtime_lost` with a
 stable `terminal_generation` (lines 920, 988-991), pre-crash retained
-output stays readable via `job_read_output` after the runtime is gone
-(line 614), the terminal notification is delivered exactly once
+output stays readable via `read_transcript(transcript_ref="job:<job_id>")`
+after the runtime is gone, the terminal notification is delivered exactly once
 post-restart and deduped durably across a SECOND restart (lines 962,
 966, 968), and `job_list` stays consistent throughout. Runtime loss is
 reported as supervision loss, never as command failure (line 1001).
@@ -62,7 +62,7 @@ reported as supervision loss, never as command failure (line 1001).
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d '{"text":"Call job_list with no filters and report every job_id, status, and reason verbatim. Then call job_read_output for the only job and report its status, reason, total_bytes, the first retained line, and the last retained line."}' \
+     -d '{"text":"Call job_list with no filters and report every job_id, status, and reason verbatim. Then call read_transcript with transcript_ref job:<the only job_id> and report its status, total_bytes, the first retained line, and the last retained line. Then call job_status for that job_id and report its status and reason."}' \
      "$HUB/s/$SID/send"
    ```
 
@@ -95,11 +95,12 @@ reported as supervision loss, never as command failure (line 1001).
 - Model-visible truth (step 6, transcript): the job_list TOOL_RESULTS
   reports `$JOB` as `stopped` / `runtime_lost` (never `failed` — this
   is supervision loss, line 1001, not command failure); the
-  job_read_output TOOL_RESULTS shows `status` `"stopped"`, `reason`
-  `"runtime_lost"`, content whose first line is `TICK_1` and whose
-  last line equals the pre-restart tail recorded in step 4 — the
-  retained pre-crash output is fully readable with the runtime gone
-  (line 614).
+  read_transcript TOOL_RESULTS shows `- status: stopped` and a fenced
+  block whose first line is `TICK_1` and whose last line equals the
+  pre-restart tail recorded in step 4 — the retained pre-crash output
+  is fully readable with the runtime gone; the job_status TOOL_RESULTS
+  carries the matching `"status":"stopped"` / `"reason":"runtime_lost"`
+  pair (the `job:` read renders status but no reason for a shell job).
 - No phantom growth: `total_bytes` in step 6 equals the step-4 file
   size; a second read 10s later is identical (the orphaned producer
   cannot reach the store once its pump died with the daemon).
@@ -116,7 +117,7 @@ reported as supervision loss, never as command failure (line 1001).
   runtime_lost notification block for `$JOB`, and the step-7 job_list
   reports it `stopped`/`runtime_lost` unchanged.
 - Falsification (substrate hole): the post-restart job_list omits the
-  job, reports it still `running`, or `job_read_output` returns
+  job, reports it still `running`, or the `job:` read returns
   `not found` while `jobs.jsonl` has the record.
 - Falsification (dedupe hole): a second `job_finished` with a NEW
   `terminal_generation`, or a second runtime_lost notification block

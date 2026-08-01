@@ -15,7 +15,7 @@ Two public job types are in scope:
 
 The default model-facing posture is:
 
-> Shell work runs foreground by default (set `background: true` to launch-and-return) and is promoted to a durable background job when the foreground wait times out. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_read_output`/`job_list` inspection for follow-up. Do not poll.
+> Shell work runs foreground by default (set `background: true` to launch-and-return) and is promoted to a durable background job when the foreground wait times out. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_status`/`job_list` inspection for follow-up, and read a job's own output with `read_transcript(transcript_ref="job:<job_id>")`. Do not poll.
 
 The target model intentionally does **not** expose:
 
@@ -25,7 +25,7 @@ The target model intentionally does **not** expose:
 - `close_agent`
 - external `agent_id`
 
-Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is bounded — `max_wait_ms` on `delegate`/`job_read_output`/`job_stop`, or `background` on shell — not a separate wait tool.
+Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is bounded — `max_wait_ms` on `delegate`/`job_stop`, or `background` on shell — not a separate wait tool. Reads never wait: no job-output read blocks.
 
 ## Model-facing guidance requirements
 
@@ -37,23 +37,23 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the default `on_idle="fail"` rejects instead of starting work. Use `on_idle="start"` only when you intend to start the delegate's next job in the same conversation.
 - Use `delegate_send` only for follow-up on a durable child delegate conversation. Observer sidecars report through `communicate(end_turn=true)`, not `delegate_send`. `delegate_send` rejects `job_id`, `transcript_ref`, and runtime aliases on the public tool surface; ordinary delegate follow-up targets a `delegate_id`.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
-- After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
+- After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost. You are told when YOUR delegates finish; your delegates handle their own children's completions in their own turns (you are not interrupted about a job you did not create).
 - Use `job_watch` when a condition should notify the watcher. `source` names what the watcher observes (`self`, `parent` when granted by `delegate(watch_parent=true)`, or a concrete `job_id` owned by this session or a live descendant). Delivery is implicit to the session that created the watch. Pick the trigger mode that matches the signal: `output_match` for concrete job output, `progress_interval_ms` for periodic progress, and `events`/`event_filter` for event frames. Do not use `job_watch` to learn when a job completes.
-- Use `job_read_output` for shell stdout/stderr and delegate invocation output/final reports. For delegates, `status="completed"` means the delegate turn ended normally; it does not prove the delegated task succeeded. Read `output`/`structured_result` to judge task outcome.
-- Use transcript tools for delegate child conversation history; `job_read_output` is not a transcript reader.
+- Use `job_status` for a job's lifecycle: kind, status, phase, reason, running/quiet time, and `transcript_ref`. Use `read_transcript(transcript_ref="job:<job_id>")` for the bytes — shell stdout/stderr, and a delegate invocation's output/final report. For delegates, `status="completed"` means the delegate turn ended normally; it does not prove the delegated task succeeded. Read the report and its `structured_result` to judge task outcome.
+- Use a session `transcript_ref` for delegate child conversation history; a `job:` ref reads that job's output log, never the child's conversation.
 - Use `job_stop` only when the intent is to cancel or stop work. It does not delete output/history and it does not acknowledge results.
 - Use `job_list` to recover or inspect job inventory, not to wait for completion. Branch primarily on `status`; treat `reason` as diagnostic detail except for documented operational cases such as `runtime_lost`, `run_timeout`, `awaiting_permission`, and `stop_pending`.
 
 Tool descriptions should avoid these phrases because they train bad behavior:
 
 - Do not describe `job_watch` as subscribing to job completion. Say: “When output/event/progress conditions happen, deliver a bounded watch notification/frame to the watcher that created the watch.”
-- Do not describe `job_read_output(max_wait_ms=...)` as the normal way to wait. Say: “Optionally perform one bounded wait for terminal state, new output, or (with `grep`) a match; do not poll.”
+- Do not describe a job-output read as a way to wait. Say: “Completion is notification-driven; do not poll this waiting for a job to finish.”
 - Do not describe `job_stop` as cleanup. Say: “Request cancellation/stop; retained history/output remains.”
 - Do not say `delegate` resumes an old agent. Say: “Start a fresh delegate conversation/job.”
 - Do not say `delegate_send` resumes by default. Say: “Send a follow-up message to a delegate_id; running delegates receive it live, while idle delegates require `on_idle="start"` to start the next job.”
 - Do not say `job_watch` sends arbitrary unbounded transcript context. Say: “Deliver bounded frame/excerpt metadata when the watch condition is met.”
-- Do not say `job_read_output` reads a delegate transcript. Say: “Read invocation output/final report; use transcript tools for full child conversation.”
+- Do not say a `job:` transcript ref reads the delegate's conversation. Say: “Read the invocation's output/final report; use the child's session `transcript_ref` for the full conversation.”
 
 ## Choosing a wait primitive
 
@@ -70,7 +70,7 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, on_idle="start", max_wait_ms=N)` |
 | Steer a running delegate | `delegate_send(to=<delegate_id>)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
-There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `job_read_output`, or start its next turn with `delegate_send(on_idle="start", max_wait_ms=N)` once it is idle.
+There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `read_transcript(transcript_ref="job:<job_id>")`, or start its next turn with `delegate_send(on_idle="start", max_wait_ms=N)` once it is idle.
 
 Terminal targets differ by watch type: only an `output_match`-only `job_watch` supports terminal catch-up (a one-shot scan of retained output on an already-terminal job). `events`, `progress_interval_ms`, and `every` watches require a running target and reject a terminal one with `target_terminal`. Use transcript reads for retained terminal output evidence.
 
@@ -127,11 +127,11 @@ The lifecycle/output/notification contract is generic enough for future job type
 
 ## Job identity and visibility
 
-Serf must mint `job_id` values that are globally unique enough to be used without string namespacing across all jobs visible to a session, including forwarded nested jobs. A parent-visible nested job uses the same opaque `job_id` in notifications, `job_list`, `job_read_output`, `job_watch`, and `job_stop`. Delegate jobs also expose a separate `delegate_id` for conversation follow-up.
+Serf must mint `job_id` values that are globally unique enough to be used without string namespacing across all jobs visible to a session, including forwarded nested jobs. A parent-visible nested job uses the same opaque `job_id` in notifications, `job_list`, `job_status`, `job_watch`, `job_stop`, and the `job:<job_id>` transcript ref. Delegate jobs also expose a separate `delegate_id` for conversation follow-up.
 
 The model-facing API must not expose two competing job handles such as `owner_job_id` and `parent_visible_job_id`. If an implementation internally maps child-owned IDs into parent-visible records, that mapping must be durable and invisible to the model-facing tools. The only accepted job handle is the parent-visible `job_id` returned or listed by Serf.
 
-Job-control tools accept their purpose-specific handles, not `transcript_ref`. Transcript tools accept `transcript_ref`, not `job_id` or `delegate_id`, unless a future transcript tool explicitly documents a job-derived lookup. `delegate` creates a new conversation and does not accept any handle for continuation. `delegate_send` accepts `delegate_id`; `job_read_output` and `job_stop` accept concrete `job_id` handles; `job_watch(operation="create")` accepts a `source` (`self`, granted `parent`, or concrete `job_id`); `job_watch(operation="inspect"|"clear")` accepts `watch_id`.
+Job-control tools accept their purpose-specific handles, not `transcript_ref`. Transcript tools accept `transcript_ref`, not a bare `job_id` or `delegate_id`: the one job-derived lookup is `read_transcript`'s documented `job:<job_id>` ref, which is a transcript ref naming a job's output log. `delegate` creates a new conversation and does not accept any handle for continuation. `delegate_send` accepts `delegate_id`; `job_status` and `job_stop` accept concrete `job_id` handles; `job_watch(operation="create")` accepts a `source` (`self`, granted `parent`, or concrete `job_id`); `job_watch(operation="inspect"|"clear")` accepts `watch_id`.
 
 ## Job status and reason model
 
@@ -273,7 +273,7 @@ Shell approval is not fully designed here. If policy requires approval before a 
 1. fail job creation synchronously with reason `permission_required` if no async approval flow is available; or
 2. create a durable background job in `running` with reason `awaiting_permission`, then continue after approval or finalize as `failed`/`permission_denied`.
 
-Whichever behavior an implementation chooses must be reflected consistently in `job_list`, `job_read_output`, and notifications.
+Whichever behavior an implementation chooses must be reflected consistently in `job_list`, `job_status`, the job output read, and notifications.
 
 ### `delegate`
 
@@ -590,9 +590,10 @@ Rules:
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
 - `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the source reached terminal state. The caller never has to reconstruct the original source/condition identity.
 - `job_watch` fails synchronously with `source_not_watchable` or `target_not_watchable` for sources the caller is not allowed to observe. A concrete descendant job can be watched by forwarding the watch install to the live owning descendant while keeping the ancestor as receiver. Parent, sibling, unrelated, closed, or non-live sources are not watchable unless explicitly granted.
-- Self-delivery feedback loops are rejected at creation with `invalid_request` when the resolved event kinds include a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`) and the watcher/source are the same session. `job.notification` self-watches remain allowed. Parent-source sidecars are cross-session and do not trip the self loop guard.
+- A watcher may observe the events it generates itself. A `self` source on a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`), delivering back to the same session, installs and returns `watching:true`; nothing is rejected at creation for being a potential feedback loop. The loop is bounded at runtime instead, by three mechanisms: a self-influenced frame is prefixed with a gradient notice telling the receiving turn how deep it stands in its own influence (`↳ this turn responded to your last message.`, sharpening to `↳ you're ~N exchanges deep responding to your own influence — consider disengaging.`); a send descending from too many delivered self-influenced priors is dropped as `runaway` instead of delivered; and the per-watch delivery budget below auto-clears a watch that keeps firing. Parent-source sidecars are cross-session and are not self-influenced by this rule at all.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
-- A parent-source observer may receive a granted read for a concrete watched job referenced by a frame. Grants are durable read capabilities keyed on the observer's session identity, not the observer's current job handle, and are not revoked by watch clear or expiry; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `delegate_send` authorization.
+- A delivery to an observer may carry a read grant for the concrete job its event payload names. Grants are minted per delivery, never at watch creation, and only from a terminal job payload — the shape behind a `job.notification` frame — so every grant names an ALREADY-FINISHED job by construction. `communicate` and `assistant.tool` deliveries carry no structured job reference and grant nothing; a job id read out of frame text is a guess and mints nothing. A grant is keyed on the observer's session identity, not its current job handle; it is durable, append-only, and never revoked by watch clear, expiry, or anything else; output retention still bounds what it can read. A grant extends exactly one call — `read_transcript(transcript_ref="job:<job_id>")` — and nothing else: no `job_list` visibility, no `job_status` (which stays denied, pointing at the sanctioned read), no `job_stop`, no additional `delegate_send` authorization. A delivery that granted nothing must not advertise a read, so the frame's trailing `read with: read_transcript(...)` line appears only when the grant behind it exists.
+- An observer is never granted a read on its own work. A `source="parent"` watch on `job.notification` also fires when the observer's own resumed callback job completes; a finished job whose delegate is the receiving observer is skipped at the mint. Grants are never revoked, so an accepted self-grant would be a permanent row conferring nothing and would surface the observer as its own observer in the hub's projection.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
 - Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
@@ -638,80 +639,72 @@ stateDiagram-v2
     Expired --> [*]
 ```
 
-### `job_read_output`
+### `job_status`
 
-`job_read_output` reads bounded retained output and status for a job. It is the only model-facing job-output inspection tool for both shell and delegate jobs. Delegate transcripts remain separate and are read with transcript tools.
-
-Default use is snapshot-only (no `max_wait_ms`). Call `job_read_output` after a terminal/match/progress notification, or when a one-time current snapshot is useful. Do not call it in a loop to wait for completion. Use `max_wait_ms` only when the user explicitly requested a bounded wait or when one bounded wait is necessary to collect immediate output. `max_wait_ms` with `grep` is the sanctioned one-call wait for a specific output token (“wait until the server prints ready”); it is not polling.
-
-Canonical target shape:
-
-```json
-{
-  “job_id”: “job_...”,
-  “grep”: “(?i)(ready|blocked|error)”,
-  “max_wait_ms”: 30000
-}
-```
-
-Canonical behavior:
-
-- Omit `head_lines`/`tail_lines` for the default **head+tail digest**: the first ~100 and last ~100 lines of retained output, with the middle elided and a marker stating how much (bytes, and a permanent-loss note when output was evicted past the retention cap).
-- Pass `head_lines` to read that many whole lines from the START of retained output, `tail_lines` from the END, or **both together** for a custom-sized head+tail digest. For an arbitrary middle window, use `from_line` (1-based) + `line_count` (default 100); `from_line` cannot be combined with `head_lines`/`tail_lines`. Omit all of them for the default digest. A per-side byte budget bounds a pathological run of very long lines.
-- `grep`, when supplied, searches retained output server-side using Go/RE2 syntax and returns bounded matching lines/chunks plus output metadata. Match entries should include a byte position such as `byte_offset` when available. In the core model-facing contract this is informational/triage metadata; agents can act on it only when an implementation also exposes advanced paging or a UI uses the coordinate to fetch surrounding context.
-- `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification/frame while a watched running job emits matching output.
-- Reads are non-consuming and non-acknowledging.
-- The result reports `total_bytes` (lifetime output), `dropped_bytes` (bytes permanently evicted past the retention cap), and `output_status`: `all_retained` (the returned window is the whole retained log), `windowed` (more is retained — read it), or `evicted` (`dropped_bytes` are gone). `output_status` describes the WINDOW, not the job lifecycle — a running job whose window covers everything-so-far still reports `all_retained`.
-- `grep` always scans the full retained output; there is no scan-budget parameter, so a grep over retained bytes never silently misses a match for budget reasons. The returned `matches` array is bounded by match-count and per-line caps.
-- `max_wait_ms` for `job_read_output` defaults to `5000` when positive; minimum is `1000`; maximum is `60000` (the same bounds as `job_stop`, deliberately tighter than delegate creation: waiting reads are bounded conveniences measured in seconds). `0` and absent mean snapshot-now (no wait). Out-of-range positive values are clamped; negative values fail `invalid_request`.
-- With `max_wait_ms > 0`, the tool performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
-- `max_wait_ms` is not a polling primitive and must not be used repeatedly in a loop. Terminal notifications remain the normal completion mechanism.
-- `job_read_output` must work for terminal durable jobs after the live runtime is gone, as long as the job record/output file is retained.
-- An observer delegate granted by a parent-source watch frame may `job_read_output` its watched job even though that job lives in the watched session's store; granted cross-session reads are snapshot-only — positive `max_wait_ms` fails `invalid_request`.
+`job_status` inspects one durable job by `job_id`. It is the orientation read: what the job is, where it is in its lifecycle, how long it has been running or quiet, and the `transcript_ref` that names its evidence. It carries no output bytes; those are read separately (below).
 
 Canonical return shape:
 
 ```json
 {
   "job_id": "job_...",
-  "type": "shell",
+  "kind": "shell",
   "status": "running",
+  "phase": "process_running",
   "reason": null,
-  "output": "head+tail digest, requested line slice, or grep excerpt",
-  "grep": "(?i)(ready|blocked|error)",
-  "matches": [
-    {
-      "byte_offset": 2048,
-      "line": "server ready"
-    }
-  ],
-  "total_bytes": 10000,
-  "dropped_bytes": 0,
-  "output_status": "all_retained",
-  "truncated": false,
-  "exit_code": null,
-  "last_activity": "..."
+  "resumable": null,
+  "running_for_ms": 12000,
+  "quiet_for_ms": 4000,
+  "started_at": "...",
+  "ended_at": null,
+  "last_event_at": "...",
+  "transcript_ref": "job:job_...",
+  "exit_code": null
 }
 ```
 
-`last_activity` is the most recent parent-observable activity timestamp for the job (an output append, or the job's start when nothing newer is observable). For a terminal record with no live activity stamp it falls back to `ended_at`, then `started_at`. It is a supervision hint for spotting a stalled or quiet job; it is not a substitute for terminal notifications.
+Canonical behavior:
 
-#### Advanced output paging
+- `kind` is the public job class: `shell` or `agent` (a delegate job's kind is `agent`; `type` in durable records stays `delegate`).
+- `phase` is the observable sub-state of a RUNNING job (`starting`, `awaiting_model`, `model_streaming`, `tool_running`, `process_running`). A terminal job omits `phase` and reports `duration_ms` instead of `running_for_ms`/`quiet_for_ms`.
+- `last_event_at` is the most recent parent-observable activity for the job (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). It is a supervision hint for spotting a stalled or quiet job; it is not a substitute for terminal notifications.
+- `transcript_ref` is the delegate conversation's session ref for a delegate job, and `job:<job_id>` for a shell job. Hand it to `read_transcript`.
+- Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
+- A `job_id` the caller cannot resolve fails `job "job_..." not found — use job_list to see this session's jobs`. A job the caller holds only a watch READ GRANT on stays denied here and is told where to go instead: `job "job_..." belongs to another session; read its output with read_transcript(transcript_ref="job:job_...")`. Status is denied for granted jobs because a delegate job's status projects its SESSION `transcript_ref`, and session refs are not access-controlled — answering would silently widen a one-job output grant into full read access to the child's conversation. A job with no grant keeps the unchanged not-found text, so the improved message never becomes an oracle for "this job exists".
 
-Absolute byte-offset paging, retained-start accounting, next offsets, and detailed truncation-reason arrays are implementation/UI capabilities, not the canonical agent-facing shape. There is no model-facing `limit_bytes` parameter: grep scans the full retained output, and result bounding is fixed policy rather than a knob. Model-facing examples should stay centered on the default digest, `head_lines`/`tail_lines`, `grep`, and `max_wait_ms`. If an implementation exposes absolute paging to models, it must document validation, retention, and truncation behavior separately without making ordinary agents learn the paging algorithm.
+### Reading job output
 
-`max_wait_ms > 0` with a nonterminal job waits until one of these occurs:
+Job output is read with the generic transcript reader: `read_transcript(transcript_ref="job:<job_id>")`. There is no separate job-output tool. One reader serves both shell logs and delegate reports, and the same `job:` ref appears in `job_status`/`job_list` rows and in terminal notifications.
 
-- terminal state;
-- without `grep`: retained output advances enough to return new content;
-- with `grep`: the retained output contains a match (a match already present at call time returns immediately);
-- timeout.
+Canonical target shape:
 
-It then returns current status and bytes. Timeout does not stop the job.
+```json
+{
+  "transcript_ref": "job:job_...",
+  "format": "markdown"
+}
+```
 
-If output metadata exists but content was pruned, `job_read_output` returns durable status plus `output_unavailable=true` and reason `retention_pruned`, rather than pretending the job does not exist.
+Canonical behavior:
 
-For delegate jobs, output is the parent-visible execution log for that delegate invocation. It must include the delegate's final user-facing report or terminal error/cancellation diagnostic. If the delegate invocation captured a valid structured result, `job_read_output` exposes `structured_result` and `structured_result_valid:true`. If a schema-backed delegate result is invalid, missing, too large to persist, or cannot be captured, `job_read_output` omits `structured_result`, sets `structured_result_valid:false`, and includes `structured_result_reason`. Resumed delegate turns inherit the original delegate conversation's `result_schema`. Delegate output may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript.
+- The read is a snapshot. It never waits, so there is no `max_wait_ms` and no way to turn a read into a wait; terminal notifications and `job_watch` are how conditions reach a caller.
+- `markdown` is the only supported format for a `job:` ref; any other value fails. The session-transcript parameters — `range`, `expand_turn`, `offset_bytes`, `max_bytes` — are rejected with `invalid_request: <name> applies only to session transcript refs`. There is no line paging, no head/tail selection, and no `grep`: use `job_watch(output_match=...)` to be told when watched output matches.
+- Reads are non-consuming and non-acknowledging.
+- The returned envelope carries `transcript_ref`, `format`, `content_type`, the rendered `content`, and `meta` (`turns_total`/`turns_rendered` 1, `range: "shell-log"`, `truncated`).
+- `content` for a shell job is a `# Shell Job <job_id>` heading, then `- status:`, `- command:`, `- total_bytes:` (the job's lifetime output byte count), `- dropped_bytes:` when bytes were permanently evicted past the retention cap, then the retained output in a fenced block.
+- `content` for a delegate job is a `# Delegate Job <job_id>` heading, then `- status:`, `- reason:`, `- task:`, `- total_bytes:`, optional `- dropped_bytes:`, the report in a fenced block, and — when the invocation captured one — a trailing `structured_result (valid=<bool>): <json>` line plus `structured_result_reason:` when the record carries one. A schema-backed result that is invalid, missing, too large to persist, or uncapturable renders no `structured_result` line and reports its `structured_result_reason` instead. Resumed delegate turns inherit the original delegate conversation's `result_schema`.
+- A delegate `job:` read deliberately omits the delegate's own session `transcript_ref`: session refs are not access-controlled, so naming one there would hand a granted reader the whole child conversation. Read the delegate's conversation through the ref `job_status`/`job_list` reports, which only its owner can get.
+- Delegate job output is the parent-visible execution log for that invocation: the final user-facing report or terminal error/cancellation diagnostic, and it may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript.
+- The window is the tail of retained output, and the envelope is bounded. An oversized render keeps a head and a tail with an elision marker between them (`… N characters elided from this oversized turn; additional output is not available from this transcript view …`) and sets `meta.truncated`. That is a rendering bound, not an eviction — only `- dropped_bytes:` means bytes are gone.
+- The read must work for terminal durable jobs after the live runtime is gone, as long as the job record and output file are retained.
+
+Resolution order for a `job:` ref — the same chain the runtime walks for any job read, so reachability cannot drift between surfaces:
+
+1. the caller's own job store;
+2. a live direct child's store (one-hop);
+3. a live descendant at depth ≥ 2, resolved through the recursive owner path;
+4. the durable watch read-grant table (see "Observer and sidecar composition");
+5. otherwise the error the earlier steps produced — a caller holding no grant learns nothing about whether the job exists.
 
 ### `job_list`
 
@@ -733,7 +726,7 @@ Rules:
 - Default `include_nested=false`.
 - Default `limit=50`; maximum `limit=100`. Omitted uses the default. Values above the maximum are clamped downward. Values `<=0` fail `invalid_request`.
 - Results are sorted by `started_at` descending, tie-broken by `job_id`.
-- `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, call `job_read_output` once for the relevant job.
+- `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, read the relevant job's `job:<job_id>` ref once.
 - The owning session can list its own jobs.
 - A parent session may list nested jobs owned by delegate child sessions only when those jobs have been forwarded into parent-visible durable job records.
 - Delegate records include `delegate_id`, `current_job_id`, `latest_job_id`, `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `delegate_send(to=..., on_idle="start")` uses the same resumability contract when the target delegate is idle. After restart reconciliation, `stopped/runtime_lost` delegate jobs are resumable from retained transcript/session state when strict restore preflight passes. If required retained state is missing, pruned, inconsistent, or otherwise fails strict preflight, Serf reports the delegate as not resumable and follow-up fails synchronously with `target_not_resumable`.
@@ -796,7 +789,7 @@ Return shape:
 }
 ```
 
-Rows are lean for scanning: a field that is null/absent for a job is omitted (a running shell row carries no `reason`, `exit_code`, `ended_at`, `transcript_ref`, or resumability keys), `visible_to_session_id` is internal routing and not emitted, and `owner_session_id` is only interesting under tree walks though it is always present. Detail beyond the scan (resumability assessment specifics, the full output) comes from `job_read_output`.
+Rows are lean for scanning: a field that is null/absent for a job is omitted (a running shell row carries no `reason`, `exit_code`, `ended_at`, `transcript_ref`, or resumability keys), `visible_to_session_id` is internal routing and not emitted, and `owner_session_id` is only interesting under tree walks though it is always present. Detail beyond the scan comes from `job_status` (lifecycle specifics) and a `job:<job_id>` transcript read (the output).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
@@ -804,9 +797,9 @@ Rows are lean for scanning: a field that is null/absent for a job is omitted (a 
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
 
-`last_activity` is the most recent parent-observable activity timestamp for the job, matching the `job_read_output` field of the same name (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). A running delegate that is working silently stays at its `started_at` until it appends output, which is the signal the quiet-job watchdog (see Notifications) acts on. A per-action "current action" field is intentionally not provided: a running delegate's mid-run action is not cheaply readable from parent-side state.
+`last_activity` is the most recent parent-observable activity timestamp for the job, derived exactly like `job_status`'s `last_event_at` (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). A running delegate that is working silently stays at its `started_at` until it appends output, which is the signal the quiet-job watchdog (see Notifications) acts on. A per-action "current action" field is intentionally not provided: a running delegate's mid-run action is not cheaply readable from parent-side state.
 
-`total_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal. It carries the same name in the shell result and `job_read_output`, so the field is identical across every tool.
+`total_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal. It carries the same name in the shell result and in a `job:` transcript read's `- total_bytes:` line, so the count is identical across every surface.
 
 `command` is the shell command line for a shell job, so a row is identifiable without opening the transcript when `description` is sparse. It is omitted for delegate jobs (which have no command).
 
@@ -900,9 +893,11 @@ The v1 model-facing tool matrix is:
 
 | Caller context | Available job tools | Notes |
 | --- | --- | --- |
-| Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
-| Delegate/subagent session | shell, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
+| Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
+| Delegate/subagent session | shell, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
 | Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `serf <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. |
+
+Job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and a `job:<job_id>` ref is the job-output read. What a caller may read is decided by the resolution chain and the grant table, not by tool availability.
 
 While a session is `awaiting` an `ask_user` reply, its autonomous job notifications are held rather than delivered, and drain at the turn boundary that follows the user's reply.
 
@@ -914,7 +909,7 @@ This matrix is the job-tool slice of the broader effective-capability policy (ho
 
 ### No `wait_job`
 
-There is no direct replacement for `wait_job`. Normal completion discovery comes from automatic terminal notifications. If a user explicitly asks to block briefly for new output or terminal state, `job_read_output(max_wait_ms=...)` may perform one bounded read/wait. It must not become a polling loop.
+There is no direct replacement for `wait_job`, and no read waits. Normal completion discovery comes from automatic terminal notifications. If a caller needs to be told about a condition rather than a completion, `job_watch` delivers it; nothing else blocks.
 
 ### No `job_ack`
 
@@ -925,10 +920,21 @@ Retention is policy-based:
 - durable job metadata is retained at least as long as the owning session transcript;
 - output bytes are capped per job;
 - old output may be pruned under session/state retention policies;
-- output pruning is reported by `job_read_output` as `output_unavailable`/`retention_pruned` rather than `job not found` when durable metadata remains;
+- the durable job record outlives its output bytes: `job_status` and `job_list` still answer for a job whose output was pruned;
 - never require model acknowledgement to make progress.
 
 Notification delivery may have internal delivered/undelivered bookkeeping, but it is not a model tool.
+
+### No `job_read_output`
+
+There is no dedicated job-output tool. A job's output is evidence, and it is read with the same reader as every other piece of evidence: `read_transcript(transcript_ref="job:<job_id>")` (see "Reading job output"). One reader means one resolution chain, so a job that can be listed and a job that can be read cannot drift apart.
+
+What went with the tool, deliberately:
+
+- **the blocking read.** There was a `max_wait_ms` that waited for new output, terminal state, or a `grep` match. No read blocks now. Completion arrives as a notification; a condition on watched output is `job_watch(output_match=...)`.
+- **model-facing grep.** Searching a job's retained output server-side is not part of the read. `job_watch(output_match=...)` is the trigger-side answer.
+- **line paging.** `head_lines`/`tail_lines`/`from_line`+`line_count` are gone; the read returns the tail of retained output, bounded by the envelope.
+- **`output_status` on the read.** A `job:` read reports `- total_bytes:` always and `- dropped_bytes:` only when retention evicted bytes; it has no window/eviction enum of its own. The shell tool's own result still carries `output_status`, because that result is the one place a caller has to be told whether the inline text is the whole thing.
 
 ### No `job_kill`
 
@@ -947,10 +953,10 @@ The target model removes the current subagent-specific control plane. Replacemen
 | `spawn_agent(blocking=false)` | `delegate` (no `max_wait_ms`) | always starts a new delegate conversation and returns `job_id`, not `agent_id` |
 | `spawn_agent(blocking=true)` | `delegate(max_wait_ms=...)` | timeout leaves job running |
 | `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=..., on_idle="start")` | steers if running; starts the delegate's next job only when `on_idle="start"` is supplied |
-| `wait` / `wait_job` | no direct replacement; usually wait for automatic terminal notification | `job_read_output(max_wait_ms=...)` is only an exceptional one-shot bounded read/wait |
+| `wait` / `wait_job` | no direct replacement; wait for the automatic terminal notification | no read blocks; `job_watch` is the only way to be told about a condition |
 | `cancel_agent` / `job_kill` | `job_stop` | graceful stop plus internal escalation |
 | `close_agent` | none | retention automatic; transcript remains accessible |
-| `subagent_output` | `job_read_output` plus transcript tools | output and transcript are separate |
+| `subagent_output` | `read_transcript(transcript_ref="job:<job_id>")` plus session transcript tools | output and conversation are separate refs into one reader |
 | `list_agents` | `job_list(type=["delegate"])` | generic job inventory |
 
 ## Durable job records
@@ -1031,11 +1037,10 @@ Rules:
 
 - Output is capped per job.
 - Output appends are serialized enough to avoid corruption.
-- Output reads support offset/tail/limit.
-- Output reads report truncation and byte offsets.
+- The storage layer's reads support offset/tail/limit and report truncation and byte offsets. That is substrate: the model-facing read exposes none of it, and takes the tail (see "Reading job output").
 - Output files are retained according to session/job retention policy.
 - Delegate job output is not a substitute for the child transcript.
-- Parent-visible nested job output must be readable through parent `job_read_output` either by mirroring output into the parent job store or by durable routing metadata. This routing is not model-visible.
+- Parent-visible nested job output must be readable through the parent's own `job:<job_id>` read, either by mirroring output into the parent job store or by durable routing metadata. This routing is not model-visible.
 
 ## Notifications
 
@@ -1047,20 +1052,20 @@ Notification example:
 
 ```xml
 <job-notification job_id="job_..." event="completed" job_type="shell|delegate" status="completed" reason="exit_zero" output_bytes="12345">
-Job job_... completed. Use job_read_output to inspect output.
+Job job_... completed. Output is available through read_transcript(transcript_ref="job:job_...") if needed.
 excerpt:
 <bounded 8000-character result excerpt: shell tail / delegate report head>
 [excerpt truncated]
 </job-notification>
 ```
 
-When the excerpt contains the job's complete output (nothing was truncated away), the body says `Complete output below.` instead of the `job_read_output` instruction — a read of what the notification already carries in full must not be nudged. The instruction wording appears only when there is no excerpt or the excerpt is truncated.
+When the excerpt contains the job's complete output (nothing was truncated away), the body says `Complete output below.` instead of the read pointer — a read of what the notification already carries in full must not be nudged. The pointer appears only when there is no excerpt or the excerpt is truncated, and it names the job's own `transcript_ref` (the delegate conversation's ref when the notification carries one, otherwise `job:<job_id>`).
 
 Rules:
 
 - Terminal job notifications carry a concrete `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. `reason` is rendered even when the status carries no reason (`reason=""`), for example an ordinary delegate completion. Watch notifications use `event="watch"` and `job_type="watch"`; output/progress/job-event watches carry the concrete watched `job_id` when one exists, while session-level event watches may omit a concrete `job_id`. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications and observer frames.
 - Terminal `job_finished` notifications carry a bounded result excerpt in a labeled `excerpt:` section, re-read from the durable job record at render time (consistent on the durable-replay path). The excerpt is directional: a `shell` job shows the last 8000 characters of retained output (the tail); a `delegate` job shows the first 8000 characters of its report (the head). Over-budget excerpts end with a `[excerpt truncated]` marker. A job with no output omits the `excerpt:` section entirely, and a failed output read degrades to no excerpt rather than failing the notification. Watch notifications carry no terminal-notification excerpt; concrete-job watch frames may carry a bounded output excerpt. This 8000-character budget is the wire excerpt the model sees; the web UI's notification card independently bounds its own default collapsed-card preview to a smaller size, preserving the same tail/head direction per job type, with the full excerpt always available in the card's raw disclosure. The two are separate budgets for separate audiences, not two descriptions of the same number.
-- Notifications include a bounded excerpt that may be the complete output when the whole result fits the budget (rendered with `Complete output below.`), and is otherwise a truncated preview pointing the reader to `job_read_output`.
+- Notifications include a bounded excerpt that may be the complete output when the whole result fits the budget (rendered with `Complete output below.`), and is otherwise a truncated preview pointing the reader at `read_transcript`.
 - Notifications wake the visible session if idle. Notifications render only in their owner's own turns: a session is never asked to render a notification for a job it does not own. A child/delegate session with undelivered attention (a queued owner notification or a pending observer frame) is **driven** by its parent at the parent's own loop boundaries — the parent launches one notification turn on the child's own drain loop so the child's model receives its own notifications. The root is driven the same way by serve.go's wake. The drive mints no new job record and notification-arms nothing new; it is the child processing its own durable queue. A child's owner-side notification state remains durable and is delivered when that child is next driven (or resumed).
 - A parent **drives** a child for the child's own (delegate-owned) job notifications; it still **renders** its OWN jobs' terminal notifications, including its direct delegates' terminals — the parent is told when its own coordinator finishes, because that is the parent's job ending, not noise about a job it did not create.
 - A successful drive handoff settles the parent's forwarded pending COPY of a child-owned terminal (marks it delivered) so the same stale signal does not re-drive forever. The forwarded copy is only a drive signal; the child's own durable queue is the delivery ledger and is never touched by the parent's settle. On restart the parent re-arms only its OWN jobs' terminal notifications; a forwarded copy of a direct child's own job is a drive signal, not the parent's render, so it is not re-armed onto the parent's rail (no restart wake-storm). A child whose latest delegate record (by durable append order) terminated by deliberate stop is not driven for attention that predates the stop; new work clears the gate. If a child cannot be driven (non-resumable, closed, descriptor-less) the parent renders the pending itself prefixed `child unreachable:`, so attention escalates one honest level instead of vanishing.
@@ -1101,7 +1106,7 @@ Notification example:
 
 ```xml
 <job-notification job_id="job_..." event="stopped" job_type="shell|delegate" status="stopped" reason="runtime_lost">
-Job job_... stopped because Serf restarted and no live runtime was attached. Use job_list and job_read_output to inspect captured state.
+Job job_... stopped. Output is available through read_transcript(transcript_ref="job:job_...") if needed.
 </job-notification>
 ```
 
@@ -1137,10 +1142,10 @@ Rules:
 - A nested job records the job that caused it in `parent_job_id`.
 - Parent-visible job lists may include nested jobs when `include_nested=true`. This is the one-hop view: the parent's own store, which holds its owned jobs plus the records forwarded up one level from its direct children.
 - `job_list(include_descendants=true)` walks the live descendant tree at read time instead of one hop. It returns the caller's own jobs plus every live descendant's jobs, reading each descendant's job store independently under its own lock (no lock is held across the recursion). Each row carries `owner_session_id` and a `depth` annotation: `depth` is the live-walk distance to the store the row was surfaced from — `0` for the caller's own store, `1` for a direct child, and so on. The dedupe rule below applies across the whole walk: a forwarded copy of a `job_id` whose owner is reached live during the walk is suppressed in favor of that owner's record (so each job appears once, at its real owner's depth). The walk is live-only: it recurses only into live child sessions. A dead or terminated descendant contributes just the terminal forwarded copy that survives in an ancestor store (at that ancestor's depth); the walk does not reopen the gone session's store to dig deeper — resume the descendant to inspect its subtree. Default `job_list` and `include_nested` semantics are unchanged; `include_descendants` is additive.
-- `job_read_output` resolves a descendant job at depth ≥ 2 (a grandchild-or-deeper session's job) through the recursive owner path: when the one-hop resolver does not find the job locally or in a live direct child, the read recurses the live subtree (the same live-only enumeration the descendant walk uses), applying the single-hop owner resolution at each hop until it reaches the session whose store owns the `job_id`. Each store is read under its own lock; no lock is held across the recursion. The read is served from the resolved owner's store, and the owner session is what the result's owner/resumability projection keys on. Such a deep read is snapshot-only: positive `max_wait_ms` fails `invalid_request` as a cross-session read, exactly as a watch-granted read does. Own-job (depth 0) and direct-child (depth 1) reads are unchanged. The owning branch must be live; if the descendant that owns the job is closed, the read falls back to whatever forwarded terminal copy survives in an ancestor store, the same as the descendant walk.
+- A `job:<job_id>` read resolves a descendant job at depth ≥ 2 (a grandchild-or-deeper session's job) through the recursive owner path: when the one-hop resolver does not find the job locally or in a live direct child, the read recurses the live subtree (the same live-only enumeration the descendant walk uses), applying the single-hop owner resolution at each hop until it reaches the session whose store owns the `job_id`. Each store is read under its own lock; no lock is held across the recursion. The read is served from the resolved owner's store, and the owner session is what the result's owner/resumability projection keys on. Own-job (depth 0) and direct-child (depth 1) reads are unchanged. The owning branch must be live; if the descendant that owns the job is closed, the read falls back to whatever forwarded terminal copy survives in the owner's DIRECT PARENT store — forwarding is single-hop, so that is where a forwarded terminal copy lands — the same as the descendant walk.
 - For any parent-visible nested job, the parent-visible `job_id` is the only control handle accepted by parent job tools.
 - Job IDs must be globally unique enough that parent job tools do not need string namespacing or a separate owner/visible ID choice.
-- Notifications, `job_list`, `job_read_output`, `job_watch`, and `job_stop` all use the same parent-visible `job_id`. `delegate_send` uses the corresponding `delegate_id` for delegate conversations.
+- Notifications, `job_list`, `job_status`, `job_watch`, `job_stop`, and the `job:<job_id>` transcript ref all use the same parent-visible `job_id`. `delegate_send` uses the corresponding `delegate_id` for delegate conversations.
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
 - Delegate jobs created by subagents join the same one-hop forwarding: delegate-job creation forwards its `job_started` one hop to the parent's store, carrying `parent_job_id` plus owner/type identity (`owner_session_id`, `type=delegate`). This seeds a typed parent-visible record at start, so the later forwarded terminal event merges onto it rather than producing a type-less phantom record.
 - Dedupe rule: the owner session's durable record is authoritative for a forwarded job. A forwarded copy of the same `job_id` in an ancestor store is suppressed in favor of the owner record; the forwarded start carries enough identity (owner session + type) to make that suppression unambiguous.
@@ -1165,7 +1170,7 @@ Example flow:
 1. Parent starts delegate job job_A.
 2. Delegate starts shell job job_B.
 3. Parent sees job_B in job_list(include_nested=true) with parent_job_id="job_A".
-4. Parent reads shell output with job_read_output(job_B).
+4. Parent reads shell output with read_transcript(transcript_ref="job:job_B").
 5. Parent stops just job_B with job_stop(job_B), or stops the visible tree with job_stop(job_A, include_children=true).
 6. job_stop(job_A) on the delegate cascades: it stops the delegate plus the running jobs in its subtree (job_B and anything job_A's child delegated onward), recursively.
 ```
@@ -1175,7 +1180,7 @@ flowchart TD
     ParentDelegateJob -->|subagent starts shell| ChildShellJob
     ChildShellJob -->|job_started forwarded| ForwardedRecord
     ForwardedRecord -->|job_list include_nested=true| ParentVisible
-    ParentVisible -->|job_read_output parent-visible job_id| ParentCanRead
+    ParentVisible -->|read_transcript job: parent-visible job_id| ParentCanRead
     ParentVisible -->|job_watch source=job_id on live descendant| ParentCanWatch
     ParentVisible -->|job_stop own delegate cascades subtree| ParentCanStop
 ```
@@ -1188,7 +1193,7 @@ Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only 
 2. Inside that child, configure `job_watch(operation="create", source="parent", ...)`.
 3. Serf delivers matching bounded event/output frames to the child that created the watch.
 4. The sidecar responds with `communicate(end_turn=true, ...)` when it has useful commentary or advice.
-5. The caller receives an "Observer callback" block with the observer message and canonical output envelope, then continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
+5. The caller receives an "Observer callback" block with the observer message and canonical output envelope, then continues from it. Follow-up `job_list`, `job_status` or `job:` transcript reads are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
 This makes observer behavior a composition of two primitives:
 
@@ -1207,8 +1212,8 @@ Safety and behavior rules:
 - Watch frames to busy sidecars are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
 - Access control is source-resolution based: `parent` requires `delegate(watch_parent:true)`, concrete jobs must be owned by this session or a live descendant, and unrelated sessions are rejected.
 - Broad unbounded transcript watches are not part of v1; watch a concrete `job_id`, `self`, or a granted `parent` session source.
-- Same-watch feedback suppression is causal: watch-originated events carry provenance, and the same `(watch_id, generation)` does not retrigger itself. A later top-level user input starts with fresh provenance, so legitimate future events can still fire the watch.
-- For observers that need to inspect watched job output, use frames that reference a concrete watched `job_id`; Serf grants the observer `job_read_output` for that watched job. Session-source watches such as `source="parent"` carry event payloads in the frame instead of granting transcript or job-list visibility.
+- Same-watch feedback is causal, and it is classified rather than suppressed: watch-originated events carry provenance, so an event whose provenance already holds this watch's `(watch_id, generation)` is recognised as the watch's own echo. It still fires and still delivers — marked self-influenced, with the gradient notice on the frame — and the runaway fuse is what stops a runaway. The classification is scoped to the current generation, so a re-arm reads as fresh, and a later top-level user input starts with fresh provenance.
+- An observer that needs the output of a job a frame told it about spends the read grant that delivery minted: `read_transcript(transcript_ref="job:<job_id>")`, the call the frame's trailing `read with:` line names. That is the whole of the capability — the frame still carries the event payload (status, reason, exit code, output bytes) for everything else, and the grant opens no transcript, listing, or control access beyond that one job's output.
 
 ## Relationship to transcript tools
 
@@ -1217,14 +1222,15 @@ Transcript tools remain separate:
 ```text
 find_session_transcripts
 read_session_transcript
+read_transcript
 ```
 
-Use job tools for work-unit lifecycle and output. Use transcript tools for conversation history.
+Use job tools for a work unit's lifecycle and control. Use transcript tools to read evidence — a session `transcript_ref` for conversation history, a `job:<job_id>` ref for a job's own output.
 
 For delegate jobs:
 
 - `job_list` and notifications expose the child `transcript_ref` when known.
-- `job_read_output` returns the delegate job output/log/final report for that invocation.
+- `read_transcript(transcript_ref="job:<job_id>")` returns the delegate job output/log/final report for that invocation.
 - `read_session_transcript` reads the child conversation.
 
 Decision table:
@@ -1232,8 +1238,8 @@ Decision table:
 | Need | Tool |
 | --- | --- |
 | Did the job finish? | Wait for automatic notification, or check `job_list` once when recovering state |
-| Shell stdout/stderr | `job_read_output(job_id)` |
-| Delegate invocation final report/log | `job_read_output(job_id)` |
+| Shell stdout/stderr | `read_transcript(transcript_ref="job:<job_id>")` |
+| Delegate invocation final report/log | `read_transcript(transcript_ref="job:<job_id>")` |
 | Delegate full child conversation/tool history | `read_session_transcript(transcript_ref)` |
 | Trigger observer/sidecar review | Parent: `delegate(watch_parent:true)`; observer: `job_watch(operation="create", source="parent", ...)`; callback: `communicate(end_turn=true)` |
 | Start a fresh delegate conversation | `delegate(...)` |
@@ -1249,8 +1255,7 @@ Tool descriptions and prompts should warn against:
 - starting a background job and immediately waiting on it with `max_wait_ms`;
 - polling `job_list` for completion;
 - using `job_watch` as a terminal completion subscription;
-- using `job_read_output` with a large `max_wait_ms` as a blocking read without a clear reason;
-- using `job_read_output(max_wait_ms=...)` repeatedly as a wait loop;
+- re-reading a job's output in a loop to discover that it finished;
 - expecting jobs to auto-resume after process restart;
 - using job output as a replacement for delegate transcripts;
 - passing `transcript_ref` to job-control tools or using `delegate` to resume old conversations;
@@ -1322,7 +1327,7 @@ The contract-level requirements are:
 - foreground shell default (`background:false` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
 - automatic terminal notification with durable no-loss/dedupe semantics;
 - `job_watch` for source-owned condition-triggered notifications and v1 observer sidecar event/frame delivery;
-- bounded output inspection and retained-output grep through `job_read_output`;
+- bounded output inspection through the `job:<job_id>` transcript read;
 - durable listing/history;
 - clear stopped/runtime-lost restart behavior;
 - observer/sidecar composition through `delegate(watch_parent:true)` + `job_watch(source:"parent")` + `communicate(end_turn:true)`;

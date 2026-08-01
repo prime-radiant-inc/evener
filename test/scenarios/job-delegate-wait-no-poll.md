@@ -76,4 +76,5 @@ untouched.
 - One orientation `job_status` is allowed by design; the failure is the *loop*,
   not the single check. Assert on the count, not on absence.
 - Notification excerpts carry small outputs in full, so a post-notification
-  `job_read_output` for the same `job_id` is acceptable but MUST NOT be required.
+  `read_transcript(transcript_ref="job:<job_id>")` is acceptable but MUST NOT
+  be required.

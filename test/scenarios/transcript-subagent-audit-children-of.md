@@ -26,5 +26,6 @@ conversation instead of treating job output as the full transcript.
   transcript with `parent_ref` set.
 - The outline maps the child turns, and a markdown read of the relevant range
   shows the file creation and `wc -l` check.
-- The parent distinguishes `job_read_output` as result/report output from
-  transcript tools as the audit surface.
+- The parent distinguishes `read_transcript(transcript_ref="job:<job_id>")`
+  as result/report output from session transcript tools as the audit
+  surface.
