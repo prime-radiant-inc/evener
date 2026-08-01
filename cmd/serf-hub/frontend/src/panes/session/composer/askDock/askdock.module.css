@@ -3,6 +3,18 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-2) 0;
+  /* A tall batch (long details, several options) must not grow the pane's
+   * flex:none footer past the pane itself: the pane clips overflow:hidden,
+   * which put the card's own bottom - note row, batch footer, Send answers
+   * - out of reach entirely, and squeezed the transcript to zero
+   * (layoutguard askdock-mobile-tall-crush: dock 45..1116 in a 469px host,
+   * transcript 32px). Cap the dock and scroll inside it; 70dvh leaves the
+   * conversation visible on a phone and is a no-op for the short batches
+   * that fit anyway. dvh-only: the dock must track the VISUAL viewport
+   * (mobile Safari's chrome and the keyboard shrink it), and every browser
+   * the hub supports has dvh. */
+  max-height: 70dvh;
+  overflow-y: auto;
 }
 
 .anchor {

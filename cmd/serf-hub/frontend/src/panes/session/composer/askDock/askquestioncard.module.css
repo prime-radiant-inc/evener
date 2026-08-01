@@ -50,12 +50,26 @@
 
 .option {
   display: flex;
+  /* wrap, because the detail text is arbitrarily long: on a phone the
+   * detail's natural width alone exceeds the row, and without wrapping the
+   * row's shrink math squeezed the chip down to its longest WORD - the
+   * label then wrapped inside the chip's fixed 24px height and painted
+   * above/below the box (layoutguard askdock-mobile-tall-crush, measured
+   * 3-5 line boxes in a 50-62px chip). With wrap, an item that no longer
+   * fits beside the chip drops to its own line instead. Wide rows are
+   * unchanged: everything still fits on one line there. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
 }
 
 .optionChip {
   display: inline-flex;
+  /* The label is the option's identity - it never shrinks (see .option's
+   * comment); the detail is what gives way. max-width guards a label
+   * longer than the whole row from pushing sideways. */
+  flex: none;
+  max-width: 100%;
 }
 
 /* Checked ring is --accent, not --attention: this is ordinary control
@@ -68,6 +82,14 @@
 }
 
 .optionDetail {
+  /* 1 1 12rem, not 0 1 auto: wrapping decisions use the flex BASIS, and an
+   * auto basis is the detail's full natural width - which exceeds even a
+   * desktop row once the sentence is long, so the detail would drop below
+   * the chip everywhere, not just where space is genuinely tight. A 12rem
+   * basis keeps it beside the chip (growing into the remaining width)
+   * whenever that much still fits, and sends it to its own full-width line
+   * only below that - phone widths. */
+  flex: 1 1 12rem;
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
