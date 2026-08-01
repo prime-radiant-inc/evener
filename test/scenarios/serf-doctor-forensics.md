@@ -60,9 +60,16 @@ card proves it against a built binary on a real state-dir shape.
   # nothing about it — the deliveries still fold from the watch_send events, so
   # a dropped registration costs you the `target=`/`owner=` lines and the whole
   # target-job join in Step 6 while the delivery counts look perfectly fine.
+  #
+  # The transcript header MUST carry format_version 2. serf-doctor decodes it
+  # strictly (transcript.ValidateHeader, agent/transcript/transcript.go:81-86),
+  # so a header without it fails EVERY transcript subcommand with
+  # `unsupported transcript format: require transcript header with
+  # format_version 2` and exit 1, before any counting happens — Step 4 could
+  # not run at all until kata 09ft put it back.
   SCR=$(mktemp -d); SESS="$SCR/sessions"; SID=033z4xc9zDkqiOXWEe1X4l
   mkdir -p "$SESS/$SID"
-  printf '{"kind":"header","session_id":"%s"}\n' "$SID" > "$SESS/$SID.transcript.jsonl"
+  printf '{"kind":"header","format_version":2,"session_id":"%s"}\n' "$SID" > "$SESS/$SID.transcript.jsonl"
   printf '{"id":"%s"}'                          "$SID" > "$SESS/$SID.meta.json"
   cat > "$SESS/$SID/jobs.jsonl" <<'EOF'
   {"kind":"watch_registered","seq":1,"watch_id":"w1","watch":{"generation":"g1","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job:j1","send_to":"obs","condition":"output_match","config_hash":"h1"}}
@@ -118,14 +125,27 @@ card proves it against a built binary on a real state-dir shape.
    own key). The rendered (non-JSON) form shows `breaker: FIRED` for `w2`. An
    empty result serializes as `"watches": []`.
 
-4. **`transcript --count` distinguishes calls from mentions.** Append an
-   assistant turn that *names* `delegate_send` without calling it, plus a real
-   `read_file` call, then:
+4. **`transcript --count` distinguishes calls from mentions.** The fixture's
+   transcript is a bare header so far, so append the two turns the count needs:
+   one assistant turn that *names* `delegate_send` twice in prose without
+   calling it, and one that makes a real `read_file` call.
    ```bash
+   cat >> "$SESS/$SID.transcript.jsonl" <<'EOF'
+  {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"I could steer the worker with delegate_send, but delegate_send is the wrong tool here, so I will read the file instead."}]},"timestamp":"2026-07-31T18:00:00Z"}}
+  {"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"tc1","name":"read_file","arguments":{"path":"README.md"}}}]},"timestamp":"2026-07-31T18:00:01Z"}}
+  EOF
    "$run/serf-doctor" transcript "$SID" --count delegate_send --state-dir "$SCR"
+   "$run/serf-doctor" transcript "$SID" --count read_file --state-dir "$SCR"
    ```
-   ASSERT `delegate_send: 0 calls` with a non-zero "textual mention(s)" note —
-   the structural invocation count is 0 even though the name appears in text.
+   ASSERT the first prints, verbatim, `delegate_send: 0 calls  (2 textual
+   mention(s) in assistant text — not invocations)` — the structural
+   invocation count is 0 even though the name appears twice in text — and the
+   second prints `read_file: 1 call`. Both are needed: the `0` only means
+   something once a real call in the same transcript counts as `1`. Entries
+   are decoded strictly, unknown JSON fields included
+   (`transcript.DecodeEntry`), so keep the turn shape exactly as written; a
+   `mentions` count only accrues on `ASSISTANT`-kind turns
+   (`agent/doctor/transcript.go`, `Count`).
 
 5. **`jobs` folds the log into per-job state.** The fixture so far is all
    watches and no jobs; append two job records plus two watches on them, for

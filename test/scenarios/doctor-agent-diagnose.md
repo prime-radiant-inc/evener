@@ -68,8 +68,15 @@ is normal; the diagnosable event is the fired fuse):
 # identifier/uuid.go:12,64-73), so a readable fake like 01BROKENLOOP... is
 # rejected with `invalid session id` and nothing below runs. This literal is
 # a generated, validated id; keep it or generate another.
+#
+# The transcript header carries format_version 2 because every semantic reader
+# validates that boundary first (transcript.ValidateHeader); a header without
+# it fails any transcript-reading subcommand with `unsupported transcript
+# format` and exit 1. This card's asserted path reads jobs.jsonl, so the
+# omission was invisible here until it broke serf-doctor-forensics.md's
+# step 4 (kata 09ft).
 SCR=$(mktemp -d); BSID=033z4xc9zG2DUwYAg4Pcdh; mkdir -p "$SCR/sessions/$BSID"
-printf '{"kind":"header","session_id":"%s"}\n' "$BSID" > "$SCR/sessions/$BSID.transcript.jsonl"
+printf '{"kind":"header","format_version":2,"session_id":"%s"}\n' "$BSID" > "$SCR/sessions/$BSID.transcript.jsonl"
 printf '{"id":"%s"}' "$BSID" > "$SCR/sessions/$BSID.meta.json"
 cat > "$SCR/sessions/$BSID/jobs.jsonl" <<'JOBS'
 {"kind":"watch_registered","seq":1,"watch_id":"wLOOP","watch":{"generation":"g1","target":"caller","send_to":"obs"}}
