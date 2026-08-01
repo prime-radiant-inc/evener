@@ -1155,7 +1155,8 @@ test("editing a rejected queue row merges it through the normal Composer", async
   if (!row) throw new Error("missing rejected queue row");
   await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
-  await waitFor(() => expect(textarea().value).toBe("current work\n\nrejected draft"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("current work\n\nrejected draft");
   expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
   expect(screen.queryByText("rejected draft")).toBeNull();
 });
@@ -1183,15 +1184,20 @@ test("sending recovered text uses current Composer routing and consumes the reco
     },
   }));
 
-  await waitFor(() => expect(textarea().value).toBe("retry me"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("retry me");
   await user.click(submitButton());
+  await settleRecoveryProjection();
 
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  // The wire call itself stays a waitFor: dispatch is deliberately
+  // fire-and-forget off the durable resend (threads.ts's own
+  // handleDiscoveredMutations call), so it is not projection work to await.
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true));
   expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
     expectedTurnId: "turn-current",
     input: [{ type: "text", text: "retry me" }],
   });
-  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
 });
 
 test("a losing cross-tab recovered send does not issue a second request", async () => {
@@ -1200,7 +1206,8 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const recovered = await seedRejectedRecovery(storage, "ref_a", "one winner");
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("one winner"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("one winner");
   const otherTab = new MutationOutboxIndexedDB();
   await otherTab.resendRecovery(recovered.clientMutationId, {
     targetRef: "ref_a",
@@ -1279,21 +1286,22 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("edit me [image 1]"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("edit me [image 1]");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
 
   await user.clear(textarea());
   await user.type(textarea(), "edited");
   await user.click(screen.getByRole("button", { name: "Remove proof.png" }));
-  await waitFor(async () => {
-    expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
-      { type: "text", text: "edited" },
-    ]);
-  });
+  await settleRecoveryProjection();
+  expect((await storage.getRecovery(recovered.clientMutationId))?.payload.input).toEqual([
+    { type: "text", text: "edited" },
+  ]);
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("edited"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("edited");
   // Any remove control at all, not one named for this file: a tile carries
   // its filename in labels rather than as a text node, so a text query would
   // report "gone" for an attachment still sitting there - and a query naming
@@ -1307,12 +1315,15 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   const recovered = await seedRejectedRecovery(storage, "ref_a", "discard me");
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
-  await waitFor(() => expect(textarea().value).toBe("discard me"));
+  await settleRecoveryProjection();
+  expect(textarea().value).toBe("discard me");
   await user.clear(textarea());
-  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
+  await settleRecoveryProjection();
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   first.unmount();
 
   await mountComposer("ref_a", { status: { type: "idle" } });
+  await settleRecoveryProjection();
   expect(textarea().value).toBe("");
   expect(screen.queryByText("discard me")).toBeNull();
 });
