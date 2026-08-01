@@ -150,9 +150,9 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # behaviour of serf's own tooling. Each is offline, deterministic and works only
 # in throwaway fixtures, and each is the ONLY thing that pins its script's
 # contract — run-module-lint-selftest.sh alone carries 167 assertions about the
-# aggregate lint runner. The fuzz-*-selftest suites are deliberately absent:
-# they already have their own entry points, and their cost (real git bisect,
-# real worktrees, real `go test`) is heavy and unmeasured.
+# aggregate lint runner. The six fuzz-*-selftest suites listed here are
+# fixture-contained: seam-driven stubs and mktemp worlds avoid their real git
+# bisect, worktree, and go-test operations.
 SELFTEST_SCRIPTS := run-module-lint run-module-tests disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # selftest hangs off `make test` because a script selftest is a test. The runner
