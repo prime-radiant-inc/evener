@@ -97,6 +97,48 @@ func TestScenarioRetiredToolAllowlistEntriesActuallyExist(t *testing.T) {
 	}
 }
 
+// jobControlContract is the evergreen job-control contract, the one document
+// that is allowed to name a retired tool — in the entry whose whole job is
+// recording the removal.
+const jobControlContract = "docs/job-control.md"
+
+// TestJobControlContractNamesARetiredToolOnlyAsRemoved is the doc half of kata
+// fd8n. docs/job-control.md described job_read_output as live contract for five
+// weeks after it was unregistered — a whole `### job_read_output` section, its
+// paging rules, and ~50 references written as though a model could call it.
+// Recording the removal is the doc's job; describing the tool as reachable is
+// the rot. The section heading is the boundary between the two.
+func TestJobControlContractNamesARetiredToolOnlyAsRemoved(t *testing.T) {
+	raw, err := os.ReadFile(jobControlContract)
+	if err != nil {
+		t.Fatalf("reading %s: %v", jobControlContract, err)
+	}
+	var findings []string
+	heading := ""
+	for i, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "#") {
+			heading = strings.TrimSpace(line)
+		}
+		for name := range scenarioRetiredJobTools {
+			if !strings.Contains(line, name) {
+				continue
+			}
+			if heading == "### No `"+name+"`" {
+				continue
+			}
+			findings = append(findings, jobControlContract+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("%s may name a retired job tool only under its own "+
+			"\"### No `<tool>`\" removed-tools entry, which exists to record the "+
+			"removal. Everywhere else the contract must describe the surface a "+
+			"model can actually reach (kata fd8n):\n%s",
+			jobControlContract, strings.Join(findings, "\n"))
+	}
+}
+
 func scenarioRetiredToolMentionAllowed(path, line string) bool {
 	for _, allowed := range scenarioRetiredToolAllowedMentions[path] {
 		if strings.Contains(line, allowed) {
