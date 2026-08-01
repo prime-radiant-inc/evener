@@ -38,29 +38,56 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    set -euo pipefail
 
-   RUN_ROOT=$(mktemp -d -t serf-queue-XXXXXX)
-   WORKDIR="$RUN_ROOT/work"
-   TMUX_SESSION="serf-queue-$(basename "$RUN_ROOT")"
-   HUB_ADDR="127.0.0.1:$PORT"
-   HUB="http://$HUB_ADDR"
-   TOKEN=$(cat "$HOME/.serf/auth-token")
+   RUN_ROOT=""
+   TMUX_SESSION=""
+   HUB=""
+   TOKEN=""
    SID=""
 
    cleanup() {
-     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-     if [ -n "$SID" ]; then
-       curl -fsS -X POST \
-         -H "Authorization: Bearer $TOKEN" \
-         -H "Content-Type: application/json" \
-         -d '{}' "$HUB/api/sessions/local:$SID/shutdown" >/dev/null || true
+     local exit_code="${1:-0}"
+     local owned_root="${RUN_ROOT:-}"
+     local owned_tmux="${TMUX_SESSION:-}"
+     local owned_hub="${HUB:-}"
+     local owned_token="${TOKEN:-}"
+     local owned_sid="${SID:-}"
+
+     if [ -n "$owned_tmux" ]; then
+       tmux kill-session -t "$owned_tmux" 2>/dev/null || true
      fi
-     rm -rf "$RUN_ROOT"
+     if [ -n "$owned_sid" ] && [ -n "$owned_hub" ] && [ -n "$owned_token" ]; then
+       curl -fsS -X POST \
+         -H "Authorization: Bearer $owned_token" \
+         -H "Content-Type: application/json" \
+         -d '{}' "$owned_hub/api/sessions/local:$owned_sid/shutdown" >/dev/null || true
+     fi
+     if [ -n "$owned_root" ] && [ -d "$owned_root" ]; then
+       rm -rf "$owned_root"
+     fi
+     return "$exit_code"
    }
-   trap cleanup EXIT
+
+   RUN_ROOT=$(mktemp -d -t serf-queue-XXXXXX)
+   trap 'cleanup "$?"' EXIT
+
+   WORKDIR="$RUN_ROOT/work"
+   TMUX_SESSION="serf-queue-$(basename "$RUN_ROOT")"
+   if [ -z "${PORT:-}" ]; then
+     printf 'PORT must name the isolated test hub\n' >&2
+     exit 1
+   fi
+   HUB_ADDR="127.0.0.1:$PORT"
+   HUB="http://$HUB_ADDR"
+   TOKEN=$(cat "$HOME/.serf/auth-token")
 
    mkdir "$WORKDIR"
    cp README.md "$WORKDIR/README.md"
    ```
+
+   Cleanup-visible variables are initialized before any fallible command, the
+   trap is the first command after `mktemp`, and nounset-safe snapshots keep it
+   valid on every partial path. The trap returns the incoming exit status, so a
+   setup failure is cleaned without being converted into a false success.
 
 2. **Spawn the slow first turn through the structured REST API and capture its
    exact session ID before attaching the TUI**:
@@ -98,7 +125,8 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    lowercase.
 
 3. **Launch the first TUI process and open that exact session**. From the
-   dashboard, Ctrl+P opens the command palette; its session item ID contains
+   dashboard, `/` opens the command palette (`updateDashboardKey`,
+   `cmd/serf-tui/hub_keys.go#updateDashboardKey`); its session item ID contains
    the full ref (`commandPaletteEntriesForRows`,
    `cmd/serf-tui/command_palette.go#commandPaletteEntriesForRows`), and the
    picker filters on item IDs as well as visible labels
@@ -106,9 +134,9 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --debug 2>\"$RUN_ROOT/tui-live.log\""
+     "./serf-tui --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-live.log\""
    sleep 1
-   tmux send-keys -t "$TMUX_SESSION" C-p
+   tmux send-keys -t "$TMUX_SESSION" "/"
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
@@ -163,9 +191,9 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```bash
    tmux kill-session -t "$TMUX_SESSION"
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./serf-tui --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --debug 2>\"$RUN_ROOT/tui-cold.log\""
+     "./serf-tui --hub-addr \"$HUB_ADDR\" --auth-token \"$TOKEN\" --no-auto-start-hub --debug 2>\"$RUN_ROOT/tui-cold.log\""
    sleep 1
-   tmux send-keys -t "$TMUX_SESSION" C-p
+   tmux send-keys -t "$TMUX_SESSION" "/"
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    tmux send-keys -t "$TMUX_SESSION" Enter
    sleep 0.5
@@ -188,19 +216,18 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 
    ```bash
    sleep 12
-   tmux capture-pane -t "$TMUX_SESSION" -p | tee "$RUN_ROOT/after-drain-pane.txt"
-   ! grep -F 'queued (1)' "$RUN_ROOT/after-drain-pane.txt"
-   ```
 
-   The queue block disappears when `thread/queueChanged` carries the
-   daemon's post-pop state. A fresh `turn_2` starts for the queued line without
-   another keypress, and the composer remains in `queue` mode while that turn
-   runs. Eventually the file listing appears in the model's `communicate`
-   payload.
+   prev=$(tmux capture-pane -t "$TMUX_SESSION" -p)
+   sleep 0.02
+   cur=$(tmux capture-pane -t "$TMUX_SESSION" -p)
+   while [ "$prev" != "$cur" ]; do
+     prev="$cur"
+     sleep 0.02
+     cur=$(tmux capture-pane -t "$TMUX_SESSION" -p)
+   done
+   printf '%s\n' "$cur" | tee "$RUN_ROOT/after-drain-pane.txt"
+   ! grep -F 'queued (' "$RUN_ROOT/after-drain-pane.txt"
 
-7. **Cross-check the durable transcript**:
-
-   ```bash
    TS=$(find "$HOME/.local/state/serf/projects" \
      -name "$SID.transcript.jsonl" -print -quit)
    test -n "$TS"
@@ -216,10 +243,17 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ' "$TS" >/dev/null
    ```
 
-   This proves there are at least two user-input turns in order and the last
-   one contains exactly the follow-up queued in step 4.
+   The two 20 ms-spaced, byte-identical captures follow the direct-driving
+   stable-capture rule in `docs/testing.md` (the Go harness equivalent is
+   `CaptureStable`, exercised by `TestTUITmuxE2E_CaptureStableDuringStream` in
+   `cmd/serf-tui/tmux_e2e_test.go#TestTUITmuxE2E_CaptureStableDuringStream`).
+   Only that stable frame is used for the negative queue-row assertion. The
+   structured transcript assertion positively proves that a second
+   `USER_INPUT` turn started without another keypress and contains exactly the
+   follow-up queued in step 4. Eventually the file listing appears in the
+   model's `communicate` payload.
 
-8. **Clean up explicitly** (the exit trap performs the same cleanup after an
+7. **Clean up explicitly** (the exit trap performs the same cleanup after an
    earlier failure):
 
    ```bash
@@ -240,18 +274,17 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 - Step 5: a brand-new TUI process renders the same count and text immediately
   after opening the session. A missing or different cold preview means the
   `thread/read` snapshot was not applied authoritatively.
-- Step 6: after `turn_1` completes, the queue block disappears and `turn_2`
-  begins without user action. The daemon contract is covered deterministically
-  by `TestSession_Enqueue_DrainsAfterTurnCompletes`
+- Step 6: after `turn_1` completes, two consecutive stable captures show the
+  queue block absent, and the transcript positively contains the queued text
+  as the second user-input turn. The daemon contract is covered
+  deterministically by `TestSession_Enqueue_DrainsAfterTurnCompletes`
   (`agent/session_lifecycle_test.go#TestSession_Enqueue_DrainsAfterTurnCompletes`).
-- Step 7: the transcript contains both user turns, with the exact queued text
-  last.
 
 ## Cleanup
 
 The step-1 exit trap owns cleanup for every path: it kills only
 `$TMUX_SESSION`, posts shutdown for `local:$SID` when spawn succeeded, and
-removes `$RUN_ROOT`. The explicit step 8 disarms the trap before invoking the
+removes `$RUN_ROOT`. The explicit step 7 disarms the trap before invoking the
 same function once.
 
 ## Sharp edges
@@ -259,6 +292,13 @@ same function once.
 - **Use the structured ID.** The ordinary TUI session pane does not display a
   dependable machine-readable SID. Use `.session_id` from the spawn response;
   do not grep the pane or constrain the ID to an uppercase alphabet.
+- **Dashboard and session palette keys differ.** `/` opens the palette on the
+  dashboard; Ctrl+P is the session-mode binding. Both attaches in this card
+  begin on the dashboard and therefore send `/`.
+- **Do not auto-start a fallback hub.** Both TUI invocations pass
+  `--no-auto-start-hub`; an unreachable test hub must fail this run rather than
+  make the TUI create a second hub outside this run's ownership boundary
+  (`cmd/serf-tui/internal/hubstart/hub_start.go#ParseTUIStartupOptions`).
 - **The queue preview is authoritative.** `appwire.QueueState` carries queue
   depth and first-line preview text on both `thread/read` and
   `thread/queueChanged`. `applyQueueState` replaces the TUI's snapshot rather

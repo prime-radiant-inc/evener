@@ -8,20 +8,36 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 
 ## Pre-state
 
-- Hub running, browser authenticated, a session with some transcript content
-  open (so the effect is visible in the transcript, not just the sidebar).
+- Complete the full **Setup checklist** in `docs/agentic-testing.md` for this
+  run: one unique `run=$(mktemp -d ...)` owns the fresh binaries, an isolated
+  `$HOME=$run/home` (with `XDG_STATE_HOME` unset), and a hub bound by the kernel
+  to `127.0.0.1:0`. Keep its exact PID in `$run/hub.pid`; never use an ambient
+  hub, assigned port, real home, or shared state.
+- Before the first browser call, claim a browser profile owned only by this run,
+  e.g. `set_profile font-size-<basename-of-$run>`. Do not use the ambient/shared
+  default or any pre-existing persistent profile. Authenticate that browser to
+  this run's `$HUB`, then open a session containing transcript content so the
+  effect is visible beyond the sidebar.
+- Create `RESULTS=$run/results/font-size-presets-visible` with
+  `mkdir -p "$RESULTS"`. Every measurement export and S/M/L/XL screenshot from
+  this card must be written there, beneath the run root that this card owns.
 
 ## Steps
 
-1. Open Settings → Theme. Confirm the current preset (default `m`) is
-   indicated.
+1. Confirm `HOME` is `$run/home`, the page's `location.port` equals this run's
+   kernel-assigned `$PORT`, and the claimed browser profile is the unique
+   profile named above. Open Settings → Theme and confirm the fresh profile's
+   current preset (default `m`) is indicated.
 2. Cycle through S, M, L, XL. After each selection, read
    `document.body.dataset.fontSize`,
    `getComputedStyle(document.body).getPropertyValue('--font-scale')`, and,
    for a representative scaled token,
    `getComputedStyle(document.body).getPropertyValue('--font-size-body')`.
+   Save the four labeled result objects to `$RESULTS/measurements.json`.
 3. With each preset active, screenshot or visually inspect: the sidebar
    session-row text, the transcript prose, and the Settings pane's own text.
+   Save the captures as `$RESULTS/font-s.png`, `font-m.png`, `font-l.png`, and
+   `font-xl.png`; do not leave the only copy in a shared browser-tool cache.
 
 ## Expected
 
@@ -36,13 +52,18 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 
 ## Cleanup
 
-- Reset the preset to `m` (default) if using a persistent browser profile.
+- Close only the tabs/browser instance claimed for this run, shut down the
+  session this card spawned, and kill only the hub PID recorded in
+  `$run/hub.pid`. Then remove this card's exact `$run` directory.
+- Do **not** reset `fontSize`, clear storage, or otherwise overwrite an ambient
+  or pre-existing persistent browser profile. Such a profile is outside this
+  card's ownership and must never be used by the steps above.
 
 ## Sharp edges
 
-- Storage is per-browser (`localStorage`), not synced server-side — a second
-  browser/profile will show the default `m` preset regardless of what was
-  set elsewhere.
+- Storage is per-browser (`localStorage`), not synced server-side. That is why
+  this card requires a new run-owned profile: its default `m` state and every
+  mutation belong to this run, and cleanup never edits someone else's profile.
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session, so the visual/screenshot verification in step 3
   was **not driven live**. Backing evidence used instead:
@@ -54,6 +75,7 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
   - `cmd/serf-hub/frontend/src/panes/settings/sections/theme.test.tsx`
     exercises the Font size control: choosing XL updates both the preference
     and `document.body.dataset.fontSize`.
-  - If re-running with a working browser: perform steps 1-3 for real,
-    capture screenshots at each preset, and replace this note with the
-    observed visual evidence.
+  - If re-running with a working browser: first establish the run-owned hub,
+    home, profile, and results directory above; then perform steps 1-3, retain
+    all four captures below `$RESULTS`, and replace this note with the observed
+    visual evidence.
