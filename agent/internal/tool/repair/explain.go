@@ -56,14 +56,8 @@ func parseExcerpt(parseErr error, raw []byte) string {
 	var se *json.SyntaxError
 	if errors.As(parseErr, &se) && se.Offset > 0 && se.Offset <= int64(len(s)) {
 		off := int(se.Offset)
-		start := off - window/2
-		if start < 0 {
-			start = 0
-		}
-		end := off + window/2
-		if end > len(s) {
-			end = len(s)
-		}
+		start := max(off-window/2, 0)
+		end := min(off+window/2, len(s))
 		prefix, suffix := "", ""
 		if start > 0 {
 			prefix = "..."
