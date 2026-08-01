@@ -76,4 +76,5 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
   or the readiness result cannot report `watching: true`.
 - The alert and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`).
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent").

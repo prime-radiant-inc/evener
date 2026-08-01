@@ -67,7 +67,8 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
   or the readiness result cannot report `watching: true`.
 - The alert and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`).
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent").
 - The parent's acknowledgement of the callback is itself a
   `communicate` event and re-fires the watch. Bounded by the
   self-influence breaker; clear the watch rather than reading the extra

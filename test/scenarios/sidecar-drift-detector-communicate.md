@@ -77,7 +77,8 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
   has no watch_id to clear.
 - The alert and the record collapse into one call now: the observer's
   terminal `communicate(end_turn=true)` IS the callback to the parent
-  (`docs/job-control.md:1190`). A separate "recorded" message would be
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent"). A separate "recorded" message would be
   a second turn, not part of this scenario.
 - The parent's own acknowledgement of the callback is itself a
   `communicate` event and re-fires the watch. That is expected and

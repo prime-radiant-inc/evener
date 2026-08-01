@@ -183,7 +183,9 @@ Finding with `category: watch_runaway`, `severity: high`,
 `signature: watch_runaway:<sessionID>:<watchID>`, `evidence.deliveryIds`
 naming the dropped send, a `doctorCommand` in `evidence`, and
 `suggestedFix.type: diagnosis` — the vocabulary the doctoring-serf runbook
-prescribes (`internal/bundled/skills/doctoring-serf/runbooks/observer-self-loop.md:34-45`).
+prescribes
+(`internal/bundled/skills/doctoring-serf/runbooks/observer-self-loop.md`,
+"CLASSIFY").
 There is no `watch_self_loop` category.
 
 ## Out of scope

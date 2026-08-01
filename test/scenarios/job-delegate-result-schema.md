@@ -139,7 +139,9 @@ structured fields are how the parent judges outcome.
 - Arm (c) must wait for the arm-(a) job to be terminal (it is — the
   foreground call returned completed). Do **not** expect a
   `delegate_session_busy` failure if you race it: that error is
-  contract-legal (`docs/job-control.md:148,424`) but nothing in the Go
+  contract-legal (`docs/job-control.md` "Job status and reason model"
+  "Canonical synchronous errors include"; "`delegate_send`" "fails
+  synchronously with `delegate_session_busy`") but nothing in the Go
   source emits it. A `delegate_send` aimed at a delegate whose job is
   still running live-steers that job instead, returning
   `action:"steered"` on the running `job_id` — pinned by

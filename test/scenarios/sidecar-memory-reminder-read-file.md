@@ -104,4 +104,5 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send  # exp
   tool `output`.
 - The reminder and the record collapse into one call: the terminal
   `communicate(end_turn=true)` IS the callback
-  (`docs/job-control.md:1190`).
+  (`docs/job-control.md` "`job_watch`" "That terminal communicate is
+  the callback to the parent").
