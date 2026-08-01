@@ -133,7 +133,14 @@ set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
 case "${1:-}" in
-	list) printf 'primeradiant.com/serf/%s\n' "$module"; exit 0 ;;
+	list)
+		if [ "${FAKE_LIST_FAIL:-0}" -ne 0 ]; then
+			printf 'go: cannot load module\n' >&2
+			exit 1
+		fi
+		printf 'primeradiant.com/serf/%s\n' "$module"
+		exit 0
+		;;
 esac
 printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/calls"
 printf 'go-stdout:%s\n' "$module"
@@ -216,13 +223,31 @@ run_tests() {
 	shift 2
 	(
 		cd "$repo" || exit 1
-		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
+	) >"$output" 2>&1
+}
+
+run_tests_default_modules() {
+	output="$1"
+	shift
+	(
+		cd "$repo" || exit 1
+		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
 started_streams() {
 	cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ *$//'
+}
+
+runner_logdirs() {
+	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
+}
+
+full_logs_path() {
+	awk '/^full logs: / { print substr($0, 12); exit }' "$1"
 }
 
 new_case
@@ -241,6 +266,19 @@ assert_one_verdict_per_name "$out" "all-passing run reports no name twice"
 assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
+assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
+
+new_case
+out="$case_dir/ambient-overrides.out"
+if MODULES="nosuch" WAVE1= WAVE2= run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "ambient module and wave overrides do not affect a fixture case"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent web" "a fixture case retains its requested wave schedule"
+
+new_case
+out="$case_dir/default-modules.out"
+if run_tests_default_modules "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "a default-module run exits zero"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent llm auth envvars invariant identifier web" "a default-module run covers every non-fuzz Makefile module"
 
 new_case
 out="$case_dir/root-full.out"
@@ -308,6 +346,7 @@ assert_has "$out" "----- auth -----" "the test-failed module is dumped"
 assert_has "$out" "--- FAIL: TestThing" "a failure with a go-test marker is still dumped"
 assert_not_has "$out" "----- agent -----" "the passing module is not dumped"
 assert_not_has "$out" "go-stdout:agent" "passing module chatter stays hidden"
+if [ -d "$(full_logs_path "$out")" ]; then ok "a failing run retains the logs it names"; else bad "a failing run removes the logs it names"; fi
 llm_line="$(grep -nF -- '----- llm -----' "$out" | cut -d: -f1)"
 auth_line="$(grep -nF -- '----- auth -----' "$out" | cut -d: -f1)"
 if [ -n "$llm_line" ] && [ -n "$auth_line" ] && [ "$llm_line" -lt "$auth_line" ]; then
@@ -336,6 +375,13 @@ assert_one_verdict_per_name "$out" "missing-module run reports no name twice"
 assert_dump_nonempty "$out" "a missing module directory dumps its reason"
 assert_has "$out" "----- nosuch -----" "the missing module is named in the failure dump"
 assert_has "$out" "No such file or directory" "the missing module's own diagnostic reaches the reader"
+
+new_case
+out="$case_dir/root-package-discovery-failure.out"
+if FAKE_LIST_FAIL=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "a root package-discovery failure exits nonzero"; else bad "a root package-discovery failure unexpectedly exits zero"; fi
+assert_has "$out" "go: cannot load module" "a root package-discovery diagnostic reaches the reader"
+assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery failure does not fall into an empty-array error"
 
 new_case
 out="$case_dir/web-failure.out"

@@ -37,7 +37,7 @@ set -uo pipefail
 # a single `df`, so the cost is unmeasurable next to the rest of this script.
 scripts/disk-reclaim.sh --check || exit 1
 
-MODULES=${MODULES:-". agent llm auth envvars invariant"}
+MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
 
 # WEB controls the concurrent frontend gate. It is skipped automatically when
@@ -130,6 +130,17 @@ module_test_flags() {
 	printf '%s' "${selected# }"
 }
 
+logdir=""
+keep_failed_logs=0
+
+cleanup() {
+	if [ -n "$logdir" ] && [ "$keep_failed_logs" -eq 0 ]; then
+		rm -rf "$logdir"
+	fi
+}
+
+trap cleanup EXIT
+
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
 failed_modules=()
@@ -143,7 +154,11 @@ run_module() {
 	# shellcheck disable=SC2086
 	if [ "$m" = "." ]; then
 		local -a packages=()
-		local pkg
+		local pkg package_list
+		package_list="$logdir/root.packages"
+		if ! go list ./... >"$package_list"; then
+			return 1
+		fi
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)
@@ -151,7 +166,11 @@ run_module() {
 					;;
 			esac
 			packages+=("$pkg")
-		done < <(go list ./...)
+		done <"$package_list"
+		if [ "${#packages[@]}" -eq 0 ]; then
+			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
+			return 1
+		fi
 		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		return
 	fi
@@ -276,6 +295,7 @@ if [ "$fail" -ne 0 ]; then
 	done
 	echo
 	echo "full logs: $logdir"
+	keep_failed_logs=1
 fi
 
 exit "$fail"
