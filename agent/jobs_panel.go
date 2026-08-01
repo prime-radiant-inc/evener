@@ -86,9 +86,13 @@ func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
 }
 
 // JobSummaries is the live-daemon serf/jobs/list payload: every job in the
-// session's durable store, in append order. A nil jobManager (a session that
-// never started job infrastructure) yields an empty, non-nil slice, so the
-// wire carries [] rather than null.
+// session's durable store, in append order, with the manager's live records
+// laid over the fold (liveJobRecords, the same overlay listWithError applies).
+// A running job's live state is not all in the log — Background is live-only
+// and OutputBytes is stamped durably only at terminal — so the fold alone
+// would report every job foreground and every running job silent. A nil
+// jobManager (a session that never started job infrastructure) yields an
+// empty, non-nil slice, so the wire carries [] rather than null.
 //
 // A store that cannot be read is an ERROR, never an empty list. "No jobs
 // ran" and "I can't tell you what ran" are different answers, and only one
@@ -102,6 +106,15 @@ func (s *Session) JobSummaries() ([]JobSummary, error) {
 	ordered, err := s.jobManager.store.LoadOrdered()
 	if err != nil {
 		return nil, err
+	}
+	live := s.jobManager.liveJobRecords()
+	for i, rec := range ordered {
+		if rec == nil {
+			continue
+		}
+		if liveRec, ok := live[rec.JobID]; ok {
+			ordered[i] = liveRec
+		}
 	}
 	return summarizeJobRecords(ordered), nil
 }

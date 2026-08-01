@@ -756,13 +756,17 @@ func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
 	return jobs
 }
 
-func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, int, error) {
-	recs, err := jm.store.Load()
-	if err != nil {
-		return nil, 0, err
-	}
-
+// liveJobRecords snapshots the in-memory record of every durably-started
+// running job, keyed by job id. It is the live overlay EVERY listing of this
+// session's jobs lays over the durable fold: fields no event carries live
+// only here (Background, Phase, LastActivity), so a folded record reads them
+// empty however the job was launched. A job in this snapshot is always in the
+// fold too — the job_started event is appended before durableStarted is set —
+// so an overlay never invents a row.
+func (jm *jobManager) liveJobRecords() map[string]*jobstore.JobRecord {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	live := make(map[string]*jobstore.JobRecord, len(jm.running))
 	for jobID, run := range jm.running {
 		if !run.durableStarted {
 			continue
@@ -773,9 +777,20 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, i
 		if rec.Status == jobstore.StatusRunning && run.output != nil {
 			rec.OutputBytes = run.output.Len()
 		}
+		live[jobID] = rec
+	}
+	return live
+}
+
+func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, int, error) {
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	for jobID, rec := range jm.liveJobRecords() {
 		recs[jobID] = rec
 	}
-	jm.mu.Unlock()
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
