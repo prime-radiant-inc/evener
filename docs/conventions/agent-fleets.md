@@ -105,6 +105,18 @@ gives a specific "this is what an unmounted build-cache volume looks
 like" diagnosis instead of a bare `go build` error naming neither
 `GOCACHE` nor "unmounted".
 
+It can also **stall while still mounted**, which is worse than being
+gone: nothing fails, everything blocks. `mkdir` blocks, and so does every
+go command that touches the cache — four go processes were once found
+sleeping 12-23 hours that way, on a volume that answered `ls` instantly
+by the time anyone looked, while a session watched five background
+`go test` jobs die at their run timeout with zero output and no
+explanation (kata r07s). So the probe is bounded: 10s by default,
+`SERF_GOCACHE_PROBE_TIMEOUT` to change it, and the diagnosis names the
+stall. A sleepy volume costs one failed check, not a fleet-wide mystery.
+Do not route around it with `GOCACHE=/tmp/...`; that fills the volume the
+external cache exists to spare (kata 98x9).
+
 Disk exhaustion never announces itself otherwise. It surfaces as
 `link: mapping output file failed`, `t.TempDir()` failures, and jobstore
 open errors — four test failures were once root-caused to it after being
