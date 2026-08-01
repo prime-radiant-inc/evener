@@ -154,7 +154,9 @@ start_epoch="$(date +%s)"
 keys_before="$(crasher_keys | sort)"
 turn=0
 idx=0
-declare -A target_turns=()
+# Per-target turn tally as an append-log (counted at report time): bash 3.2 —
+# the stock macOS bash — has no associative arrays.
+turn_log=""
 
 elapsed() { echo $(( $(date +%s) - start_epoch )); }
 
@@ -171,7 +173,7 @@ $sweep && echo "    rotation: sweep (all targets per round)" || echo "    rotati
 one_turn() {
 	local target="$1" before after
 	turn=$((turn + 1))
-	target_turns["$target"]=$(( ${target_turns["$target"]:-0} + 1 ))
+	turn_log="$turn_log$target"$'\n'
 	echo "--- turn $turn | $target | elapsed $(elapsed)s${total:+/${total}s} ---"
 	before="$(crasher_keys | sort)"
 
@@ -180,7 +182,7 @@ one_turn() {
 	$dry_run && args+=(--dry-run)
 	$no_pr && args+=(--no-pr)
 	args+=(--no-corpus "$target")
-	bash "$triage" "${args[@]}" || echo "fuzz-continuous: turn for $target exited non-zero (continuing)"
+	bash "$triage" ${args[@]+"${args[@]}"} || echo "fuzz-continuous: turn for $target exited non-zero (continuing)"
 
 	after="$(crasher_keys | sort)"
 	local new
@@ -202,7 +204,7 @@ maybe_drive() {
 	elif ! $no_pr; then
 		args+=(--pr)
 	fi
-	bash "$drive" "${args[@]}" || echo "fuzz-continuous: corpus refresh exited non-zero (continuing)"
+	bash "$drive" ${args[@]+"${args[@]}"} || echo "fuzz-continuous: corpus refresh exited non-zero (continuing)"
 }
 
 budget_left() {
@@ -241,7 +243,10 @@ echo "=== fuzz-continuous: session summary ==="
 echo "    turns: $turn   elapsed: $(elapsed)s"
 echo "    targets exercised:"
 for target in "${rotation[@]}"; do
-	[ "${target_turns[$target]:-0}" -gt 0 ] && printf '      %-50s %d turn(s)\n' "$target" "${target_turns[$target]}"
+	count="$(printf '%s' "$turn_log" | grep -cxF -- "$target")" || true
+	if [ "${count:-0}" -gt 0 ]; then
+		printf '      %-50s %d turn(s)\n' "$target" "$count"
+	fi
 done
 if [ -n "$new_session" ]; then
 	echo "    NEW crasher signature(s) this session:"
