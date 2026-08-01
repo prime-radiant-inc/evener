@@ -227,15 +227,16 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 }
 
 // newBuildWebFixture prepares a runtimeBuildFixture whose fixture root has
-// the frontend toolchain stubbed and the Makefile plus
-// scripts/build-runtime-pair.sh copied in, ready for any make target that
-// reaches build-web.
+// the frontend toolchain stubbed and the Makefile plus the scripts its
+// recipes invoke copied in, ready for any make target that reaches
+// build-web.
 func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	t.Helper()
 	fixture := newRuntimeBuildFixture(t)
 	installFrontendToolchainStubs(t, fixture)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web-preflight.sh", 0o755)
 	return fixture
 }
 
