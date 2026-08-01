@@ -725,7 +725,7 @@ go vet -tags eval ./...
 go run ./cmd/serf-internalcheck
 go run ./cmd/serf-docscheck
 go generate ./appwire/...
-git diff --exit-code -- docs/appwire-protocol.md
+git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
 secret-scan repo
 WANT_FAMILIES
 if cmp -s "$state/want-families" "$state/families"; then
@@ -735,6 +735,46 @@ else
 	diff -u "$state/want-families" "$state/families" || :
 fi
 assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "healthy checks remove quiet-wrapper logs"
+
+# lint-generated must compare every file its go:generate directives write. A
+# committed stale TypeScript output is the regression the old Markdown-only
+# path missed: generation repairs the working tree, and the real Git diff must
+# still compare that repair with the committed stale file.
+generated_case="$case_dir/generated-case"
+generated_repo="$generated_case/repo"
+generated_bin="$generated_case/bin"
+mkdir -p "$generated_repo/docs" \
+	"$generated_repo/cmd/serf-hub/frontend/src/protocol" "$generated_bin"
+cp "$makefile" "$generated_repo/Makefile"
+printf 'current protocol doc\n' >"$generated_repo/docs/appwire-protocol.md"
+printf 'stale protocol types\n' >"$generated_repo/cmd/serf-hub/frontend/src/protocol/types.gen.ts"
+cat >"$generated_bin/go" <<'FAKE_GENERATOR'
+#!/usr/bin/env bash
+set -u
+if [ "$*" != "generate ./appwire/..." ]; then exit 64; fi
+printf 'current protocol doc\n' >docs/appwire-protocol.md
+printf 'current protocol types\n' >cmd/serf-hub/frontend/src/protocol/types.gen.ts
+FAKE_GENERATOR
+chmod +x "$generated_bin/go"
+(
+	cd "$generated_repo" || exit 1
+	git init -q
+	git config user.name selftest
+	git config user.email selftest@example.invalid
+	git add Makefile docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts
+	git commit -qm initial
+)
+out="$case_dir/generated-drift.out"
+if (
+	cd "$generated_repo" || exit 1
+	PATH="$generated_bin:/usr/bin:/bin" TMPDIR="$tmp" make lint-generated
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then
+	ok "stale TypeScript output fails lint-generated"
+else
+	bad "stale TypeScript output fails lint-generated"
+fi
+assert_has "$out" "types.gen.ts" "generated drift identifies the TypeScript output"
 
 # The missing-gitleaks path is successful but degraded. Its existing warning is
 # part of the secret-scan policy and must survive routine-success suppression.

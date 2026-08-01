@@ -472,15 +472,15 @@ build-namingcheck:
 lint-golangci:
 	@MODULES="$(GO_MODULES)" scripts/run-module-lint.sh
 
-# generate runs all `go generate` directives. Currently the AppWire protocol
-# reference (docs/appwire-protocol.md) from the catalog in appwire/protocol.go.
+# generate runs all `go generate` directives. The AppWire protocol reference
+# and frontend TypeScript declarations come from the catalog in appwire/protocol.go.
 generate:
 	go generate ./appwire/...
 
-# lint-generated fails if a committed generated file is stale — i.e. the
-# AppWire catalog changed without regenerating the protocol doc.
+# lint-generated fails if either committed AppWire output is stale — i.e. the
+# catalog changed without regenerating the protocol doc and TypeScript types.
 lint-generated:
-	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md || { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }; })
+	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
 lint: lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
 
