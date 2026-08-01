@@ -11,6 +11,7 @@ require (
 	golang.org/x/mod v0.34.0
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/serf/fuzz v0.0.0
+	primeradiant.com/serf/identifier v0.0.0
 	primeradiant.com/serf/invariant v0.0.0
 )
 
