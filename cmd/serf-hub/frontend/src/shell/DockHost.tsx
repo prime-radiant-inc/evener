@@ -20,8 +20,6 @@ import {
   type OpenPaneRecord,
   type PanePanelParams,
   registerDockviewApi,
-  SETTINGS_PRIMARY_ID,
-  SPAWN_PRIMARY_ID,
   useWorkspaceStore,
   workspaceStore,
 } from "./workspace";
@@ -435,13 +433,16 @@ export function DockHost() {
     }
 
     if (routedPrimary?.type === "settings") {
-      workspaceStore.getState().replacePrimary("settings", routedPrimary.params, SETTINGS_PRIMARY_ID);
+      workspaceStore.getState().replacePrimary("settings", routedPrimary.params);
     } else if (routedPrimary?.type === "spawn") {
-      workspaceStore.getState().replacePrimary("spawn", routedPrimary.params, SPAWN_PRIMARY_ID);
+      workspaceStore.getState().replacePrimary("spawn", routedPrimary.params);
     } else if (routedPrimary?.type === "session") {
+      // A session pane with no ref is not a session to route to; replacePrimary
+      // would mint a main pane no chrome can render from. The ref it matches on
+      // is read out of these same params.
       const ref = (routedPrimary.params as { ref?: unknown }).ref;
       if (typeof ref === "string") {
-        workspaceStore.getState().replacePrimary("session", routedPrimary.params, ref);
+        workspaceStore.getState().replacePrimary("session", routedPrimary.params);
       }
     }
     for (const pane of routedSecondary) {

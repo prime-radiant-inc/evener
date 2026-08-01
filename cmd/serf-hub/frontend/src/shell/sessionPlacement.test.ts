@@ -33,9 +33,11 @@ describe("openTopLevelSession", () => {
   // premise checked here, since it is this rule that makes it unreachable).
   //
   // replacePrimary CAN update a main pane's params in place - that is how a
-  // singleton settings section changes without losing the pane - so the fact
-  // that a session never takes that path is a property of the identity this
-  // caller passes, not of the store alone. Hence the pin here, at the caller.
+  // singleton settings section changes without losing the pane. A session
+  // never takes that path because the store matches a session pane on the ref
+  // in the very params that would replace it (kata z44z), so an in-place
+  // update cannot change a ref. This pins the consequence at the caller a
+  // route actually reaches.
   test("switching to a different ref opens a NEW pane instead of re-pointing the open one", () => {
     openTopLevelSession("local:session-a");
     const first = workspaceStore.getState().mainPane();

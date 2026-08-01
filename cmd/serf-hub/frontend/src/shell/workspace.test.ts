@@ -237,7 +237,7 @@ describe("replacePrimary", () => {
     workspace.openPane("doc", { ref: "secondary-a" });
     workspace.openPane("doc", { ref: "secondary-b" });
 
-    const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
+    const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" });
 
     expect(workspaceStore.getState().panes).toEqual([
       { id: sessionId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
@@ -249,10 +249,10 @@ describe("replacePrimary", () => {
   // panes even when the requested primary is already the current identity.
   test("preserves secondary panes when the requested primary identity is already main", () => {
     const workspace = workspaceStore.getState();
-    const mainId = workspace.replacePrimary("session", { ref: "local:session-a" }, "local:session-a");
+    const mainId = workspace.replacePrimary("session", { ref: "local:session-a" });
     const secondaryId = workspace.openPane("doc", { ref: "secondary" });
 
-    const repeatedId = workspace.replacePrimary("session", { ref: "local:session-a" }, "local:session-a");
+    const repeatedId = workspace.replacePrimary("session", { ref: "local:session-a" });
 
     expect(repeatedId).toBe(mainId);
     expect(workspaceStore.getState().panes).toEqual([
@@ -266,10 +266,10 @@ describe("replacePrimary", () => {
   // and its secondary neighbors instead of updating the existing main pane.
   test("updates a singleton settings section in place while preserving secondary panes", () => {
     const workspace = workspaceStore.getState();
-    const settingsId = workspace.replacePrimary("settings", { section: "general" }, "settings");
+    const settingsId = workspace.replacePrimary("settings", { section: "general" });
     const secondaryId = workspace.openPane("doc", { ref: "secondary" });
 
-    const updatedId = workspace.replacePrimary("settings", { section: "credentials" }, "settings");
+    const updatedId = workspace.replacePrimary("settings", { section: "credentials" });
 
     expect(updatedId).toBe(settingsId);
     expect(workspaceStore.getState().panes).toEqual([
@@ -278,11 +278,31 @@ describe("replacePrimary", () => {
     ]);
   });
 
+  // A session's primary identity is READ FROM the params it is called with,
+  // never spelled beside them: with two arguments there is no pair that can
+  // disagree, so no caller can ask replacePrimary to keep a live pane while
+  // handing it a different ref (kata z44z). That mismatch is what would
+  // re-point a mounted pane - same pane id, new ref - and neither host
+  // remounts a pane whose id it already has, so the previous session's job
+  // list and badge count would stay on screen (katas pcx5/tmyw rest on this).
+  // Written in the two-argument form on purpose: re-introducing a separate
+  // identity argument breaks the typecheck here.
+  test("a session's primary identity is the ref in its own params", () => {
+    const workspace = workspaceStore.getState();
+    const mainId = workspace.replacePrimary("session", { ref: "local:session-a" });
+
+    expect(workspace.replacePrimary("session", { ref: "local:session-a" })).toBe(mainId);
+
+    const switched = workspace.replacePrimary("session", { ref: "local:session-b" });
+    expect(switched).not.toBe(mainId);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-b" });
+  });
+
   test("notifies subscribers once for a primary replacement", () => {
     const snapshots: Array<ReadonlyArray<OpenPaneRecord>> = [];
     const unsubscribe = workspaceStore.subscribe((state) => snapshots.push(state.panes));
 
-    workspaceStore.getState().replacePrimary("spawn", {}, "spawn");
+    workspaceStore.getState().replacePrimary("spawn", {});
 
     unsubscribe();
     expect(snapshots).toHaveLength(1);

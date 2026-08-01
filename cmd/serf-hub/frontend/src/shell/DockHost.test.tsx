@@ -503,7 +503,7 @@ test("a primary replacement removes stale panels from the live DockHost", async 
   workspace.openPane("doc", { ref: "secondary" });
   await screen.findByText(/doc pane: secondary/);
 
-  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" }, "local:session-b");
+  const replacementId = workspace.replacePrimary("session", { ref: "local:session-b" });
 
   expect(workspaceStore.getState().panes).toEqual([
     { id: replacementId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
