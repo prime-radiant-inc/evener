@@ -151,9 +151,8 @@ type caseWin struct{ name string }
 // judgeOutput asks the real model to rate a handoff 1-5 and parses the integer.
 // Deterministic-ish: temperature 0, strict rubric, integer-only answer.
 func (cm *Manager) judgeOutput(ctx context.Context, taskContext, handoff string) (int, bool, error) {
-	prof := cm.currentProfile()
-	models := summarizationModels(prof)
-	if len(models) == 0 {
+	routes := summarizationModels(cm.currentProfile())
+	if len(routes) == 0 {
 		return 0, false, fmt.Errorf("no summarization model for judge")
 	}
 
@@ -170,8 +169,8 @@ func (cm *Manager) judgeOutput(ctx context.Context, taskContext, handoff string)
 		"Answer with ONLY a single integer 1-5. No words, no punctuation."
 
 	req := llm.Request{
-		Model:       models[0],
-		Provider:    prof.ID(),
+		Model:       routes[0].model,
+		Provider:    routes[0].provider,
 		Messages:    []llm.Message{llm.User(prompt)},
 		Temperature: &temp,
 	}
