@@ -140,6 +140,9 @@ func TestForkFlowCopyNamesAUserMessageNotATurn(t *testing.T) {
 		t.Fatal("/fork should enter browse mode synchronously")
 	}
 	browsePrompt := lastForkEntrySystemMessage(t, m)
+	// The chrome alone, not the whole view: the transcript below carries the
+	// prompt already asserted above and would satisfy the footer's check for it.
+	_, _, footer := m.sessionChromeText()
 
 	for _, surface := range []struct {
 		name string
@@ -149,7 +152,7 @@ func TestForkFlowCopyNamesAUserMessageNotATurn(t *testing.T) {
 		{name: "/fork browse prompt", got: browsePrompt},
 		{name: "/fork summary", got: fork.Summary},
 		{name: "/fork palette detail", got: fork.PaletteDetail},
-		{name: "browse footer", got: m.sessionView()},
+		{name: "browse footer", got: footer},
 		{name: "/help", got: hubCommandHelp(hubSessionCapabilities{Fork: true})},
 	} {
 		if strings.Contains(surface.got, "user turn") {
