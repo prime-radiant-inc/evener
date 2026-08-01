@@ -40,8 +40,21 @@ floors_file="$repo_root/scripts/fuzzcov-global-floors.txt"
 # explicit --modules selection is useful while a module is being raised, but the
 # default contract is the full workspace as it exists at execution time.
 workspace_modules=()
-declare -A workspace_module_paths=()
-declare -A workspace_module_dirs=()
+# bash 3.2 — the stock macOS bash — has no associative arrays. Sets in this
+# script are newline-delimited lists behind in_list; the two module maps are
+# "key<TAB>value" line stores behind map_get. Set entries may themselves
+# contain tabs (module<TAB>pkg keys); map keys are module names and never do.
+tab=$'\t'
+in_list() { case "$2" in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac; }
+map_get() {
+	local key="$1" line
+	while IFS= read -r line; do
+		case "$line" in "$key"$'\t'*) printf '%s' "${line#*$'\t'}"; return 0 ;; esac
+	done <<<"$2"
+	return 1
+}
+workspace_module_paths=""
+workspace_module_dirs=""
 selected_modules=()
 modules_argument=""
 modules_argument_set=false
@@ -85,11 +98,11 @@ select_modules() {
 	local words="$1" module
 	read -r -a selected_modules <<<"$words"
 	[ "${#selected_modules[@]}" -gt 0 ] || die "--modules must name at least one go.work module"
-	declare -A seen=()
+	local seen=$'\n'
 	for module in "${selected_modules[@]}"; do
 		is_workspace_module "$module" || die "unknown go.work module: $module"
-		[ -z "${seen[$module]+x}" ] || die "duplicate module: $module"
-		seen[$module]=1
+		if in_list "$module" "$seen"; then die "duplicate module: $module"; fi
+		seen="$seen$module"$'\n'
 	done
 }
 
@@ -126,10 +139,10 @@ discover_workspace_modules() {
 	local workspace_json="$work/go.work.json"
 	local workspace_paths="$work/go.work-paths.txt"
 	local disk_path logical_module_dir resolved_module_dir module
-	declare -A seen=() resolved_seen=()
+	local seen=$'\n' resolved_seen=$'\n'
 	workspace_modules=()
-	workspace_module_paths=()
-	workspace_module_dirs=()
+	workspace_module_paths=""
+	workspace_module_dirs=""
 
 	if ! (cd "$repo_root" && "$go_bin" work edit -json "$go_work") >"$workspace_json"; then
 		die "cannot read go.work module list: $go_work"
@@ -179,13 +192,13 @@ discover_workspace_modules() {
 			*) die "go.work module is outside repository root: $disk_path" ;;
 		esac
 		[ -f "$resolved_module_dir/go.mod" ] || die "go.work module has no go.mod: $disk_path"
-		[ -z "${seen[$module]+x}" ] || die "go.work lists duplicate module: $module"
-		[ -z "${resolved_seen[$resolved_module_dir]+x}" ] || die "go.work lists duplicate module directory: $disk_path"
-		seen[$module]=1
-		resolved_seen[$resolved_module_dir]=1
+		if in_list "$module" "$seen"; then die "go.work lists duplicate module: $module"; fi
+		if in_list "$resolved_module_dir" "$resolved_seen"; then die "go.work lists duplicate module directory: $disk_path"; fi
+		seen="$seen$module"$'\n'
+		resolved_seen="$resolved_seen$resolved_module_dir"$'\n'
 		workspace_modules+=("$module")
-		workspace_module_paths["$module"]="$logical_module_dir"
-		workspace_module_dirs["$module"]="$resolved_module_dir"
+		workspace_module_paths="$workspace_module_paths$module$tab$logical_module_dir"$'\n'
+		workspace_module_dirs="$workspace_module_dirs$module$tab$resolved_module_dir"$'\n'
 	done <"$workspace_paths"
 	[ "${#workspace_modules[@]}" -gt 0 ] || die "go.work contains no modules"
 }
@@ -275,9 +288,8 @@ if ! awk -F '\t' '
 fi
 [ -s "$plan" ] || die "registry checker emitted no coverage targets"
 
-declare -A surface=()
-declare -A target=()
-tab=$'\t'
+surface_list=$'\n'
+target_list=$'\n'
 while IFS=$'\t' read -r kind module pkg name; do
 	case "$kind" in
 		native|rapid) ;;
@@ -299,24 +311,26 @@ while IFS=$'\t' read -r kind module pkg name; do
 		*) die "registry plan has invalid $kind target name: $module:$pkg:$name" ;;
 	esac
 	identity="$kind$tab$module$tab$pkg$tab$name"
-	[ -z "${target[$identity]+x}" ] || die "registry plan duplicates target: $kind:$module:$pkg:$name"
-	target[$identity]=1
-	surface["$module$tab$pkg"]=1
+	if in_list "$identity" "$target_list"; then die "registry plan duplicates target: $kind:$module:$pkg:$name"; fi
+	target_list="$target_list$identity"$'\n'
+	if ! in_list "$module$tab$pkg" "$surface_list"; then
+		surface_list="$surface_list$module$tab$pkg"$'\n'
+	fi
 done <"$plan"
 
-declare -A selected=()
+selected_list=$'\n'
 for module in "${selected_modules[@]}"; do
-	selected[$module]=1
+	selected_list="$selected_list$module"$'\n'
 done
 
 # Preflight every production package before running one replay. This avoids Go
 # 1.25's no-test-binary covdata path and gives a complete actionable list rather
 # than discovering missing local surfaces one package at a time mid-measurement.
-declare -A production_package=()
+production_package_list=$'\n'
 preflight_failed=false
 for module in "${selected_modules[@]}"; do
-	logical_module_dir="${workspace_module_paths[$module]:-}"
-	module_dir="${workspace_module_dirs[$module]:-}"
+	logical_module_dir="$(map_get "$module" "$workspace_module_paths")" || logical_module_dir=""
+	module_dir="$(map_get "$module" "$workspace_module_dirs")" || module_dir=""
 	[ -n "$logical_module_dir" ] && [ -n "$module_dir" ] || die "missing module directory mapping: $module"
 	list_file="$work/packages-${module//\//_}.txt"
 	if ! (cd "$logical_module_dir" && "$go_bin" list -tags serffuzz -f '{{.Dir}}' ./...) >"$list_file"; then
@@ -334,8 +348,10 @@ for module in "${selected_modules[@]}"; do
 		else
 			die "go list returned package outside module $module: $package_dir"
 		fi
-		production_package["$module$tab$pkg"]=1
-		if [ -z "${surface["$module$tab$pkg"]+x}" ]; then
+		if ! in_list "$module$tab$pkg" "$production_package_list"; then
+			production_package_list="$production_package_list$module$tab$pkg"$'\n'
+		fi
+		if ! in_list "$module$tab$pkg" "$surface_list"; then
 			echo "missing local fuzz surface: $module:$pkg" >&2
 			preflight_failed=true
 		fi
@@ -344,15 +360,16 @@ done
 
 # A plan row for a non-production package is just as unsafe as a missing row:
 # it would otherwise be replayed outside the exact denominator we preflighted.
-for key in "${!surface[@]}"; do
+while IFS= read -r key; do
+	[ -n "$key" ] || continue
 	module="${key%%$tab*}"
 	pkg="${key#*$tab}"
-	[ -n "${selected[$module]+x}" ] || continue
-	if [ -z "${production_package[$key]+x}" ]; then
+	in_list "$module" "$selected_list" || continue
+	if ! in_list "$key" "$production_package_list"; then
 		echo "registered local fuzz surface is not a production package: $module:$pkg" >&2
 		preflight_failed=true
 	fi
-done
+done <<<"$surface_list"
 
 if [ "$preflight_failed" = true ]; then
 	die "local fuzz surface preflight failed; replay did not begin"
@@ -362,7 +379,7 @@ fi
 # native/Rapid targets, but it contributes exactly one merged profile below.
 : >"$groups"
 while IFS=$'\t' read -r kind module pkg name; do
-	[ -n "${selected[$module]+x}" ] || continue
+	in_list "$module" "$selected_list" || continue
 	printf '%s\t%s\n' "$module" "$pkg" >>"$groups"
 done <"$plan"
 LC_ALL=C sort -u "$groups" >"$groups.sorted"
@@ -495,7 +512,7 @@ replay_target() {
 	local kind="$1" module="$2" pkg="$3" name="$4" seed="${5:-}" profile="$6"
 	local label="$kind:$module:$pkg:$name" logical_module_dir
 	[ -z "$seed" ] || label="$label seed=$seed"
-	logical_module_dir="${workspace_module_paths[$module]:-}"
+	logical_module_dir="$(map_get "$module" "$workspace_module_paths")" || logical_module_dir=""
 	[ -n "$logical_module_dir" ] || die "missing module directory mapping: $module"
 	echo "fuzz-coverage-global: replay $label" >&2
 	if [ "$kind" = rapid ]; then
@@ -513,27 +530,32 @@ replay_target() {
 	validate_profile "$profile" "$label"
 }
 
+# Profile names need only be unique within this run's private $work dir; a
+# serial counter does that portably (BSD mktemp cannot substitute embedded Xs,
+# so a target.XXXXXX.cov template stays literal and collides on the second use).
+profile_serial=0
+
 : >"$global_manifest"
 while IFS=$'\t' read -r module pkg; do
 	package_profiles=()
 	while IFS=$'\t' read -r kind row_module row_pkg name; do
 		[ "$row_module" = "$module" ] && [ "$row_pkg" = "$pkg" ] || continue
 		if [ "$kind" = native ]; then
-			profile="$(mktemp "$work/target.XXXXXX.cov")"
-			rm -f "$profile"
+			profile_serial=$((profile_serial + 1))
+			profile="$work/target.$profile_serial.cov"
 			replay_target "$kind" "$module" "$pkg" "$name" "" "$profile"
 			package_profiles+=("$profile")
 		else
 			for seed in "${rapid_seeds[@]}"; do
-				profile="$(mktemp "$work/target.XXXXXX.cov")"
-				rm -f "$profile"
+				profile_serial=$((profile_serial + 1))
+				profile="$work/target.$profile_serial.cov"
 				replay_target "$kind" "$module" "$pkg" "$name" "$seed" "$profile"
 				package_profiles+=("$profile")
 			done
 		fi
 	done <"$plan"
-	package_profile="$(mktemp "$work/package.XXXXXX.cov")"
-	rm -f "$package_profile"
+	profile_serial=$((profile_serial + 1))
+	package_profile="$work/package.$profile_serial.cov"
 	merge_profiles "$package_profile" "${package_profiles[@]}"
 	printf '%s\t%s\t%s\n' "$module" "$pkg" "$package_profile" >>"$global_manifest"
 done <"$groups"

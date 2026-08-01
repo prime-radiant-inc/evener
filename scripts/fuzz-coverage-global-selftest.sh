@@ -7,6 +7,10 @@ set -euo pipefail
 runner="$(cd "$(dirname "$0")" && pwd)/fuzz-coverage-global.sh"
 makefile="$(cd "$(dirname "$runner")/.." && pwd)/Makefile"
 work="$(mktemp -d -t fuzzcov-global-selftest.XXXXXX)"
+# Canonicalize: the runner resolves its repo root with pwd -P, so the fixture's
+# spelling must be physical too or the fake go's exact-$PWD dispatch never
+# matches (macOS $TMPDIR lives behind the /var -> /private/var symlink).
+work="$(cd "$work" && pwd -P)"
 trap 'rm -rf "$work"' EXIT
 checks=0
 fails=0
@@ -90,6 +94,10 @@ cp "$runner" "$repo/scripts/fuzz-coverage-global.sh"
 for module in added agent auth envvars fuzz invariant llm; do
 	mkdir -p "$repo/$module"
 done
+# The Makefile's FUZZ_SEED_REPLAY cds into every GO_MODULES entry; identifier
+# only needs to exist for that cd (its go commands hit the fake go). It stays
+# out of the fixture go.work so discovery scenarios keep their exact module set.
+mkdir -p "$repo/identifier"
 mkdir -p "$repo/other" "$repo/missing-one" "$repo/missing-two"
 ln -s agent "$repo/alias"
 printf 'go 1.25.6\n\nuse (\n\t.\n\t./agent\n\t./auth\n\t./envvars\n\t./fuzz\n\t./invariant\n\t./llm\n\t./added\n)\n' >"$repo/go.work"
@@ -110,7 +118,9 @@ cat >"$registry" <<'REGISTRY'
 set -euo pipefail
 env_value() {
 	local name="$1"
-	if [[ -v "$name" ]]; then
+	# [ -n "${!name+x}" ], not [[ -v ]]: -v is bash 4.2+ and this stub runs
+	# under the stock macOS bash (3.2).
+	if [ -n "${!name+x}" ]; then
 		printf '%s' "${!name}"
 	else
 		printf '<unset>'
@@ -143,7 +153,9 @@ cat >"$gobin" <<'GOBIN'
 set -euo pipefail
 env_value() {
 	local name="$1"
-	if [[ -v "$name" ]]; then
+	# [ -n "${!name+x}" ], not [[ -v ]]: -v is bash 4.2+ and this stub runs
+	# under the stock macOS bash (3.2).
+	if [ -n "${!name+x}" ]; then
 		printf '%s' "${!name}"
 	else
 		printf '<unset>'
@@ -155,8 +167,16 @@ command="$1"
 shift
 case "$command" in
 	env)
-		[ "$#" -eq 1 ] && [ "$1" = GOARCH ] || { echo "fake go: unexpected env command" >&2; exit 25; }
-		printf '%s\n' "${FAKE_GOARCH:-amd64}"
+		# run-fuzz.sh asks for GOOS to decide whether Linux-only targets join the
+		# registry; a fixed darwin answer keeps the fixture's target set identical
+		# on every host.
+		if [ "$#" -eq 1 ] && [ "$1" = GOARCH ]; then
+			printf '%s\n' "${FAKE_GOARCH:-amd64}"
+		elif [ "$#" -eq 1 ] && [ "$1" = GOOS ]; then
+			printf '%s\n' "${FAKE_GOOS:-darwin}"
+		else
+			echo "fake go: unexpected env command" >&2; exit 25
+		fi
 		;;
 	work)
 		[ "$1" = edit ] && [ "$2" = -json ] || { echo "fake go: unexpected work command" >&2; exit 25; }
