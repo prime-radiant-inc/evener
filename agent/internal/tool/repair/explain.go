@@ -1,6 +1,8 @@
 package repair
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,10 +30,55 @@ func ExplainSchemaError(toolName string, params, args map[string]any, offendingF
 	return b.String()
 }
 
-// ExplainJSONError renders coaching for arguments still unparseable after RepairJSON.
-func ExplainJSONError(toolName string, params map[string]any, parseErr string) string {
-	return fmt.Sprintf("%s: arguments were not valid JSON (%s). Send a single JSON object, e.g. %s",
-		toolName, parseErr, minimalExample(params))
+// ExplainJSONError renders coaching for arguments still unparseable after
+// RepairJSON. raw is the argument text that failed to parse; when it is
+// non-empty, an excerpt of the failing region is included so the model can
+// see what it actually sent.
+func ExplainJSONError(toolName string, params map[string]any, parseErr error, raw []byte) string {
+	excerpt := parseExcerpt(parseErr, raw)
+	if excerpt != "" {
+		excerpt += " "
+	}
+	return fmt.Sprintf("%s: arguments were not valid JSON (%s). %sSend a single JSON object, e.g. %s",
+		toolName, parseErr, excerpt, minimalExample(params))
+}
+
+// parseExcerpt renders the region of raw that failed parsing. When the error
+// carries a byte offset (encoding/json.SyntaxError), it shows a window around
+// that offset; otherwise (e.g. truncated input) it shows the tail, which is
+// where the parser stopped. Returns "" when raw is empty.
+func parseExcerpt(parseErr error, raw []byte) string {
+	s := string(raw)
+	if s == "" {
+		return ""
+	}
+	const window = 120
+	var se *json.SyntaxError
+	if errors.As(parseErr, &se) && se.Offset > 0 && se.Offset <= int64(len(s)) {
+		off := int(se.Offset)
+		start := off - window/2
+		if start < 0 {
+			start = 0
+		}
+		end := off + window/2
+		if end > len(s) {
+			end = len(s)
+		}
+		prefix, suffix := "", ""
+		if start > 0 {
+			prefix = "..."
+		}
+		if end < len(s) {
+			suffix = "..."
+		}
+		return fmt.Sprintf("Failing input near byte %d: %q.",
+			se.Offset, prefix+s[start:off]+">>>"+s[off:end]+suffix)
+	}
+	tail := s
+	if len(tail) > window {
+		tail = "..." + tail[len(tail)-window:]
+	}
+	return fmt.Sprintf("Your input ended with: %q.", tail)
 }
 
 func requiredList(params map[string]any) []string {
