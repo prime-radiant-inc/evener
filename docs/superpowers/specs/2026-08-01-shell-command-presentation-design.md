@@ -150,14 +150,14 @@ is displayed conceptually as:
 
 ```text
 cd /tmp &&
-[display indent] echo "a;b";
-[display indent] printf '%s\n' "$HOME" |
+[display indent]echo "a;b";
+[display indent]printf '%s\n' "$HOME" |
 [display indent] tee out
 ```
 
 `[display indent]` represents two visual columns supplied by the renderer; it
 is not source whitespace. The source space after each operator remains at the
-start of the following source slice, even though it is not shown separately in
+end of the preceding source slice, even though it is not shown separately in
 the conceptual rendering. The line breaks and continuation indents above are
 not part of the copied command. The semicolon inside the double-quoted string
 and the `\n` inside the single-quoted string do not create boundaries.
@@ -179,14 +179,15 @@ At lexical depth zero, outside quotes, comments, and escapes, split *after*:
 - `;`
 
 The longest operator is matched first, so `||` is one operator and not two
-single pipes. The operator remains at the end of the preceding display line;
-the following source text begins the next display line. Existing whitespace
-around the operator remains in the source slice on the same side where it
-appeared. No trimming is performed.
+single pipes. The display boundary is placed after the operator and any
+immediately following horizontal whitespace, so the operator's source spacing
+stays with the preceding line and the continuation indent aligns the next
+command. If there is no following source text, the trailing operator and its
+whitespace stay on the current line. No trimming is performed.
 
-If an operator is immediately followed by an existing source newline, the
-existing newline supplies the display boundary and the formatter does not add a
-second empty line.
+If an operator is followed only by horizontal whitespace and then an existing
+source newline, the existing newline supplies the display boundary and the
+formatter does not add a second empty line.
 
 ### Lexical protection
 
