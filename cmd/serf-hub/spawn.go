@@ -331,6 +331,8 @@ func spawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		dlog.close()
+		// Nothing was ever written to it and no session will ever claim it.
+		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	// The child holds its own descriptor from here on.
@@ -345,7 +347,13 @@ func spawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("daemon spawn", err), err, dlog.tail(daemonLaunchOutputLimit))
+		// Take the tail FIRST: it is the only account of this failure anyone
+		// gets. Then drop the file, because the session id that would have
+		// named it only ever arrives with the rendezvous entry this launch did
+		// not get, so nothing will ever read it again (kata dd8d).
+		failure := launchFailureError(launchFailurePrefix("daemon spawn", err), err, dlog.tail(daemonLaunchOutputLimit))
+		dlog.removeIfPending()
+		return rendezvous.Entry{}, failure
 	}
 	dlog.adopt(entry.SessionID)
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))

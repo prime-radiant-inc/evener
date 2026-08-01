@@ -178,6 +178,86 @@ func TestSpawnFailsWhenTheDaemonLogCannotBeOpened(t *testing.T) {
 	}
 }
 
+// A failed launch's log is adopted by nobody. The session id that would name
+// it arrives only with the rendezvous entry the launch never got, so the file
+// keeps the opaque daemon-pending-<random>.log name it was opened under — and
+// the launch has already quoted its tail into the error, which is the only
+// account of the failure anyone reads. Nothing in the hub sweeps
+// <run-dir>/logs (rendezvous.List skips it; hubcore.Roster prunes rendezvous
+// entries only), so every failed launch used to leave one more of these behind
+// forever (kata dd8d). Adopt it or delete it; there is no third thing to do
+// with it.
+func TestFailedLaunchLeavesNoPendingDaemonLogBehind(t *testing.T) {
+	t.Parallel()
+	// Both ways a launch can fail before the daemon reports a session id: the
+	// binary never starts, and the daemon starts, says why it is unhappy, and
+	// exits before rendezvous.
+	for _, tc := range []struct {
+		name   string
+		script string
+		start  bool // the fake serf is written at all
+		quotes string
+	}{
+		{
+			name:   "daemon exits before rendezvous",
+			script: "#!/bin/sh\necho 'serf serve: session creation: no such model' >&2\nexit 42\n",
+			start:  true,
+			quotes: "no such model",
+		},
+		{
+			name:  "the daemon binary cannot be started",
+			start: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			runDir := filepath.Join(dir, "run")
+			bin := filepath.Join(dir, "fake-serf")
+			if tc.start {
+				writeFakeSerf(t, bin, tc.script)
+			}
+
+			var hubLog bytes.Buffer
+			_, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog)
+			if err == nil {
+				t.Fatal("spawn should have failed")
+			}
+			// The tail is taken before the file goes, and it has to stay that
+			// way: deleting the log first would trade a leaked file for a
+			// failure that says nothing about why.
+			if tc.quotes != "" && !strings.Contains(err.Error(), tc.quotes) {
+				t.Fatalf("failure dropped the daemon's own words: %v", err)
+			}
+			pending, globErr := filepath.Glob(filepath.Join(runDir, "logs", "daemon-pending-*.log"))
+			if globErr != nil {
+				t.Fatalf("glob pending logs: %v", globErr)
+			}
+			if len(pending) > 0 {
+				t.Fatalf("failed launch left %d pending daemon log(s) nobody can name or read: %v", len(pending), pending)
+			}
+		})
+	}
+}
+
+// The other half: a launch that succeeds owns its log, and a resume appends to
+// it. Nothing about reaping the unadopted ones may touch a file a session has
+// its name on — that file is an operator's account of a daemon that ran.
+func TestAdoptedDaemonLogSurvivesTheLaunchThatMadeIt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-serf")
+	writeFakeSerf(t, bin, registeringFakeSerf(runDir, "033z7k96Nj0LLiLImAqa9s", "out", "daemon says this on stderr"))
+
+	var hubLog bytes.Buffer
+	if _, err := spawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 10*time.Second, &hubLog); err != nil {
+		t.Fatalf("spawnDaemon: %v", err)
+	}
+	logPath := filepath.Join(runDir, "logs", "daemon-033z7k96Nj0LLiLImAqa9s.log")
+	readEventually(t, logPath, "daemon says this on stderr")
+}
+
 // A session id reaches the hub from a client on the resume path, so the log
 // file it names has to stay inside the log directory no matter what the id
 // says.

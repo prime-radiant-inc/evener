@@ -185,6 +185,67 @@ func TestSessionDeleteRefusesWhenAlreadyReserved(t *testing.T) {
 	}
 }
 
+// A spawned session writes its own daemon log under <run-dir>/logs
+// (spawn_daemonlog.go). Nothing removed it, ever: rendezvous.List skips that
+// subdirectory and hubcore.Roster prunes rendezvous entries only, so a machine
+// that had spawned sessions for months kept every daemon log it ever wrote
+// (kata dd8d). Deleting the session is the one moment the hub knows for
+// certain that nobody owns the file, which makes it the only place it can go
+// without inventing an age policy — an operator reads these after a crash.
+//
+// The unrelated session's log is the other half: this reaps the target's file
+// and only the target's.
+func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	survivorID := projectDeleteCanonicalSessionIDs[1]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	writeSession(t, stateDir, survivorID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(root, "run")
+	logDir := filepath.Join(runDir, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	targetLog := filepath.Join(logDir, daemonLogName(targetID))
+	survivorLog := filepath.Join(logDir, daemonLogName(survivorID))
+	for _, path := range []string{targetLog, survivorLog} {
+		if err := os.WriteFile(path, []byte("[serve] listening\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, RunDir: runDir, Past: past, Roster: hubcore.NewRosterWithEntries(),
+	})
+	rec, resp := postSessionDelete(t, web, targetID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(resp.Deleted) != 1 || resp.Deleted[0] != targetID {
+		t.Fatalf("session should have been deleted: %+v", resp)
+	}
+	if _, err := os.Stat(targetLog); !os.IsNotExist(err) {
+		t.Fatalf("the deleted session's daemon log is still there (stat err=%v); nothing else will ever remove it", err)
+	}
+	if _, err := os.Stat(survivorLog); err != nil {
+		t.Fatalf("an unrelated session's daemon log was removed: %v", err)
+	}
+}
+
 // TestSessionDeleteRemovesCrashedSessionAndRendezvous covers n15j's
 // verification #3, reusing kata 8at6's crash-vs-live predicate: a confirmed
 // crash marker is deletable, and its stale rendezvous records go with it.
