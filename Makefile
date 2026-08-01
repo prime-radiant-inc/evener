@@ -48,8 +48,9 @@ web-preflight:
 # into frontend/dist, which build-hub embeds via go:embed. The vite build
 # itself stays unconditional — dist freshness is the entire point, the
 # install step is the only cacheable part. vite's emptyOutDir wipes the
-# tracked dist/PLACEHOLDER on every build; restore it from git so
-# `git status` stays clean after a build.
+# tracked dist/PLACEHOLDER on every build; vite.config.ts writes it back at
+# closeBundle, so no recipe here restores it and `git status` stays clean
+# after a build however vite was invoked (kata 88nn).
 build-web: web-preflight
 	cd cmd/serf-hub/frontend && npm run build
 
