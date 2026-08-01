@@ -760,9 +760,8 @@ func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
 // running job, keyed by job id. It is the live overlay EVERY listing of this
 // session's jobs lays over the durable fold: fields no event carries live
 // only here (Background, Phase, LastActivity), so a folded record reads them
-// empty however the job was launched. A job in this snapshot is always in the
-// fold too — the job_started event is appended before durableStarted is set —
-// so an overlay never invents a row.
+// empty however the job was launched. A run enters the snapshot only once its
+// job_started event is appended, so every job here is in the durable log too.
 func (jm *jobManager) liveJobRecords() map[string]*jobstore.JobRecord {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
