@@ -56,11 +56,10 @@ case "$1" in
 		if [ -n "${STUB_GO_FLAKY:-}" ]; then
 			# No default: this counter's odd/even parity IS the flake verdict, so a
 			# shared fallback path would let two concurrent runs decide each other's
-			# outcome instead of failing (kata qw8e). The caller passes one under its
-			# own mktemp'd work dir.
-			# No apostrophe in that message: inside ${...:?word} bash treats a
-			# lone quote as a quote even within double quotes, and the stub stops
-			# parsing.
+			# outcome instead of failing (kata qw8e). The caller passes a path under
+			# its own mktemp'd work dir. The refusal message carries no apostrophe on
+			# purpose — inside ${...:?word} bash reads a lone quote as a quote even
+			# within double quotes, and the whole stub then fails to parse.
 			cnt="${STUB_COUNTER:?the flake counter is per-run state, so the caller must pass a path under its own work dir}"
 			n=$(cat "$cnt" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$cnt"
 			# fail (1) on odd run, pass (0) on even -> passes on replay 2.

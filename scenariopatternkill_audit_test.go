@@ -149,8 +149,8 @@ func TestNoCardOrScriptPatternKillsAProcess(t *testing.T) {
 	}
 	// Clean corpus and dead needle are the same green, and only a floor on
 	// matches tells them apart (scenariofixture_audit_test.go). scripts/ carries
-	// exactly the two sanctioned kills below, so zero is not "the scripts are
-	// clean" — it is "this audit stopped reading the scripts".
+	// the two sanctioned kills below and the comment that explains them, so zero
+	// is not "the scripts are clean" — it is "this audit stopped reading them".
 	if scriptMatches == 0 {
 		t.Fatalf("the pattern-kill needle matched nothing across %s/*.sh, where "+
 			"disk-reclaim-selftest.sh reaps its own stall probes with `pkill -f`. "+

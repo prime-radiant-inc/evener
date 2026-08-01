@@ -169,11 +169,12 @@ var scenarioFixedTmpPathAllowedMentions = map[string][]string{
 //
 // scripts/*.sh is the second corpus, added by kata qw8e: the audit stopped at
 // the cards while the scripts agents run every day carried the same class
-// unchecked, and two live instances were sitting there — fuzz-triage's stub
-// flake counter defaulting to a shared `/tmp/stubgo.cnt` whose odd/even parity
+// unchecked, and two live ones were sitting there — fuzz-triage's stub flake
+// counter defaulting to a shared `/tmp/stubgo.cnt` whose odd/even parity
 // decides the verdict, and fuzz-coverage-global's `RAPID_FAILFILE=/tmp/ambient`.
-// Shell is the easier half of the corpus: a script has no prose, so a `/tmp`
-// path in one is nearly always an instruction rather than a warning about one.
+// Shell narrows the prose-versus-instruction problem that makes the card
+// allowlist long, but does not remove it: three of the six lines this found on
+// its first run over scripts/ were a comment or a path named to be deleted.
 func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 	var findings []string
 	scriptMatches := 0
@@ -198,9 +199,9 @@ func TestNoCardOrScriptNamesAFixedTmpPath(t *testing.T) {
 	}
 	// A corpus audit is green either because the corpus is clean or because its
 	// needle stopped reaching that corpus, and the two are the same green
-	// (scenariofixture_audit_test.go). The cards cannot go quiet — their
-	// allowlist is 30 entries deep — but scripts/ carries only the handful
-	// below, so the script half gets the floor.
+	// (scenariofixture_audit_test.go). The cards cannot go quiet — their half of
+	// the allowlist above says how many lines still name a /tmp path — but
+	// scripts/ carries only the three below, so the script half gets the floor.
 	if scriptMatches == 0 {
 		t.Fatalf("the fixed-/tmp needle matched nothing across %s/*.sh. Two scripts "+
 			"exist to talk about /tmp (reclaim-test-debris.sh names the one-off "+
