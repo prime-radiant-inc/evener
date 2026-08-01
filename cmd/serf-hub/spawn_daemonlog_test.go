@@ -321,6 +321,135 @@ func TestDaemonLogNameCannotEscapeItsDirectory(t *testing.T) {
 	}
 }
 
+// seedDaemonLogHistory writes want bytes of fixed-width, self-numbering lines
+// to a session's log, as an earlier run of that session would have left them,
+// and returns the line function and the highest number it got to. Every line is
+// the same length, so a line that comes back a different length came back torn.
+func seedDaemonLogHistory(t *testing.T, logPath string, want int) (line func(int) string, last int) {
+	t.Helper()
+	line = func(n int) string {
+		return fmt.Sprintf("[serve] earlier run line %06d %s\n", n, strings.Repeat("x", 200))
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	var seeded bytes.Buffer
+	for seeded.Len() < want {
+		seeded.WriteString(line(last))
+		last++
+	}
+	last--
+	if err := os.WriteFile(logPath, seeded.Bytes(), 0o600); err != nil {
+		t.Fatalf("seed log history: %v", err)
+	}
+	return line, last
+}
+
+// A resume keeps its session's id, so it keeps and appends to that session's
+// own log (kata vca1) — and nothing ever trimmed that file, so a session
+// resumed daily for months held every line its daemon had ever written, with
+// only deleting the session to end it (kata rcxy). A launch now carries at most
+// daemonLogRetainedBytes of history in: the newest lines stay, the oldest go,
+// and what stays is whole lines rather than a torn prefix.
+func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "run")
+	const sessionID = "033z7k96Nj0LLiLImAqa9s"
+	logPath := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	line, last := seedDaemonLogHistory(t, logPath, 3*daemonLogRetainedBytes)
+
+	dlog, err := openDaemonLog(runDir, sessionID)
+	if err != nil {
+		t.Fatalf("openDaemonLog: %v", err)
+	}
+	defer dlog.close()
+
+	// Measured before this run writes anything: the bound is on what a launch
+	// inherits, which is the only part of the file the hub gets to decide.
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	if info.Size() > daemonLogRetainedBytes {
+		t.Fatalf("resume carried %d bytes of earlier runs into this one, past the %d byte cap", info.Size(), daemonLogRetainedBytes)
+	}
+
+	const thisRun = "[serve] this run's very first line\n"
+	if _, err := dlog.file.WriteString(thisRun); err != nil {
+		t.Fatalf("write this run's line: %v", err)
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.HasSuffix(string(got), thisRun) {
+		t.Fatalf("this run appends to the log it inherited; its first line is not at the end")
+	}
+	if !strings.Contains(string(got), line(last)) {
+		t.Fatalf("the previous run's newest line did not survive the trim")
+	}
+	if strings.Contains(string(got), line(0)) {
+		t.Fatalf("the oldest line survived a trim whose whole job was to drop it")
+	}
+
+	// A trimmed log has to say so, or it reads as the session's complete
+	// history and an operator counts the absence of a line as evidence.
+	kept := strings.SplitAfter(string(got), "\n")
+	if !strings.Contains(kept[0], "earlier output dropped") {
+		t.Fatalf("a trimmed log does not admit to being trimmed; it opens with %q", kept[0])
+	}
+	if len(kept[1]) != len(line(0)) || !strings.HasPrefix(kept[1], "[serve] earlier run line ") {
+		t.Fatalf("the oldest retained line came back torn: %q", kept[1])
+	}
+}
+
+// The trim is a launch-time act and has to stay one. A daemon's log is the
+// account of the incident it is in the middle of; trimming it while that
+// daemon writes would cut the evidence out from under the crash being
+// investigated. Anything this run says survives however far past the cap it
+// goes — only the launch that opened the file gets to drop anything.
+func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "run")
+	const sessionID = "01JLOUDSESSION0000000"
+	logPath := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	seedDaemonLogHistory(t, logPath, 2*daemonLogRetainedBytes)
+
+	dlog, err := openDaemonLog(runDir, sessionID)
+	if err != nil {
+		t.Fatalf("openDaemonLog: %v", err)
+	}
+	defer dlog.close()
+
+	first := "[serve] this run's first word\n"
+	if _, err := dlog.file.WriteString(first); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	// Well past the cap, as a daemon in trouble would.
+	shout := strings.Repeat("[serve] retrying\n", 2*daemonLogRetainedBytes/len("[serve] retrying\n"))
+	if _, err := dlog.file.WriteString(shout); err != nil {
+		t.Fatalf("write shout: %v", err)
+	}
+	last := "[serve] this run's dying words\n"
+	if _, err := dlog.file.WriteString(last); err != nil {
+		t.Fatalf("write last: %v", err)
+	}
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(got), first) {
+		t.Fatalf("this run's first line was trimmed away while the run was still going")
+	}
+	if !strings.HasSuffix(string(got), last) {
+		t.Fatalf("this run's last line is not at the end of its own log")
+	}
+	if len(got) < len(first)+len(shout)+len(last) {
+		t.Fatalf("log is %d bytes; this run alone wrote %d, so something cut it mid-incident", len(got), len(first)+len(shout)+len(last))
+	}
+}
+
 // readEventually reads path until it contains want. The daemon writes on its
 // own schedule; the rendezvous entry the hub waited for is written after these
 // lines, so this is a short backstop against buffering, not a race.
