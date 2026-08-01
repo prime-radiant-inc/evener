@@ -2,6 +2,7 @@ package codexlaunch
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -420,28 +421,85 @@ func forwardCodexPipe(r io.ReadCloser, endpoints chan<- string, launchDone <-cha
 	scanCodexEndpoint(r, endpoints, launchDone, out, prefix)
 }
 
+// maxCodexLogLine bounds how much of one app-server line the launch keeps. The
+// value is the limit that has always been in force here — bufio.Scanner's
+// default token size, which every line the app-server writes on purpose fits
+// inside — so nothing that reaches the hub log today is cut by it. What changes
+// past the bound is only what a longer line costs: the rest of it, and not the
+// pipe (kata jqbb).
+const maxCodexLogLine = 64 << 10
+
 func scanCodexEndpoint(r io.Reader, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if endpoint, ok := ParseCodexEndpoint(line); ok && deliverCodexEndpoint(endpoints, launchDone, endpoint) {
+	reader := bufio.NewReaderSize(r, maxCodexLogLine)
+	for {
+		line, dropped, err := readCodexLogLine(reader)
+		if err == nil || len(line) > 0 || dropped > 0 {
+			forwardCodexLine(line, dropped, endpoints, launchDone, out, prefix)
+		}
+		if err == nil {
 			continue
 		}
-		// Everything else is the app-server talking to whoever launched it —
-		// a bind failure, a crash, a warning — and the hub log is the only
-		// place it can land: the hub holds both pipes to scan them, so a line
-		// dropped here is a line nobody will ever see.
-		_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
+		// A pipe that ended and a pipe that can no longer be read both stop the
+		// scan, and only the second means the launch has lost the ability to
+		// hear an app-server that may still be talking. Unannounced, that reads
+		// as an app-server that went quiet, which is the one thing it does not
+		// mean (kata e1nh).
+		if !errors.Is(err, io.EOF) {
+			_, _ = fmt.Fprintf(out, "%s app-server output ended early: %v\n", prefix, err)
+		}
+		return
 	}
-	// Scan() says "clean end of output" and "this pipe can no longer be read"
-	// the same way, by returning false, and only Err() tells them apart. A
-	// line past bufio's 64KB token limit — a stack dump, a serialized payload
-	// — ends the scan, and every later line the app-server writes is lost with
-	// it. Unannounced, that reads as an app-server that went quiet, which is
-	// the one thing it does not mean (kata e1nh).
-	if err := scanner.Err(); err != nil {
-		_, _ = fmt.Fprintf(out, "%s app-server output ended early: %v\n", prefix, err)
+}
+
+// forwardCodexLine puts one line of app-server output where it belongs: the
+// launch's readiness wait, if it is an announcement the wait is still there to
+// take, and the hub log otherwise. The hub holds both of the app-server's pipes
+// in order to scan them, so a line dropped here — a bind failure, a crash, a
+// warning — is a line nobody will ever see (kata d35w).
+func forwardCodexLine(line []byte, dropped int, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
+	if dropped > 0 {
+		// A line the launch had to cut is never taken as an announcement:
+		// consuming it as one would swallow the only record that it was cut.
+		_, _ = fmt.Fprintf(out, "%s %s [truncated: %d bytes dropped from this line]\n", prefix, line, dropped)
+		return
 	}
+	if endpoint, ok := ParseCodexEndpoint(string(line)); ok && deliverCodexEndpoint(endpoints, launchDone, endpoint) {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
+}
+
+// readCodexLogLine reads one newline-framed line, keeping at most
+// maxCodexLogLine bytes of it and reporting how many further bytes of the same
+// line it read and dropped. Consuming the remainder is the whole point: a line
+// the launch merely stopped reading leaves the pipe to fill, and a full pipe
+// blocks the app-server writing into it, so one overlong line would silence the
+// process as well as the log (kata jqbb).
+//
+// The returned line aliases the reader's buffer and stays valid only until the
+// next read from it, which is why the caller forwards it before looping.
+func readCodexLogLine(reader *bufio.Reader) (line []byte, dropped int, err error) {
+	line, err = reader.ReadSlice('\n')
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		return dropCodexLineEnd(line), 0, err
+	}
+	kept := bytes.Clone(line)
+	for {
+		rest, restErr := reader.ReadSlice('\n')
+		dropped += len(dropCodexLineEnd(rest))
+		if !errors.Is(restErr, bufio.ErrBufferFull) {
+			return kept, dropped, restErr
+		}
+	}
+}
+
+// dropCodexLineEnd strips the framing that bufio.ScanLines strips, so an
+// app-server writing CRLF does not carry a carriage return into the hub log.
+func dropCodexLineEnd(line []byte) []byte {
+	if !bytes.HasSuffix(line, []byte("\n")) {
+		return line
+	}
+	return bytes.TrimSuffix(line[:len(line)-1], []byte("\r"))
 }
 
 // deliverCodexEndpoint offers an announcement to the launch's readiness wait
