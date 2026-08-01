@@ -13,9 +13,10 @@ package agent
 // a tool result" is hard-gated deterministically by
 // contextmgr.TestElicitNoteCapturesToolResult — this test is the full-loop smoke.
 //
-// Run: go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
 //
-// SECURITY: uses Jesse's real OAuth creds (authorized). Skips cleanly if absent.
+// SECURITY: uses the current user's real OAuth creds (authorized). Skips when
+// live evals are not explicitly enabled or the local setup is absent.
 
 import (
 	"context"
@@ -27,7 +28,9 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/liveeval"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 
@@ -39,15 +42,22 @@ import (
 )
 
 func TestForcedNoteLive(t *testing.T) {
-	const stateHome = "/home/jesse/.local/state"
-	if _, err := os.Stat(filepath.Join(stateHome, "serf", "auth", "openai.json")); err != nil {
-		t.Skipf("no OAuth record: %v", err)
+	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
+		t.Skipf("live eval disabled: set %s=1 to run provider-backed evals", liveeval.OptInEnv)
 	}
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("live eval requires a resolvable user home: %v", err)
+	}
+	stateHome, providersConfig := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
+	if _, err := os.Stat(filepath.Join(stateHome, "serf", "auth", "openai.json")); err != nil {
+		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", stateHome, err)
+	}
+	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 
-	cfg, exists, err := providercfg.LoadFile("/home/jesse/.serf/providers.toml")
+	cfg, exists, err := providercfg.LoadFile(providersConfig)
 	if err != nil || !exists {
-		t.Skipf("providers.toml: %v exists=%v", err, exists)
+		t.Skipf("providers.toml at %s: %v exists=%v", providersConfig, err, exists)
 	}
 	client, _, err := llm.NewFromAvailableProviders(cfg)
 	if err != nil {

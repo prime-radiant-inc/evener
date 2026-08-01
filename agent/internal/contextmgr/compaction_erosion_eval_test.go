@@ -12,7 +12,7 @@ package contextmgr
 // compaction, so it cannot erode by construction. This eval measures whether the
 // BASELINE recursive summary actually erodes the fact across N rounds.
 //
-// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionErosion -v -timeout 40m
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionErosion -v -timeout 40m
 //
 // Live can't do this (can't force N auto-compactions — window too big,
 // compactionThresholdScale is test-only), so it's a controlled recursive eval

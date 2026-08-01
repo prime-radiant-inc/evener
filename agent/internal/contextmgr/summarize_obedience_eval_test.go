@@ -2,7 +2,7 @@
 
 package contextmgr
 
-// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
 //
 // Gates the compact tool's instruction path: requires >=90% of cases honored and
 // ZERO must-keep drops. If it fails, ship note-pin-only.
@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/liveeval"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -318,8 +319,8 @@ func TestSummarizeObedience(t *testing.T) {
 // It skips the test if no provider API keys are present in the environment.
 func newRealSummarizerManager(t *testing.T) *Manager {
 	t.Helper()
-	if os.Getenv("SERF_LIVE_TESTS") != "1" {
-		t.Skip("set SERF_LIVE_TESTS=1 to run live summarizer obedience eval")
+	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
+		t.Skipf("live eval disabled: set %s=1 to run live summarizer obedience eval", liveeval.OptInEnv)
 	}
 
 	// Gate on any known provider key. The providers are registered via the

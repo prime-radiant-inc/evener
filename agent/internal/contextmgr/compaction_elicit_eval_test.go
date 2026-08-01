@@ -9,7 +9,7 @@ package contextmgr
 // compactions. If the elicitor captures those verbatim while they are still present,
 // pinning them prevents the erosion by construction.
 //
-// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestElicitNoteCapture -v -timeout 15m
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestElicitNoteCapture -v -timeout 15m
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func TestElicitNoteCapture(t *testing.T) {
 // elicitor must still capture it verbatim. Before the fix, the renderer flattened
 // only ContentText and the model never saw the token at all.
 //
-// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestElicitNoteCapturesToolResult -v -timeout 10m
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestElicitNoteCapturesToolResult -v -timeout 10m
 func TestElicitNoteCapturesToolResult(t *testing.T) {
 	cm := newOAuthManager(t)
 

@@ -6,15 +6,15 @@ package contextmgr
 // real OAuth OpenAI endpoint (NOT mocked).
 //
 // Smoke first:
-//   go test -tags eval ./agent/internal/contextmgr/ -run TestEvalSmoke -v -timeout 5m
+//   SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestEvalSmoke -v -timeout 5m
 // Full eval:
-//   go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionComparison -v -timeout 20m
+//   SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionComparison -v -timeout 20m
 //
 // OAuth wiring: the creds are stored at <XDG_STATE_HOME>/serf/auth/openai.json,
-// not env vars. We set XDG_STATE_HOME=/home/jesse/.local/state so the openai
-// adapter's OAuth resolution (auth/openai.DefaultStateDirWithStateHome ->
-// "<stateHome>/serf") finds the real record, load the real providers.toml
-// (~/.serf/providers.toml, which has [instances.openai] type="openai"), build a
+// not env vars. The live setup resolves XDG_STATE_HOME from the environment or
+// the current user's home, then loads that user's .serf/providers.toml. The
+// openai adapter's OAuth resolution (auth/openai.DefaultStateDirWithStateHome ->
+// "<stateHome>/serf") finds the real record, builds a
 // client via llm.NewFromAvailableProviders (which threads StateHome from
 // XDG_STATE_HOME into the openai factory), and resolve the "openai" profile via
 // provider.ResolveProfileFromConfig. NewManager(profile, client) then summarizes
@@ -38,8 +38,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/liveeval"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 
@@ -49,12 +51,6 @@ import (
 	_ "primeradiant.com/serf/llm/providers/ollama"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
-
-// oauthStateHome is the XDG_STATE_HOME under which serf/auth/openai.json lives.
-const oauthStateHome = "/home/jesse/.local/state"
-
-// oauthProvidersConfig is the real providers.toml with [instances.openai].
-const oauthProvidersConfig = "/home/jesse/.serf/providers.toml"
 
 // evalModel is the openai model the eval drives. The profile's cheap-model
 // resolution picks the actual summarization model; the OAuth token works for
@@ -69,13 +65,14 @@ const resultsDoc = "../../../docs/design/2026-06-14-compaction-comparison-result
 // missing so the eval never fails for an unconfigured machine.
 func newOAuthManager(t *testing.T) *Manager {
 	t.Helper()
+	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
 
 	if _, err := os.Stat(filepath.Join(oauthStateHome, "serf", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", oauthStateHome, err)
 	}
 
 	// Point OAuth resolution at the real state home for the duration of the test.
-	t.Setenv("XDG_STATE_HOME", oauthStateHome)
+	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
 
 	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
 	if err != nil {
@@ -99,6 +96,18 @@ func newOAuthManager(t *testing.T) *Manager {
 	}
 
 	return NewManager(prof, client)
+}
+
+func liveEvalOAuthPaths(t *testing.T) (string, string) {
+	t.Helper()
+	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
+		t.Skipf("live eval disabled: set %s=1 to run provider-backed evals", liveeval.OptInEnv)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("live eval requires a resolvable user home: %v", err)
+	}
+	return liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
 }
 
 // pinnedNote wraps a note in a delimited block for the controlled with/without-note

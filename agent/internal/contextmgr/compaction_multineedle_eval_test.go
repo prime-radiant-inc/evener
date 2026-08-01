@@ -10,7 +10,7 @@ package contextmgr
 // is exactly where an agent-authored note (containing all the facts verbatim) earns
 // its keep.
 //
-// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
+// Run: SERF_LIVE_TESTS=1 go test -tags eval ./agent/internal/contextmgr/ -run TestCompactionMultiNeedle -v -timeout 60m
 //
 // Arms, scored by COUNT-based retention (facts present / total facts):
 //   A baseline:       summarizeWithLLMSteered(hist, 2, "")         -> summary only
@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -213,10 +214,11 @@ func multiNeedleCases() []multiNeedleCase {
 // judge at different models).
 func oauthClientAndCfg(t *testing.T) (*llm.Client, providercfg.Config) {
 	t.Helper()
+	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
 	if _, err := os.Stat(filepath.Join(oauthStateHome, "serf", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/serf/auth/openai.json: %v", oauthStateHome, err)
 	}
-	t.Setenv("XDG_STATE_HOME", oauthStateHome)
+	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
 	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
 	if err != nil {
 		t.Fatalf("load providers.toml: %v", err)
