@@ -1051,8 +1051,17 @@ func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 	if !failed {
 		t.Fatal("test did not exercise the kept-sync retry path")
 	}
-	if len(notified) != 0 {
-		t.Fatalf("kept-sync retry enqueued owner/watch notifications: %+v", notified)
+	// The retried finalize produces exactly ONE watch notification: the
+	// never-fired end notice (this watch's "ready" can never match a job that
+	// completed with zero output — kata y0re). One, not two, is the retry
+	// half of the contract: the failed first attempt must not double the
+	// notice. Owner-notification arming stays at zero either way, which is
+	// what this test's name promises.
+	if len(notified) != 1 {
+		t.Fatalf("kept-sync retry enqueued %d notifications, want exactly the one end notice: %+v", len(notified), notified)
+	}
+	if notified[0].JobType != "watch" || !strings.HasPrefix(notified[0].Reason, "watch ended: ") {
+		t.Fatalf("kept-sync retry's one notification is not the watch end notice: %+v", notified[0])
 	}
 	for _, event := range loadJobStoreEvents(t, jm) {
 		if event.Kind == jobstore.EventJobNotificationPending {
