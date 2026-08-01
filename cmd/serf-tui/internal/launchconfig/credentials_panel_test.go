@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
@@ -523,5 +524,46 @@ func TestCredentialsPanel_RefreshResetsAndRejectsLateCredentialResult(t *testing
 	})
 	if strings.Contains(lateModel.(CredentialsPanel).View(), "Credentials verified") {
 		t.Fatal("late result attached to refreshed same-name instance")
+	}
+}
+
+// TestCredentialsPanelSourceBadgeTones (kata gk5r) pins the panel's whole
+// source-tone vocabulary in one place.
+//
+// The panel spends three tones: StateIdle marks a credential that is present
+// and working, StateEnded marks one that is missing, and TextDim is chrome —
+// type headings, hints, the "optional" badge and the "none" source that wants
+// no key. "file" is a stored API key, the most-configured state the panel can
+// show, so it belongs with the other configured sources; wearing the chrome
+// tone made it read as no-credential, indistinguishable from a source the
+// panel does not recognise. An unrecognised source has no state to report and
+// must stay dim.
+func TestCredentialsPanelSourceBadgeTones(t *testing.T) {
+	withTestColorProfile(t)
+	th := tuitheme.ActiveTheme()
+	p := CredentialsPanel{}
+
+	for _, tc := range []struct {
+		source string
+		want   lipgloss.Color
+		why    string
+	}{
+		{"oauth", th.StateIdle, "a signed-in OAuth credential is configured"},
+		{"env", th.StateIdle, "a credential from the environment is configured"},
+		{"file", th.StateIdle, "a stored API key is configured"},
+		{"absent", th.StateEnded, "a required credential is missing"},
+		{"none", th.TextDim, "this provider wants no credential"},
+		{"something-else", th.TextDim, "an unrecognised source reports no state"},
+		{"", th.TextDim, "an unrecognised source reports no state"},
+	} {
+		if got := p.sourceBadgeColor(tc.source); got != tc.want {
+			t.Errorf("sourceBadgeColor(%q) = %v, want %v — %s", tc.source, got, tc.want, tc.why)
+		}
+	}
+
+	// The three configured sources must be told apart from the chrome tone at
+	// all, which is the whole point of the mapping above.
+	if th.StateIdle == th.TextDim {
+		t.Fatal("StateIdle and TextDim are the same color in this theme, so the assertions above prove nothing")
 	}
 }

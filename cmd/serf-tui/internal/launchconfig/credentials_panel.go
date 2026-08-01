@@ -394,10 +394,18 @@ type InstanceEditSubmitMsg struct {
 	Params appwire.InstanceEditParams
 }
 
+// sourceBadgeColor picks the tone for one instance's credential-source badge.
+//
+// oauth, file and env are the three ways a credential can be PRESENT — a
+// signed-in account, a stored API key, an environment variable — so all three
+// wear the configured tone. "absent" is the one missing-credential state and
+// wears the ended tone. Everything left over — "none", which wants no
+// credential, and any source this build does not recognise — has no state to
+// report and stays on the panel's chrome tone.
 func (p CredentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 	th := tuitheme.ActiveTheme()
 	switch source {
-	case "oauth", "env":
+	case "oauth", "file", "env":
 		return th.StateIdle
 	case "absent":
 		return th.StateEnded

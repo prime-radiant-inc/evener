@@ -352,7 +352,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestHubModelIgnoresAsyncCompletionForDifferentSession,
 		TestHubModelSendErrorRemovesOptimisticUserEcho,
 		TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild,
-		TestHubModelBrowseForkRequiresUserTurnWithTurnIndex,
+		TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex,
 		TestHubModelBrowseForkRequiresSelectedUserMessage,
 		TestHubModelForkFailurePreservesDraftAndLabel,
 		TestHubModelDashboardShowsRecentWhenNothingLive,

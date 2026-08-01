@@ -57,8 +57,19 @@ Delete one declaration at a time so a failure names the culprit:
 go build ./... && go vet ./...
 ```
 
-Remember that a build tag hides a whole compilation unit. `make lint`
-covers the tagged fuzz builds; a bare build does not.
+Remember that a build tag hides a whole compilation unit, and that
+**`make lint` does not look inside the tagged fuzz builds**. Nothing on
+its path passes a tag: `scripts/run-module-lint.sh` runs a bare
+`golangci-lint run ./...` per module and `.golangci.yml` sets no
+`build-tags`, so a `//go:build serffuzz` file is not part of any package
+it analyses. Renaming a test that `cmd/serf-tui/root_factories_fuzz_test.go`
+replays by function value left that build broken while `make lint`
+returned 0; only `make fuzz`, which does pass `-tags serffuzz`, would
+have caught it. After any rename, add:
+
+```
+go vet -tags serffuzz ./...
+```
 
 ## `gofmt -r` is a blunt instrument
 

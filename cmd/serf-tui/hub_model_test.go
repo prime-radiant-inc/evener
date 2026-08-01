@@ -3183,8 +3183,10 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
+	// A live turn whose id and transcript entry index have diverged: the fork
+	// request must carry the ENTRY index, which is what sourceTurnId means.
 	m.session.messages = []transcript.ChatMessage{
-		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 3},
+		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 2, TranscriptEntryIndex: 3},
 		{Kind: transcript.MsgAssistant, Text: "answer"},
 	}
 	m.session.scrollMode = true
@@ -3224,10 +3226,15 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	}
 }
 
-func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
+// TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex keeps the
+// refusal that stops a fork cutting where the user never pointed. A turn index
+// is not a substitute: the row below is the composer's optimistic echo, which
+// knows its turn but has no transcript position yet, and thread/fork's
+// divergence position is a transcript entry index.
+func TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "not persisted"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "not persisted", TurnIndex: 2}}
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
@@ -3237,7 +3244,7 @@ func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
 	}
 	view := got.View()
-	if !strings.Contains(view, "fork requires persisted transcript") {
+	if !strings.Contains(view, "fork requires a persisted transcript position") {
 		t.Fatalf("missing fork reason:\n%s", view)
 	}
 }
@@ -3277,7 +3284,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 3}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 2, TranscriptEntryIndex: 3}}
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
