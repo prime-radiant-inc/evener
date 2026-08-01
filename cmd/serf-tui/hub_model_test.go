@@ -3227,12 +3227,12 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	}
 }
 
-// TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex keeps the
+// TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex keeps the
 // refusal that stops a fork cutting where the user never pointed. A turn index
 // is not a substitute: the row below is the composer's optimistic echo, which
 // knows its turn but has no transcript position yet, and thread/fork's
 // divergence position is a transcript entry index.
-func TestHubModelBrowseForkRequiresUserTurnWithTranscriptEntryIndex(t *testing.T) {
+func TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
 	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "not persisted", TurnIndex: 2}}
@@ -3268,7 +3268,7 @@ func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
 	if got.forkDraft != nil {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
 	}
-	if !strings.Contains(got.View(), "Select a user turn to fork.") {
+	if !strings.Contains(got.View(), "Select a user message to fork.") {
 		t.Fatalf("missing invalid selection reason:\n%s", got.View())
 	}
 }
@@ -3456,7 +3456,7 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
-	for _, want := range []string{"esc/i/q: compose", "f: fork selected user turn", "ctrl+o: dashboard"} {
+	for _, want := range []string{"esc/i/q: compose", "f: fork selected user message", "ctrl+o: dashboard"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
 		}
@@ -3487,7 +3487,7 @@ func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
 		t.Fatal("/fork should enter transcript browse mode")
 	}
 	view := got.sessionView()
-	for _, want := range []string{"Select a user turn, then press f to fork.", "f: fork selected user turn", "original request"} {
+	for _, want := range []string{"Select a user message, then press f to fork.", "f: fork selected user message", "original request"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("/fork view missing %q:\n%s", want, view)
 		}
@@ -3540,7 +3540,7 @@ func TestHubModelHelpRespectsSessionCapabilities(t *testing.T) {
 		t.Fatal("/help should not need an async command")
 	}
 	got = updated.(hubModel).View()
-	if !strings.Contains(got, "/fork") || !strings.Contains(got, "Fork selected user turn") {
+	if !strings.Contains(got, "/fork") || !strings.Contains(got, "Fork selected user message") {
 		t.Fatalf("help missing supported fork:\n%s", got)
 	}
 }

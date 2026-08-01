@@ -315,7 +315,7 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose", "enter: expand selected", "ctrl+t: expand all"}
 		if m.detail.Capabilities.Fork {
-			keys = append(keys, "f: fork selected user turn")
+			keys = append(keys, "f: fork selected user message")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
 		footer = tuiprim.ActionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()

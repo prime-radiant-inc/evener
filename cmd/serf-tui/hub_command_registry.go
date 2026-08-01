@@ -269,16 +269,16 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:               "fork",
-		Summary:            "Fork selected user turn",
+		Summary:            "Fork selected user message",
 		PaletteLabel:       "/fork",
-		PaletteDetail:      "browse and fork a user turn",
+		PaletteDetail:      "browse and fork a user message",
 		Scopes:             hubCommandSession,
 		UnavailableAction:  "fork",
 		UnavailableSummary: "Fork is not available for this session.",
 		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Fork }, "source does not advertise fork"),
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			m.enterSessionBrowse(false)
-			m.addSessionSystem("Select a user turn, then press f to fork.")
+			m.addSessionSystem("Select a user message, then press f to fork.")
 			return nil
 		},
 	},
@@ -546,7 +546,7 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 		"  esc / i          Return from browse to compose",
 	)
 	if caps.Fork {
-		lines = append(lines, "  f                Fork selected user turn in browse")
+		lines = append(lines, "  f                Fork selected user message in browse")
 	}
 	lines = append(lines,
 		"  ctrl+o           Go to live dashboard",

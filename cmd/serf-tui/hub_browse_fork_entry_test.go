@@ -109,6 +109,58 @@ func TestHubForkDraftCopyNamesTheTranscriptPositionNotATurn(t *testing.T) {
 	}
 }
 
+// TestForkFlowCopyNamesAUserMessageNotATurn (kata 88k0) pins one vocabulary for
+// the whole fork flow. The row the flow selects is a transcript entry whose Kind
+// is MsgUser, and the position it diverges at is that entry's index rather than
+// a turn index — so copy that calls the selection a "user turn" names a unit the
+// fork does not operate on, and a reader who counts turns lands on the wrong
+// row. Every surface that names the selection says "user message", matching the
+// confirmation copy's "transcript position".
+func TestForkFlowCopyNamesAUserMessageNotATurn(t *testing.T) {
+	fork, ok := hubCommandByName("fork")
+	if !ok {
+		t.Fatal("registry missing /fork")
+	}
+
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.width, m.height = 100, 20
+	m.session.width, m.session.height = 100, 20
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgAssistant, Text: "assistant answer"},
+		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 1, TranscriptEntryIndex: 2},
+	}
+	m.session.scrollMode = true
+
+	m.browseSelected = 0
+	m.startForkDraft()
+	refusal := lastForkEntrySystemMessage(t, m)
+
+	if cmd := fork.Run(&m, ""); cmd != nil {
+		t.Fatal("/fork should enter browse mode synchronously")
+	}
+	browsePrompt := lastForkEntrySystemMessage(t, m)
+
+	for _, surface := range []struct {
+		name string
+		got  string
+	}{
+		{name: "refusal on a non-user selection", got: refusal},
+		{name: "/fork browse prompt", got: browsePrompt},
+		{name: "/fork summary", got: fork.Summary},
+		{name: "/fork palette detail", got: fork.PaletteDetail},
+		{name: "browse footer", got: m.sessionView()},
+		{name: "/help", got: hubCommandHelp(hubSessionCapabilities{Fork: true})},
+	} {
+		if strings.Contains(surface.got, "user turn") {
+			t.Errorf("%s calls the fork selection a user turn; the fork diverges at a transcript entry, not a turn:\n%s", surface.name, surface.got)
+		}
+		if !strings.Contains(surface.got, "user message") {
+			t.Errorf("%s does not name the fork selection a user message:\n%s", surface.name, surface.got)
+		}
+	}
+}
+
 func lastForkEntrySystemMessage(t *testing.T, m hubModel) string {
 	t.Helper()
 	for i := len(m.session.messages) - 1; i >= 0; i-- {
