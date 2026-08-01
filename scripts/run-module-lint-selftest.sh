@@ -643,12 +643,12 @@ cat >"$bin/go" <<'FAKE_GO'
 case "$*" in
 	"env GOOS") printf 'darwin\n'; exit 0 ;;
 	"env GOARCH") printf 'arm64\n'; exit 0 ;;
-	"vet -tags serffuzz ./...")
-		# The serffuzz compile floor is per-module like golangci-lint, so it is
+	"vet -tags serffuzz ./..."|"vet -tags eval ./...")
+		# The tagged compile floors are per-module like golangci-lint, so each is
 		# recorded with its module the same way, and asserted on below.
 		module="$(basename "$PWD")"
 		[ "$PWD" = "$FAKE_REPO" ] && module=.
-		printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/vetmodules"
+		printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/vetmodules.$3"
 		;;
 esac
 printf 'go %s\n' "$*" >>"$FAKE_STATE/families"
@@ -697,10 +697,13 @@ esac
 assert_not_has "$out" "success-chatter" "all successful lint-family chatter is hidden"
 assert_eq "$(cut -f1 "$state/modules" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "Makefile passes every canonical non-fuzz module"
 assert_eq "$(cut -f2 "$state/modules" | sort -u)" "run --allow-parallel-runners ./..." "Makefile wiring admits its bounded parallel golangci-lint children"
-# lint-serffuzz is the only gate that compiles the //go:build serffuzz sources,
-# and it is worth nothing if it misses a module — so the floor's reach is pinned
-# module by module, and it spans one MORE than golangci-lint: the fuzz toolkit.
-assert_eq "$(cut -f1 "$state/vetmodules" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars fuzz identifier invariant llm" "Makefile vets every module under the serffuzz tag"
+# lint-serffuzz and lint-eval are the only gates that compile their tagged
+# sources, and a floor is worth nothing where it misses a module — so each one's
+# reach is pinned module by module, and both span one MORE than golangci-lint:
+# the fuzz toolkit. eval sources live only in agent today, which is exactly why
+# its floor must still cover the modules where the next one could land.
+assert_eq "$(cut -f1 "$state/vetmodules.serffuzz" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars fuzz identifier invariant llm" "Makefile vets every module under the serffuzz tag"
+assert_eq "$(cut -f1 "$state/vetmodules.eval" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars fuzz identifier invariant llm" "Makefile vets every module under the eval tag"
 cat >"$state/want-families" <<'WANT_FAMILIES'
 go run ./cmd/serf-namingcheck
 go vet -tags serffuzz ./...
@@ -711,6 +714,14 @@ go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
+go vet -tags eval ./...
 go run ./cmd/serf-internalcheck
 go run ./cmd/serf-docscheck
 go generate ./appwire/...
@@ -718,7 +729,7 @@ git diff --exit-code -- docs/appwire-protocol.md
 secret-scan repo
 WANT_FAMILIES
 if cmp -s "$state/want-families" "$state/families"; then
-	ok "make lint retains all seven existing lint families with exact arguments"
+	ok "make lint retains all eight existing lint families with exact arguments"
 else
 	bad "make lint changed the existing lint families or arguments"
 	diff -u "$state/want-families" "$state/families" || :
