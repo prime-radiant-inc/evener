@@ -698,6 +698,10 @@ cat >"$bin/git" <<'FAKE_GIT'
 printf 'git %s\n' "$*" >>"$FAKE_STATE/families"
 printf 'git-success-chatter\n'
 FAKE_GIT
+cat >"$bin/gofmt" <<'FAKE_GOFMT'
+#!/usr/bin/env bash
+printf 'gofmt %s\n' "$*" >>"$FAKE_STATE/families"
+FAKE_GOFMT
 cat >"$bin/golangci-lint" <<'FAKE_MAKE_LINT'
 #!/usr/bin/env bash
 module="$(basename "$PWD")"
@@ -714,7 +718,7 @@ if [ "${FAKE_GITLEAKS_MISSING:-0}" = 1 ]; then
 fi
 printf 'secret-success-chatter\n'
 FAKE_SECRET_SCAN
-chmod +x "$bin/go" "$bin/git" "$bin/golangci-lint" "$repo/scripts/gitleaks-scan.sh"
+chmod +x "$bin/go" "$bin/git" "$bin/gofmt" "$bin/golangci-lint" "$repo/scripts/gitleaks-scan.sh"
 
 out="$case_dir/make-lint.out"
 if (
@@ -740,6 +744,7 @@ assert_eq "$(cut -f1 "$state/vetmodules.serffuzz" | sort | tr '\n' ' ' | sed 's/
 assert_eq "$(cut -f1 "$state/vetmodules.eval" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars fuzz identifier invariant llm" "Makefile vets every module under the eval tag"
 cat >"$state/want-families" <<'WANT_FAMILIES'
 go run ./cmd/serf-namingcheck
+gofmt -l .
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
@@ -763,9 +768,9 @@ git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/proto
 secret-scan repo
 WANT_FAMILIES
 if cmp -s "$state/want-families" "$state/families"; then
-	ok "make lint retains all eight existing lint families with exact arguments"
+	ok "make lint includes the gofmt gate with exact arguments"
 else
-	bad "make lint changed the existing lint families or arguments"
+	bad "make lint omitted or changed a lint family or argument"
 	diff -u "$state/want-families" "$state/families" || :
 fi
 assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "healthy checks remove quiet-wrapper logs"

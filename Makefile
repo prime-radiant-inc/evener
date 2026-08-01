@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -432,6 +432,12 @@ endef
 lint-naming:
 	$(call run_quiet_lint,go run ./cmd/serf-namingcheck)
 
+# lint-gofmt keeps the repository's Go sources formatter-clean. The formatter
+# configuration in golangci-lint is not the Makefile gate and may not run in
+# every lint mode.
+lint-gofmt:
+	$(call run_quiet_lint,files="$$(gofmt -l .)"; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
+
 # lint-serffuzz is the compile floor for the //go:build serffuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and
 # `go build ./...` never compile those 250 files — so a production signature
@@ -482,7 +488,7 @@ generate:
 lint-generated:
 	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md cmd/serf-hub/frontend/src/protocol/types.gen.ts || { echo "generated AppWire outputs are stale; run 'make generate' and commit."; exit 1; }; })
 
-lint: lint-naming lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
+lint: lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 clean:
 	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck serf-fuzzcov

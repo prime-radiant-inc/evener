@@ -115,7 +115,9 @@ func jdTailCreateForegroundTimeout(t *testing.T) {
 	s.jobManager.now = clk.Now
 	result := make(chan delegateResult, 1)
 	blocked := clk.BlockedCount()
-	go func() { result <- s.createDelegate(context.Background(), delegateArgs{Task: "timeout", BlockTimeoutMS: 1}) }()
+	go func() {
+		result <- s.createDelegate(context.Background(), delegateArgs{Task: "timeout", BlockTimeoutMS: 1})
+	}()
 	clk.BlockUntil(blocked + 1)
 	clk.Advance(time.Millisecond)
 	res := <-result
