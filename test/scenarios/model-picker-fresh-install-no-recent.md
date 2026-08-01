@@ -13,7 +13,7 @@ it worth an e2e card at all:
 
 - **Wire**: `recent` is always present and always an array, never null —
   `writeModelsResponse` coerces nil to `[]`
-  (`cmd/serf-hub/web_spawn.go:178-180`), and
+  (`cmd/serf-hub/web_spawn.go#writeModelsResponse`), and
   `recentModelEntriesFromDescriptors` returns nil for an empty ref list
   (`:248-251`).
 - **Web**: `buildPickerRows` emits the `Recent` group head *only* when
@@ -39,7 +39,7 @@ there is one markup to assert against, not two.
   (`$XDG_STATE_HOME/serf/projects` does not exist yet) and no `index.db`
   entries — verified via `find $XDG_STATE_HOME/serf/projects` returning
   "no such file". This is the whole precondition: `RecentModels` reads
-  the Past index (`cmd/serf-hub/internal/hubcore/past.go:653-677`), and
+  the Past index (`cmd/serf-hub/internal/hubcore/past.go#RecentModels`), and
   an empty index is the only way to get an empty Recent honestly.
 - Real `providers.toml`/`credentials.toml` copied **in** from `~/.serf`
   so at least one provider enumerates live (`ollama` + `openai` on this
@@ -65,7 +65,7 @@ there is one markup to assert against, not two.
    ```
    `?diagnostics=1` is not optional here — the bare response is a
    models-only array with no `recent` key at all
-   (`writeModelsResponse`, `web_spawn.go:166-172`), so checking the
+   (`writeModelsResponse`, `web_spawn.go#writeModelsResponse`), so checking the
    default shape proves nothing.
 
 ### Browser
@@ -167,7 +167,7 @@ there is one markup to assert against, not two.
   not a test artifact; re-verify with `lunarouter` live if convenient.
 - The unit-level counterpart is
   `TestModelPickerItemsFromResponse_NoRecentOmitsGroup`
-  (`cmd/serf-tui/hub_model_picker_items_test.go:130`) for the TUI and
+  (`cmd/serf-tui/hub_model_picker_items_test.go#TestModelPickerItemsFromResponse_NoRecentOmitsGroup`) for the TUI and
   `pickerRows.test.ts:54-55` ("no Recent group when the envelope carries
   none") for the web. If those pass and the live picker still shows a
   Recent header, the bug is in what the hub put in `recent`, not in the

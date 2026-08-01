@@ -45,7 +45,7 @@ replaces them is one REST object and one React panel — see steps 3 and 4.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
      | jq '{state, live, work_millis, usage, turn_count}'
    ```
-   Field names are `hubapi.SessionDetail` (`hubapi/types.go:129-176`):
+   Field names are `hubapi.SessionDetail` (`hubapi/types.go#SessionDetail`):
    `work_millis`, and `usage.{input_tokens,output_tokens,cache_read_tokens,total_tokens}`
    (`hubapi.Usage`, `:180-185`). Cost is **not** on this object — it is a
    server-formatted `~$X.XX` string on the appwire thread

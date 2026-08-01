@@ -154,7 +154,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
   (`"key does not match workingDir"`) instead of the one it asserts.
 - **"Live" means the daemon is registered in the hub's roster, not that a turn
   is running.** A session sitting in `awaiting` still 409s. The predicate is
-  `projectSessionLive` (`web_api_project_delete.go:39-42`), which deliberately
+  `projectSessionLive` (`web_api_project_delete.go#projectSessionLive`), which deliberately
   does *not* count a retained crash marker as live (kata 8at6) — a crashed
   session is deletable.
 - **The 409 body's `live` array carries short ids**

@@ -48,7 +48,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
          [ .. | objects | select(.ref? == $ref)
            | {row_id, ref, state, ask_pending: (.ask_pending // false)} ]'
    ```
-   Fields are `hubapi.TreeNode` (`hubapi/types.go:99-125`): `row_id`, `ref`,
+   Fields are `hubapi.TreeNode` (`hubapi/types.go#TreeNode`): `row_id`, `ref`,
    `state`, `ask_pending`.
 
 3. **[browser] The rail renders what the wire said.** Navigate to
@@ -171,7 +171,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
   (`tuiprim.StatusBadge`), and the web rail lowercases
   (`humanizeState`). Both are deliberate surface-specific styling, not a
   vocabulary mismatch — the shared vocabulary is `hubapi.StateWord`, which
-  the TUI reaches through `displayWord` (`hub_dashboard_view.go:576-578`).
+  the TUI reaches through `displayWord` (`hub_dashboard_view.go#displayWord`).
 - **Historical result: forcing `errored` live could not be verified in the
   original pass.** A bad model name was rejected at spawn time before a
   session existed, and recoverable provider failures return the live session

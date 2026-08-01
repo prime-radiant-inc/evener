@@ -76,3 +76,143 @@ func scenarioCitesSourceFile(lines []string, i int) bool {
 	}
 	return i > 0 && scenarioSourcePathCitation.MatchString(lines[i-1])
 }
+
+// scenarioBacktickedDocPath matches the head of a doc-anchor citation: a
+// markdown path in backticks. Backticks are the discriminator — a bare
+// `README.md` inside a shell fence is a file the card creates at runtime, not
+// a contract it is citing.
+var scenarioBacktickedDocPath = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.md)`")
+
+// scenarioAnchorRunSeparators are the bytes a card may put between the doc
+// path and its quoted anchors, and between one anchor and the next. Anything
+// else ends the run, which is what keeps ordinary prose quotes out of it.
+const scenarioAnchorRunSeparators = " \t\n,;:()[]"
+
+// scenarioAnchorRunConnector is the one word the corpus writes inside an
+// anchor run — `docs/job-control.md` "A" ("B") and "C". Every other connector
+// tried against the corpus bought nothing, so the list stays at one.
+const scenarioAnchorRunConnector = "and"
+
+// TestScenarioDocAnchorsAppearInTheDocTheyName keeps the replacements kata 2mzk
+// made honest. TestScenarioCardsNeverCiteADocByLineNumber proves no card cites
+// a doc by line number any more; it does NOT prove the section names and quoted
+// phrases that replaced those numbers point at anything. A card can quote
+// "Nested jobs" "the forwarded copy is a drive signal for the parent" long
+// after that heading was renamed or that sentence reworded, and the
+// line-number audit stays green (kata gmy6).
+//
+// The hard part is telling an ANCHOR quote from an ordinary one — the same
+// cards quote tool arguments, shell fragments, scare quotes, and observed
+// output, all legitimately absent from any contract. This audit takes the
+// syntactic answer and needs no allowlist for it: an anchor is a quoted span
+// in the RUN that immediately follows a backticked doc path, which is exactly
+// the `docs/x.md` "Section" "phrase" shape 2mzk wrote. A quote that is merely
+// somewhere in the same paragraph is prose and is not checked.
+//
+// Matching collapses whitespace and drops backticks on both sides: card prose
+// wraps mid-quote, so "delivers a bounded notification/frame back to that\n
+// watcher" has a newline the doc does not.
+func TestScenarioDocAnchorsAppearInTheDocTheyName(t *testing.T) {
+	docs := map[string]string{}
+	var findings []string
+	anchors := 0
+	for _, path := range scenarioCardFiles(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		text := string(raw)
+		for _, m := range scenarioBacktickedDocPath.FindAllStringSubmatchIndex(text, -1) {
+			cited := text[m[2]:m[3]]
+			quoted := scenarioQuotedAnchorRun(text, m[1])
+			if len(quoted) == 0 {
+				continue
+			}
+			where := path + ":" + strconv.Itoa(strings.Count(text[:m[0]], "\n")+1)
+			body, seen := docs[cited]
+			if !seen {
+				docRaw, err := os.ReadFile(cited)
+				if err == nil {
+					body = scenarioCollapseForAnchor(string(docRaw))
+				}
+				docs[cited] = body
+			}
+			if body == "" {
+				findings = append(findings, where+": cites `"+cited+"`, which does not exist")
+				continue
+			}
+			for _, q := range quoted {
+				anchors++
+				if strings.Contains(body, scenarioCollapseForAnchor(q)) {
+					continue
+				}
+				findings = append(findings, where+": `"+cited+"` no longer contains "+strconv.Quote(q))
+			}
+		}
+	}
+	// A corpus audit is green either because the corpus is clean or because its
+	// needle stopped matching anything; only a floor on matches tells the two
+	// apart. Every card that names a contract anchors it this way today, so
+	// zero anchors means the run parser broke, not that the anchors left.
+	if anchors == 0 {
+		t.Fatalf("the doc-anchor needle matched nothing across the corpus — " +
+			"the detector is dead and this audit is checking nothing")
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		t.Fatalf("a scenario card's contract anchor must still be findable in "+
+			"the doc it names — a renamed heading or a reworded sentence leaves "+
+			"the citation parsing fine and pointing at nothing, which is the "+
+			"exact failure kata 2mzk's line-number audit cannot see (kata "+
+			"gmy6). Requote from the doc, or move the anchor to the section "+
+			"that now carries the rule:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// scenarioQuotedAnchorRun returns the double-quoted spans that immediately
+// follow a doc citation ending at offset i — the anchor run. It stops at the
+// first byte that is neither a separator, the one connector word, nor the
+// opening quote of another span, so prose after the citation is never read as
+// an anchor.
+func scenarioQuotedAnchorRun(text string, i int) []string {
+	var run []string
+	for {
+		j := scenarioSkipAnchorRunGap(text, i)
+		if j >= len(text) || text[j] != '"' {
+			return run
+		}
+		end := strings.IndexByte(text[j+1:], '"')
+		if end < 0 {
+			return run
+		}
+		run = append(run, text[j+1:j+1+end])
+		i = j + end + 2
+	}
+}
+
+// scenarioSkipAnchorRunGap advances past the separators and connector words
+// that may sit between two members of an anchor run.
+func scenarioSkipAnchorRunGap(text string, i int) int {
+	for i < len(text) {
+		if strings.IndexByte(scenarioAnchorRunSeparators, text[i]) >= 0 {
+			i++
+			continue
+		}
+		next := i + len(scenarioAnchorRunConnector)
+		if strings.HasPrefix(text[i:], scenarioAnchorRunConnector) && next < len(text) &&
+			strings.IndexByte(scenarioAnchorRunSeparators, text[next]) >= 0 {
+			i = next
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+// scenarioCollapseForAnchor normalizes a card quote and a doc body to the same
+// shape: runs of whitespace become one space and backticks disappear. Card
+// prose wraps mid-quote and both sides mark code spans, so neither newlines nor
+// backticks can be part of the comparison.
+func scenarioCollapseForAnchor(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
+}

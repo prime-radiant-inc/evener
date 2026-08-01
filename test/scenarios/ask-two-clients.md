@@ -148,8 +148,8 @@ and assert what each tab converges to.
 
 - **Step 2 (exact, the whole point)**: one request returns **202**; the other returns
   **409** with body `{"error":"turn is already active","code":-32013,"serf_error_info":"conflict"}`
-  (`statusForWireError`, `cmd/serf-hub/web_api.go:110-124`; `hubapi.ErrorResponse` tags at
-  `hubapi/types.go:268-272`), **or** — if the capability gate saw the flip first — **503**
+  (`statusForWireError`, `cmd/serf-hub/web_api.go#statusForWireError`; `hubapi.ErrorResponse` tags at
+  `hubapi/types.go#ErrorResponse`), **or** — if the capability gate saw the flip first — **503**
   with `serf_error_info: "actionUnavailable"` (`ensureThreadActionAvailable(…, "send")`
   ahead of `StartTurn`, `cmd/serf-hub/web_session.go:137-139`). Either loser shape is
   correct; two 202s is not. Falsify: both requests return 202, or the loser returns 502

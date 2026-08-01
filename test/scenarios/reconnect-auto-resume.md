@@ -4,7 +4,7 @@
 (`d2b5102`), `ws5f` (`d02d386`), `xcas` (`aecf225`). When the daemon
 backing a session has died but the session is still navigable, the
 hub should silently spawn a fresh daemon via `hubThreadResume`
-(`cmd/serf-hub/app_threadlifecycle.go:212`) and replay the user's turn. This
+(`cmd/serf-hub/app_threadlifecycle.go#hubThreadResume`) and replay the user's turn. This
 is the "server-side Layer 3" of the mggf design; the UI `Reconnect & retry`
 button uses the SAME path.
 
@@ -23,7 +23,7 @@ placeholder is not a stable hook at all — see step 6.
   so it can spawn fresh daemons — the scratch `$HOME` and kernel-assigned
   port from the Setup checklist in `docs/agentic-testing.md`, never Jesse's
   real hub. Every `~/.serf/run` path below is that isolated home's
-  rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go:39-49`):
+  rendezvous dir (`rendezvous.DefaultDir`, `rendezvous/rendezvous.go#DefaultDir`):
   step 2 globs it for a pid and step 3 kills that pid, so under a real
   `$HOME` this card kills a real daemon.
 - A session exists whose last completed turn ended in idle (i.e.
@@ -40,7 +40,7 @@ placeholder is not a stable hook at all — see step 6.
 
 2. **[browser-free] Find the daemon PID.** Each daemon writes
    `~/.serf/run/<pid>.json` on startup (`rendezvous.DefaultDir`,
-   `rendezvous/rendezvous.go:39-49`; file naming at `:52-77`), so the
+   `rendezvous/rendezvous.go#DefaultDir`; file naming at `:52-77`), so the
    filename *is* the pid:
    ```bash
    RFILE=$(grep -l "\"session_id\":\"$SID\"" "$HOME"/.serf/run/*.json)
@@ -146,7 +146,7 @@ placeholder is not a stable hook at all — see step 6.
   scenario.
 - **A live daemon speaking a different AppWire protocol version wedges the
   resume, and says so.** `resumeFailureError`
-  (`cmd/serf-hub/app_threadlifecycle.go:318-334`) re-reads the roster and
+  (`cmd/serf-hub/app_threadlifecycle.go#resumeFailureError`) re-reads the roster and
   names the blocking pid and protocol rather than returning a bare spawn
   failure. If step 5 fails, read the error text before assuming the resume
   chain regressed.

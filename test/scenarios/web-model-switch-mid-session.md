@@ -72,7 +72,7 @@ mid-turn, and this card previously asserted that it was.
    # Re-read the session and confirm its model did NOT move.
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" | jq .model
    ```
-   `handleAPIModel` (`cmd/serf-hub/web_api.go:304-344`) forwards
+   `handleAPIModel` (`cmd/serf-hub/web_api.go#handleAPIModel`) forwards
    `ThreadModelSetParams` to the same source the browser's RPC reaches.
 
 5. **[browser, optional] The same rejection through the UI.** Repeat step 4's
@@ -105,7 +105,7 @@ mid-turn, and this card previously asserted that it was.
 - **Step 4 (AC 4, exact)**: HTTP **409** with a JSON body whose `error` is
   the daemon's own `turn <reservedTurnID> is active`
   (`server/appwire_runtime.go:820-831`; `appwire.Conflict` →
-  `CodeConflict` → 409 via `statusForWireError`, `web_api.go:110-125`). The
+  `CodeConflict` → 409 via `statusForWireError`, `web_api.go#statusForWireError`). The
   re-read `model` is unchanged — no partial state. Falsification: 204, or a
   200 with the model mutated, or a 5xx that hides which layer refused.
 - **Step 5**: the toast region contains `Couldn't change model:` followed by
@@ -117,7 +117,7 @@ mid-turn, and this card previously asserted that it was.
   drained turn (`cmd/serf/serve.go:950-958`), and `ProcessInputKind` loops to
   run queued messages as further turns (`agent/session_lifecycle.go:517-524`),
   so `handleAppThreadModelSet`'s `processing || reservedTurnID != ""` guard
-  (`server/appwire_runtime.go:820-831`) stays true across the whole drain.
+  (`server/appwire_runtime.go#handleAppThreadModelSet`) stays true across the whole drain.
   Falsification: it succeeds while a queued message is still draining.
 - **Step 7**: once idle, the identical call that was rejected in steps 4 and 6
   returns 204 — confirms the rejection was state (turn-in-flight), not a

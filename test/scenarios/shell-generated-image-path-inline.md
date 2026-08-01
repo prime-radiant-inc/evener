@@ -5,7 +5,7 @@ shell command writes an image under the session cwd and prints its path; the
 **server** — never the frontend — scans that output text for image-looking
 paths, validates each against the cwd boundary and the four supported media
 types, and only then mints a descriptor the browser renders. The scan is
-`shellOutputImageCandidates` (`cmd/serf-hub/output_images.go:210-237`), reached
+`shellOutputImageCandidates` (`cmd/serf-hub/output_images.go#shellOutputImageCandidates`), reached
 only for `shell` / `exec_command` (`:66-69`); the frontend has no shell-output
 parser at all — `ImageGallery` renders `item.outputImages` and constructs no
 URLs of its own (`ImageGallery.tsx:1-16`). If path inference leaks to the
@@ -79,8 +79,8 @@ with the vanilla frontend (`660376f78`).
 - **Step 4 (bytes)**: 200 with an image `Content-Type` — `/doc/image` re-reads
   the file inside the cwd boundary (`doc_serve.go:84-127`). This route works
   for a *live* session with no past index, off the roster's working dir
-  (`localSessionCWD`, `doc_serve.go:132-155`;
-  `TestDocImageServesLiveDescriptorURLWithoutPast`, `doc_serve_test.go:158`).
+  (`localSessionCWD`, `doc_serve.go#localSessionCWD`;
+  `TestDocImageServesLiveDescriptorURLWithoutPast`, `doc_serve_test.go#TestDocImageServesLiveDescriptorURLWithoutPast`).
 - **Step 5 (browser)**: the expanded row shows both the original shell output
   text and one thumbnail whose `src` is exactly the `url` from step 3 — the
   component does no URL construction (`ImageGallery.tsx:1-16`), so a `src` that

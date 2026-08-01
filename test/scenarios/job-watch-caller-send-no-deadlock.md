@@ -71,7 +71,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   2's names `'target'`. Neither call returns `watching: true`, and
   neither reaches a handler. Pinned by
   `TestJobWatchRejectsRemovedPublicShapes`
-  (`agent/session_tools_jobs_watch_test.go:239-240`).
+  (`agent/session_tools_jobs_watch_test.go#TestJobWatchRejectsRemovedPublicShapes`).
   <!-- The deleted handler-level messages ("job_watch uses source, not
        target"; "job_watch delivers to the watcher automatically; send
        is not a public argument", agent/session_tools_jobs.go:1984,1987)
@@ -82,7 +82,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   self-delivery guard is GONE. `source: "self"` on a self-generated
   event kind installs (`watching: true`) and the runtime breaker bounds
   the loop instead — `TestJobWatchSelfSourceSelfKindInstalls`
-  (`agent/job_watch_loopguard_test.go:138`). Falsification: an
+  (`agent/job_watch_loopguard_test.go#TestJobWatchSelfSourceSelfKindInstalls`). Falsification: an
   `invalid_request` here means the create-time guard came back, which
   contradicts the contract as it now reads — `docs/job-control.md`
   "`job_watch`" "nothing is rejected at creation for being a potential

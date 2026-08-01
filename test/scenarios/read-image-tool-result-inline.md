@@ -7,7 +7,7 @@ output into a side channel (`agent/internal/tool/registry.go:197-219`
 thumbnail under that same tool row. AppWire must carry no bytes and no base64
 for it: `appwire.OutputImage` (`appwire/types.go:730-738`) has Source / Name /
 MediaType / Size / URL / SHA / Path and **no data field at all**. If
-`events.ToolResultOutputImage` (`agent/events/payloads.go:180-197`), the hub's
+`events.ToolResultOutputImage` (`agent/events/payloads.go#ToolResultOutputImage`), the hub's
 sha-route stamp (`cmd/serf-hub/output_images.go:169-181`), or the transcript
 byte-serving route regresses, this catches it.
 
@@ -89,7 +89,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
   twice — file-backed (`source: "read-file"`, the `/doc/image` route,
   `output_images.go:49-61`) and sha-addressed (`source: "tool-result"`). The
   hub dedupes them by sha, preferring sha over URL as content identity
-  (`appendOutputImagesUnique`, `app_threadread.go:556-586`), so the expected
+  (`appendOutputImagesUnique`, `app_threadread.go#appendOutputImagesUnique`), so the expected
   count is **one rendered thumb**, not two. Falsify: two thumbs of the same
   image side by side (kata `1nr4`'s regression).
 

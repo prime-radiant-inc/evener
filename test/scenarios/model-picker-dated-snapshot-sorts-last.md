@@ -45,7 +45,7 @@ list.
      | jq -r '.models[] | "\(.provider)/\(.model)"'
    ```
    Within each provider run, every id matching `-\d{8}(-v\d+)?$`
-   (`datedSnapshotSuffix`, `web_spawn.go:193`) must come after every id
+   (`datedSnapshotSuffix`, `web_spawn.go#datedSnapshotSuffix`) must come after every id
    in that run that doesn't. Providers themselves sort ascending
    (`sortModelEntriesDatedLast`, `:226-241`).
 2. Same check through the TUI's own path: `modelPickerItems` applies the
@@ -81,7 +81,7 @@ list.
    `BTab BTab` to reach the Model field (field order is
    Prompt/Harness/Model/Dir, `cmd/serf-tui/hub_model.go:27-30`, and
    focus wraps backwards through Dir — `advanceSpawnFocus`,
-   `hub_spawn.go:222-230`), then `Enter` to open the picker overlay;
+   `hub_spawn.go#advanceSpawnFocus`), then `Enter` to open the picker overlay;
    `capture-pane`.
 
 ## Expected
@@ -99,7 +99,7 @@ list.
   precedes the dated row.
 - Note the display names are prettified and the dated suffix is
   *stripped from the label*, so the two rows read identically
-  (`prettifyModelDisplayName`, `web_spawn.go:209-221`, and its test
+  (`prettifyModelDisplayName`, `web_spawn.go#prettifyModelDisplayName`, and its test
   expecting `"Claude Opus 4 6"`). Distinguish them by the qualified id
   in the row's meta/id text, not by the display name.
 
@@ -132,7 +132,7 @@ Investigated and ruled out:
   including `qwen/qwen3.5-plus-20260420` which *does* match the 8-digit
   dated regex) was ruled out one layer further upstream:
   `launchCheckModelVisible`
-  (`cmd/serf/internal/launchcheck/launchcheck.go:274-291`) filters every
+  (`cmd/serf/internal/launchcheck/launchcheck.go#launchCheckModelVisible`) filters every
   `openrouter`-tagged model to ones with an exact embedded-catalog match
   AND `SupportsTools` (`:286-288`) — none of the real openrouter ids
   (including the qwen dated pair) satisfy that filter, so they never
@@ -141,15 +141,15 @@ Investigated and ruled out:
 Given no live path existed, the rule was verified as passing, on that
 build, via:
 
-- `TestIsDatedSnapshotModelID` (`cmd/serf-hub/app_models_test.go:151`).
+- `TestIsDatedSnapshotModelID` (`cmd/serf-hub/app_models_test.go#TestIsDatedSnapshotModelID`).
 - `TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`
-  (`cmd/serf-hub/app_models_test.go:169-193`) — asserts
+  (`cmd/serf-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`) — asserts
   `modelDescriptorsToAPIModels([{anthropic, claude-opus-4-6-20251101},
   {anthropic, claude-opus-4-6}, {openai, gpt-5.2}], nil)` returns the
   anthropic group in order `[claude-opus-4-6, claude-opus-4-6-20251101]`
   regardless of input order.
 - `TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`
-  (`cmd/serf-tui/hub_model_picker_items_test.go:59-70`) — the same
+  (`cmd/serf-tui/hub_model_picker_items_test.go#TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`) — the same
   assertion for the TUI's `modelPickerItems`.
 
 Both are still the fallback when no dated pair is reachable:

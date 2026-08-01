@@ -3,7 +3,7 @@
 TUI counterpart of `web-steer-in-idle-fails-fast.md`. The production
 TUI intentionally does not drive Ctrl+S as a force-steer action in IDLE:
 `handleSessionForceSteer` returns early unless the composer is in queue
-mode (`cmd/serf-tui/hub_session_keys.go:491-496`). That gate is correct. This scenario documents the deterministic
+mode (`cmd/serf-tui/hub_session_keys.go#handleSessionForceSteer`). That gate is correct. This scenario documents the deterministic
 falsification path for the underlying reject behavior without asking a
 live tmux driver to bypass production UI state.
 

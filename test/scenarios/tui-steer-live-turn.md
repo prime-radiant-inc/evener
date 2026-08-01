@@ -14,13 +14,13 @@ just bound to a different key. The wiring lives in:
 - `cmd/serf-tui/composer_panel.go:155-165` (`hubComposerModeQueue`) —
   sets the `queue` label and `CanSteer`. The footer a live session
   actually renders comes from `composerFooterHints`
-  (`cmd/serf-tui/composer_render.go:348-360`) via `tuiprim.KbdHint`,
+  (`cmd/serf-tui/composer_render.go#composerFooterHints`) via `tuiprim.KbdHint`,
   which joins key and action with a space — `enter queue  ctrl+s steer
   …`, no colons. `composer_panel.go`'s colon'd `Keys` strings are only
   the fallback for a panel built without a `ChipContext`
   (`composer_panel.go:264-273`), i.e. unit fixtures, never a live pane.
-- `cmd/serf-tui/hub_session_keys.go:491` (`handleSessionForceSteer`).
-- `cmd/serf-tui/queue_send.go:80` (`sendHubDrainAsSteer`) — the composer
+- `cmd/serf-tui/hub_session_keys.go#handleSessionForceSteer` (`handleSessionForceSteer`).
+- `cmd/serf-tui/queue_send.go#sendHubDrainAsSteer` (`sendHubDrainAsSteer`) — the composer
   text rides directly on ONE `turn/drainAsSteer` call. There is no
   `sendHubQueueThenDrain` two-RPC chain any more.
 

@@ -315,7 +315,7 @@ appwire ref is `local:$SID`.
 The state vocabulary is fixed and shared by the web rail, the TUI, and
 this REST shim: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
-`cmd/serf-hub/internal/hubcore/tree.go:391-414`, normalizing
+`cmd/serf-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
 `appwire.ThreadStatus*`, `appwire/types.go:138-145`). A running turn is
 **`active`**, never `processing` — `processing` is not a wire value at
 all, and `test/scenarios/scenario_docs_test.go`'s
@@ -343,7 +343,7 @@ flight once both the status flip and the turn id have landed
 
 There is exactly one session REST namespace now: `/api/sessions/<ref>`,
 where `<ref>` is the canonical `local:<SID>` form. The dispatcher is
-`handleAPISession` (`cmd/serf-hub/web_api_tree.go:1360-1419`) and the
+`handleAPISession` (`cmd/serf-hub/web_api_tree.go#handleAPISession`) and the
 whole verb list is:
 
 | Route | Method | Notes |

@@ -41,7 +41,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
    session rows sit under it as a flat state-bar + status-dot + label,
    with no tree-connector glyphs (see step 5). Footer reads:
    `↑↓ select  enter open  n new  / filter  ctrl+o dashboard  q quit`
-   (`dashboardFooter`, `cmd/serf-tui/hub_dashboard_view.go:410-420`).
+   (`dashboardFooter`, `cmd/serf-tui/hub_dashboard_view.go#dashboardFooter`).
 
 2. **Dashboard arrow navigation**: send `Down Down` (or `j j`); recapture
    and confirm the `>` selection marker moved two rows.
@@ -65,12 +65,12 @@ Use `tmux send-keys -t "$TMUX_SESSION" KEY ...` to drive input and
    `Enter`. Session rows are a flat colored state-bar + status-dot +
    label — they carry **no** `└─`/`├─` tree connectors, and
    `TestSessionRowsHaveNoTreeConnectors`
-   (`cmd/serf-tui/dashboard_rows_test.go:36-48`) fails the build if any
+   (`cmd/serf-tui/dashboard_rows_test.go#TestSessionRowsHaveNoTreeConnectors`) fails the build if any
    reappear, so a literal grep for those glyphs is a false failure. The
    composer view replaces the dashboard. Confirm the footer changes to:
    `enter send  shift+enter newline  ⌘P palette  esc browse  /help`
    (`composerFooterHints`' compose arm,
-   `cmd/serf-tui/composer_render.go:376-382` — key and action joined by a
+   `cmd/serf-tui/composer_render.go#composerFooterHints` — key and action joined by a
    space, not a colon, and ⌘-glyphs not `ctrl+`), above a prompt with
    cursor (`> █`). There is **no** `message` label: default compose mode
    deliberately sets none (`composer_panel.go:175-178`, "an extra

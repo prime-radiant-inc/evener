@@ -11,7 +11,7 @@
   (`panes/session/chrome/GoalControl.tsx:153,165`).
 - **A6 capability gate** — `goal/set` is pre-flight gated by the `Goal`
   thread capability inside `setGoalWithResume`
-  (`cmd/serf-hub/app_session_resume.go:92`, whose comment names `/par A6`);
+  (`cmd/serf-hub/app_session_resume.go#setGoalWithResume`, whose comment names `/par A6`);
   a serf session must advertise the appwire `Goal` capability or the call is
   rejected.
 - **B6 compact continuation marker** — each autonomous continuation turn is
@@ -113,7 +113,7 @@ done
    **Expected:** `state` is `idle`. Note: the `Goal` capability lives on the
    **appwire** `ThreadCapabilities` (which the hub gate reads), NOT on the
    REST `/api/sessions` shape — `hubCapabilitiesFromAppwire`
-   (`cmd/serf-hub/web_api_tree.go:792-804`) deliberately omits it, so
+   (`cmd/serf-hub/web_api_tree.go#hubCapabilitiesFromAppwire`) deliberately omits it, so
    `capabilities.goal` over REST is always absent. A6 is proven
    positively by step 2 (the `goal/set` call succeeds because the gate read
    `appCapabilities.Goal == true`) and negatively by the unit test

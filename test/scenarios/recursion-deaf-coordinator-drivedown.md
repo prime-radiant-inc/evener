@@ -173,7 +173,7 @@ IS the test, asserted on the coordinator's own transcript.
   no-polling instruction emphasized. The coordinator transcript shows
   whether it ended its turn before the workers finished (the gate for
   this whole card).
-- **Drive latency is parent-cadence (design §3 / architecture.md
+- **Drive latency is parent-cadence (design §3 / `docs/architecture.md`
   "Drive-down").** The coordinator's notification turn fires at the
   ROOT's loop boundary, so it can lag the workers' actual completion by
   a beat. Poll the coordinator's transcript for the post-idle

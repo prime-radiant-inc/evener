@@ -5,9 +5,9 @@
 thumbnail inline under its own row while the turn is live, and the SAME
 thumbnail is reconstructed after a reload — because the hub re-derives the
 file-backed descriptor from the call's own `file_path` argument on both paths:
-live via `enrichOutputImageNotification` (`cmd/serf-hub/output_images.go:98-152`)
+live via `enrichOutputImageNotification` (`cmd/serf-hub/output_images.go#enrichOutputImageNotification`)
 and on reload via `enrichThreadFileBackedOutputImages`
-(`cmd/serf-hub/app_threadread.go:519-554`, called from `app_rpc.go:210`). If
+(`cmd/serf-hub/app_threadread.go#enrichThreadFileBackedOutputImages`, called from `app_rpc.go:210`). If
 either half regresses, the image appears once and never again — the exact
 regression this card exists for.
 
@@ -46,7 +46,7 @@ with the vanilla frontend (`660376f78`).
    Find the `commandExecution` item whose `toolName` is `write_file` (by name,
    never by turn index) and read its `outputImages`. Re-issue the same
    `thread/read` a second time and diff: enrichment is idempotent
-   (`TestEnrichThreadFileBackedOutputImagesIsIdempotent`, `output_images_test.go:185`).
+   (`TestEnrichThreadFileBackedOutputImagesIsIdempotent`, `output_images_test.go#TestEnrichThreadFileBackedOutputImagesIsIdempotent`).
 
 4. **Fetch the bytes (browser-free).** `curl` the descriptor's `url` with
    `Authorization: Bearer $TOKEN`.
@@ -74,7 +74,7 @@ with the vanilla frontend (`660376f78`).
   a `mediaType` starting `image/`, a 64-hex `sha`, and a `url` of the form
   `/doc/image?session=<escaped session>&path=out.png` — same-origin, relative,
   server-built, both query values escaped (`output_images.go:283`; shape pinned
-  by `TestResolveOutputImageFileBuildsDescriptor`, `output_images_test.go:83`).
+  by `TestResolveOutputImageFileBuildsDescriptor`, `output_images_test.go#TestResolveOutputImageFileBuildsDescriptor`).
   The second `thread/read`
   returns the identical list. Falsify: no `outputImages` after reload (the
   image was live-only — the regression); a duplicate entry appearing on the
@@ -108,7 +108,7 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
 - **The reload path needs the session's cwd.** `enrichThreadFileBackedOutputImages`
   returns the thread untouched when `thread.CWD` is empty
   (`app_threadread.go:524-527`), and `/doc/image` refuses a session whose cwd
-  it cannot resolve (`localSessionCWD`, `doc_serve.go:132-155`). A session
+  it cannot resolve (`localSessionCWD`, `doc_serve.go#localSessionCWD`). A session
   spawned with no `working_dir` cannot pass this card.
 - **`/doc/image` is LOCAL-session only** (`isLocalRouteID`, `doc_serve.go:133-135`).
   A remote/codex ref gets no file-backed descriptor at all.

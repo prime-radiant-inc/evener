@@ -170,9 +170,9 @@ combobox, as a real gesture.
                      | {kind, media: .image.media_type, bytes: (.image.data|length),
                         text: (.text // "" | .[0:60])}]}' "$TFILE"
    ```
-   Field shapes: `schema.Turn` (`agent/schema/turn.go:123-126`),
+   Field shapes: `schema.Turn` (`agent/schema/turn.go#Turn`),
    `llm.ContentPart` with `kind` selecting the payload
-   (`llm/types.go:122-135`), `llm.ImageData.media_type`/`data`
+   (`llm/types.go#ContentPart`), `llm.ImageData.media_type`/`data`
    (`llm/types.go:137-143`), `TurnUserInput = "USER_INPUT"`
    (`agent/schema/turn.go:16`), `ContentImage = "image"`
    (`llm/types.go:35`). This is a byte-level structural read, which is
@@ -272,7 +272,7 @@ REST surface, and what is no longer on it" in the runbook.
   `MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024`), which also rejects any
   non-image outright and surfaces `Couldn't attach <name> …`. Server:
   `validateAppWireInputItems`
-  (`cmd/serf-hub/appwire_validation.go:10-28`) against
+  (`cmd/serf-hub/appwire_validation.go#validateAppWireInputItems`) against
   `hubcore.SendMaxImageItems = 8` / `SendMaxImageBytes = 8 MiB` /
   `SendMaxRequestBytes = 96 MiB`
   (`cmd/serf-hub/internal/hubcore/types.go:12-14`). The old card's

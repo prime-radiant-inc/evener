@@ -4,7 +4,8 @@
 `body[data-font-size="s|m|l|xl"]` cascading `--text-*` custom properties,
 set via Settings → Appearance and persisted to `localStorage` key
 `serf-hub.appearance.fontSize` (documented in
-`docs/web-ui/design-system.md` "Font-size presets").
+`docs/web-ui/parity/parity-m7-settings.md` "3. Theme" and
+"localStorage key `serf-hub.appearance.fontSize`").
 
 ## Pre-state
 

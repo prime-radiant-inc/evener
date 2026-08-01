@@ -170,6 +170,6 @@ Run 2:
   (at-least-once) — only duplicates within one uninterrupted run
   falsify coalescing.
 - Each watch has a 50-delivery budget (`watchDeliveryBudget`,
-  `agent/job_watch.go:56`); a watch that exhausts it is auto-cleared
+  `agent/job_watch.go#watchDeliveryBudget`); a watch that exhausts it is auto-cleared
   with one final notification. Neither run comes close, but a runaway
   `output_match` in a variant of this card will hit it.

@@ -2,9 +2,9 @@
 
 **What this covers**: spec `docs/superpowers/specs/2026-07-12-model-switching-design.md`
 Acceptance criterion 8 (a live cross-provider ladder) and the "Live ladder"
-test-plan bullet. Exercises `Session.SetModel` (`agent/session.go:783`), the
+test-plan bullet. Exercises `Session.SetModel` (`agent/session.go#SetModel`), the
 persisted `Switched model: <old> → <new>` marker
-(`buildModelSwitchMarkerText`, `agent/session.go:900`), the effort-ladder
+(`buildModelSwitchMarkerText`, `agent/session.go#buildModelSwitchMarkerText`), the effort-ladder
 clamp re-derivation on switch (`ReasoningEffortLevels`/`SupportsReasoning`,
 `appwire/types.go:348-349` — a hub/AppWire-layer snapshot, not visible on
 this card's daemon HTTP surface; see Sharp edges), and — for the anthropic-family leg — the
@@ -196,7 +196,7 @@ no hub, no browser — so the switch path under test is exactly
   `web-model-switch-mid-session.md`) — it proves `Session.SetModel` and the
   marker contract directly, but reaches no ladder fields at all
   (`DetailedStatus` carries tools/mcp/skills/plugins/hooks/jobs/agents and
-  nothing about reasoning — `server/server.go:88-96`), and does NOT exercise the hub's
+  nothing about reasoning — `server/server.go#DetailedStatus`), and does NOT exercise the hub's
   turn-active/queue-drain rejection semantics; those are covered by
   `web-model-switch-mid-session.md` and are out of scope here.
 - Effort is a **launch-only** flag on this HTTP surface — there is no
