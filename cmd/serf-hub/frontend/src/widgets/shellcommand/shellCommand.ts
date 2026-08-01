@@ -3,7 +3,16 @@ export interface ShellCommandLine {
   indent: number;
 }
 
+export type ShellCommandTokenKind = "plain" | "command" | "operator" | "string" | "variable" | "flag" | "comment";
+
+export interface ShellCommandToken {
+  text: string;
+  kind: ShellCommandTokenKind;
+}
+
 const SHELL_OPERATORS = ["&&", "||", "|&", "|", ";"] as const;
+const CONTROL_OPERATORS = new Set(["&&", "||", "|&", "|", ";"]);
+const TOKEN_OPERATORS = ["&&", "||", "|&", ">>", "<<", ">&", "&>", "|", ";", ">", "<"];
 
 function operatorAt(raw: string, index: number): string | undefined {
   return SHELL_OPERATORS.find((operator) => raw.startsWith(operator, index));
@@ -129,4 +138,135 @@ export function formatShellCommand(raw: string): ShellCommandLine[] {
 
   lines.push({ text: raw.slice(lineStart), indent: continuationIndent });
   return lines;
+}
+
+function token(kind: ShellCommandTokenKind, text: string): ShellCommandToken {
+  return { kind, text };
+}
+
+function tokenOperatorAt(raw: string, index: number): string | undefined {
+  return TOKEN_OPERATORS.find((operator) => raw.startsWith(operator, index));
+}
+
+function variableEnd(raw: string, index: number): number {
+  if (raw[index + 1] === "{") {
+    const close = raw.indexOf("}", index + 2);
+    return close === -1 ? raw.length : close + 1;
+  }
+  if (raw[index + 1] === "?") return index + 2;
+  let end = index + 1;
+  while (/[A-Za-z0-9_]/.test(raw[end] ?? "")) end += 1;
+  return end === index + 1 ? index + 1 : end;
+}
+
+function isAssignmentWord(text: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(text);
+}
+
+/**
+ * Decorates a command for display without parsing or normalizing shell input.
+ * Every returned token is a direct slice of its formatted source line.
+ */
+export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellCommandToken[][] {
+  let quote: "'" | '"' | "`" | undefined;
+  let escaped = false;
+  let expectCommand = true;
+
+  return lines.map(({ text }) => {
+    const tokens: ShellCommandToken[] = [];
+    let index = 0;
+
+    while (index < text.length) {
+      const character = text[index] ?? "";
+      if (/\s/.test(character)) {
+        const start = index;
+        while (/\s/.test(text[index] ?? "")) index += 1;
+        tokens.push(token("plain", text.slice(start, index)));
+        continue;
+      }
+
+      if (quote !== undefined) {
+        const start = index;
+        while (index < text.length) {
+          const quoted = text[index] ?? "";
+          if (quote !== "'" && !escaped && quoted === "$") {
+            if (start < index) tokens.push(token("string", text.slice(start, index)));
+            const end = variableEnd(text, index);
+            tokens.push(token("variable", text.slice(index, end)));
+            index = end;
+            break;
+          }
+          if (quote !== "'" && escaped) {
+            escaped = false;
+            index += 1;
+            continue;
+          }
+          if (quote !== "'" && quoted === "\\") {
+            escaped = true;
+            index += 1;
+            continue;
+          }
+          index += 1;
+          if (quoted === quote) {
+            quote = undefined;
+            break;
+          }
+        }
+        if (start < index) tokens.push(token("string", text.slice(start, index)));
+        continue;
+      }
+
+      if (character === "#" && (index === 0 || /\s/.test(text[index - 1] ?? ""))) {
+        tokens.push(token("comment", text.slice(index)));
+        break;
+      }
+
+      const operator = tokenOperatorAt(text, index);
+      if (operator !== undefined) {
+        tokens.push(token("operator", operator));
+        if (CONTROL_OPERATORS.has(operator)) expectCommand = true;
+        index += operator.length;
+        continue;
+      }
+
+      if (character === "'" || character === '"' || character === "`") {
+        quote = character;
+        escaped = false;
+        continue;
+      }
+
+      if (character === "$") {
+        const end = variableEnd(text, index);
+        tokens.push(token("variable", text.slice(index, end)));
+        index = end;
+        continue;
+      }
+
+      const start = index;
+      while (index < text.length) {
+        const wordCharacter = text[index] ?? "";
+        if (
+          /\s/.test(wordCharacter) ||
+          tokenOperatorAt(text, index) !== undefined ||
+          wordCharacter === "'" ||
+          wordCharacter === '"' ||
+          wordCharacter === "`"
+        ) {
+          break;
+        }
+        if (wordCharacter === "\\") index += 1;
+        index += 1;
+      }
+      const word = text.slice(start, index);
+      const kind: ShellCommandTokenKind = word.startsWith("-")
+        ? "flag"
+        : expectCommand && !isAssignmentWord(word)
+          ? "command"
+          : "plain";
+      tokens.push(token(kind, word));
+      if (expectCommand && !isAssignmentWord(word)) expectCommand = false;
+    }
+
+    return tokens;
+  });
 }

@@ -37,6 +37,18 @@ test("renders the code text", () => {
   expect(screen.getByText("const x = 1;")).toBeTruthy();
 });
 
+test("renders plain source lines through the display-only line callback", () => {
+  const renderLine = vi.fn((line: string, lineNumber: number) => `${lineNumber}: ${line}`);
+
+  render(<CodeBlock text={"first\nsecond"} renderLine={renderLine} />);
+
+  expect(renderLine).toHaveBeenCalledTimes(2);
+  expect(renderLine).toHaveBeenNthCalledWith(1, "first", 0);
+  expect(renderLine).toHaveBeenNthCalledWith(2, "second", 1);
+  expect(screen.getByText("0: first")).toBeTruthy();
+  expect(screen.getByText("1: second")).toBeTruthy();
+});
+
 test("ANSI mode renders Vitest SGR output as styled text instead of escape fragments", () => {
   const vitestOutput =
     "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m283 passed\u001b[39m\u001b[22m\n" +

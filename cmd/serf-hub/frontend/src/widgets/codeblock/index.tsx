@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
@@ -20,6 +20,9 @@ export interface CodeBlockProps {
   /** The copy control's accessible name. Defaults to "Copy"; a caller whose
    * block holds something more specific (a tool's output) should say so. */
   copyLabel?: string;
+  /** Display-only decoration for plain source lines. The callback receives a
+   * source line without its separator and its zero-based source line index. */
+  renderLine?: (line: string, lineNumber: number) => ReactNode;
 }
 
 const CLASS = {
@@ -85,6 +88,7 @@ export function CodeBlock({
   ansi = false,
   showLineNumbers = false,
   copyLabel = "Copy",
+  renderLine,
 }: CodeBlockProps) {
   const allLines = useMemo(() => (ansi ? parseAnsiLines(text) : text.split("\n")), [ansi, text]);
   const isLong = allLines.length > TAIL_VISIBLE_LINES;
@@ -161,7 +165,17 @@ export function CodeBlock({
                     <span className={CLASS.gutter} aria-hidden="true">
                       {tailStart + i + 1}
                     </span>
-                    <span>{typeof line === "string" ? line : <AnsiLineContent line={line} />}</span>
+                    <span>
+                      {ansi ? (
+                        typeof line === "string" ? (
+                          line
+                        ) : (
+                          <AnsiLineContent line={line} />
+                        )
+                      ) : (
+                        (renderLine?.(line as string, tailStart + i) ?? (line as string))
+                      )}
+                    </span>
                   </span>
                 ))
               : ansi
@@ -172,7 +186,16 @@ export function CodeBlock({
                       {typeof line === "string" ? line : <AnsiLineContent line={line} />}
                     </Fragment>
                   ))
-                : visibleLines.join("\n")}
+                : (visibleLines as string[]).map((line, index) => {
+                    const rendered = renderLine?.(line, tailStart + index) ?? line;
+                    return (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: tailStart + index is the stable displayed source line number
+                      <Fragment key={tailStart + index}>
+                        {index > 0 ? "\n" : null}
+                        <span>{rendered}</span>
+                      </Fragment>
+                    );
+                  })}
           </code>
         </pre>
       </div>

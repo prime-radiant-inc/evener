@@ -1,6 +1,16 @@
-import { describe, expect, test } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createElement } from "react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { formatShellCommand, type ShellCommandLine } from "./shellCommand";
+import { ShellCommandBlock } from "./index";
+import { formatShellCommand, type ShellCommandLine, tokenizeShellCommand } from "./shellCommand";
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+});
 
 function sourceWithoutNewlines(lines: readonly ShellCommandLine[]): string {
   return lines.map((line) => line.text).join("");
@@ -122,4 +132,34 @@ describe("formatShellCommand", () => {
     ]);
     expect(sourceWithoutNewlines(got)).toBe(raw);
   });
+});
+
+test("tokenizes shell constructs without changing token text", () => {
+  const lines = formatShellCommand("printf '%s' \"$HOME\" && echo --name # note");
+  const tokens = tokenizeShellCommand(lines);
+
+  expect(
+    tokens
+      .flat()
+      .map((part) => part.text)
+      .join(""),
+  ).toBe(lines.map((line) => line.text).join(""));
+  expect(tokens.flat().map((part) => part.kind)).toEqual(
+    expect.arrayContaining(["command", "string", "variable", "operator", "flag", "comment"]),
+  );
+});
+
+test("renders formatted shell lines, token kinds, and copies the raw command", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const command = 'printf "two  spaces" \\ path && echo done';
+
+  const { container } = render(createElement(ShellCommandBlock, { command }));
+
+  expect(container.querySelector("code")?.textContent).toContain("\n");
+  expect(container.querySelector('[data-shell-token-kind="command"]')).toBeTruthy();
+  expect(container.querySelector('[data-shell-token-kind="operator"]')).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Copy command" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(command);
 });

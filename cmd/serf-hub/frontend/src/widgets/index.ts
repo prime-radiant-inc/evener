@@ -68,6 +68,8 @@ export type { SelectOption, SelectProps } from "./select";
 export { Select } from "./select";
 export type { SheetProps, SheetSide } from "./sheet";
 export { Sheet } from "./sheet";
+export type { ShellCommandBlockProps } from "./shellcommand";
+export { ShellCommandBlock } from "./shellcommand";
 export type { SkeletonProps } from "./skeleton";
 export { Skeleton } from "./skeleton";
 export type { SpeakerAvatarProps, SpeakerAvatarSpeaker } from "./speakeravatar";
