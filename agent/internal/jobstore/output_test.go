@@ -79,6 +79,47 @@ func TestCreateOutputRefusesEveryExistingArtifactWithoutChangingIt(t *testing.T)
 	}
 }
 
+func TestCreateOutputRefusesDanglingSidecarSymlinksWithoutChangingThem(t *testing.T) {
+	for _, artifact := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "final metadata", path: outputMetaPath},
+		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
+		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
+		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "job.log")
+			occupied := artifact.path(path)
+			target := filepath.Join(dir, "missing-target")
+			if err := os.Symlink(target, occupied); err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := CreateOutput(path, 1024)
+			if output != nil {
+				_ = output.Close()
+				t.Fatal("CreateOutput returned an output store for an occupied path")
+			}
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("CreateOutput error = %v, want fs.ErrExist", err)
+			}
+			gotTarget, readErr := os.Readlink(occupied)
+			if readErr != nil {
+				t.Fatalf("read dangling sidecar link: %v", readErr)
+			}
+			if gotTarget != target {
+				t.Fatalf("dangling sidecar target = %q, want %q", gotTarget, target)
+			}
+			if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("dangling link target was materialized: %v", statErr)
+			}
+		})
+	}
+}
+
 type createOutputSidecarRaceFS struct {
 	afero.Fs
 	outputPath  string
@@ -120,6 +161,126 @@ func TestCreateOutputSecondCheckPreservesRacingSidecar(t *testing.T) {
 	}
 	if string(got) != contents {
 		t.Fatalf("racing sidecar changed: %q", got)
+	}
+}
+
+type createOutputInitializationRaceFS struct {
+	afero.Fs
+	metaPath    string
+	racerPath   string
+	contents    []byte
+	writeErr    error
+	racerPlaced bool
+}
+
+func (fs *createOutputInitializationRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	isMetadataCreation := name == fs.metaPath || name == fs.metaPath+".tmp"
+	if !fs.racerPlaced && isMetadataCreation && flag&os.O_CREATE != 0 {
+		fs.racerPlaced = true
+		if err := afero.WriteFile(fs.Fs, fs.racerPath, fs.contents, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil || fs.writeErr == nil || !isMetadataCreation {
+		return f, err
+	}
+	return &createOutputInitializationWriteErrorFile{File: f, err: fs.writeErr}, nil
+}
+
+type createOutputInitializationWriteErrorFile struct {
+	afero.File
+	err error
+}
+
+func (f *createOutputInitializationWriteErrorFile) Write([]byte) (int, error) {
+	return 0, f.err
+}
+
+func TestCreateOutputPreservesSidecarsRacingInitialMetadata(t *testing.T) {
+	const contents = "keep me\n"
+	for _, artifact := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "final metadata", path: outputMetaPath},
+		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
+		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
+		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			mem := afero.NewMemMapFs()
+			path := "/job.log"
+			metaPath := outputMetaPath(path)
+			racerPath := artifact.path(path)
+			fs := &createOutputInitializationRaceFS{
+				Fs:        mem,
+				metaPath:  metaPath,
+				racerPath: racerPath,
+				contents:  []byte(contents),
+			}
+
+			output, err := createOutputFsWithSync(fs, path, 1024, true)
+			if output != nil {
+				_ = output.Close()
+				t.Fatal("createOutputFsWithSync returned an output store after a sidecar race")
+			}
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("createOutputFsWithSync error = %v, want fs.ErrExist", err)
+			}
+			got, readErr := afero.ReadFile(mem, racerPath)
+			if readErr != nil {
+				t.Fatalf("read racing sidecar: %v", readErr)
+			}
+			if string(got) != contents {
+				t.Fatalf("racing sidecar changed: %q", got)
+			}
+			if _, statErr := mem.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("reserved output log remains: %v", statErr)
+			}
+			if racerPath != metaPath {
+				if _, statErr := mem.Stat(metaPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("owned initial metadata remains: %v", statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateOutputInitializationFailurePreservesUnownedRacingArtifact(t *testing.T) {
+	const contents = "keep me\n"
+	want := errors.New("initial metadata write failed")
+	mem := afero.NewMemMapFs()
+	path := "/job.log"
+	metaPath := outputMetaPath(path)
+	racerPath := outputPendingMetaPath(metaPath) + ".tmp"
+	fs := &createOutputInitializationRaceFS{
+		Fs:        mem,
+		metaPath:  metaPath,
+		racerPath: racerPath,
+		contents:  []byte(contents),
+		writeErr:  want,
+	}
+
+	output, err := createOutputFsWithSync(fs, path, 1024, true)
+	if output != nil {
+		_ = output.Close()
+		t.Fatal("createOutputFsWithSync returned an output store after metadata failure")
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("createOutputFsWithSync error = %v, want %v", err, want)
+	}
+	got, readErr := afero.ReadFile(mem, racerPath)
+	if readErr != nil {
+		t.Fatalf("read unowned racing sidecar: %v", readErr)
+	}
+	if string(got) != contents {
+		t.Fatalf("unowned racing sidecar changed: %q", got)
+	}
+	for _, owned := range []string{path, metaPath, metaPath + ".tmp"} {
+		if _, statErr := mem.Stat(owned); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("owned creation artifact %q remains: %v", owned, statErr)
+		}
 	}
 }
 

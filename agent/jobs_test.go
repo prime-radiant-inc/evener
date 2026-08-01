@@ -100,6 +100,78 @@ func TestCreateJobOutputRetriesDurableRecordCollision(t *testing.T) {
 	}
 }
 
+func TestCreateJobOutputExhaustsExactlyEightCollisions(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := "job_" + jm.sessionID + "_000000000000"
+	generationCalls := 0
+	creationCalls := 0
+	jm.newJobID = func(string) (string, error) {
+		generationCalls++
+		return jobID, nil
+	}
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
+		creationCalls++
+		return nil, &os.PathError{Op: "open", Path: "occupied", Err: os.ErrExist}
+	}
+
+	gotID, gotPath, output, err := jm.createJobOutput()
+	if gotID != "" || gotPath != "" || output != nil {
+		t.Fatalf("createJobOutput = (%q, %q, %v, %v), want empty allocation", gotID, gotPath, output, err)
+	}
+	if !errors.Is(err, errJobIDAllocationExhausted) {
+		t.Fatalf("createJobOutput error = %v, want %v", err, errJobIDAllocationExhausted)
+	}
+	if generationCalls != 8 || creationCalls != 8 {
+		t.Fatalf("allocation attempts = generation:%d creation:%d, want 8/8", generationCalls, creationCalls)
+	}
+}
+
+func TestCreateJobOutputRandomSourceFailureReturnsImmediately(t *testing.T) {
+	jm := newTestJM(t)
+	want := errors.New("random source failed")
+	generationCalls := 0
+	jm.newJobID = func(string) (string, error) {
+		generationCalls++
+		return "", want
+	}
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
+		t.Fatal("random source failure reached output creation")
+		return nil, nil
+	}
+
+	_, _, output, err := jm.createJobOutput()
+	if output != nil || !errors.Is(err, want) {
+		t.Fatalf("createJobOutput = (%v, %v), want nil/%v", output, err, want)
+	}
+	if generationCalls != 1 {
+		t.Fatalf("job ID generation calls = %d, want 1", generationCalls)
+	}
+}
+
+func TestCreateJobOutputOrdinaryCreationFailureReturnsImmediately(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := "job_" + jm.sessionID + "_000000000000"
+	want := errors.New("output filesystem failed")
+	generationCalls := 0
+	creationCalls := 0
+	jm.newJobID = func(string) (string, error) {
+		generationCalls++
+		return jobID, nil
+	}
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
+		creationCalls++
+		return nil, want
+	}
+
+	_, _, output, err := jm.createJobOutput()
+	if output != nil || !errors.Is(err, want) {
+		t.Fatalf("createJobOutput = (%v, %v), want nil/%v", output, err, want)
+	}
+	if generationCalls != 1 || creationCalls != 1 {
+		t.Fatalf("allocation attempts = generation:%d creation:%d, want 1/1", generationCalls, creationCalls)
+	}
+}
+
 func requireNoOutputArtifacts(t *testing.T, path string) {
 	t.Helper()
 	metaPath := path + ".meta.json"

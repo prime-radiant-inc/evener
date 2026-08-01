@@ -98,24 +98,34 @@ func createOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSyn
 }
 
 func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync bool, flags int) (*OutputStore, error) {
-	f, err := fs.OpenFile(path, flags, 0o644)
+	created := flags&os.O_EXCL != 0
+	var creation *outputArtifactCreation
+	if created {
+		creation = &outputArtifactCreation{fs: fs}
+	}
+	var (
+		f   afero.File
+		err error
+	)
+	if creation != nil {
+		f, err = creation.openFile(path, flags, 0o644)
+	} else {
+		f, err = fs.OpenFile(path, flags, 0o644)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output %s: %w", path, err)
 	}
-	created := flags&os.O_EXCL != 0
 	if created {
 		if err := refuseExistingOutputSidecars(fs, path); err != nil {
 			_ = f.Close()
-			_ = fs.Remove(path)
+			creation.removeAll()
 			return nil, err
 		}
 	}
 	cleanupCreated := func() {
 		_ = f.Close()
-		if created {
-			for _, artifact := range outputArtifactPaths(path) {
-				_ = fs.Remove(artifact)
-			}
+		if creation != nil {
+			creation.removeAll()
 		}
 	}
 	info, err := f.Stat()
@@ -124,32 +134,76 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 		return nil, err
 	}
 	metaPath := outputMetaPath(path)
-	total, retainedStart, err := readOutputMetaForFile(fs, metaPath, path, info.Size())
-	if err != nil {
-		cleanupCreated()
-		return nil, err
+	total := info.Size()
+	retainedStart := int64(0)
+	if !created {
+		total, retainedStart, err = readOutputMetaForFile(fs, metaPath, path, info.Size())
+		if err != nil {
+			cleanupCreated()
+			return nil, err
+		}
 	}
 	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart, disableSync: disableSync}
 	if err := o.pruneLocked(); err != nil {
 		cleanupCreated()
 		return nil, err
 	}
-	if err := o.persistMetaLocked(); err != nil {
+	if created {
+		err = o.persistInitialMetaLocked(creation)
+	} else {
+		err = o.persistMetaLocked()
+	}
+	if err != nil {
 		cleanupCreated()
 		return nil, err
 	}
 	return o, nil
 }
 
+type outputArtifactCreation struct {
+	fs    afero.Fs
+	paths []string
+}
+
+func (c *outputArtifactCreation) openFile(path string, flags int, perm os.FileMode) (afero.File, error) {
+	f, err := c.fs.OpenFile(path, flags, perm)
+	if err == nil {
+		c.paths = append(c.paths, path)
+	}
+	return f, err
+}
+
+func (c *outputArtifactCreation) removeAll() {
+	for i := len(c.paths) - 1; i >= 0; i-- {
+		_ = c.fs.Remove(c.paths[i])
+	}
+}
+
 func refuseExistingOutputSidecars(fs afero.Fs, path string) error {
-	for _, artifact := range outputArtifactPaths(path)[1:] {
-		if _, err := fs.Stat(artifact); err == nil {
+	return refuseExistingOutputArtifacts(fs, path, outputArtifactPaths(path)[1:])
+}
+
+func refuseExistingTransientOutputSidecars(fs afero.Fs, path string) error {
+	return refuseExistingOutputArtifacts(fs, path, outputArtifactPaths(path)[2:])
+}
+
+func refuseExistingOutputArtifacts(fs afero.Fs, path string, artifacts []string) error {
+	for _, artifact := range artifacts {
+		if _, err := lstatOutputArtifact(fs, artifact); err == nil {
 			return fmt.Errorf("jobstore: create output %s: %w", path, os.ErrExist)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("jobstore: stat output artifact %s: %w", artifact, err)
+			return fmt.Errorf("jobstore: lstat output artifact %s: %w", artifact, err)
 		}
 	}
 	return nil
+}
+
+func lstatOutputArtifact(fs afero.Fs, path string) (os.FileInfo, error) {
+	if lstater, ok := fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		return info, err
+	}
+	return fs.Stat(path)
 }
 
 func outputArtifactPaths(path string) []string {
@@ -465,9 +519,37 @@ func (o *OutputStore) persistMetaLocked() error {
 	if o.metaPath == "" {
 		return nil
 	}
+	meta, err := o.outputMetaLocked()
+	if err != nil {
+		return err
+	}
+	if err := writeOutputMetaFileFsSync(o.fs, o.metaPath, meta, !o.disableSync); err != nil {
+		return err
+	}
+	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("jobstore: remove pending output metadata: %w", err)
+	}
+	return nil
+}
+
+func (o *OutputStore) persistInitialMetaLocked(creation *outputArtifactCreation) error {
+	if o.metaPath == "" {
+		return nil
+	}
+	meta, err := o.outputMetaLocked()
+	if err != nil {
+		return err
+	}
+	if err := writeInitialOutputMetaFileFsSync(creation, o.metaPath, meta, !o.disableSync); err != nil {
+		return err
+	}
+	return refuseExistingTransientOutputSidecars(o.fs, o.path)
+}
+
+func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	if !o.disableSync {
 		if err := o.f.Sync(); err != nil {
-			return fmt.Errorf("jobstore: sync output before metadata: %w", err)
+			return outputMeta{}, fmt.Errorf("jobstore: sync output before metadata: %w", err)
 		}
 	}
 	meta := outputMeta{
@@ -476,16 +558,10 @@ func (o *OutputStore) persistMetaLocked() error {
 	}
 	hash, err := outputFileSHA256(o.fs, o.path)
 	if err != nil {
-		return err
+		return outputMeta{}, err
 	}
 	meta.RetainedSHA256 = hash
-	if err := writeOutputMetaFileFsSync(o.fs, o.metaPath, meta, !o.disableSync); err != nil {
-		return err
-	}
-	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("jobstore: remove pending output metadata: %w", err)
-	}
-	return nil
+	return meta, nil
 }
 
 // writeOutputMetaFile atomically writes meta on the OS filesystem.
@@ -517,25 +593,9 @@ func writeOutputMetaFileFsSyncMarshal(fs afero.Fs, path string, meta outputMeta,
 	if err != nil {
 		return fmt.Errorf("jobstore: open output metadata: %w", err)
 	}
-	if n, err := f.Write(b); err != nil {
-		_ = f.Close()
+	if err := writeOutputMetaBytes(f, b, syncWrites); err != nil {
 		_ = fs.Remove(tmp)
-		return fmt.Errorf("jobstore: write output metadata: %w", err)
-	} else if n != len(b) {
-		_ = f.Close()
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("jobstore: write output metadata: %w", io.ErrShortWrite)
-	}
-	if syncWrites {
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			_ = fs.Remove(tmp)
-			return fmt.Errorf("jobstore: sync output metadata: %w", err)
-		}
-	}
-	if err := f.Close(); err != nil {
-		_ = fs.Remove(tmp)
-		return fmt.Errorf("jobstore: close output metadata: %w", err)
+		return err
 	}
 	if err := fs.Rename(tmp, path); err != nil {
 		_ = fs.Remove(tmp)
@@ -545,6 +605,47 @@ func writeOutputMetaFileFsSyncMarshal(fs afero.Fs, path string, meta outputMeta,
 		if err := syncParentDir(fs, path); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func writeInitialOutputMetaFileFsSync(creation *outputArtifactCreation, path string, meta outputMeta, syncWrites bool) error {
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("jobstore: marshal output metadata: %w", err)
+	}
+	b = append(b, '\n')
+	f, err := creation.openFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("jobstore: create output metadata: %w", err)
+	}
+	if err := writeOutputMetaBytes(f, b, syncWrites); err != nil {
+		return err
+	}
+	if syncWrites {
+		if err := syncParentDir(creation.fs, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeOutputMetaBytes(f afero.File, b []byte, syncWrites bool) error {
+	if n, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("jobstore: write output metadata: %w", err)
+	} else if n != len(b) {
+		_ = f.Close()
+		return fmt.Errorf("jobstore: write output metadata: %w", io.ErrShortWrite)
+	}
+	if syncWrites {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("jobstore: sync output metadata: %w", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("jobstore: close output metadata: %w", err)
 	}
 	return nil
 }
