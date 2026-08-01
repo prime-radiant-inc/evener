@@ -2,15 +2,22 @@
 
 **What this covers**: the durable-substrate headline of
 `docs/job-control.md` — jobs survive a Serf process death as durable
-records even though running processes do not (lines 9, 89). Restart
-reconciliation (lines 984-1005): a `running` record with no live
-runtime is finalized exactly once as `stopped`/`runtime_lost` with a
-stable `terminal_generation` (lines 920, 988-991), pre-crash retained
+records even though running processes do not ("Summary" "Running
+processes are not required to survive a Serf process restart";
+"Design principles" "No automatic process resume after restart").
+Restart reconciliation ("Restart behavior"): a `running` record with
+no live runtime is finalized exactly once as `stopped`/`runtime_lost`
+with a stable `terminal_generation` ("Durable reconstruction
+invariants" "The first canonical terminal durable record/event for a
+job defines `terminal_generation`"), pre-crash retained
 output stays readable via `read_transcript(transcript_ref="job:<job_id>")`
 after the runtime is gone, the terminal notification is delivered exactly once
-post-restart and deduped durably across a SECOND restart (lines 962,
-966, 968), and `job_list` stays consistent throughout. Runtime loss is
-reported as supervision loss, never as command failure (line 1001).
+post-restart and deduped durably across a SECOND restart
+("Notifications" "Terminal notification dedupe is durable" and
+"Notification delivery must also avoid lost notifications"), and
+`job_list` stays consistent throughout. Runtime loss is reported as
+supervision loss, never as command failure ("Restart behavior" "This
+is not command failure. It is supervision loss").
 
 ## Pre-state
 
@@ -94,7 +101,7 @@ reported as supervision loss, never as command failure (line 1001).
   SAME `terminal_generation`.
 - Model-visible truth (step 6, transcript): the job_list TOOL_RESULTS
   reports `$JOB` as `stopped` / `runtime_lost` (never `failed` — this
-  is supervision loss, line 1001, not command failure); the
+  is supervision loss, "Restart behavior", not command failure); the
   read_transcript TOOL_RESULTS shows `- status: stopped` and a fenced
   block whose first line is `TICK_1` and whose last line equals the
   pre-restart tail recorded in step 4 — the retained pre-crash output
@@ -113,7 +120,8 @@ reported as supervision loss, never as command failure (line 1001).
        entries today; re-verify the persisted kind on shipped code. -->
 - Second-restart dedupe (step 7): `jobs.jsonl` gains NO new
   `job_finished` for `$JOB` (grep count still 1 — `terminal_generation`
-  is minted once, line 920), the transcript still contains exactly ONE
+  is minted once, "Durable reconstruction invariants"), the
+  transcript still contains exactly ONE
   runtime_lost notification block for `$JOB`, and the step-7 job_list
   reports it `stopped`/`runtime_lost` unchanged.
 - Falsification (substrate hole): the post-restart job_list omits the
@@ -121,11 +129,13 @@ reported as supervision loss, never as command failure (line 1001).
   `not found` while `jobs.jsonl` has the record.
 - Falsification (dedupe hole): a second `job_finished` with a NEW
   `terminal_generation`, or a second runtime_lost notification block
-  after the second restart — "must not repeatedly notify about the
-  same terminal event on every restore" (line 966).
+  after the second restart — "Notifications" "must not repeatedly
+  notify about the same terminal event on every restore".
 - Falsification (loss hole): no runtime_lost notification ever
   appears although `job_notification_pending` was appended — pending
-  state lost between queueing and delivery (line 968).
+  state lost between queueing and delivery ("Notifications" "restart
+  between queueing and delivery must not silently lose the terminal
+  notification").
 
 ## Cleanup
 
@@ -154,9 +164,11 @@ reported as supervision loss, never as command failure (line 1001).
 - The retained tick count is pump-latency fuzzy (±2 ticks around the
   kill moment); assert the contiguous prefix and the step-4 equality,
   not an exact n.
-- Restart reconciliation does NOT auto-resume anything (line 984); the
+- Restart reconciliation does NOT auto-resume anything ("Restart
+  behavior" "Jobs do not auto-resume after a Serf process restart"); the
   producer does not restart. If a fresh producer process appears after
   resume, that is auto-resume creeping in — file it.
 - Shell jobs are not resumable; `resumable` on the row stays
   false/absent. The delegate-flavored runtime_lost resumability path
-  (line 1005) is out of this card's scope.
+  ("Restart behavior" "Their delegate conversations remain resumable
+  through") is out of this card's scope.
