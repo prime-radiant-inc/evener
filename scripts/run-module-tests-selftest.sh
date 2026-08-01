@@ -223,7 +223,7 @@ run_tests() {
 	shift 2
 	(
 		cd "$repo" || exit 1
-		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -233,8 +233,7 @@ run_tests_default_modules() {
 	shift
 	(
 		cd "$repo" || exit 1
-		unset MODULES
-		env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -268,6 +267,12 @@ assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
 assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
+
+new_case
+out="$case_dir/ambient-overrides.out"
+if MODULES="nosuch" WAVE1= WAVE2= run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "ambient module and wave overrides do not affect a fixture case"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent web" "a fixture case retains its requested wave schedule"
 
 new_case
 out="$case_dir/default-modules.out"
