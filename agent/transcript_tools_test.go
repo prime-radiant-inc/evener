@@ -106,6 +106,13 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	}
 }
 
+// TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs spells its four
+// parameter names out rather than ranging over jobRefRejectedParams. Reading
+// the list from the implementation would make this test agree with whatever
+// the implementation happens to say — dropping an entry there would silently
+// drop a subtest instead of failing one. The description test in
+// read_transcript_description_test.go is the half that keys to the var, so an
+// ADDED rejection still cannot land unannounced.
 func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
 	for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
 		t.Run(name, func(t *testing.T) {

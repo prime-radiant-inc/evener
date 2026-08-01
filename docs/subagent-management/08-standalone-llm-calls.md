@@ -89,7 +89,7 @@ Examples:
 
 - The task needs tools.
 - The task may require multiple turns, investigation, retries with changed strategy, or user steering.
-- The parent needs `delegate_send`, `job_read_output`, `job_stop`, progress, or child status.
+- The parent needs `delegate_send`, `read_transcript` on the child's `job:` ref, `job_stop`, progress, or child status.
 - The work should be isolated from the parent context.
 - A child transcript/audit trail is required.
 

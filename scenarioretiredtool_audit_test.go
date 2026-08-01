@@ -1,7 +1,10 @@
 package serf_test
 
 import (
+	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,13 +26,25 @@ var scenarioRetiredJobTools = map[string]string{
 }
 
 // scenarioRetiredToolAllowedMentions lists the exact (file, line-substring)
-// pairs where a retired tool name may still appear. The only sanctioned reason
-// is a dated "Verified live" results block reporting what a past run actually
-// called: rewriting that sentence to name today's tool would falsify the
-// record. An instruction to an executing agent never qualifies.
+// pairs where a retired tool name may still appear. Two reasons are sanctioned,
+// and both name the retired tool as retired:
+//
+//   - a dated "Verified live" results block reporting what a past run actually
+//     called — rewriting that sentence to name today's tool would falsify the
+//     record;
+//   - a line whose subject IS the removal: it states the live name, then names
+//     the retired one to say what became of it. The web-UI renderer registry
+//     keys a descriptor on a tool NAME, and it still carries the retired name as
+//     a defensive alias, so the parity checklist has to be able to say which
+//     name is live and which is only an alias.
+//
+// An instruction to call the tool never qualifies under either.
 var scenarioRetiredToolAllowedMentions = map[string][]string{
 	"test/scenarios/job-watch-passive-observer-noop-filter.md": {
 		"Parent still used `job_list` and `job_read_output` after successful",
+	},
+	"docs/web-ui/parity/parity-m4-transcript.md": {
+		"The legacy renderer was keyed on `job_read_output`, unregistered since cf84923c6",
 	},
 }
 
@@ -137,6 +152,137 @@ func TestJobControlContractNamesARetiredToolOnlyAsRemoved(t *testing.T) {
 			"model can actually reach (kata fd8n):\n%s",
 			jobControlContract, strings.Join(findings, "\n"))
 	}
+}
+
+// retiredToolDocRoots are the two trees read as current instruction: docs/
+// tells a contributor or an agent which tool to reach for, and tools/ holds the
+// harnesses that drive real sessions plus the prompts they send. A retired tool
+// name in either is the same failure the card corpus has — the reader reaches
+// for a tool that is not there.
+var retiredToolDocRoots = []string{"docs", "tools"}
+
+// retiredToolLiveDocExtensions are the file kinds the sweep reads. The .yaml
+// half is not decoration: a fluency probe's prompt is sent verbatim to a live
+// model, so a probe naming a retired tool is a stronger version of the same
+// bug — the model is told to make a call that returns `unknown tool`, and the
+// probe's own expectations then grade the improvisation that follows.
+var retiredToolLiveDocExtensions = map[string]bool{".md": true, ".yaml": true, ".yml": true}
+
+// retiredToolHistoricalDocDirs are trees kept precisely to preserve a past
+// state. docs/web-ui/history holds the pre-rewrite mockups and the plan written
+// against them; rewriting those to today's tool names would falsify the record.
+var retiredToolHistoricalDocDirs = []string{
+	filepath.Join("docs", "web-ui", "history"),
+}
+
+// TestLiveDocsNeverTeachARetiredJobTool extends the card corpus's rule to the
+// evergreen docs and the live fluency probes. Kata eb5m found five documents
+// outside kata fd8n's scope still naming job_read_output — an architecture
+// invariant, a fluency metric, a "use a subagent when" capability list, a
+// probe-coverage table, and a web-UI renderer parity item — and the sweep it
+// asked for turned up two more consequential ones the kata had not seen: the
+// jobs.control_lifecycle probe told a live model to call the retired tool, and
+// job_watch.observer_callback spent a forbidden_calls slot on it.
+func TestLiveDocsNeverTeachARetiredJobTool(t *testing.T) {
+	var findings []string
+	for _, path := range retiredToolLiveDocFiles(t) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for name := range scenarioRetiredJobTools {
+				if !strings.Contains(line, name) {
+					continue
+				}
+				if scenarioRetiredToolMentionAllowed(path, line) {
+					continue
+				}
+				findings = append(findings, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+			}
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		var guidance []string
+		for name, replacement := range scenarioRetiredJobTools {
+			guidance = append(guidance, name+" — "+replacement)
+		}
+		sort.Strings(guidance)
+		t.Fatalf("evergreen docs must describe the tool surface a model can "+
+			"actually reach; a retired name here teaches a reader to build on or "+
+			"call a tool that is not registered (kata eb5m):\n%s\n\nRetired tools "+
+			"and what to teach instead:\n%s",
+			strings.Join(findings, "\n"), strings.Join(guidance, "\n"))
+	}
+}
+
+// retiredToolLiveDocFiles walks the evergreen files under retiredToolDocRoots.
+// It skips two kinds of file for the same reason the mention allowlist skips a
+// "Verified live" results block: a dated record says what was true on its date,
+// and a history tree exists to hold what used to be. docs/job-control.md is
+// skipped too — TestJobControlContractNamesARetiredToolOnlyAsRemoved owns it,
+// with the sharper heading-scoped rule the removed-tools entry needs.
+func retiredToolLiveDocFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	for _, root := range retiredToolDocRoots {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if isRetiredToolHistoricalDocDir(path) {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !retiredToolLiveDocExtensions[filepath.Ext(path)] || datedRecordFilename(d.Name()) {
+				return nil
+			}
+			if filepath.ToSlash(path) == jobControlContract {
+				return nil
+			}
+			files = append(files, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", root, err)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatalf("no evergreen docs found under %v — the audit would pass vacuously", retiredToolDocRoots)
+	}
+	sort.Strings(files)
+	return files
+}
+
+func isRetiredToolHistoricalDocDir(path string) bool {
+	return slices.Contains(retiredToolHistoricalDocDirs, path)
+}
+
+// datedRecordFilename reports whether a markdown file name starts with a
+// YYYY-MM-DD- stamp. Every spec, plan, research note, and run report in this
+// repo carries one, and that stamp is what marks it as a record of a decision
+// rather than the contract in force today.
+func datedRecordFilename(name string) bool {
+	const stamp = "2026-01-01-"
+	if len(name) < len(stamp) {
+		return false
+	}
+	for i, want := range "dddd-dd-dd-" {
+		switch want {
+		case 'd':
+			if name[i] < '0' || name[i] > '9' {
+				return false
+			}
+		default:
+			if name[i] != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func scenarioRetiredToolMentionAllowed(path, line string) bool {

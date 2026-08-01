@@ -229,12 +229,21 @@ func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	}
 }
 
+// jobRefRejectedParams are read_transcript parameters that shape a SESSION
+// transcript read and have no meaning for a job: ref: a job read is one
+// snapshot of the retained tail, with no turns to window and no byte paging.
+// Passing one fails invalid_request rather than being quietly ignored, so a
+// model that guesses learns the shape instead of getting an unexplained
+// result. DefReadTranscript's description must name every entry — that is what
+// keeps the model from guessing in the first place.
+var jobRefRejectedParams = []string{"range", "expand_turn", "offset_bytes", "max_bytes"}
+
 func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	selector := strings.TrimSpace(stringArg(args, "transcript_ref"))
 	rangeArg := strings.TrimSpace(stringArg(args, "range"))
 	format := strings.TrimSpace(stringArg(args, "format"))
 	if strings.HasPrefix(selector, "job:") {
-		for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
+		for _, name := range jobRefRejectedParams {
 			if _, present := args[name]; present {
 				return nil, fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
 			}

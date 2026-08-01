@@ -314,9 +314,9 @@ returns **without** re-forwarding to its own parent (`agent/jobs_nested.go`). So
 forwarded copy lives only in its **direct parent's** store — it is not propagated up to
 grandparents or the root. Two consequences that are easy to get wrong: an ancestor sees deeper
 descendants only by walking the live tree (`job_list(include_descendants=true)`), not from
-forwarded copies sitting at the root; and a depth-≥2 `job_read_output` whose owner store closes
-mid-read falls back to the **owner's parent** store (where the single-hop copy lives), not the
-root caller's store.
+forwarded copies sitting at the root; and a depth-≥2 job output read
+(`read_transcript(transcript_ref="job:<job_id>")`) whose owner store closes mid-read falls back
+to the **owner's parent** store (where the single-hop copy lives), not the root caller's store.
 
 ## Current status
 
