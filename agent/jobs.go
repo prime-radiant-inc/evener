@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -787,9 +788,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, i
 		return nil, 0, err
 	}
 
-	for jobID, rec := range jm.liveJobRecords() {
-		recs[jobID] = rec
-	}
+	maps.Copy(recs, jm.liveJobRecords())
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
