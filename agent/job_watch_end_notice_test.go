@@ -208,6 +208,89 @@ func TestWatchThatFiredGetsNoEndNoticeOnTerminalTarget(t *testing.T) {
 	})
 }
 
+// The frame carries its own nature durably. Every later reader — serf-doctor
+// first among them — has to tell a teardown frame from a condition fire, and the
+// trigger prose is a rendering surface, not a contract.
+func TestWatchEndNoticeFrameIsMarkedAsTeardown(t *testing.T) {
+	t.Parallel()
+	t.Run("live expiry", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		seedCommonWatchSendTargets(t, jm)
+		rec, _ := jm.createShell(createShellOpts{Command: "go test ./..."})
+		if _, err := jm.configureWatch(watchArgs{
+			Target:      rec.JobID,
+			OutputMatch: "(FAIL|ok  |PASS)",
+			Send:        &watchSendArgs{To: "dlg_obs", Message: "tell me when the tests land"},
+		}); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		exit := -1
+		if err := jm.finalize(rec.JobID, jobstore.StatusStopped, "run_timeout", &exit); err != nil {
+			t.Fatalf("finalize: %v", err)
+		}
+		assertSingleEndNoticeFrame(t, jm, true)
+	})
+
+	t.Run("restart expiry", func(t *testing.T) {
+		t.Parallel()
+		stateDir := t.TempDir()
+		original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+		if err != nil {
+			t.Fatalf("new job manager: %v", err)
+		}
+		freezeClock(original)
+		seedCommonWatchSendTargets(t, original)
+		rec, err := original.createShell(createShellOpts{Command: "go test ./..."})
+		if err != nil {
+			t.Fatalf("create shell: %v", err)
+		}
+		if _, err := original.configureWatch(watchArgs{
+			Target:      rec.JobID,
+			OutputMatch: "(FAIL|ok  |PASS)",
+			Send:        &watchSendArgs{To: "dlg_obs", Message: "tell me when the tests land"},
+		}); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		crashJobManager(t, original)
+
+		assertSingleEndNoticeFrame(t, restartJobManager(t, stateDir, "S1", func(jobNotification) {}), true)
+	})
+
+	// The mark is for teardown frames only: an ordinary match must stay a
+	// delivery, or the doctor's split would swallow every fire.
+	t.Run("condition fire is not marked", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		seedCommonWatchSendTargets(t, jm)
+		rec, _ := jm.createShell(createShellOpts{Command: "serve"})
+		if _, err := jm.configureWatch(watchArgs{
+			Target:      rec.JobID,
+			OutputMatch: "ready",
+			Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		}); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		feedJob(jm, rec.JobID, []byte("server ready\n"))
+		assertSingleEndNoticeFrame(t, jm, false)
+	})
+}
+
+// assertSingleEndNoticeFrame checks the one pending watch-send frame a manager
+// holds and whether it is marked as the watch's end notice.
+func assertSingleEndNoticeFrame(t *testing.T, jm *jobManager, want bool) {
+	t.Helper()
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending watch sends = %d (%+v), want exactly one frame", len(pending), pending)
+	}
+	for _, state := range pending {
+		if state.EndNotice != want {
+			t.Errorf("frame EndNotice = %v, want %v; trigger = %q", state.EndNotice, want, state.TriggerReason)
+		}
+	}
+}
+
 // The end notice is teardown, not a condition fire. recent_watches deliveries
 // answers "did this watch's condition ever produce anything", which is exactly
 // the zero the notice exists to explain; counting the notice would erase it.

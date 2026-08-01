@@ -116,6 +116,7 @@ func dr2_buildEvents(r *doctor_reader) []jobstore.Event {
 				CoalescedCount:   r.doctor_int(5),
 				DiagnosticReason: dr2_maybeStr(r, "dr"),
 				Provenance:       dr2_buildProvenance(r),
+				EndNotice:        r.doctor_bool(),
 			}
 		}
 		events = append(events, e)
@@ -162,14 +163,15 @@ func dr2_reportEqual(a, b WatchReport) bool { return reflect.DeepEqual(a, b) }
 //   - structural reflection: the report carries the session id, jobs path, and
 //     the opts-derived filter label unchanged;
 //   - per-view internal consistency: the delivery-row count equals
-//     DistinctDeliveries, the delivered/dropped/evicted tallies sum to it, the
-//     Coalesced flag is exactly PendingLines>DistinctDeliveries, and the
+//     DistinctDeliveries+EndNotices (the two counters partition the settled
+//     rows), the delivered/dropped/evicted tallies sum to DistinctDeliveries,
+//     the Coalesced flag is exactly PendingLines>settled rows, and the
 //     breaker telemetry (max depth, runaway drops) matches the per-delivery
 //     recorded stamps;
 //   - filter honesty: a WatchID filter yields only that watch, and SelfLoopsOnly
 //     yields only self-looping watches;
-//   - count preservation: with no filter, the report's total distinct deliveries
-//     equals the independent unique-terminal-pair count.
+//   - count preservation: with no filter, the report's total settled frames
+//     (deliveries + end notices) equals the independent unique-terminal-pair count.
 func FuzzDr2BuildWatchReport(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
@@ -202,14 +204,25 @@ func FuzzDr2BuildWatchReport(f *testing.F) {
 		}
 
 		for _, w := range rep.Watches {
-			if len(w.Deliveries) != w.DistinctDeliveries {
-				t.Fatalf("watch %s: %d delivery rows but DistinctDeliveries=%d", w.WatchID, len(w.Deliveries), w.DistinctDeliveries)
+			// Every settled frame is a row, and each row is either a delivery or an
+			// end notice — the two counters partition the rows, never overlap.
+			if len(w.Deliveries) != w.DistinctDeliveries+w.EndNotices {
+				t.Fatalf("watch %s: %d delivery rows but DistinctDeliveries=%d + EndNotices=%d", w.WatchID, len(w.Deliveries), w.DistinctDeliveries, w.EndNotices)
 			}
 			if sum := w.Delivered + w.Dropped + w.Evicted; sum != w.DistinctDeliveries {
 				t.Fatalf("watch %s: delivered+dropped+evicted=%d != distinct=%d", w.WatchID, sum, w.DistinctDeliveries)
 			}
-			if want := w.PendingLines > w.DistinctDeliveries; w.Coalesced != want {
-				t.Fatalf("watch %s: Coalesced=%v but PendingLines=%d DistinctDeliveries=%d", w.WatchID, w.Coalesced, w.PendingLines, w.DistinctDeliveries)
+			endNoticeRows := 0
+			for _, d := range w.Deliveries {
+				if d.EndNotice {
+					endNoticeRows++
+				}
+			}
+			if endNoticeRows != w.EndNotices {
+				t.Fatalf("watch %s: EndNotices=%d but %d rows marked as end notices", w.WatchID, w.EndNotices, endNoticeRows)
+			}
+			if want := w.PendingLines > len(w.Deliveries); w.Coalesced != want {
+				t.Fatalf("watch %s: Coalesced=%v but PendingLines=%d settled rows=%d", w.WatchID, w.Coalesced, w.PendingLines, len(w.Deliveries))
 			}
 			if opts.WatchID != "" && w.WatchID != opts.WatchID {
 				t.Fatalf("WatchID filter %q leaked watch %q", opts.WatchID, w.WatchID)
@@ -239,12 +252,14 @@ func FuzzDr2BuildWatchReport(f *testing.F) {
 		}
 
 		if opts.WatchID == "" && !opts.SelfLoopsOnly {
-			distinct := 0
+			// Settled frames are split between the two counters, so the sum — not
+			// the delivery count alone — is what the independent pair count must match.
+			settled := 0
 			for _, w := range rep.Watches {
-				distinct += w.DistinctDeliveries
+				settled += w.DistinctDeliveries + w.EndNotices
 			}
-			if want := dr2_distinctTerminals(events); distinct != want {
-				t.Fatalf("report has %d distinct deliveries; %d independent terminal pairs", distinct, want)
+			if want := dr2_distinctTerminals(events); settled != want {
+				t.Fatalf("report has %d settled frames; %d independent terminal pairs", settled, want)
 			}
 		}
 	})
@@ -278,8 +293,9 @@ func dr2_watchSeeds() [][]byte {
 	}
 	// putSend writes one watch_send_* event. term selects the terminal kind
 	// (0 pending, 1 delivered, 2 dropped, 3 evicted); did is the delivery-id pool
-	// index; withProv adds a self-referential provenance chain hop.
-	putSend := func(w *doctor_writer, wid, term, did, updateSeq int, withProv, chainTruncated bool, provDelivered int) {
+	// index; withProv adds a self-referential provenance chain hop; endNotice
+	// makes the frame a watch's teardown notice rather than a condition fire.
+	putSend := func(w *doctor_writer, wid, term, did, updateSeq int, withProv, chainTruncated bool, provDelivered int, endNotice bool) {
 		w.doctor_putInt(wid)
 		w.doctor_putInt(2)         // kind: default arm -> watch_send
 		w.doctor_putInt(term)      // terminal kind selector
@@ -292,14 +308,15 @@ func dr2_watchSeeds() [][]byte {
 		present(w)                 // DiagnosticReason
 		if !withProv {
 			w.doctor_putBool(false) // no provenance
-			return
+		} else {
+			w.doctor_putBool(true)           // has provenance
+			w.doctor_putBool(chainTruncated) // ChainTruncated
+			w.doctor_putInt(0)               // zero watch keys
+			w.doctor_putInt(1)               // one chain hop
+			w.doctor_putInt(wid)             // hop WatchID (same watch)
+			w.doctor_putInt(provDelivered)   // hop DeliveryID (points at another delivered id)
 		}
-		w.doctor_putBool(true)           // has provenance
-		w.doctor_putBool(chainTruncated) // ChainTruncated
-		w.doctor_putInt(0)               // zero watch keys
-		w.doctor_putInt(1)               // one chain hop
-		w.doctor_putInt(wid)             // hop WatchID (same watch)
-		w.doctor_putInt(provDelivered)   // hop DeliveryID (points at another delivered id)
+		w.doctor_putBool(endNotice) // EndNotice
 	}
 
 	trailer := func(w *doctor_writer, selfLoopsOnly bool, watchFilter int) {
@@ -325,8 +342,8 @@ func dr2_watchSeeds() [][]byte {
 		w := &doctor_writer{}
 		head(w, 4)
 		putRegistered(w, 0)
-		putSend(w, 0, 1, 0, 1, false, false, 0) // delivered d0
-		putSend(w, 0, 2, 1, 1, false, false, 0) // dropped d1
+		putSend(w, 0, 1, 0, 1, false, false, 0, false) // delivered d0
+		putSend(w, 0, 2, 1, 1, false, false, 0, false) // dropped d1
 		putCleared(w, 0)
 		trailer(w, false, 0)
 		seeds = append(seeds, w.b)
@@ -339,9 +356,9 @@ func dr2_watchSeeds() [][]byte {
 		w := &doctor_writer{}
 		head(w, 3)
 		putRegistered(w, 1)
-		putSend(w, 1, 1, 0, 1, false, false, 0) // delivered d0
-		putSend(w, 1, 1, 1, 2, true, true, 0)   // delivered d1, chain hop -> d0 (delivered), truncated
-		trailer(w, true, 0)                     // SelfLoopsOnly filter
+		putSend(w, 1, 1, 0, 1, false, false, 0, false) // delivered d0
+		putSend(w, 1, 1, 1, 2, true, true, 0, false)   // delivered d1, chain hop -> d0 (delivered), truncated
+		trailer(w, true, 0)                            // SelfLoopsOnly filter
 		seeds = append(seeds, w.b)
 	}
 
@@ -350,9 +367,9 @@ func dr2_watchSeeds() [][]byte {
 		w := &doctor_writer{}
 		head(w, 3)
 		putRegistered(w, 0)
-		putSend(w, 0, 3, 0, 1, false, false, 0) // evicted d0
-		putSend(w, 0, 0, 1, 2, false, false, 0) // pending d1 (still-pending, never settled)
-		trailer(w, false, 1)                    // filter to w0
+		putSend(w, 0, 3, 0, 1, false, false, 0, false) // evicted d0
+		putSend(w, 0, 0, 1, 2, false, false, 0, false) // pending d1 (still-pending, never settled)
+		trailer(w, false, 1)                           // filter to w0
 		seeds = append(seeds, w.b)
 	}
 
@@ -361,6 +378,19 @@ func dr2_watchSeeds() [][]byte {
 		w := &doctor_writer{}
 		head(w, 0)
 		trailer(w, false, 2) // filter to an absent watch id
+		seeds = append(seeds, w.b)
+	}
+
+	// 5: a watch that ended without ever firing — its only settled frame is the
+	// end notice, so the counters must split it away from the deliveries.
+	{
+		w := &doctor_writer{}
+		head(w, 4)
+		putRegistered(w, 2)
+		putSend(w, 2, 0, 0, 1, false, false, 0, true) // pending end notice
+		putSend(w, 2, 1, 0, 1, false, false, 0, true) // delivered end notice
+		putCleared(w, 2)
+		trailer(w, false, 0)
 		seeds = append(seeds, w.b)
 	}
 

@@ -316,6 +316,9 @@ type watchSendDelivery struct {
 	provenance *provenance.Causal
 	eventKind  events.EventKind
 	eventData  events.EventData
+	// endNotice marks the teardown frame a watch sends when it ends without ever
+	// having fired, so the durable state says what the trigger prose only implies.
+	endNotice bool
 	// self-influence classification, stamped at the observation site; fuseDepth
 	// drives the runaway fuse, the rest the gradient inform.
 	selfInfluence bool
@@ -2763,6 +2766,7 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 			if cfg.send != nil {
 				delivery := jm.watchSendSnapshot(cfg, jobID, trigger, root)
 				delivery.allowAfterTerminalExpiry = true
+				delivery.endNotice = true
 				deliveries = append(deliveries, delivery)
 				jm.rememberDetachedPendingLocked(cfg)
 			} else {
@@ -2843,6 +2847,7 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		jm.mu.Lock()
 		delivery := jm.watchSendSnapshot(cfg, watch.Target, trigger, root)
 		delivery.allowAfterTerminalExpiry = true
+		delivery.endNotice = true
 		jm.rememberDetachedPendingLocked(cfg)
 		jm.mu.Unlock()
 		// Teardown, not a condition fire: no delivery count and no self-influence
@@ -3267,6 +3272,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		ReceiverSessionID:  d.cfg.receiverSessionID,
 		ReceiverDelegateID: d.cfg.receiverDelegateID,
 		SelfInfluenceDepth: d.fuseDepth,
+		EndNotice:          d.endNotice,
 	}
 }
 
