@@ -2,6 +2,7 @@ package codexlaunch
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,15 +67,64 @@ type launchProcess interface {
 	Kill() error
 }
 
-type execLaunchProcess struct{ cmd *exec.Cmd }
+// execLaunchProcess owns the app-server's pipes instead of borrowing os/exec's.
+// Cmd.StdoutPipe hands back a pipe that Cmd.Wait closes the moment the child
+// exits — "It is thus incorrect to call Wait before all reads from the pipe
+// have completed" — and this launch cannot honour that, because the readiness
+// loop needs the exit signal while the scanners are still draining. A pipe the
+// launch owns survives Wait, so the app-server's dying words are still there to
+// be read after the exit that produced them, and a scanner reaches EOF instead
+// of an os.ErrClosed it would have to report as a read failure (kata j27f).
+type execLaunchProcess struct {
+	cmd *exec.Cmd
+	// The child's ends, held only until Start hands them to the child: the
+	// parent must drop its copies or no scanner ever sees the EOF that the
+	// app-server's exit produces.
+	childEnds []*os.File
+	// The launch's ends. Closed here only when Start fails and no scanner will
+	// ever read them, which is what os/exec does with its own pipes.
+	launchEnds []*os.File
+}
 
 func (p *execLaunchProcess) Cmd() *exec.Cmd                     { return p.cmd }
 func (p *execLaunchProcess) SetDir(dir string)                  { p.cmd.Dir = dir }
 func (p *execLaunchProcess) SetEnv(env []string)                { p.cmd.Env = env }
-func (p *execLaunchProcess) StdoutPipe() (io.ReadCloser, error) { return p.cmd.StdoutPipe() }
-func (p *execLaunchProcess) StderrPipe() (io.ReadCloser, error) { return p.cmd.StderrPipe() }
-func (p *execLaunchProcess) Start() error                       { return p.cmd.Start() }
-func (p *execLaunchProcess) Wait() error                        { return p.cmd.Wait() }
+func (p *execLaunchProcess) StdoutPipe() (io.ReadCloser, error) { return p.pipeTo(&p.cmd.Stdout) }
+func (p *execLaunchProcess) StderrPipe() (io.ReadCloser, error) { return p.pipeTo(&p.cmd.Stderr) }
+
+// pipeTo points one of the child's output streams at a pipe this launch owns.
+// An *os.File assigned to Cmd.Stdout or Cmd.Stderr is passed straight to the
+// child, so os/exec never adopts either end and Wait never closes one.
+func (p *execLaunchProcess) pipeTo(stream *io.Writer) (io.ReadCloser, error) {
+	launchEnd, childEnd, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	*stream = childEnd
+	p.childEnds = append(p.childEnds, childEnd)
+	p.launchEnds = append(p.launchEnds, launchEnd)
+	return launchEnd, nil
+}
+
+// Start hands the write ends to the child and then drops the parent's copies,
+// which is what turns the app-server's exit into the EOF a scanner stops on.
+// os/exec does this for pipes it made itself; it cannot for pipes it was given.
+func (p *execLaunchProcess) Start() error {
+	err := p.cmd.Start()
+	for _, childEnd := range p.childEnds {
+		_ = childEnd.Close()
+	}
+	p.childEnds = nil
+	if err != nil {
+		for _, launchEnd := range p.launchEnds {
+			_ = launchEnd.Close()
+		}
+	}
+	p.launchEnds = nil
+	return err
+}
+
+func (p *execLaunchProcess) Wait() error { return p.cmd.Wait() }
 func (p *execLaunchProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
@@ -253,8 +303,8 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// take (kata e1nh).
 	launchDone := make(chan struct{})
 	defer close(launchDone)
-	go scanCodexEndpoint(stdout, endpoints, launchDone, l.logOutput, prefix)
-	go scanCodexEndpoint(stderr, endpoints, launchDone, l.logOutput, prefix)
+	go forwardCodexPipe(stdout, endpoints, launchDone, l.logOutput, prefix)
+	go forwardCodexPipe(stderr, endpoints, launchDone, l.logOutput, prefix)
 	// exitErr is published before close(exited); a receive on exited
 	// happens-after the close, so reading exitErr after the receive is race-free.
 	exited := make(chan struct{})
@@ -360,28 +410,96 @@ func codexLogPrefix(id string) string {
 	return "[codex:" + id + "]"
 }
 
+// forwardCodexPipe scans one of the app-server's pipes to its end and then
+// gives up the launch's end of it. The launch owns these pipes so that Cmd.Wait
+// cannot close them out from under a scan in progress (kata j27f), which leaves
+// closing them to the reader that has finished with one. "Its end" is now the
+// pipe's real EOF — every writer gone, the app-server's own words included —
+// rather than the moment Wait pulled the descriptor away.
+func forwardCodexPipe(r io.ReadCloser, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
+	defer r.Close() //nolint:errcheck // a drained read end's close has no actionable failure
+	scanCodexEndpoint(r, endpoints, launchDone, out, prefix)
+}
+
+// maxCodexLogLine bounds how much of one app-server line the launch keeps. The
+// value is the limit that has always been in force here — bufio.Scanner's
+// default token size, which every line the app-server writes on purpose fits
+// inside — so nothing that reaches the hub log today is cut by it. What changes
+// past the bound is only what a longer line costs: the rest of it, and not the
+// pipe (kata jqbb).
+const maxCodexLogLine = 64 << 10
+
 func scanCodexEndpoint(r io.Reader, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if endpoint, ok := ParseCodexEndpoint(line); ok && deliverCodexEndpoint(endpoints, launchDone, endpoint) {
+	reader := bufio.NewReaderSize(r, maxCodexLogLine)
+	for {
+		line, dropped, err := readCodexLogLine(reader)
+		if err == nil || len(line) > 0 || dropped > 0 {
+			forwardCodexLine(line, dropped, endpoints, launchDone, out, prefix)
+		}
+		if err == nil {
 			continue
 		}
-		// Everything else is the app-server talking to whoever launched it —
-		// a bind failure, a crash, a warning — and the hub log is the only
-		// place it can land: the hub holds both pipes to scan them, so a line
-		// dropped here is a line nobody will ever see.
-		_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
+		// A pipe that ended and a pipe that can no longer be read both stop the
+		// scan, and only the second means the launch has lost the ability to
+		// hear an app-server that may still be talking. Unannounced, that reads
+		// as an app-server that went quiet, which is the one thing it does not
+		// mean (kata e1nh).
+		if !errors.Is(err, io.EOF) {
+			_, _ = fmt.Fprintf(out, "%s app-server output ended early: %v\n", prefix, err)
+		}
+		return
 	}
-	// Scan() says "clean end of output" and "this pipe can no longer be read"
-	// the same way, by returning false, and only Err() tells them apart. A
-	// line past bufio's 64KB token limit — a stack dump, a serialized payload
-	// — ends the scan, and every later line the app-server writes is lost with
-	// it. Unannounced, that reads as an app-server that went quiet, which is
-	// the one thing it does not mean (kata e1nh).
-	if err := scanner.Err(); err != nil {
-		_, _ = fmt.Fprintf(out, "%s app-server output ended early: %v\n", prefix, err)
+}
+
+// forwardCodexLine puts one line of app-server output where it belongs: the
+// launch's readiness wait, if it is an announcement the wait is still there to
+// take, and the hub log otherwise. The hub holds both of the app-server's pipes
+// in order to scan them, so a line dropped here — a bind failure, a crash, a
+// warning — is a line nobody will ever see (kata d35w).
+func forwardCodexLine(line []byte, dropped int, endpoints chan<- string, launchDone <-chan struct{}, out io.Writer, prefix string) {
+	if dropped > 0 {
+		// A line the launch had to cut is never taken as an announcement:
+		// consuming it as one would swallow the only record that it was cut.
+		_, _ = fmt.Fprintf(out, "%s %s [truncated: %d bytes dropped from this line]\n", prefix, line, dropped)
+		return
 	}
+	if endpoint, ok := ParseCodexEndpoint(string(line)); ok && deliverCodexEndpoint(endpoints, launchDone, endpoint) {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
+}
+
+// readCodexLogLine reads one newline-framed line, keeping at most
+// maxCodexLogLine bytes of it and reporting how many further bytes of the same
+// line it read and dropped. Consuming the remainder is the whole point: a line
+// the launch merely stopped reading leaves the pipe to fill, and a full pipe
+// blocks the app-server writing into it, so one overlong line would silence the
+// process as well as the log (kata jqbb).
+//
+// The returned line aliases the reader's buffer and stays valid only until the
+// next read from it, which is why the caller forwards it before looping.
+func readCodexLogLine(reader *bufio.Reader) (line []byte, dropped int, err error) {
+	line, err = reader.ReadSlice('\n')
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		return dropCodexLineEnd(line), 0, err
+	}
+	kept := bytes.Clone(line)
+	for {
+		rest, restErr := reader.ReadSlice('\n')
+		dropped += len(dropCodexLineEnd(rest))
+		if !errors.Is(restErr, bufio.ErrBufferFull) {
+			return kept, dropped, restErr
+		}
+	}
+}
+
+// dropCodexLineEnd strips the framing that bufio.ScanLines strips, so an
+// app-server writing CRLF does not carry a carriage return into the hub log.
+func dropCodexLineEnd(line []byte) []byte {
+	if !bytes.HasSuffix(line, []byte("\n")) {
+		return line
+	}
+	return bytes.TrimSuffix(line[:len(line)-1], []byte("\r"))
 }
 
 // deliverCodexEndpoint offers an announcement to the launch's readiness wait

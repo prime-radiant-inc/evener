@@ -1,13 +1,14 @@
 package codexlaunch
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,104 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// gatedLog holds the one forwarded line that carries hold until the test
+// releases it, which is how a scanner is put where output goes missing: busy
+// writing to the hub log at the moment the app-server exits. Only that line is
+// held, so anything the other pipe's scanner has to say still lands and can be
+// asserted on.
+type gatedLog struct {
+	syncBuffer
+	hold    string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedLog) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(g.hold)) {
+		g.once.Do(func() {
+			close(g.entered)
+			<-g.release
+		})
+	}
+	return g.syncBuffer.Write(p)
+}
+
+// os/exec closes a StdoutPipe as soon as Cmd.Wait sees the child exit — "It is
+// thus incorrect to call Wait before all reads from the pipe have completed" —
+// and this launch starts Wait in a goroutine while both scanners are still
+// draining, because the readiness loop needs the exit signal. Whatever is still
+// in the pipe when Wait closes it is gone, and since d35w the hub log is the
+// only place a launched app-server's output can land: what gets lost is its
+// dying words, the most valuable thing it ever writes (kata j27f).
+//
+// The loss needs a scanner to be busy elsewhere at the moment of exit, which is
+// what the gate arranges: the app-server does not say its last words until the
+// scanner is held inside a write to the hub log, and it is not released until
+// the process has been reaped.
+func TestCodexLaunchKeepsTheAppServersDyingWordsAcrossWait(t *testing.T) {
+	const held = "codex: warning: reticulating splines"
+	const dying = "codex: fatal: session store is corrupt"
+	// The app-server speaks, waits to be told the scanner is held, then says
+	// its last words and exits. Reading stdin is how it waits — the test closes
+	// the write end to release it — so nothing here turns on a clock.
+	cmd := exec.Command("/bin/sh", "-c", `printf '%s\n' "$1"; read -r gate; printf '%s\n' "$2"`, "sh", held, dying)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l := NewCodexLauncher(nil)
+	l.client = seedClient(http.StatusOK, nil)
+	log := &gatedLog{hold: held, entered: make(chan struct{}), release: make(chan struct{})}
+	l.logOutput = log
+	l.process = func(string, ...string) launchProcess { return &execLaunchProcess{cmd: cmd} }
+
+	// A configured listen address answers on the first readiness check, so the
+	// launch returns while the app-server is still talking.
+	launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{ID: "live", Listen: "ws://127.0.0.1:4321"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-log.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the app-server's first line never reached the hub log: %q", log.String())
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Wait has returned, so it has already done whatever it does to the pipes.
+	<-launched.Exited
+
+	logged := log.await(dying)
+	close(log.release)
+	select {
+	case <-logged:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the app-server's last words never reached the hub log: %q", log.String())
+	}
+	// The other half of the same lifecycle bug: a scanner whose pipe is closed
+	// under it reports os.ErrClosed rather than reaching EOF, so an ordinary
+	// exit files a read failure nobody can act on.
+	if strings.Contains(log.String(), "ended early") {
+		t.Fatalf("an ordinary app-server exit was reported as a read failure: %q", log.String())
+	}
+	// Owning the pipe puts the other half of that bargain on the launch: the
+	// parent's copy of the child's write end has to go at Start, or the exit
+	// that ends the app-server never becomes the EOF that ends the scan. A zero
+	// byte write reports the descriptor's state without putting anything on the
+	// pipe.
+	childEnd, ok := launched.Cmd.Stdout.(*os.File)
+	if !ok {
+		t.Fatalf("app-server stdout = %T, want a pipe the launch owns", launched.Cmd.Stdout)
+	}
+	if _, err := childEnd.Write(nil); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("the launch still holds the child's end of its own stdout: %v", err)
+	}
+}
+
 // A codex app-server that fails after launch says so on the pipes the hub is
 // scanning, and the hub owns both of them — nothing else can read that output,
 // so a line the scanner drops is a line nobody will ever see. Every line that
@@ -62,8 +161,11 @@ func (b *syncBuffer) String() string {
 func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	endpoints := make(chan string, 4)
 	var log syncBuffer
+	// The first line is CRLF-framed and its expectation below is not: the
+	// carriage return is framing, and a log line carrying one returns the
+	// cursor over the prefix that says which app-server spoke.
 	scanCodexEndpoint(
-		strings.NewReader("codex: error: address already in use\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"),
+		strings.NewReader("codex: error: address already in use\r\n{\"endpoint\":\"ws://one:1\"}\nlisten ws://two:2.\n"),
 		endpoints, launching(), &log, "[codex:live]")
 	close(endpoints)
 
@@ -86,27 +188,106 @@ func TestScanCodexEndpointLogsWhatIsNotAnEndpoint(t *testing.T) {
 	}
 }
 
-// Scan() reports a clean end of output and a fatal read failure the same way,
-// by returning false, and bufio.Scanner fails on any line past its 64KB token
-// limit — a stack dump, a serialized payload. That ends the scan of that pipe,
-// and with the scan goes every later line the app-server writes: the trailing
-// line here never reaches the log. A record that simply stops reads as an
-// app-server that went quiet, which is the one thing it does not mean, so the
-// launch says why it stopped listening (kata e1nh).
-func TestScanCodexEndpointSaysWhyItStoppedReading(t *testing.T) {
+// A line longer than the launch will hold — a stack dump, a serialized payload
+// — used to end the scan of that pipe, and with the scan went every later line
+// the app-server wrote. An abandoned pipe also fills, and then the app-server
+// blocks writing to it, so one pathological line silenced the process as well
+// as the log. The line is now cut at the bound and the rest of it consumed, so
+// what an overlong line costs is its own tail and nothing else (kata jqbb).
+func TestScanCodexEndpointKeepsReadingPastAnOverlongLine(t *testing.T) {
+	const overrun = 4096
 	endpoints := make(chan string, 4)
 	var log syncBuffer
 	scanCodexEndpoint(
-		strings.NewReader(strings.Repeat("x", bufio.MaxScanTokenSize+1)+"\ncodex: still here\n"),
+		strings.NewReader(strings.Repeat("x", maxCodexLogLine+overrun)+"\ncodex: still here\n"),
 		endpoints, launching(), &log, "[codex:live]")
 
-	// Exact: the record names the failure, and the 64KB line that caused it
-	// is not dumped into the log in the name of reporting it.
-	want := "[codex:live] app-server output ended early: " + bufio.ErrTooLong.Error() + "\n"
+	got := strings.Split(strings.TrimSuffix(log.String(), "\n"), "\n")
+	if len(got) != 2 {
+		t.Fatalf("log has %d lines, want the cut line and the line after it", len(got))
+	}
+	// A cut line says so and says how much went missing, so it cannot be read
+	// as a whole line that happened to end there.
+	marker := fmt.Sprintf(" [truncated: %d bytes dropped from this line]", overrun)
+	kept, said := strings.CutSuffix(got[0], marker)
+	if !said {
+		t.Fatalf("cut line does not say what it dropped, it ends %q", tailOf(got[0]))
+	}
+	if want := "[codex:live] " + strings.Repeat("x", maxCodexLogLine); kept != want {
+		t.Fatalf("kept %d bytes of the overlong line, want %d", len(kept), len(want))
+	}
+	if got[1] != "[codex:live] codex: still here" {
+		t.Fatalf("line after the overlong one = %q", got[1])
+	}
+}
+
+// tailOf keeps a failure message readable when the value under it is a line
+// the size of the bound.
+func tailOf(line string) string { return line[max(0, len(line)-120):] }
+
+// Where the bound falls is the whole of what an overlong line costs, so the
+// bytes either side of it are worth pinning: a line ending exactly on the bound
+// is a whole line and says nothing about truncation, and one byte more is a cut
+// line that names the byte it lost. An app-server that dies mid-line reaches
+// the same place by a different route — the remainder is never terminated — and
+// running out of line is not a read failure to report.
+func TestScanCodexEndpointCutsOnlyWhatIsPastTheBound(t *testing.T) {
+	const cutOne = " [truncated: 1 bytes dropped from this line]"
+	tests := []struct {
+		name       string
+		content    int
+		unfinished bool
+		want       string
+	}{
+		{name: "one byte short of the bound", content: maxCodexLogLine - 1},
+		{name: "exactly the bound", content: maxCodexLogLine},
+		{name: "one byte past the bound", content: maxCodexLogLine + 1, want: cutOne},
+		{name: "past the bound and never finished", content: maxCodexLogLine + 1, unfinished: true, want: cutOne},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := strings.Repeat("x", tt.content)
+			if !tt.unfinished {
+				line += "\n"
+			}
+			var log syncBuffer
+			scanCodexEndpoint(strings.NewReader(line), make(chan string, 1), launching(), &log, "[codex:live]")
+
+			want := "[codex:live] " + strings.Repeat("x", min(tt.content, maxCodexLogLine)) + tt.want + "\n"
+			if log.String() != want {
+				t.Fatalf("logged %d bytes ending %q, want %d bytes ending %q",
+					len(log.String()), tailOf(log.String()), len(want), tailOf(want))
+			}
+		})
+	}
+}
+
+// A read that failed and a pipe that reached its end look identical in a log
+// that simply stops, and the second is the app-server going quiet while the
+// first is the launch losing the ability to hear it. The launch says which
+// happened (kata e1nh). Past jqbb the surviving case is a genuine read failure:
+// an overlong line is no longer one of them.
+func TestScanCodexEndpointSaysWhyItStoppedReading(t *testing.T) {
+	endpoints := make(chan string, 4)
+	var log syncBuffer
+	failure := errors.New("input/output error")
+	scanCodexEndpoint(
+		io.MultiReader(strings.NewReader("codex: still here\n"), failingReader{failure}),
+		endpoints, launching(), &log, "[codex:live]")
+
+	// Exact: everything read before the failure still reaches the log, and the
+	// failure is named once.
+	want := "[codex:live] codex: still here\n[codex:live] app-server output ended early: " + failure.Error() + "\n"
 	if log.String() != want {
 		t.Fatalf("log = %q, want %q", log.String(), want)
 	}
 }
+
+// failingReader is a pipe that has stopped being readable, the way a launch's
+// end of one behaves once something has gone wrong with it.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 // The launch wires both of the app-server's pipes to the hub log, since the
 // endpoint announcement itself arrives on either one and so does the failure
