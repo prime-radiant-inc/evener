@@ -4,9 +4,9 @@
 // the aggregated view these calls' targets correlate into).
 //
 // Ground truth (agent/session_tools_jobs.go, verified directly): the
-// currently registered "read one job" tool is named job_status, NOT
-// job_read_output (that Def exists but is never wired into
-// registerJobToolsWithRegistrar). ExecuteCall marshals State directly into
+// registered "read one job" tool is named job_status, NOT job_read_output,
+// which has no definition and no registration, and reaches this renderer
+// only from stored transcripts. ExecuteCall marshals State directly into
 // item.raw with no wrapper key. job_status returns whole-object JSON in
 // item.output, so its existing output parser is the useful representation;
 // raw duplicates that state. job_list returns human-formatted text in output

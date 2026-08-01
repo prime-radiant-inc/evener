@@ -87,7 +87,7 @@ const FLAT_LEVEL: Record<string, ConsequenceLevel> = {
   find_session_transcripts: "read-only",
   job_list: "read-only",
   job_status: "read-only",
-  job_read_output: "read-only", // definitions.go's own words: "reads never consume or acknowledge anything"
+  job_read_output: "read-only", // a retired reader: it returned a job's output and never consumed or acknowledged it
   // job_watch's create/clear operations DO register or remove a standing
   // trigger, but that trigger is this session's own notification plumbing -
   // it never touches a file, job, or branch, so unlike manage_worktree/

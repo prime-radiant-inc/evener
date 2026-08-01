@@ -35,7 +35,7 @@ func containsString(values []string, want string) bool {
 }
 
 // TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's wait
-// knob is a `background` boolean; the other four wait-capable tools use
+// knob is a `background` boolean; the other three wait-capable tools use
 // `max_wait_ms`. No tool carries both, and `block`/`block_timeout_ms` are gone
 // everywhere. (Supersedes the all-five max_wait_ms unification for shell — see
 // docs/superpowers/specs/2026-06-13-max-wait-unification.md.)
@@ -46,7 +46,6 @@ func TestSchemaWaitKnobs(t *testing.T) {
 	}{
 		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
 		{"delegate_send", func() map[string]any { return DefDelegateSend().Parameters }},
-		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
 

@@ -426,11 +426,11 @@ func renderJobTranscript(rec *jobstore.JobRecord, output string, total, dropped 
 }
 
 // renderDelegateJobTranscript renders a delegate job's report. The
-// structured_result is appended as JSON with its validity flag, matching the
-// shape job_read_output's footer uses, so the two evidence surfaces read the
-// same. It deliberately omits the delegate's transcript_ref: session refs are
-// not access-controlled, so naming one here would hand a granted reader the
-// whole child conversation (spec non-goal 4).
+// structured_result is appended as JSON with its validity flag, so one read
+// carries both the report text and the machine-readable result together with
+// whether it parsed. It deliberately omits the delegate's transcript_ref:
+// session refs are not access-controlled, so naming one here would hand a
+// granted reader the whole child conversation (spec non-goal 4).
 func renderDelegateJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Delegate Job %s\n\n", rec.JobID)

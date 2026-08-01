@@ -117,7 +117,7 @@ test("job_status ranks read-only - inspects one job for orientation, no state ch
   expect(consequenceLevel(call("job_status"))).toBe("read-only");
 });
 
-test("job_read_output ranks read-only - definitions.go's own words: 'reads never consume or acknowledge anything'", () => {
+test("job_read_output ranks read-only - a retired reader that never consumed or acknowledged output", () => {
   expect(consequenceLevel(call("job_read_output"))).toBe("read-only");
 });
 

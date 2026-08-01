@@ -217,6 +217,46 @@ func TestLiveDocsNeverTeachARetiredJobTool(t *testing.T) {
 	}
 }
 
+// modelFacingToolDefinitions declares every tool schema a provider can be
+// handed. A constructor here is model-facing contract text: its Description is
+// sent verbatim to the model as the tool's instructions.
+const modelFacingToolDefinitions = "agent/internal/tool/definitions.go"
+
+// TestToolDefinitionsNeverDeclareARetiredJobTool is the source half of the rule
+// the doc and card sweeps enforce. A retired tool's constructor is invisible to
+// every other guard: the registry check only sees what is registered, and the
+// definition-enumerating tests keep the constructor compiling, so a full
+// pre-removal contract can sit in the schema file describing paging knobs and
+// wait semantics no model can reach.
+func TestToolDefinitionsNeverDeclareARetiredJobTool(t *testing.T) {
+	raw, err := os.ReadFile(modelFacingToolDefinitions)
+	if err != nil {
+		t.Fatalf("reading %s: %v", modelFacingToolDefinitions, err)
+	}
+	var findings []string
+	for i, line := range strings.Split(string(raw), "\n") {
+		for name := range scenarioRetiredJobTools {
+			if !strings.Contains(line, name) {
+				continue
+			}
+			findings = append(findings, modelFacingToolDefinitions+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
+		}
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		var guidance []string
+		for name, replacement := range scenarioRetiredJobTools {
+			guidance = append(guidance, name+" — "+replacement)
+		}
+		sort.Strings(guidance)
+		t.Fatalf("%s must not name a job tool that is no longer registered — the "+
+			"constructor and its Description read as live contract to anyone "+
+			"editing the tool surface (kata 0fyd):\n%s\n\nRetired tools and what "+
+			"to describe instead:\n%s",
+			modelFacingToolDefinitions, strings.Join(findings, "\n"), strings.Join(guidance, "\n"))
+	}
+}
+
 // retiredToolLiveDocFiles walks the evergreen files under retiredToolDocRoots.
 // It skips two kinds of file for the same reason the mention allowlist skips a
 // "Verified live" results block: a dated record says what was true on its date,
