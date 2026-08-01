@@ -43,6 +43,7 @@ reported as supervision loss, never as command failure (line 1001).
    PID=$(for f in $HOME/.serf/run/*.json; do python3 -c "
    import json,sys; d=json.load(open('$f'))
    print(d['pid']) if d.get('session_id')=='$SID' else None" 2>/dev/null; done | head -1)
+   PRODUCER=$(pgrep -P "$PID")   # this run's producer, while the daemon is still its parent
    kill -9 "$PID"
    ```
 
@@ -130,8 +131,11 @@ reported as supervision loss, never as command failure (line 1001).
 ## Cleanup
 
 - The orphaned producer self-terminates on its next write after the
-  daemon dies (SIGPIPE); verify with `pgrep -f TICK_` and `pkill` if
-  anything lingers.
+  daemon dies (SIGPIPE). If one lingers, `kill $PRODUCER 2>/dev/null` —
+  the pid step 3 recorded while the daemon was still its parent. Never a
+  `TICK_` pattern kill: every run of this card emits that same marker, so
+  the pattern matches a concurrent agent's producer as readily as your own
+  (kata `pcev`).
 - Shut down the resumed session (`POST /s/$SID/shutdown`); remove the
   stale rendezvous files of the killed PIDs under `$HOME/.serf/run/` if
   present; `rm -rf "$tmpdir"` and `rm -f "$run/jobs-before-restart.jsonl"`.

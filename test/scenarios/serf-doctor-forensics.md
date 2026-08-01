@@ -140,7 +140,7 @@ card proves it against a built binary on a real state-dir shape.
   {"kind":"watch_cleared","seq":18,"watch_id":"w3","watch":{"generation":"g3","end_reason":"auto_removed_terminal"}}
   {"kind":"watch_registered","seq":19,"watch_id":"w4","watch":{"generation":"g4","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job_033z4xc9zDkqiOXWEe1X4o","send_to":"caller","condition":"output_match:ready","config_hash":"h4"}}
   EOF
-   /tmp/serf-doctor jobs "$SID" --state-dir "$SCR"
+   "$run/serf-doctor" jobs "$SID" --state-dir "$SCR"
    ```
    ASSERT two blocks, in the log's append order: `job
    job_033z4xc9zDkqiOXWEe1X4m  (completed)` with `exit=0  output_bytes=4096`,
@@ -154,8 +154,8 @@ card proves it against a built binary on a real state-dir shape.
 
 6. **`watches` joins each row with its target job's state.**
    ```bash
-   /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --watch w3
-   /tmp/serf-doctor watches "$SID" --state-dir "$SCR" --watch w4
+   "$run/serf-doctor" watches "$SID" --state-dir "$SCR" --watch w3
+   "$run/serf-doctor" watches "$SID" --state-dir "$SCR" --watch w4
    ```
    ASSERT `w3` — the watch on the job the run timeout stopped — renders
    `(ended: auto_removed_terminal)`, `deliveries: 0 distinct`, and the joined
