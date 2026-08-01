@@ -313,6 +313,45 @@ func TestSessionJobSummariesLiveSession(t *testing.T) {
 	}
 }
 
+// A RUNNING job's row must report the live record, not the fold of the
+// durable log alone. Background is live-only (jobstore.JobRecord.Background
+// is json:"-": no event carries it), so a listing built from the store alone
+// answers false for every job however it was launched; OutputBytes is only
+// stamped durably at terminal, so a running job's folded row counts 0 bytes
+// however much it has written. Both are what jobManager.listWithError's
+// live overlay exists to correct, and this payload owes the same answer.
+func TestSessionJobSummariesOverlaysLiveRunningJob(t *testing.T) {
+	jm := newTestJM(t)
+	s := &Session{id: jm.sessionID, jobManager: jm}
+	run, err := jm.newDelayedShell(shellArgs{Command: "tail -f server.log", Background: true})
+	if err != nil {
+		t.Fatalf("newDelayedShell: %v", err)
+	}
+	if err := jm.commitDelayedShell(run); err != nil {
+		t.Fatalf("commitDelayedShell: %v", err)
+	}
+	appendManualJobOutput(jm, run.rec.JobID, "listening\n")
+
+	got, err := s.JobSummaries()
+	if err != nil {
+		t.Fatalf("JobSummaries: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("job list: got %d jobs, want 1: %+v", len(got), got)
+	}
+	sum := got[0]
+	if sum.JobID != run.rec.JobID || sum.Status != "running" {
+		t.Fatalf("identity/status: %+v", sum)
+	}
+	if !sum.Background {
+		t.Errorf("a live background shell must list background:true, got %+v", sum)
+	}
+	if sum.OutputBytes != int64(len("listening\n")) {
+		t.Errorf("a running job lists its live output count: got %d, want %d (%+v)",
+			sum.OutputBytes, len("listening\n"), sum)
+	}
+}
+
 // A jobstore that cannot be read is not a session that ran no jobs. The
 // past-session reader for this same payload (LoadSessionJobList) has always
 // surfaced the read error; the live one used to answer the empty list a

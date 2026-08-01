@@ -39,6 +39,37 @@ imports `agent/schema` in several files. A wrapper type introduced to
 what the hub's `ReplayTurn` mirror turned out to be, and deleting it
 recovered thirteen turn-level fields it had been quietly dropping.
 
+## `go mod tidy` cannot maintain these `go.mod` files
+
+Tidy ignores `go.work`. Run it in a module here and it tries to download
+`primeradiant.com/serf/llm v0.0.0` and friends from the proxy instead of
+using the sibling directories, so it cannot be the thing that keeps a
+`go.mod` honest. Every require in them is hand-written.
+
+That matters because each module is at go 1.17+, where **module graph
+pruning makes a module's `go.mod` the complete statement of what its
+packages need**: a consumer that requires only `primeradiant.com/serf/agent`
+sees agent's requires and nothing deeper. A missing indirect is a build
+failure for that consumer even though the workspace is green — the
+workspace fills the gap from a sibling's `go.mod`, and a consumer has no
+sibling. Pin each indirect at the version the workspace itself selects
+(`go list -m <module>` from the root), so a consumer resolves the code
+serf tested.
+
+To check a module, build a consumer OUTSIDE the workspace: a scratch
+module whose `go.mod` requires just that module, plus a directory
+`replace` for every serf module, and no other requires. Then
+
+```
+GOWORK=off GOFLAGS= GOPROXY=off go list -deps primeradiant.com/serf/agent/...
+```
+
+`-mod=readonly` is the default and is the point: it reports "no required
+module provides package X" instead of silently repairing the gap.
+`GOFLAGS=` keeps an ambient `-mod=mod` from turning the probe into a
+rewrite. Never point a `-mod=mod` probe at the tree — it edits `go.mod`
+and `go.sum` in place; check `git status` after any probe.
+
 ## The compiler is the completeness net. Grep is not.
 
 When removing or renaming a symbol, delete it and rebuild. Do not trust
