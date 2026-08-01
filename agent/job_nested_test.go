@@ -53,14 +53,14 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 
 func TestDelegateRelinkSynchronizesNestedShellParent(t *testing.T) {
 	t.Parallel()
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	childJM, err := newJobManager(t.TempDir(), testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new child jobManager: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = childJM.store.Close()
 	})
-	child := &Session{id: "CHILD", jobManager: childJM}
+	child := &Session{id: testOwnerSessionID, jobManager: childJM}
 
 	iterations := 8
 	if raceDetectorEnabled || !testing.Short() {
@@ -2043,7 +2043,7 @@ func TestRecoverForwardedExhaustedTerminalAfterParentRestart(t *testing.T) {
 	}
 
 	startedAt := time.Unix(4400, 0).UTC()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2147,7 +2147,7 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	})
 
 	startedAt := time.Unix(4500, 0).UTC()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2241,7 +2241,7 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 
 	startedAt := time.Unix(4700, 0).UTC()
 	endedAt := startedAt.Add(time.Second)
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2305,7 +2305,7 @@ func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testi
 
 	startedAt := time.Unix(4800, 0).UTC()
 	endedAt := startedAt.Add(time.Second)
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	if err := childJM.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2367,7 +2367,7 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 	})
 
 	startedAt := time.Unix(4600, 0).UTC()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -2446,7 +2446,7 @@ func TestDeferredRestoreSideEffectsSkipsStartForwardFailedNestedTerminal(t *test
 	})
 
 	startedAt := time.Unix(4700, 0).UTC()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	if err := childSeed.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -3110,7 +3110,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 // against its true owner.
 func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string) *jobstore.JobRecord {
 	t.Helper()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	now := time.Now().UTC()
 	ref := encodeRef("", "WORKERCHILD")
 	desc := &jobstore.DelegateRestoreDescriptor{
@@ -3164,7 +3164,7 @@ func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string
 func seedRunningDelegate(t *testing.T, jm *jobManager, transcriptRef string, signals *atomic.Int32) string {
 	t.Helper()
 	startedAt := jm.now()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(testOwnerSessionID)
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -3350,7 +3350,7 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 
 	// Root-owned coordinator delegate (its child session is COORD), seeded
 	// already TERMINAL (completed). The coordinator's jobs forward up through it.
-	coordDelegateJobID := jobstore.NewJobID()
+	coordDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
 	appendDelegateRecordForChild(t, rootJM, coordDelegateJobID, "COORD", jobstore.StatusCompleted, "exit_zero")
 	coordJM.parentJobID = coordDelegateJobID
 
@@ -3413,12 +3413,12 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 
 	// Root-owned coordinator delegate J1 (its child session is COORD), seeded
 	// already TERMINAL (stopped) — the OLD, superseded delegate record.
-	staleDelegateJobID := jobstore.NewJobID()
+	staleDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
 	appendDelegateRecordForChild(t, rootJM, staleDelegateJobID, "COORD", jobstore.StatusStopped, "runtime_lost")
 
 	// The child was RESUMED: relinked to a NEWER delegate job J2. Its current
 	// parent is J2, NOT the stale J1 record being stopped.
-	currentDelegateJobID := jobstore.NewJobID()
+	currentDelegateJobID := jobstore.NewJobID(testOwnerSessionID)
 	if currentDelegateJobID == staleDelegateJobID {
 		t.Fatalf("J2 == J1 = %q, want distinct delegate job ids", currentDelegateJobID)
 	}

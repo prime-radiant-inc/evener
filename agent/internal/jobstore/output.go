@@ -66,45 +66,101 @@ func OpenOutputNoSync(path string, capBytes int64) (*OutputStore, error) {
 	return openOutputFsNoSync(afero.NewOsFs(), path, capBytes)
 }
 
+// CreateOutput exclusively creates a new output store and refuses any existing
+// log or metadata artifact belonging to the path.
+func CreateOutput(path string, capBytes int64) (*OutputStore, error) {
+	return createOutputFsWithSync(afero.NewOsFs(), path, capBytes, false)
+}
+
+// CreateOutputNoSync is CreateOutput with durability fsyncs disabled for tests.
+func CreateOutputNoSync(path string, capBytes int64) (*OutputStore, error) {
+	return createOutputFsWithSync(afero.NewOsFs(), path, capBytes, true)
+}
+
 // openOutputFs opens the output store on the given filesystem. OpenOutput
 // delegates here with afero.NewOsFs(), which forwards every call straight to the
 // os package, so production behavior is byte-identical to direct os calls. Tests
 // and fuzzers inject an in-memory or fault-injecting filesystem to drive the
 // prune/persist error arms off real disk.
 func openOutputFs(fs afero.Fs, path string, capBytes int64) (*OutputStore, error) {
-	return openOutputFsWithSync(fs, path, capBytes, false)
+	return openOutputFsWithSync(fs, path, capBytes, false, os.O_RDWR|os.O_CREATE|os.O_APPEND)
 }
 
 func openOutputFsNoSync(fs afero.Fs, path string, capBytes int64) (*OutputStore, error) {
-	return openOutputFsWithSync(fs, path, capBytes, true)
+	return openOutputFsWithSync(fs, path, capBytes, true, os.O_RDWR|os.O_CREATE|os.O_APPEND)
 }
 
-func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync bool) (*OutputStore, error) {
-	f, err := fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+func createOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync bool) (*OutputStore, error) {
+	if err := refuseExistingOutputSidecars(fs, path); err != nil {
+		return nil, err
+	}
+	return openOutputFsWithSync(fs, path, capBytes, disableSync, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND)
+}
+
+func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync bool, flags int) (*OutputStore, error) {
+	f, err := fs.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output %s: %w", path, err)
 	}
+	created := flags&os.O_EXCL != 0
+	if created {
+		if err := refuseExistingOutputSidecars(fs, path); err != nil {
+			_ = f.Close()
+			_ = fs.Remove(path)
+			return nil, err
+		}
+	}
+	cleanupCreated := func() {
+		_ = f.Close()
+		if created {
+			for _, artifact := range outputArtifactPaths(path) {
+				_ = fs.Remove(artifact)
+			}
+		}
+	}
 	info, err := f.Stat()
 	if err != nil {
-		_ = f.Close()
+		cleanupCreated()
 		return nil, err
 	}
 	metaPath := outputMetaPath(path)
 	total, retainedStart, err := readOutputMetaForFile(fs, metaPath, path, info.Size())
 	if err != nil {
-		_ = f.Close()
+		cleanupCreated()
 		return nil, err
 	}
 	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart, disableSync: disableSync}
 	if err := o.pruneLocked(); err != nil {
-		_ = f.Close()
+		cleanupCreated()
 		return nil, err
 	}
 	if err := o.persistMetaLocked(); err != nil {
-		_ = f.Close()
+		cleanupCreated()
 		return nil, err
 	}
 	return o, nil
+}
+
+func refuseExistingOutputSidecars(fs afero.Fs, path string) error {
+	for _, artifact := range outputArtifactPaths(path)[1:] {
+		if _, err := fs.Stat(artifact); err == nil {
+			return fmt.Errorf("jobstore: create output %s: %w", path, os.ErrExist)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("jobstore: stat output artifact %s: %w", artifact, err)
+		}
+	}
+	return nil
+}
+
+func outputArtifactPaths(path string) []string {
+	metaPath := outputMetaPath(path)
+	return []string{
+		path,
+		metaPath,
+		metaPath + ".tmp",
+		outputPendingMetaPath(metaPath),
+		outputPendingMetaPath(metaPath) + ".tmp",
+	}
 }
 
 // Append writes b to the log and returns the number of bytes written.
@@ -342,14 +398,7 @@ func OutputFileStats(path string) (total int64, retainedStart int64, err error) 
 // RemoveOutputArtifacts removes an output file and the metadata files that
 // describe it. Missing artifacts are ignored.
 func RemoveOutputArtifacts(path string) error {
-	metaPath := outputMetaPath(path)
-	for _, p := range []string{
-		path,
-		metaPath,
-		metaPath + ".tmp",
-		outputPendingMetaPath(metaPath),
-		outputPendingMetaPath(metaPath) + ".tmp",
-	} {
+	for _, p := range outputArtifactPaths(path) {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("jobstore: remove output artifact: %w", err)
 		}

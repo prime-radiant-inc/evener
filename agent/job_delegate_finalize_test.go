@@ -23,7 +23,7 @@ func TestFinalizeDelegatePersistsSchemaValidationFailedReason(t *testing.T) {
 	child.mu.Unlock()
 	sub := completedDelegateSubagent(child, "validation failed")
 	parent.subagents.track(sub)
-	run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "validate structured result", sub, jobstore.NewJobID(), map[string]any{
+	run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "validate structured result", sub, jobstore.NewJobID(parent.ID()), map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"count": map[string]any{"type": "number"},

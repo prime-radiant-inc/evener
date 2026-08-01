@@ -117,7 +117,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			if err := s.jobManager.appendEvent(jobstore.Event{
 				Kind:             jobstore.EventJobStarted,
 				TS:               now,
-				JobID:            jobstore.NewJobID(),
+				JobID:            jobstore.NewJobID(s.ID()),
 				DelegateID:       jobstore.NewDelegateID(),
 				Type:             jobstore.JobDelegate,
 				OwnerSessionID:   s.ID(),

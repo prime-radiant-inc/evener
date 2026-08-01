@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -412,13 +411,11 @@ func clampShellBlockTimeoutMS(timeoutMS int) int {
 
 func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	startedAt := jm.now()
-	jobID := jobstore.NewJobID()
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	parentJobID := jm.currentParentJobID()
-	output, err := jm.openOutput(outputPath, maxJobOutputRetentionBytes)
+	jobID, outputPath, output, err := jm.createJobOutput()
 	if err != nil {
 		return nil, err
 	}
+	parentJobID := jm.currentParentJobID()
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,

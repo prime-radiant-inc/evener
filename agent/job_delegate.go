@@ -334,7 +334,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 
 	delegateID := jobstore.NewDelegateID()
 	delegateGeneration := jobstore.NewDelegateGeneration()
-	jobID := jobstore.NewJobID()
+	jobID, err := jm.newJobID(jm.sessionID)
+	if err != nil {
+		return delegateStartFailed(err)
+	}
 	ctx = context.WithValue(ctx, ctxParentDelegateID, delegateID)
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
 
@@ -1918,18 +1921,30 @@ func (s *Session) bridgeDelegateFinalizationWithDone(jobID, childID string, sub 
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
 	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
-	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), nil, false, nil, nil, link, nil)
+	jobID, err := jm.newJobID(jm.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, nil, false, nil, nil, link, nil)
 }
 
 //nolint:unused // retained for watch restore paths that create a fresh delegate without a preexisting delegate id.
 func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, error) {
 	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
-	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link, nil)
+	jobID, err := jm.newJobID(jm.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil, restore, link, nil)
 }
 
 func (s *Session) attachDelegateJobFromWatchWithDelegate(jm *jobManager, childID, task string, sub *subagent, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool, watchProvenance *provenance.Causal) (*runningJob, error) {
 	link := delegateJobLink{delegateID: delegateID, generation: jobstore.NewDelegateGeneration()}
-	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link, watchProvenance)
+	jobID, err := jm.newJobID(jm.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil, restore, link, watchProvenance)
 }
 
 func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool) (*runningJob, error) {
@@ -1980,8 +1995,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jm.openOutput(outputPath, maxJobOutputRetentionBytes)
+	outputPath, output, err := jm.createJobOutputForID(jobID)
 	if err != nil {
 		treeSlot.release()
 		return nil, err
@@ -2036,7 +2050,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 	if jm.closing {
 		jm.mu.Unlock()
 		_ = output.Close()
-		_ = os.Remove(outputPath)
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		treeSlot.release()
 		return nil, errJobManagerClosing
 	}
@@ -2089,7 +2103,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 	if err := jm.appendJobEvents(startEvents); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
-		_ = os.Remove(outputPath)
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		treeSlot.release()
 		return nil, err
 	}

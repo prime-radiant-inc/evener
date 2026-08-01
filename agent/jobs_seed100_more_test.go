@@ -30,7 +30,7 @@ func seed100JobsMore(t *testing.T) {
 			}
 			return nil
 		}
-		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, restore, restore)
+		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, jobstore.CreateOutputNoSync, restore, restore)
 	}
 
 	jm := newTestJM(t)

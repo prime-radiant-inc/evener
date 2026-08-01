@@ -10,13 +10,14 @@ import (
 )
 
 func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
 	tests := []struct {
 		name     string
 		newID    func() string
 		validate func(string) error
 		prefix   string
 	}{
-		{"job", NewJobID, identifier.ValidateJobID, "job_"},
+		{"job", func() string { return NewJobID(owner) }, identifier.ValidateJobID, "job_"},
 		{"delegate", NewDelegateID, identifier.ValidateDelegateID, "dlg_"},
 		{"delegate generation", NewDelegateGeneration, identifier.ValidateDelegateGeneration, "dg_"},
 		{"watch", NewWatchID, identifier.ValidateWatchID, "watch_"},
@@ -26,8 +27,8 @@ func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.newID()
-			if len(got) != len(tt.prefix)+22 || !strings.HasPrefix(got, tt.prefix) {
-				t.Fatalf("ID = %q, want %s plus 22 characters", got, tt.prefix)
+			if !strings.HasPrefix(got, tt.prefix) {
+				t.Fatalf("ID = %q, want prefix %s", got, tt.prefix)
 			}
 			if err := tt.validate(got); err != nil {
 				t.Fatalf("validate %q: %v", got, err)
@@ -185,16 +186,16 @@ func TestStatusIsTerminal_Exhausted(t *testing.T) {
 }
 
 func TestNewJobIDFormatAndUniqueness(t *testing.T) {
-	a := NewJobID()
-	b := NewJobID()
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	a := NewJobID(owner)
+	b := NewJobID(owner)
 	if !strings.HasPrefix(a, "job_") {
 		t.Errorf("job id %q should start with job_", a)
 	}
 	if a == b {
 		t.Errorf("two job ids should differ: %q == %q", a, b)
 	}
-	// "job_" + 22-character compact identifier payload.
-	if len(a) != len("job_")+22 {
+	if len(a) != len("job_")+22+1+12 {
 		t.Errorf("job id %q has unexpected length %d", a, len(a))
 	}
 }

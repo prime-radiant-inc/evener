@@ -47,7 +47,7 @@ func TestW3Dlg_AttachTreeAtCapacity(t *testing.T) {
 
 	run, err := parent.attachDelegateJobWithRestoreAndDelegate(
 		parent.jobManager, child.ID(), "task", w3dlg_attachSub(child),
-		jobstore.NewJobID(), nil, false, nil, nil, w3dlg_attachLink(), nil)
+		jobstore.NewJobID(parent.ID()), nil, false, nil, nil, w3dlg_attachLink(), nil)
 	if run != nil {
 		t.Fatalf("run = %v, want nil at capacity", run)
 	}
@@ -64,7 +64,7 @@ func TestW3Dlg_AttachOpenOutputFails(t *testing.T) {
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	jm := parent.jobManager
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(parent.ID())
 	// Pre-create a directory where the job log file would go so OpenOutput fails.
 	logDir := filepath.Join(jm.dir, "jobs", jobID+".log")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -109,7 +109,7 @@ func TestW3Dlg_AttachJobManagerClosing(t *testing.T) {
 
 	run, err := parent.attachDelegateJobWithRestoreAndDelegate(
 		jm, child.ID(), "task", w3dlg_attachSub(child),
-		jobstore.NewJobID(), nil, false, nil, nil, w3dlg_attachLink(), nil)
+		jobstore.NewJobID(parent.ID()), nil, false, nil, nil, w3dlg_attachLink(), nil)
 	if run != nil {
 		t.Fatalf("run = %v, want nil while closing", run)
 	}

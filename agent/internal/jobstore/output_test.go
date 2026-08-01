@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/spf13/afero"
 )
 
 func appendOutput(t *testing.T, o *OutputStore, s string) {
@@ -37,6 +39,88 @@ func appendFile(path string, s string) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+func TestCreateOutputRefusesEveryExistingArtifactWithoutChangingIt(t *testing.T) {
+	const contents = "keep me\n"
+	for _, artifact := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "log", path: func(path string) string { return path }},
+		{name: "final metadata", path: outputMetaPath},
+		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
+		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
+		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			occupied := artifact.path(path)
+			if err := os.WriteFile(occupied, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := CreateOutput(path, 1024)
+			if output != nil {
+				_ = output.Close()
+				t.Fatal("CreateOutput returned an output store for an occupied path")
+			}
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("CreateOutput error = %v, want fs.ErrExist", err)
+			}
+			got, readErr := os.ReadFile(occupied)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != contents {
+				t.Fatalf("occupied artifact changed: %q", got)
+			}
+		})
+	}
+}
+
+type createOutputSidecarRaceFS struct {
+	afero.Fs
+	outputPath  string
+	sidecarPath string
+}
+
+func (fs *createOutputSidecarRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err == nil && name == fs.outputPath && flag&os.O_EXCL != 0 {
+		if writeErr := afero.WriteFile(fs.Fs, fs.sidecarPath, []byte("keep me\n"), 0o644); writeErr != nil {
+			_ = f.Close()
+			return nil, writeErr
+		}
+	}
+	return f, err
+}
+
+func TestCreateOutputSecondCheckPreservesRacingSidecar(t *testing.T) {
+	const contents = "keep me\n"
+	mem := afero.NewMemMapFs()
+	path := "/job.log"
+	sidecar := outputMetaPath(path) + ".tmp"
+	fs := &createOutputSidecarRaceFS{Fs: mem, outputPath: path, sidecarPath: sidecar}
+
+	output, err := createOutputFsWithSync(fs, path, 1024, true)
+	if output != nil {
+		_ = output.Close()
+		t.Fatal("createOutputFsWithSync returned an output store after a sidecar race")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("createOutputFsWithSync error = %v, want fs.ErrExist", err)
+	}
+	if _, err := mem.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reserved output log remains: %v", err)
+	}
+	got, err := afero.ReadFile(mem, sidecar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != contents {
+		t.Fatalf("racing sidecar changed: %q", got)
+	}
 }
 
 func TestOutputAppendAndTail(t *testing.T) {

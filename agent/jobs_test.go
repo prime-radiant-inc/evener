@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+const testOwnerSessionID = "02wMz5TxvEMoJEDTDGOTil"
+
 // Shrink the graceful-shutdown grace so tests whose jobs never naturally
 // terminate don't each pay the full production window at teardown. The value is
 // build-tagged (see closegrace_{race,norace}_test.go): a generous window under
@@ -27,12 +30,263 @@ func init() {
 
 func newTestJM(t *testing.T) *jobManager {
 	t.Helper()
-	jm, err := newJobManagerNoSync(t.TempDir(), "S1", func(jobNotification) {})
+	jm, err := newJobManagerNoSync(t.TempDir(), testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
 	freezeClock(jm)
 	return jm
+}
+
+func TestCreateJobOutputRetriesWithoutOverwritingCollision(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	jm, err := newJobManagerNoSync(t.TempDir(), owner, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jm.store.Close() })
+	first := "job_" + owner + "_000000000000"
+	second := "job_" + owner + "_000000000001"
+	occupied := filepath.Join(jm.dir, "jobs", first+".log")
+	if err := os.WriteFile(occupied, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{first, second}
+	jm.newJobID = func(string) (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	}
+	jobID, _, output, err := jm.createJobOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	if jobID != second {
+		t.Fatalf("job id = %q, want %q", jobID, second)
+	}
+	if got, _ := os.ReadFile(occupied); string(got) != "keep me\n" {
+		t.Fatalf("occupied artifact changed: %q", got)
+	}
+}
+
+func TestCreateJobOutputRetriesDurableRecordCollision(t *testing.T) {
+	jm := newTestJM(t)
+	first := "job_" + jm.sessionID + "_000000000000"
+	second := "job_" + jm.sessionID + "_000000000001"
+	startedAt := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:           jobstore.EventJobStarted,
+		TS:             startedAt,
+		JobID:          first,
+		Type:           jobstore.JobShell,
+		OwnerSessionID: jm.sessionID,
+		StartedAt:      &startedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{first, second}
+	jm.newJobID = func(string) (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	}
+
+	jobID, _, output, err := jm.createJobOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	if jobID != second {
+		t.Fatalf("job id = %q, want %q", jobID, second)
+	}
+}
+
+func requireNoOutputArtifacts(t *testing.T, path string) {
+	t.Helper()
+	metaPath := path + ".meta.json"
+	for _, artifact := range []string{
+		path,
+		metaPath,
+		metaPath + ".tmp",
+		metaPath + ".pending",
+		metaPath + ".pending.tmp",
+	} {
+		if _, err := os.Stat(artifact); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("output artifact %q remains: %v", artifact, err)
+		}
+	}
+}
+
+func requireOutputEvidence(t *testing.T, path string) {
+	t.Helper()
+	for _, artifact := range []string{path, path + ".meta.json"} {
+		if _, err := os.Stat(artifact); err != nil {
+			t.Fatalf("output evidence %q missing: %v", artifact, err)
+		}
+	}
+}
+
+func TestPreDurableJobStartFailureRemovesOutputArtifacts(t *testing.T) {
+	t.Run("shell manager closing", func(t *testing.T) {
+		jm := newTestJM(t)
+		jobID := jobstore.NewJobID(jm.sessionID)
+		jm.newJobID = func(string) (string, error) { return jobID, nil }
+		jm.mu.Lock()
+		jm.closing = true
+		jm.mu.Unlock()
+
+		if _, err := jm.createShell(createShellOpts{Command: "true"}); !errors.Is(err, errJobManagerClosing) {
+			t.Fatalf("createShell error = %v, want errJobManagerClosing", err)
+		}
+		requireNoOutputArtifacts(t, filepath.Join(jm.dir, "jobs", jobID+".log"))
+	})
+
+	t.Run("shell start append", func(t *testing.T) {
+		jm := newTestJM(t)
+		jobID := jobstore.NewJobID(jm.sessionID)
+		jm.newJobID = func(string) (string, error) { return jobID, nil }
+		jm.appendEvent = func(jobstore.Event) error { return errors.New("append failed") }
+
+		if _, err := jm.createShell(createShellOpts{Command: "true"}); err == nil {
+			t.Fatal("createShell succeeded, want append failure")
+		}
+		requireNoOutputArtifacts(t, filepath.Join(jm.dir, "jobs", jobID+".log"))
+	})
+
+	t.Run("delayed shell manager closing", func(t *testing.T) {
+		jm := newTestJM(t)
+		jobID := jobstore.NewJobID(jm.sessionID)
+		jm.newJobID = func(string) (string, error) { return jobID, nil }
+		jm.mu.Lock()
+		jm.closing = true
+		jm.mu.Unlock()
+
+		if _, err := jm.newDelayedShell(shellArgs{Command: "true"}); !errors.Is(err, errJobManagerClosing) {
+			t.Fatalf("newDelayedShell error = %v, want errJobManagerClosing", err)
+		}
+		requireNoOutputArtifacts(t, filepath.Join(jm.dir, "jobs", jobID+".log"))
+	})
+
+	t.Run("delayed shell start append", func(t *testing.T) {
+		jm := newTestJM(t)
+		jobID := jobstore.NewJobID(jm.sessionID)
+		jm.newJobID = func(string) (string, error) { return jobID, nil }
+		res := runShell(context.Background(), jm, s1cov_instantExitExecutor{}, shellArgs{Command: "true"})
+		if res.settle == nil {
+			t.Fatalf("runShell result = %+v, want settle callback", res)
+		}
+		jm.appendEvent = func(jobstore.Event) error { return errors.New("append failed") }
+		if got := res.settle(true); got != "" {
+			t.Fatalf("settle after append failure = %q, want empty", got)
+		}
+		requireNoOutputArtifacts(t, filepath.Join(jm.dir, "jobs", jobID+".log"))
+	})
+
+	for _, test := range []struct {
+		name  string
+		setup func(*jobManager)
+		want  error
+	}{
+		{
+			name: "delegate manager closing",
+			setup: func(jm *jobManager) {
+				jm.mu.Lock()
+				jm.closing = true
+				jm.mu.Unlock()
+			},
+			want: errJobManagerClosing,
+		},
+		{
+			name: "delegate start append",
+			setup: func(jm *jobManager) {
+				jm.appendEvents = func([]jobstore.Event) error { return errors.New("append failed") }
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent := newTestSession(t)
+			child := newTestSession(t)
+			jobID := jobstore.NewJobID(parent.ID())
+			test.setup(parent.jobManager)
+
+			run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child), jobID, nil, false)
+			if run != nil || err == nil {
+				t.Fatalf("attachDelegateJobWithID = (%v, %v), want nil/error", run, err)
+			}
+			if test.want != nil && !errors.Is(err, test.want) {
+				t.Fatalf("attach error = %v, want %v", err, test.want)
+			}
+			requireNoOutputArtifacts(t, filepath.Join(parent.jobManager.dir, "jobs", jobID+".log"))
+		})
+	}
+}
+
+func TestShellDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := jobstore.NewJobID(jm.sessionID)
+	jm.newJobID = func(string) (string, error) { return jobID, nil }
+	jm.forward = func(jobstore.Event) error { return errors.New("forward failed") }
+	jm.parentJobID = "job_parent"
+
+	if _, err := jm.createShell(createShellOpts{Command: "true"}); err == nil {
+		t.Fatal("createShell succeeded, want forward failure")
+	}
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	requireOutputEvidence(t, outputPath)
+	t.Cleanup(func() { _ = jobstore.RemoveOutputArtifacts(outputPath) })
+}
+
+func TestDelegateDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	jobID := jobstore.NewJobID(parent.ID())
+	parent.jobManager.forward = func(jobstore.Event) error { return errors.New("forward failed") }
+	parent.jobManager.parentJobID = "job_parent"
+
+	run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child), jobID, nil, false)
+	if run != nil || err == nil {
+		t.Fatalf("attachDelegateJobWithID = (%v, %v), want nil/error", run, err)
+	}
+	outputPath := filepath.Join(parent.jobManager.dir, "jobs", jobID+".log")
+	requireOutputEvidence(t, outputPath)
+	t.Cleanup(func() { _ = jobstore.RemoveOutputArtifacts(outputPath) })
+}
+
+func TestCreateJobOutputForIDValidatesOwnerBeforeFilesystemAccess(t *testing.T) {
+	jm := newTestJM(t)
+	filesystemAccessed := false
+	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
+		filesystemAccessed = true
+		return nil, errors.New("unexpected filesystem access")
+	}
+	for _, jobID := range []string{
+		"job_invalid",
+		"job_02wMz5Txv1C3Hut0M8GCeB_000000000000",
+	} {
+		if _, _, err := jm.createJobOutputForID(jobID); err == nil {
+			t.Fatalf("createJobOutputForID(%q) succeeded", jobID)
+		}
+	}
+	if filesystemAccessed {
+		t.Fatal("createJobOutputForID reached filesystem before rejecting the owner")
+	}
+}
+
+func TestDelegateJobGenerationErrorPropagatesBeforeOutputCreation(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	want := errors.New("random source failed")
+	parent.jobManager.newJobID = func(string) (string, error) { return "", want }
+	parent.jobManager.createOutput = func(string, int64) (*jobstore.OutputStore, error) {
+		t.Fatal("delegate job generation failure reached output creation")
+		return nil, nil
+	}
+
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "task", w3dlg_attachSub(child))
+	if run != nil || !errors.Is(err, want) {
+		t.Fatalf("attachDelegateJob = (%v, %v), want nil/%v", run, err, want)
+	}
 }
 
 type feedKey struct {

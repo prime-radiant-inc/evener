@@ -17,7 +17,6 @@ func validateDomainID(value, prefix string) error {
 
 func NewSessionID() (string, error)          { return newDomainID("") }
 func NewInstallationID() (string, error)     { return newDomainID("") }
-func NewJobID() (string, error)              { return newDomainID("job_") }
 func NewDelegateID() (string, error)         { return newDomainID("dlg_") }
 func NewDelegateGeneration() (string, error) { return newDomainID("dg_") }
 func NewWatchID() (string, error)            { return newDomainID("watch_") }
@@ -31,7 +30,6 @@ func NewTerminalGeneration() (string, error) { return newDomainID("") }
 
 func ValidateSessionID(value string) error          { return validateDomainID(value, "") }
 func ValidateInstallationID(value string) error     { return validateDomainID(value, "") }
-func ValidateJobID(value string) error              { return validateDomainID(value, "job_") }
 func ValidateDelegateID(value string) error         { return validateDomainID(value, "dlg_") }
 func ValidateDelegateGeneration(value string) error { return validateDomainID(value, "dg_") }
 func ValidateWatchID(value string) error            { return validateDomainID(value, "watch_") }
@@ -53,7 +51,6 @@ func mustDomainID(newID func() (string, error)) string {
 
 func MustNewSessionID() string          { return mustDomainID(NewSessionID) }
 func MustNewInstallationID() string     { return mustDomainID(NewInstallationID) }
-func MustNewJobID() string              { return mustDomainID(NewJobID) }
 func MustNewDelegateID() string         { return mustDomainID(NewDelegateID) }
 func MustNewDelegateGeneration() string { return mustDomainID(NewDelegateGeneration) }
 func MustNewWatchID() string            { return mustDomainID(NewWatchID) }

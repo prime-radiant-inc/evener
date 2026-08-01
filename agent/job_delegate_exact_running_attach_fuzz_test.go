@@ -91,7 +91,7 @@ func jdraRunningFixture(t *testing.T, installRun bool) (*Session, *Session, *sub
 	sub.running = true
 	sub.status = SubagentRunning
 	p.subagents.track(sub)
-	rec := &jobstore.JobRecord{JobID: jobstore.NewJobID(), DelegateID: jobstore.NewDelegateID(), Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, TranscriptRef: encodeRef("", c.ID())}
+	rec := &jobstore.JobRecord{JobID: jobstore.NewJobID(p.ID()), DelegateID: jobstore.NewDelegateID(), Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, TranscriptRef: encodeRef("", c.ID())}
 	if installRun {
 		p.jobManager.mu.Lock()
 		p.jobManager.running[rec.JobID] = &runningJob{rec: rec, done: make(chan struct{})}
@@ -105,7 +105,7 @@ func jdraSeedAmbiguous(t *testing.T) {
 	s := newTestSession(t)
 	now, ref := s.jobManager.now(), encodeRef("", "same")
 	for i := 0; i < 2; i++ {
-		if err := s.jobManager.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: jobstore.NewJobID(), Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, StartedAt: &now, TranscriptRef: ref}); err != nil {
+		if err := s.jobManager.appendEvent(jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: jobstore.NewJobID(s.ID()), Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, StartedAt: &now, TranscriptRef: ref}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,7 +164,7 @@ func jdraAttachClosing(t *testing.T) {
 	p.jobManager.mu.Lock()
 	p.jobManager.closing = true
 	p.jobManager.mu.Unlock()
-	if run, err := p.attachDelegateJobWithID(p.jobManager, c.ID(), "closing", w3dlg_attachSub(c), jobstore.NewJobID(), nil, false); run != nil || !errors.Is(err, errJobManagerClosing) {
+	if run, err := p.attachDelegateJobWithID(p.jobManager, c.ID(), "closing", w3dlg_attachSub(c), jobstore.NewJobID(p.ID()), nil, false); run != nil || !errors.Is(err, errJobManagerClosing) {
 		t.Fatalf("closing run=%v err=%v", run, err)
 	}
 }
@@ -184,7 +184,7 @@ func jdraAttachWrapper(t *testing.T, prepared bool) {
 	t.Helper()
 	p, c := newTestSession(t), newTestSession(t)
 	sub := w3dlg_attachSub(c)
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(p.ID())
 	var run *runningJob
 	var err error
 	if prepared {

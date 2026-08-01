@@ -14,7 +14,6 @@ func TestGeneratedIDDomains(t *testing.T) {
 	}{
 		{"session", "", NewSessionID, ValidateSessionID},
 		{"installation", "", NewInstallationID, ValidateInstallationID},
-		{"job", "job_", NewJobID, ValidateJobID},
 		{"delegate", "dlg_", NewDelegateID, ValidateDelegateID},
 		{"delegate-generation", "dg_", NewDelegateGeneration, ValidateDelegateGeneration},
 		{"watch", "watch_", NewWatchID, ValidateWatchID},
@@ -51,7 +50,6 @@ func TestGeneratedIDValidatorsRejectWrongDomain(t *testing.T) {
 	}{
 		{"session", "", NewSessionID, ValidateSessionID},
 		{"installation", "", NewInstallationID, ValidateInstallationID},
-		{"job", "job_", NewJobID, ValidateJobID},
 		{"delegate", "dlg_", NewDelegateID, ValidateDelegateID},
 		{"delegate-generation", "dg_", NewDelegateGeneration, ValidateDelegateGeneration},
 		{"watch", "watch_", NewWatchID, ValidateWatchID},
@@ -85,7 +83,7 @@ func TestGeneratedIDValidatorsRejectWrongDomain(t *testing.T) {
 }
 
 func TestGeneratedIDValidatorsRejectCrossDomain(t *testing.T) {
-	job, err := NewJobID()
+	job, err := NewJobID("02wMz5TxvEMoJEDTDGOTil")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +102,7 @@ func TestGeneratedIDValidatorsRejectCrossDomain(t *testing.T) {
 
 func TestMustGeneratedIDDomains(t *testing.T) {
 	for name, newID := range map[string]func() string{
-		"session": MustNewSessionID, "installation": MustNewInstallationID, "job": MustNewJobID,
+		"session": MustNewSessionID, "installation": MustNewInstallationID,
 		"delegate": MustNewDelegateID, "delegate generation": MustNewDelegateGeneration,
 		"watch": MustNewWatchID, "watch generation": MustNewWatchGeneration,
 		"watch delivery": MustNewWatchDeliveryID, "agent call": MustNewAgentCallID,

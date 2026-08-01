@@ -33,7 +33,7 @@ func (r *wtRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA 
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(r.s.ID())
 	now := time.Now().UTC()
 	ref := encodeRef("", "child-"+delegateID)
 	desc := &jobstore.DelegateRestoreDescriptor{

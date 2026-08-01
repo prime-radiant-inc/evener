@@ -310,7 +310,7 @@ func TestSubagentTurnReportsAwaitingModelAndToolRunning(t *testing.T) {
 	clk := newMutableClock(time.Unix(7200, 0).UTC())
 	parent.jobManager.now = clk.now
 
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(parent.ID())
 	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
 	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)

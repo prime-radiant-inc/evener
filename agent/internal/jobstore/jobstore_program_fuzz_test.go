@@ -403,7 +403,7 @@ func jcpWatchAndUtilityPaths(t *testing.T, r *jcpReader) {
 		prefix string
 		value  string
 	}{
-		{"job_", NewJobID()},
+		{"job_", NewJobID("02wMz5TxvEMoJEDTDGOTil")},
 		{"dlg_", NewDelegateID()},
 		{"dg_", NewDelegateGeneration()},
 		{"watch_", NewWatchID()},

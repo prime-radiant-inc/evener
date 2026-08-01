@@ -302,8 +302,8 @@ type JobRecord struct {
 	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
 }
 
-func NewJobID() string {
-	return identifier.MustNewJobID()
+func NewJobID(ownerSessionID string) string {
+	return identifier.MustNewJobID(ownerSessionID)
 }
 
 func NewDelegateID() string {

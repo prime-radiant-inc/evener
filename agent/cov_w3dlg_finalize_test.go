@@ -50,7 +50,7 @@ func TestW3Dlg_FinalizeOnceStructuredCaptureFailed(t *testing.T) {
 		result: "final prose",
 		done:   make(chan struct{}),
 	}
-	run, err := parent.attachDelegateJobWithID(parent.jobManager, childID, "task", sub, jobstore.NewJobID(), schema, false)
+	run, err := parent.attachDelegateJobWithID(parent.jobManager, childID, "task", sub, jobstore.NewJobID(parent.ID()), schema, false)
 	if err != nil {
 		t.Fatalf("attachDelegateJobWithID: %v", err)
 	}

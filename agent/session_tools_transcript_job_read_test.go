@@ -151,12 +151,12 @@ func TestReadTranscriptChainFallsThroughWalkToGrantThenError(t *testing.T) {
 // missing command line would be a lie in the model's evidence stream.
 func TestReadTranscriptRendersDelegateJobAsDelegate(t *testing.T) {
 	t.Parallel()
-	jm := newWalkJobManager(t, "OWNER")
+	jm := newWalkJobManager(t, testOwnerSessionID)
 	t.Cleanup(func() { _ = jm.store.Close() })
 	const report = "reviewed 3 files; no blocking findings\n"
 	jobID := seedTerminalDelegateJob(t, jm, report, map[string]any{"verdict": "clean"})
 
-	envelope, err := readJobTranscriptFor(t, &Session{id: "OWNER", jobManager: jm, subagents: newSubagentManager(nil, 0)}, jobID)
+	envelope, err := readJobTranscriptFor(t, &Session{id: testOwnerSessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}, jobID)
 	if err != nil {
 		t.Fatalf("delegate read_transcript: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestJobStatusOnGrantedJobPointsAtReadTranscript(t *testing.T) {
 // without a provider or a live child runtime.
 func seedTerminalDelegateJob(t *testing.T, jm *jobManager, report string, structured map[string]any) string {
 	t.Helper()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(jm.sessionID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	output, err := jobstore.OpenOutputNoSync(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {

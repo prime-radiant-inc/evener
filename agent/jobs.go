@@ -24,9 +24,13 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/runetrim"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/identifier"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
+var errJobIDAllocationExhausted = errors.New("job ID allocation exhausted")
+
+const jobIDAllocationAttempts = 8
 
 // errJobNotFoundSentinel is wrapped by every errJobNotFound value so
 // programmatic callers (the jobs-panel readers) can detect a not-found
@@ -101,6 +105,8 @@ type jobManager struct {
 	appendEvent            func(jobstore.Event) error
 	appendEvents           func([]jobstore.Event) error
 	openOutput             outputStoreOpener
+	createOutput           outputStoreOpener
+	newJobID               func(string) (string, error)
 	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
 	appendTeardown         func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
 	appendRegistry         func([]jobstore.Event) error
@@ -461,19 +467,19 @@ type jobStoreOpener func(string) (*jobstore.Store, error)
 type outputStoreOpener func(string, int64) (*jobstore.OutputStore, error)
 
 func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open, jobstore.OpenOutput)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.Open, jobstore.OpenOutput, jobstore.CreateOutput)
 }
 
 func newJobManagerNoSync(stateDir, sessionID string, enqueue func(jobNotification)) (*jobManager, error) {
-	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync, jobstore.OpenOutputNoSync)
+	return newJobManagerWithStoreOpen(stateDir, sessionID, enqueue, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, jobstore.CreateOutputNoSync)
 }
 
-func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput outputStoreOpener) (*jobManager, error) {
-	return newJobManagerWithRestore(stateDir, sessionID, enqueue, openStore, openOutput,
+func newJobManagerWithStoreOpen(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput, createOutput outputStoreOpener) (*jobManager, error) {
+	return newJobManagerWithRestore(stateDir, sessionID, enqueue, openStore, openOutput, createOutput,
 		(*jobManager).restoreWatchSendPending, (*jobManager).clearUnrestoredActiveWatches)
 }
 
-func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput outputStoreOpener, restorePending, clearWatches func(*jobManager) error) (*jobManager, error) {
+func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotification), openStore jobStoreOpener, openOutput, createOutput outputStoreOpener, restorePending, clearWatches func(*jobManager) error) (*jobManager, error) {
 	dir := jobsDir(stateDir, sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -499,6 +505,8 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
 		openOutput:            openOutput,
+		createOutput:          createOutput,
+		newJobID:              identifier.NewJobID,
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
@@ -519,6 +527,55 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		return nil, err
 	}
 	return jm, nil
+}
+
+func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, error) {
+	for range jobIDAllocationAttempts {
+		jobID, err := jm.newJobID(jm.sessionID)
+		if err != nil {
+			return "", "", nil, err
+		}
+		records, err := jm.store.Load()
+		if err != nil {
+			return "", "", nil, err
+		}
+		if _, exists := records[jobID]; exists {
+			continue
+		}
+		outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+		output, err := jm.createOutput(outputPath, maxJobOutputRetentionBytes)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", "", nil, err
+		}
+		return jobID, outputPath, output, nil
+	}
+	return "", "", nil, errJobIDAllocationExhausted
+}
+
+func (jm *jobManager) createJobOutputForID(jobID string) (string, *jobstore.OutputStore, error) {
+	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
+	if err != nil {
+		return "", nil, err
+	}
+	if ownerSessionID != jm.sessionID {
+		return "", nil, fmt.Errorf("job ID owner %q does not match session %q", ownerSessionID, jm.sessionID)
+	}
+	records, err := jm.store.Load()
+	if err != nil {
+		return "", nil, err
+	}
+	if _, exists := records[jobID]; exists {
+		return "", nil, fmt.Errorf("job ID %q already exists: %w", jobID, os.ErrExist)
+	}
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	output, err := jm.createOutput(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		return "", nil, err
+	}
+	return outputPath, output, nil
 }
 
 func (jm *jobManager) close() error {
@@ -679,8 +736,10 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
 	startedAt := jm.now()
-	jobID := jobstore.NewJobID()
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	jobID, outputPath, output, err := jm.createJobOutput()
+	if err != nil {
+		return nil, err
+	}
 	parentJobID := jm.currentParentJobID()
 	jobProvenance := jm.currentCausalProvenance()
 	rec := &jobstore.JobRecord{
@@ -698,10 +757,6 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OutputPath:       outputPath,
 		Provenance:       provenance.Clone(jobProvenance),
 	}
-	output, err := jm.openOutput(outputPath, maxJobOutputRetentionBytes)
-	if err != nil {
-		return nil, err
-	}
 	run := &runningJob{
 		rec:            rec,
 		output:         output,
@@ -714,7 +769,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	if jm.closing {
 		jm.mu.Unlock()
 		_ = output.Close()
-		_ = os.Remove(outputPath)
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, errJobManagerClosing
 	}
 	started := jobstore.Event{
@@ -734,6 +789,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, err
 	}
 	if err := jm.forwardLocked(started); err != nil {
