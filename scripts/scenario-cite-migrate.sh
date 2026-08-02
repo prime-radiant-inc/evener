@@ -60,11 +60,38 @@ for arg in "$@"; do
 done
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-if ! work="$(mktemp -d -t serf-cite-migrate.XXXXXX)"; then
+temp_root="${TMPDIR:-/tmp}"
+if ! temp_root="$(cd "$temp_root" 2>/dev/null && pwd -P)"; then
+	echo "scenario-cite-migrate.sh: unable to resolve temporary directory root" >&2
+	exit 1
+fi
+if ! work="$(mktemp -d "$temp_root/serf-cite-migrate.XXXXXX")"; then
 	echo "scenario-cite-migrate.sh: unable to create temporary directory" >&2
 	exit 1
 fi
-trap 'rm -f "$work"/*.go; rmdir "$work"' EXIT
+if [ -z "$work" ] || [ ! -d "$work" ] || ! work="$(cd "$work" 2>/dev/null && pwd -P)"; then
+	echo "scenario-cite-migrate.sh: mktemp returned no usable directory" >&2
+	exit 1
+fi
+case "$work" in
+"$temp_root"/serf-cite-migrate.*) ;;
+*)
+	echo "scenario-cite-migrate.sh: mktemp returned a directory outside its temporary root" >&2
+	exit 1
+	;;
+esac
+
+cleanup() {
+	[ -n "${work:-}" ] || return 0
+	[ -d "$work" ] || return 0
+	case "$work" in
+	"$temp_root"/serf-cite-migrate.*) ;;
+	*) return 0 ;;
+	esac
+	rm -f "$work"/*.go
+	rmdir "$work"
+}
+trap cleanup EXIT
 
 prog="$work/migrate.go"
 cat >"$prog" <<'GO'
