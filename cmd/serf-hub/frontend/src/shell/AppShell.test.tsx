@@ -1147,6 +1147,18 @@ test("mobile: the shell content frame drops its padding so the workspace is full
   expect(contentRule![1]).toContain("gap: 0");
 });
 
+test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
+  const shellRule = css.match(/\.shell \{([^}]*)\}/);
+  expect(shellRule).not.toBeNull();
+
+  const fallback = shellRule![1]!.indexOf("height: 100vh");
+  const dynamic = shellRule![1]!.indexOf("height: 100dvh");
+  expect(fallback).toBeGreaterThanOrEqual(0);
+  expect(dynamic).toBeGreaterThan(fallback);
+});
+
 // --- kata bbsv: a mobile deep link outlives the wait for the tree --------
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts's own header

@@ -1,7 +1,9 @@
 .shell {
   display: flex;
   flex-direction: column;
+  /* 100vh is the fallback; 100dvh follows the mobile browser chrome. */
   height: 100vh;
+  height: 100dvh;
   background: var(--surface-0);
 }
 
