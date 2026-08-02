@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { diagnoseRealizedViewport } from "./viewport.mjs";
 
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -140,16 +141,16 @@ async function withPage(port, fileUrl, expr, forcePseudoStates, viewport) {
 
     await send("Page.enable");
 
-	    if (viewport) {
-	      await send("Emulation.setDeviceMetricsOverride", {
-	        width: viewport.width,
-	        height: viewport.height,
-	        deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
-	        mobile: viewport.mobile ?? false,
-	        screenWidth: viewport.width,
-	        screenHeight: viewport.height,
-	      });
-	    }
+    if (viewport) {
+      await send("Emulation.setDeviceMetricsOverride", {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
+        mobile: viewport.mobile ?? false,
+        screenWidth: viewport.width,
+        screenHeight: viewport.height,
+      });
+    }
 
     const navDone = new Promise((resolve) => {
       const handler = (ev) => {
@@ -176,6 +177,23 @@ async function withPage(port, fileUrl, expr, forcePseudoStates, viewport) {
     }
     if (!origin.startsWith("file://")) {
       throw new Error(`refusing: expected a file:// origin, got ${origin}`);
+    }
+
+    if (viewport) {
+      const realizedRes = await send("Runtime.evaluate", {
+        expression: `JSON.stringify({
+          windowInnerWidth: window.innerWidth,
+          windowInnerHeight: window.innerHeight,
+          documentClientWidth: document.documentElement.clientWidth,
+          documentClientHeight: document.documentElement.clientHeight,
+          visualViewportWidth: window.visualViewport ? window.visualViewport.width : null,
+          visualViewportHeight: window.visualViewport ? window.visualViewport.height : null
+        })`,
+        returnByValue: true,
+      });
+      const realized = JSON.parse(realizedRes.result.result.value);
+      const viewportDiagnostic = diagnoseRealizedViewport(viewport, realized);
+      if (viewportDiagnostic) throw new Error(viewportDiagnostic);
     }
 
     if (forcePseudoStates.length > 0) {

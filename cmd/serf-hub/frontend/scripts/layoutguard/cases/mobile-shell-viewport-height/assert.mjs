@@ -41,6 +41,7 @@ export default function assert(measurements) {
 
     for (const [name, box] of [
       ["shell", measurement.shell],
+      ["top bar", measurement.topBar],
       ["pane", measurement.pane],
       ["pane body", measurement.paneBody?.rect ?? null],
       ["footer", measurement.footer],

@@ -45,6 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { evalInFreshChrome } from "./cdp.mjs";
 import { resolveComposes } from "./resolve-composes.mjs";
+import { normalizeViewportSpec } from "./viewport.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CASES_DIR = path.join(__dirname, "cases");
@@ -53,6 +54,7 @@ const SRC_DIR = path.join(__dirname, "..", "..", "src");
 async function runCase(caseDir) {
   const name = path.basename(caseDir);
   const caseJson = JSON.parse(readFileSync(path.join(caseDir, "case.json"), "utf8"));
+  const viewport = normalizeViewportSpec(caseJson.viewport ?? null, name);
   const { default: assert } = await import(path.join(caseDir, "assert.mjs"));
 
   const workDir = mkdtempSync(path.join(tmpdir(), `layoutguard-${name}-`));
@@ -75,7 +77,7 @@ async function runCase(caseDir) {
       `file://${harnessPath}`,
       "window.measure()",
       caseJson.forcePseudoStates ?? [],
-      caseJson.viewport ?? null,
+      viewport,
     );
     const result = assert(measurement);
     return { name, description: caseJson.description, measurement, ...result };
