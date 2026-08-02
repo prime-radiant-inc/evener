@@ -541,7 +541,7 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 	lines = append(lines,
 		"  alt+enter        New line in input",
 		"  ctrl+j           New line in input (alternative)",
-		"  esc              Browse transcript / select turns",
+		"  esc              Browse transcript / select messages",
 		"  pgup             Browse transcript and page up",
 		"  esc / i          Return from browse to compose",
 	)
