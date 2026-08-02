@@ -87,16 +87,22 @@ export function DockRegion() {
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
   const [Host, setHost] = useState<DockHostChunk>(dockHost);
+  const retry = () => setHost(() => lazyDockHost());
 
   return (
-    <DockChunkBoundary onRetry={() => setHost(() => lazyDockHost())}>
-      {/* fallback={null}: DockHost's own boot sequence (handleReady) already
-          produces the very first meaningful paint (a routed pane, or welcome)
-          synchronously once its chunk resolves - there is no useful
-          intermediate state to show while just the dockview chunk itself is
-          still loading, only this app's existing blank-shell moment stretched
-          slightly longer. */}
-      <Suspense fallback={null}>
+    <DockChunkBoundary onRetry={retry}>
+      <Suspense
+        fallback={
+          <EmptyState
+            title="Loading the workspace…"
+            action={
+              <Button size="sm" onClick={retry}>
+                Retry
+              </Button>
+            }
+          />
+        }
+      >
         <Host />
       </Suspense>
     </DockChunkBoundary>

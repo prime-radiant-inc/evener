@@ -110,18 +110,33 @@ test("Retry fetches the chunk again and mounts the host on the second attempt", 
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
 
-test("a chunk still in flight holds the Suspense fallback, and is not treated as a failure", () => {
+test("a chunk still in flight leaves a visible workspace placeholder beside the rail", () => {
   // Never settles: a request the hub never answers, with no wall clock in it.
   vi.mocked(loadDockHost).mockReturnValue(new Promise(() => {}));
 
-  const { container } = render(<DockRegion />);
+  render(<AppShell client={new FakeClient("ready")} />);
 
-  // fallback={null}, so the region renders nothing at all while its chunk is
-  // in flight. That silent blank is the stall half of kata 1s47 and is a
-  // deliberately open design question (deadline? progress? retry?) - what is
-  // pinned here is only containment: an unanswered request is not a failure,
-  // must not trip the failure state, and must not fetch again on its own.
-  expect(container.innerHTML).toBe("");
+  const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
+  const workspaceRow = loading?.parentElement;
+  expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+  // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
+});
+
+test("Retry abandons a chunk still in flight and mounts a fresh attempt", async () => {
+  vi.mocked(loadDockHost)
+    .mockReturnValueOnce(new Promise(() => {}))
+    .mockResolvedValueOnce({ DockHost: StubDockHost });
+  const user = userEvent.setup();
+
+  render(<DockRegion />);
+  expect(screen.getByText("Loading the workspace…")).toBeTruthy();
+  expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(2);
 });
