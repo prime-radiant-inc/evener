@@ -120,6 +120,34 @@ test("an expanded row drops the clamp entirely - the full call wraps, no head/ta
   expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
 });
 
+// The clamped head/tail spans are FLEX ITEMS (.clamped is display:flex), and
+// CSS white-space processing drops whitespace at a flex item's line edges - so
+// a 60% cut that lands next to a space renders "Ran go test./...": the space
+// fell at the tail's start (or the head's end) and the browser removed it.
+// The split must walk the cut off any whitespace so every space stays
+// INTERIOR to one span. jsdom runs no layout, so this asserts the boundary
+// condition directly.
+test("the collapsed head/tail split never leaves whitespace at a span boundary - the browser drops it", () => {
+  const summary = "Ran go test ./..."; // the 60% cut lands exactly on the space
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Running the tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const head = screen.getByTestId("tool-row-summary-head").textContent ?? "";
+  const tail = screen.getByTestId("tool-row-summary-tail").textContent ?? "";
+  // Nothing lost, nothing added...
+  expect(head + tail).toBe(summary);
+  // ...and no character the browser would collapse sits at a span edge.
+  expect(head).not.toMatch(/\s$/);
+  expect(tail).not.toMatch(/^\s/);
+});
+
 test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the clamp lives off .demoted", () => {
   const css = rowCss();
   expect(css).toMatch(/\.clampedHead\s*\{[^}]*text-overflow:\s*ellipsis/);

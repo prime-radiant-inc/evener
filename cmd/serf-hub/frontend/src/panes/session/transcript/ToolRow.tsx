@@ -121,10 +121,21 @@ export function statedPurposeOf(item: { description?: string }): string | undefi
  * full, because a command's ENDING is the part end-truncation kept hiding
  * (the file being written, the branch being merged). Split on code POINTS
  * (Array.from), never UTF-16 units - a cut through a surrogate pair would
- * render a replacement glyph. */
+ * render a replacement glyph.
+ *
+ * The cut must never sit ADJACENT to whitespace: the head and tail render as
+ * separate flex items (.clamped is display:flex), and CSS white-space
+ * processing removes whitespace at a flex item's line edges. A raw 60% cut
+ * through "Ran go test ./..." leaves the space at the tail's start, and the
+ * browser renders "Ran go test./...". Walk the cut left across any boundary
+ * whitespace so every space stays INTERIOR to one span and survives. */
 function middleSplit(text: string): [head: string, tail: string] {
   const chars = Array.from(text);
-  const cut = Math.ceil(chars.length * 0.6);
+  let cut = Math.ceil(chars.length * 0.6);
+  const isSpace = (i: number) => /\s/.test(chars[i] ?? "");
+  while (cut > 0 && cut < chars.length && (isSpace(cut - 1) || isSpace(cut))) {
+    cut--;
+  }
   return [chars.slice(0, cut).join(""), chars.slice(cut).join("")];
 }
 
