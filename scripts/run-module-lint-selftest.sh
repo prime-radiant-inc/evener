@@ -41,10 +41,11 @@ assert_count() {
 # no gitleaks executable, so the optional and strict missing-tool policies are
 # deterministic and never depend on the host installation.
 gitleaks_case="$work/gitleaks-case"
-mkdir -p "$gitleaks_case/bin"
+mkdir -p "$gitleaks_case/bin" "$gitleaks_case/host-bin"
 cat >"$gitleaks_case/bin/git" <<'FAKE_GIT_ROOT'
-#!/usr/bin/env bash
+#!/bin/bash
 set -u
+printf '%s\n' "$*" >>"$FAKE_GIT_CALLS"
 if [ "${1:-}" = "rev-parse" ]; then
 	printf '%s\n' "$FAKE_REPO_ROOT"
 	exit 0
@@ -52,17 +53,26 @@ fi
 exit 64
 FAKE_GIT_ROOT
 chmod +x "$gitleaks_case/bin/git"
+cat >"$gitleaks_case/host-bin/gitleaks" <<'HOST_GITLEAKS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$FAKE_HOST_GITLEAKS_CALLS"
+HOST_GITLEAKS
+chmod +x "$gitleaks_case/host-bin/gitleaks"
+: >"$gitleaks_case/git.calls"
+: >"$gitleaks_case/host-gitleaks.calls"
 
 out="$gitleaks_case/optional.out"
 if env -u SERF_GITLEAKS_REQUIRED FAKE_REPO_ROOT="$script_dir/.." \
-	PATH="$gitleaks_case/bin:/usr/bin:/bin" bash "$script_dir/gitleaks-scan.sh" repo \
+	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_HOST_GITLEAKS_CALLS="$gitleaks_case/host-gitleaks.calls" \
+	PATH="$gitleaks_case/bin" /bin/bash "$script_dir/gitleaks-scan.sh" repo \
 	>"$out" 2>&1; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "missing gitleaks remains optional by default"
 assert_eq "$(cat "$out")" "warning: gitleaks not installed; skipping repo secret scan (install: https://github.com/gitleaks/gitleaks)" "optional gitleaks warning remains visible"
 
 out="$gitleaks_case/required.out"
 if SERF_GITLEAKS_REQUIRED=1 FAKE_REPO_ROOT="$script_dir/.." \
-	PATH="$gitleaks_case/bin:/usr/bin:/bin" bash "$script_dir/gitleaks-scan.sh" repo \
+	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_HOST_GITLEAKS_CALLS="$gitleaks_case/host-gitleaks.calls" \
+	PATH="$gitleaks_case/bin" /bin/bash "$script_dir/gitleaks-scan.sh" repo \
 	>"$out" 2>&1; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then
 	ok "required missing gitleaks exits nonzero"
@@ -70,6 +80,8 @@ else
 	bad "required missing gitleaks exits nonzero"
 fi
 assert_has "$out" "error: gitleaks is required but not installed; cannot run repo secret scan" "required mode names the missing tool"
+assert_eq "$(wc -l <"$gitleaks_case/git.calls" | tr -d ' ')" "2" "missing-tool cases still exercise the fake git boundary"
+assert_eq "$(wc -l <"$gitleaks_case/host-gitleaks.calls" 2>/dev/null | tr -d ' ')" "0" "missing-tool cases cannot discover a host gitleaks"
 
 # The runner's contract to humans and log scrapers is one summary line per run,
 # whatever the run does, so every scenario that reaches the runner pins it.
