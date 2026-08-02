@@ -29,7 +29,7 @@ func stateDirForJM(jm *jobManager) string {
 // watch (concrete worker target, delivered to a concrete observer delegate)
 // stamps the observer's session id onto the watched WORKER's SessionMeta, so the
 // hub can later auto-open the observer beside the worker.
-func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
+func TestConcreteDelegateWatchStampsObservedByAtInstall(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	stateDir := stateDirForJM(jm)
@@ -68,7 +68,7 @@ func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
 // TestMintWatchCreateReadGrantObservedByDedups proves repeated watch installs of
 // the same (worker, observer) pair do not duplicate the observer id on the
 // worker's meta — the set is append-only and deduped, mirroring the grant log.
-func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
+func TestConcreteDelegateWatchObservedByDedups(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	stateDir := stateDirForJM(jm)
@@ -171,7 +171,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	}
 }
 
-func TestJobFinishedWatchFrameNamesTranscriptRead(t *testing.T) {
+func TestStructuredJobNotificationAlwaysNamesTranscriptRead(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -196,6 +196,21 @@ func TestJobFinishedWatchFrameNamesTranscriptRead(t *testing.T) {
 		}
 		if !strings.Contains(state.Frame, `read_transcript(transcript_ref="job:job_finished")`) {
 			t.Fatalf("watch frame = %q, want job transcript read", state.Frame)
+		}
+	}
+}
+
+func TestNonJobWatchFrameNamesNoTranscriptRead(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	if _, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"communicate"}, Send: &watchSendArgs{To: "dlg_obs", Message: "observe"}}); err != nil {
+		t.Fatal(err)
+	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "done"})
+	for _, state := range loadWatchSendRecord(t, jm).Pending {
+		if strings.Contains(state.Frame, "read_transcript(") || state.NotificationJobID != "" {
+			t.Fatalf("non-job frame = %+v", state)
 		}
 	}
 }

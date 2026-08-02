@@ -21,7 +21,7 @@ func TestSaveSessionMetaPreservesObservedBy(t *testing.T) {
 	}
 }
 
-func TestAppendSessionObservedByDeduplicates(t *testing.T) {
+func TestAppendSessionObservedByPreservesFieldsAndDeduplicates(t *testing.T) {
 	dir := t.TempDir()
 	const worker = "02wMz5TxvEMoJEDTDGOTil"
 	if err := SaveSessionMeta(dir, SessionMeta{ID: worker}); err != nil {
