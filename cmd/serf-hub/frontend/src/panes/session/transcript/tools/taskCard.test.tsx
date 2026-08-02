@@ -51,8 +51,20 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByTestId("task-card")).toBeTruthy();
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows).toHaveLength(2);
+  expect(within(rows[0]!).getByTestId("task-check")).toBeTruthy();
   expect(screen.getByText("build the thing")).toBeTruthy();
   expect(screen.getByText("check the thing")).toBeTruthy();
+});
+
+test("the collapsed append summary includes the added marker and task title as plain text", () => {
+  renderItem(
+    taskItem(
+      { action: "append", tasks: [{ type: "implement", description: "build the thing" }] },
+      "Added 1 task(s). Progress: 0/1 tasks complete.",
+    ),
+  );
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.textContent).toContain("+ build the thing");
 });
 
 test("the progress head reads '<done> of <total> done' from the tool output footer", () => {
@@ -98,7 +110,9 @@ test("a cancelled task renders a flagged touched-cancelled row carrying its note
   );
   const row = screen.getByTestId("task-card-row");
   expect(row.getAttribute("data-touch")).toBe("cancelled");
-  expect(screen.getByText("superseded by #5")).toBeTruthy();
+  const note = screen.getByText("Notes: superseded by #5");
+  expect(note.className).toContain("note");
+  expect(note.parentElement?.className).toContain("rowText");
 });
 
 test("an in_progress update renders a started row", () => {
@@ -252,12 +266,16 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
       { raw: sevenTaskState() },
     ),
   );
+  const summary = screen.getByTestId("tool-row-summary");
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows).toHaveLength(2);
   expect(rows[0]!.getAttribute("data-touch")).toBe("done");
   expect(rows[0]!.textContent).toContain("fourth");
   expect(rows[1]!.getAttribute("data-touch")).toBe("started");
   expect(rows[1]!.textContent).toContain("fifth");
+  expect(summary.textContent).toContain("✓ fourth");
+  expect(summary.textContent).toContain("→ fifth");
+  expect(summary.textContent!.indexOf("fourth")).toBeLessThan(summary.textContent!.indexOf("fifth"));
 });
 
 test("an update row shows the task's description from authoritative state instead of a bare id", () => {
@@ -402,7 +420,7 @@ test("a note renders under its row's label, inside the row's text column", () =>
       "Updated 4→cancelled. Progress: 1/2 tasks complete.",
     ),
   );
-  const note = screen.getByText("superseded by #5");
+  const note = screen.getByText("Notes: superseded by #5");
   expect(note.className).toContain("note");
   // The note sits in the same column wrapper as the label, not on the
   // glyph's baseline row.

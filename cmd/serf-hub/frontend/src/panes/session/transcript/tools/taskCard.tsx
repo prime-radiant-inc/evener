@@ -182,6 +182,18 @@ const TOUCH_WORD: Record<TaskTouch, string> = {
   started: "started",
 };
 
+const TOUCH_SUMMARY_MARK: Record<TaskTouch, string> = {
+  added: "+",
+  done: "✓",
+  cancelled: "×",
+  started: "→",
+};
+
+function taskMutationSummary(item: ItemModel): string {
+  const rows = mutationRows(item) ?? [];
+  return rows.map((row) => `${TOUCH_SUMMARY_MARK[row.touch]} ${row.label}`).join(" · ");
+}
+
 function TaskCardRow({ row }: { row: TouchedRow }) {
   const struck = row.touch === "done" || row.touch === "cancelled";
   return (
@@ -190,7 +202,7 @@ function TaskCardRow({ row }: { row: TouchedRow }) {
       <div className={CLASS.rowText}>
         <span className={CLASS.srOnly}>{TOUCH_WORD[row.touch]}</span>
         <span className={struck ? CLASS.descStruck : CLASS.desc}>{row.label}</span>
-        {row.note && <span className={CLASS.note}>{row.note}</span>}
+        {row.note && <span className={CLASS.note}>Notes: {row.note}</span>}
       </div>
     </div>
   );
@@ -232,7 +244,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "task_list",
   icon: "tasks",
-  summary: () => "Tasks",
+  summary: taskMutationSummary,
   body: TaskCardBody,
   // The card is a header, not a fold-to-open tool row - open it at settle so a
   // task change is visible without a click, the way the legacy always-visible
