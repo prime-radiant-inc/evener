@@ -25,10 +25,10 @@ the same queue state.
 - `SERF_LIVE_TESTS=1` exported explicitly for this provider-backed scenario;
   the card refuses to start without that opt-in.
 - Run every code block below in the same Bash shell. The setup creates one
-  workdir and derives the tmux name below that existing `$run`; all request
-  bodies, logs, and pane captures remain there. The exit trap shuts down the
-  spawned session, kills the exact tmux session and recorded hub PID, then
-  removes that one run root.
+  workdir and derives a tmux name from the driving shell's PID; all request
+  bodies, logs, and pane captures remain under the existing `$run`. The exit
+  trap shuts down the spawned session, kills the exact tmux session and
+  recorded hub PID, then removes that one run root.
 
 ## Steps
 
@@ -124,7 +124,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    test -f "$RUN_ROOT/hub.log"
 
    WORKDIR="$RUN_ROOT/work"
-   TMUX_SESSION="serf-queue-$(basename "$RUN_ROOT")"
+   TMUX_SESSION="serf-queue-$$"
    if [ -z "${PORT:-}" ]; then
      printf 'PORT must name the Setup checklist hub\n' >&2
      exit 1
