@@ -18,6 +18,11 @@ function withCommand(command: string, overrides: Partial<ItemModel> = {}): ItemM
   return item({ toolName: "shell", argumentsJSON: JSON.stringify({ command }), ...overrides });
 }
 
+function outputCode(container: HTMLElement): HTMLElement | null {
+  const codes = container.querySelectorAll("code");
+  return codes.item(codes.length - 1);
+}
+
 // --- summary ----------------------------------------------------------
 
 test("summary: leads with the command, no result suffix on a clean run", () => {
@@ -170,12 +175,27 @@ test("the command reads straight from a settled item's own argumentsJSON (the mo
   expect(d.summary(settled)).toBe("Ran echo settled");
 });
 
-test("body renders the output only - it does NOT repeat the command the row already named", () => {
-  const d = toolRendererFor("shell");
-  const Body = d.body!;
-  const { container } = render(<Body item={withCommand("echo hi", { output: "hi\n[exit 0]" })} live={false} />);
-  expect(screen.getByText(/\[exit 0\]/)).toBeTruthy();
-  expect(container.textContent).not.toContain("$ echo hi");
+test("body renders the raw formatted command above the existing output block", () => {
+  const Body = toolRendererFor("shell").body!;
+  const raw = "cd /tmp && printf '%s\\n' \"$HOME\"";
+  const { container } = render(<Body item={withCommand(raw, { output: "ok\n[exit 0]" })} live={false} />);
+  const codes = Array.from(container.querySelectorAll("code"));
+  expect(codes).toHaveLength(2);
+  expect(codes[0]?.textContent).toContain("cd /tmp &&");
+  expect(codes[0]?.textContent).toContain("printf '%s\\n' \"$HOME\"");
+  expect(codes[1]?.textContent).toContain("ok");
+  expect(container.textContent).not.toContain("$ ");
+});
+
+test("body copies the exact raw command", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  const raw = "cd /tmp &&  printf '%s\\n' \"$HOME\"";
+  render(<Body item={withCommand(raw, { output: "ok" })} live={false} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy command" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(raw);
 });
 
 test("all bash-family tool bodies render ANSI SGR output as styled text", () => {
@@ -197,7 +217,7 @@ test("a live shell tail never starts inside an ANSI sequence", () => {
   const output = `${"p".repeat(50)}\u001b[32m${"K".repeat(7_997)}`;
   const { container } = render(<Body item={withCommand("long-running", { output })} live />);
 
-  expect(container.querySelector("code")?.textContent).toBe("K".repeat(7_997));
+  expect(outputCode(container)?.textContent).toBe("K".repeat(7_997));
   expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe("K".repeat(7_997));
   expect(container.textContent).not.toContain("[32m");
 });
@@ -207,7 +227,7 @@ test("a settled shell tail restores styling that began before the retained outpu
   const output = `plain\u001b[32m${"x".repeat(8_100)}KEPT\u001b[0m`;
   const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
 
-  expect(container.querySelector("code")?.textContent).toBe(
+  expect(outputCode(container)?.textContent).toBe(
     `earlier output not retained — showing the last 8,000 chars\n${"x".repeat(7_992)}KEPT`,
   );
   expect(container.querySelector('[data-ansi-fg="green"]')?.textContent).toBe(`${"x".repeat(7_992)}KEPT`);
@@ -226,7 +246,7 @@ test("rolling ANSI state is isolated when an item ID repeats in another session"
   const view = render(<Body item={withCommand("first", { output: "ONE1" })} live sessionRef="local:session-one" />);
 
   view.rerender(<Body item={withCommand("second", { output: "TWO2" })} live sessionRef="local:session-two" />);
-  expect(view.container.querySelector("code")?.textContent).toBe("TWO2");
+  expect(outputCode(view.container)?.textContent).toBe("TWO2");
 });
 
 test("authoritative completed output replaces a non-prefix live snapshot", () => {
@@ -236,7 +256,7 @@ test("authoritative completed output replaces a non-prefix live snapshot", () =>
   view.rerender(
     <Body item={withCommand("run", { output: "settled output" })} live={false} sessionRef="local:session-one" />,
   );
-  expect(view.container.querySelector("code")?.textContent).toBe("settled output");
+  expect(outputCode(view.container)?.textContent).toBe("settled output");
 });
 
 test("an ESC intermediate before the raw boundary makes a retained bracket a final byte", () => {
@@ -244,7 +264,7 @@ test("an ESC intermediate before the raw boundary makes a retained bracket a fin
   const output = `${"p".repeat(50)}\u001b(${"["}${"V".repeat(7_999)}`;
   const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
 
-  expect(container.querySelector("code")?.textContent).toBe(
+  expect(outputCode(container)?.textContent).toBe(
     `earlier output not retained — showing the last 8,000 chars\n${"V".repeat(7_999)}`,
   );
 });
@@ -297,9 +317,7 @@ test("display and copy share the same raw boundary across a large OSC payload", 
   const output = `OLD\u001b]${"p".repeat(9_000)}\u0007NEW`;
   const { container } = render(<Body item={withCommand("long-run", { output })} live={false} />);
 
-  expect(container.querySelector("code")?.textContent).toBe(
-    "earlier output not retained — showing the last 8,000 chars\nNEW",
-  );
+  expect(outputCode(container)?.textContent).toBe("earlier output not retained — showing the last 8,000 chars\nNEW");
   await user.click(screen.getByRole("button", { name: "Copy output" }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith(output.slice(-8_000));
 });
@@ -331,7 +349,7 @@ test("a live shell tail carries an incomplete terminal control across output del
 
   const completedOutput = `${firstOutput}tle\u0007after`;
   view.rerender(<Body item={withCommand("long-run", { output: completedOutput })} live />);
-  expect(view.container.querySelector("code")?.textContent).toBe(`${"x".repeat(7_981)}after`);
+  expect(outputCode(view.container)?.textContent).toBe(`${"x".repeat(7_981)}after`);
   expect(view.container.textContent).not.toContain("title");
 });
 
@@ -344,17 +362,25 @@ test("unterminated control payloads remain bounded across many live deltas", () 
     output += "payload".repeat(80);
     view.rerender(<Body item={withCommand("long-run", { output })} live />);
   }
-  expect(view.container.querySelector("code")?.textContent).toBe("");
+  expect(outputCode(view.container)?.textContent).toBe("");
 
   output += "\u0007done";
   view.rerender(<Body item={withCommand("long-run", { output })} live />);
-  expect(view.container.querySelector("code")?.textContent).toBe("done");
+  expect(outputCode(view.container)?.textContent).toBe("done");
 });
 
-test("body renders nothing for a command with no output at all", () => {
+test("body renders a command block for a command with no output", () => {
   const d = toolRendererFor("shell");
   const Body = d.body!;
   const { container } = render(<Body item={withCommand("true", { output: "" })} live={false} />);
+  const codes = container.querySelectorAll("code");
+  expect(codes).toHaveLength(1);
+  expect(codes[0]?.textContent).toBe("true");
+});
+
+test("body renders nothing with no command and no output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(<Body item={item({ toolName: "shell", output: "" })} live={false} />);
   expect(container.textContent).toBe("");
 });
 

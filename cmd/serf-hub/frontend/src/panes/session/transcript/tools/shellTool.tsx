@@ -21,7 +21,7 @@
 
 import { useRef } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { CodeBlock } from "../../../../widgets";
+import { CodeBlock, ShellCommandBlock } from "../../../../widgets";
 import { AnsiTailBuffer } from "../../../../widgets/codeblock/ansi";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -64,14 +64,10 @@ function shellExitCode(item: ItemModel): number | undefined {
   return item.exitCode ?? parseShellExitCode(item.output ?? "");
 }
 
-// The body is the OUTPUT, nothing else. It does not repeat the command: the
-// row above already names it, and names it in FULL (A4 - "repeats the tool
-// call but not truncated"): the row owns truncation as presentation -
-// middle-truncated when collapsed, wrapped in full when expanded - so a
-// descriptor hands over the whole string and never clips for the row
-// (Jesse's review call closed the "not readable in full anywhere" gap this
-// comment used to carry).
+// The row summary owns collapsed command presentation. The expanded body owns
+// a readable formatted command block and the output block independently.
 function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
+  const command = shellCommand(parseArgs(item.argumentsJSON));
   const output = item.output ?? "";
   const buffer = useRef<{ itemId: string; sessionRef?: string; live: boolean; tail: AnsiTailBuffer } | undefined>(
     undefined,
@@ -85,12 +81,17 @@ function ShellBody({ item, live, sessionRef }: ToolRenderProps) {
   }
   buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
-  if (output === "") return null;
+  if (command === "" && output === "") return null;
   const body =
     live || !tail.truncated
       ? tail.renderedText
       : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${tail.renderedText}`;
-  return <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />;
+  return (
+    <>
+      {command !== "" && <ShellCommandBlock command={command} />}
+      {output !== "" && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
+    </>
+  );
 }
 
 // nonzeroExit is the "this command failed" predicate shared by failed() and
