@@ -16,7 +16,10 @@ import { resetWorkspaceStoreForTests } from "./workspace";
 // loader is that failure with no network involved; the real dockview module
 // never loads here, which also keeps these tests off dockview's ResizeObserver
 // (kata 1s47, reproduced live against the built bundle at 771b016ea).
-vi.mock("./dockHostChunk", () => ({ loadDockHost: vi.fn() }));
+vi.mock("./dockHostChunk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./dockHostChunk")>();
+  return { ...actual, loadDockHost: vi.fn() };
+});
 
 const CHUNK_ERROR = "Failed to fetch dynamically imported module: /webassets/DockHost-a1b2c3.js";
 
@@ -101,27 +104,71 @@ test("Retry fetches the chunk again and mounts the host on the second attempt", 
   await screen.findByText("Couldn't load the workspace");
   await user.click(screen.getByRole("button", { name: "Retry" }));
 
-  // Both halves of a retry, in one assertion each: the chunk really is
-  // requested a second time (React.lazy would otherwise rethrow its cached
-  // rejection without going near the network), and the host it returns
-  // replaces the failure state.
+  // Both halves of a retry, in one assertion each: the host it returns
+  // replaces the failure state, and the second attempt asks the loader for
+  // the cache-busted path proven to reach the network by the built-browser
+  // probe. A second same-URL import does not reach Chrome's network stack.
   expect(await screen.findByText("dock host mounted")).toBeTruthy();
-  expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
 
-test("a chunk still in flight holds the Suspense fallback, and is not treated as a failure", () => {
+test("a cache-busted retry that still names a stale hashed chunk offers a page reload", async () => {
+  vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const reload = vi.fn();
+  vi.stubGlobal("location", { ...window.location, reload });
+  const user = userEvent.setup();
+
+  render(<DockRegion />);
+  await screen.findByText("Couldn't load the workspace");
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await user.click(await screen.findByRole("button", { name: "Reload page" }));
+
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
+});
+
+test("an ordinary retry failure does not prescribe a page reload", async () => {
+  vi.mocked(loadDockHost).mockRejectedValue(new Error("workspace module initialization failed"));
+  const user = userEvent.setup();
+
+  render(<DockRegion />);
+  await screen.findByText("Couldn't load the workspace");
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("workspace module initialization failed")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+});
+
+test("a chunk still in flight leaves a visible workspace placeholder beside the rail", () => {
   // Never settles: a request the hub never answers, with no wall clock in it.
   vi.mocked(loadDockHost).mockReturnValue(new Promise(() => {}));
 
-  const { container } = render(<DockRegion />);
+  render(<AppShell client={new FakeClient("ready")} />);
 
-  // fallback={null}, so the region renders nothing at all while its chunk is
-  // in flight. That silent blank is the stall half of kata 1s47 and is a
-  // deliberately open design question (deadline? progress? retry?) - what is
-  // pinned here is only containment: an unanswered request is not a failure,
-  // must not trip the failure state, and must not fetch again on its own.
-  expect(container.innerHTML).toBe("");
+  const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
+  const workspaceRow = loading?.parentElement;
+  expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
+  // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
+});
+
+test("Retry abandons a chunk still in flight and mounts a fresh attempt", async () => {
+  vi.mocked(loadDockHost)
+    .mockReturnValueOnce(new Promise(() => {}))
+    .mockResolvedValueOnce({ DockHost: StubDockHost });
+  const user = userEvent.setup();
+
+  render(<DockRegion />);
+  expect(screen.getByText("Loading the workspace…")).toBeTruthy();
+  expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
 });
