@@ -315,7 +315,7 @@ func scenarioTrackedGoFilesByBase(root string) (map[string][]string, error) {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	byBase := map[string][]string{}
-	for _, path := range strings.Split(string(raw), "\x00") {
+	for path := range strings.SplitSeq(string(raw), "\x00") {
 		if path == "" {
 			continue
 		}
