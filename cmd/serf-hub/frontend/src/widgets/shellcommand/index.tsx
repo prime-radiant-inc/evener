@@ -17,7 +17,6 @@ export function ShellCommandBlock({ command }: ShellCommandBlockProps): JSX.Elem
       text={displayText}
       copyText={command}
       copyLabel="Copy command"
-      language="bash"
       renderLine={(line, lineNumber) => {
         const layout = lines[lineNumber];
         const lineTokens = tokens[lineNumber] ?? [{ text: line, kind: "plain" as const }];
