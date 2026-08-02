@@ -43,7 +43,8 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    TMUX_SESSION=""
    HUB="${HUB:-}"
    TOKEN="${TOKEN:-}"
-   HUBPID="${HUBPID:-}"
+   SETUP_HUBPID="${HUBPID:-}"
+   OWNED_HUBPID=""
    SID=""
 
    cleanup() {
@@ -53,7 +54,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
      local owned_tmux="${TMUX_SESSION:-}"
      local owned_hub="${HUB:-}"
      local owned_token="${TOKEN:-}"
-     local owned_hub_pid="${HUBPID:-}"
+     local owned_hub_pid="${OWNED_HUBPID:-}"
      local owned_sid="${SID:-}"
 
      if [ "$run_owned" -eq 1 ] && [ -n "$owned_sid" ] && \
@@ -90,22 +91,31 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
      printf 'HOME must be the Setup checklist home under run\n' >&2
      exit 1
    fi
+
+   RECORDED_HUBPID=$(cat "$RUN_ROOT/hub.pid")
+   case "$RECORDED_HUBPID" in
+     ''|*[!0-9]*)
+       printf 'hub.pid is not numeric; Setup owner retains run\n' >&2
+       exit 1
+       ;;
+   esac
+   if [ -n "$SETUP_HUBPID" ] && [ "$SETUP_HUBPID" != "$RECORDED_HUBPID" ]; then
+     printf '%s\n' \
+       'HUBPID does not match run/hub.pid; Setup owner retains run and both PIDs' >&2
+     exit 1
+   fi
+   if ! kill -0 "$RECORDED_HUBPID"; then
+     printf 'recorded hub PID is not running; Setup owner retains run\n' >&2
+     exit 1
+   fi
+
+   OWNED_HUBPID="$RECORDED_HUBPID"
    RUN_OWNED=1
 
    test -x "$RUN_ROOT/serf-hub"
    test -x "$RUN_ROOT/serf"
    test -x "$RUN_ROOT/serf-tui"
    test -f "$RUN_ROOT/hub.log"
-   RECORDED_HUBPID=$(cat "$RUN_ROOT/hub.pid")
-   case "$RECORDED_HUBPID" in
-     ''|*[!0-9]*) printf 'hub.pid is not numeric\n' >&2; exit 1 ;;
-   esac
-   if [ -n "$HUBPID" ] && [ "$HUBPID" != "$RECORDED_HUBPID" ]; then
-     printf 'HUBPID does not match run/hub.pid\n' >&2
-     exit 1
-   fi
-   HUBPID="$RECORDED_HUBPID"
-   kill -0 "$HUBPID"
 
    WORKDIR="$RUN_ROOT/work"
    TMUX_SESSION="serf-queue-$(basename "$RUN_ROOT")"
@@ -123,10 +133,16 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```
 
    There is no second `mktemp`: `$RUN_ROOT` is exactly the Setup checklist's
-   `$run`. Cleanup becomes destructive only after the path, basename, and HOME
-   establish ownership. It returns the incoming status and, in order, shuts
-   down the structured spawn SID, kills the derived tmux name, kills the exact
-   PID from `$run/hub.pid`, and removes only `$run`.
+   `$run`. Path, basename, and HOME checks alone do not authorize cleanup.
+   `OWNED_HUBPID` stays empty and `RUN_OWNED` stays zero until the exact
+   `$run/hub.pid` value is numeric, matches the Setup shell's ambient `HUBPID`
+   when one exists, and names a live process. A missing, invalid, dead, or
+   mismatched PID therefore exits nonzero without killing either candidate PID
+   or removing the run root; the Setup-checklist owner retains the intact run
+   and responsibility for resolving it. Only after all PID checks succeed does
+   this card atomically claim cleanup. From then on, the trap returns the
+   incoming status and, in order, shuts down the structured spawn SID, kills
+   the derived tmux name, kills the trusted PID, and removes only `$run`.
 
    The positive-pane helper below polls for observable readiness. Its ten-second
    bound only fails a stuck transition; elapsed time is never a success
