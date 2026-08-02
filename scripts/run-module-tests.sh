@@ -226,7 +226,14 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
-		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		if [ "$ROOT_FULL" -ne 0 ]; then
+			# ROOT_FULL removes the runner's regular name filter so the root
+			# module uses go test's complete non-fuzz test surface. Fuzz-owned
+			# sanity functions stay under the explicit make fuzz gate.
+			/usr/bin/time -p go test $test_flags $extra -skip "$fuzz_test_skip" "${packages[@]}"
+		else
+			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		fi
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
