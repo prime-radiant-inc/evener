@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,10 +26,10 @@ func stateDirForJM(jm *jobManager) string {
 	return filepath.Dir(filepath.Dir(jm.dir))
 }
 
-// TestMintWatchCreateReadGrantStampsObservedBy proves that installing a sidecar
-// watch (concrete worker target, delivered to a concrete observer delegate)
-// stamps the observer's session id onto the watched WORKER's SessionMeta, so the
-// hub can later auto-open the observer beside the worker.
+// TestConcreteDelegateWatchStampsObservedByAtInstall proves that installing a
+// sidecar watch (concrete worker target, delivered to a concrete observer
+// delegate) stamps the observer's session id onto the watched worker's
+// SessionMeta, so the hub can later auto-open the observer beside the worker.
 func TestConcreteDelegateWatchStampsObservedByAtInstall(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -65,9 +66,9 @@ func TestConcreteDelegateWatchStampsObservedByAtInstall(t *testing.T) {
 	}
 }
 
-// TestMintWatchCreateReadGrantObservedByDedups proves repeated watch installs of
+// TestConcreteDelegateWatchObservedByDedups proves repeated watch installs of
 // the same (worker, observer) pair do not duplicate the observer id on the
-// worker's meta — the set is append-only and deduped, mirroring the grant log.
+// worker's meta.
 func TestConcreteDelegateWatchObservedByDedups(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -215,27 +216,196 @@ func TestNonJobWatchFrameNamesNoTranscriptRead(t *testing.T) {
 	}
 }
 
-func TestSessionWatchSkipsShellAndSelfObserverLinks(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	stateDir := stateDirForJM(jm)
-	const worker = "WORKER"
-	var signals atomic.Int32
-	delegateJobID := seedRunningDelegate(t, jm, encodeRef("", worker), &signals)
-	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: worker}); err != nil {
-		t.Fatal(err)
+func sessionNotificationWatchArgs(observerSessionID string) watchArgs {
+	return watchArgs{
+		Source:             "parent",
+		Target:             runtimeMessageAliasCaller,
+		Events:             []string{"job.notification"},
+		ReceiverSessionID:  observerSessionID,
+		ReceiverDelegateID: "dlg_obs",
 	}
-	jm.recordObserverLink(delegateJobID, worker)
-	if got, err := schema.LoadSessionMeta(stateDir, worker); err != nil || len(got.ObservedBy) != 0 {
-		t.Fatalf("self observer meta = %+v, %v", got, err)
+}
+
+func recordSessionJobNotification(t *testing.T, jm *jobManager, observerSessionID, jobID, delegateID string) {
+	t.Helper()
+	seedCommonWatchSendTargets(t, jm)
+	if _, err := jm.configureWatch(sessionNotificationWatchArgs(observerSessionID)); err != nil {
+		t.Fatalf("configure session watch: %v", err)
 	}
-	shell, err := jm.createShell(createShellOpts{Command: "true"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{
+		JobID: jobID, JobType: "delegate", Status: "completed", DelegateID: delegateID,
+	})
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending session-watch sends = %d, want 1", len(pending))
+	}
+}
+
+func deliverOnlyPendingWatchSend(t *testing.T, jm *jobManager) bool {
+	t.Helper()
+	deliveries := jm.pendingWatchSendDeliveries(nil)
+	if len(deliveries) != 1 {
+		t.Fatalf("runtime pending deliveries = %d, want 1", len(deliveries))
+	}
+	delivered, err := jm.deliverPendingWatchSend(context.Background(), deliveries[0].cfg, deliveries[0].state, true, func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{}
+	})
+	if err != nil {
+		t.Fatalf("deliver pending session watch: %v", err)
+	}
+	return delivered
+}
+
+func TestSessionWatchStampsDeliveredWorkerObservedBy(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatal(err)
 	}
-	jm.recordObserverLink(shell.JobID, "observer")
-	if got, err := schema.LoadSessionMeta(stateDir, worker); err != nil || len(got.ObservedBy) != 0 {
-		t.Fatalf("shell observer meta = %+v, %v", got, err)
+	freezeClock(jm)
+	const (
+		workerSessionID   = "WORKER"
+		observerSessionID = "child_job_obs"
+	)
+	var signals atomic.Int32
+	workerJobID := seedRunningDelegate(t, jm, encodeRef("", workerSessionID), &signals)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: workerSessionID, IsSubagent: true}); err != nil {
+		t.Fatal(err)
+	}
+	recordSessionJobNotification(t, jm, observerSessionID, workerJobID, "dlg_worker")
+	if err := jm.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("restore job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = restored.store.Close() })
+	restored.scheduleObserverLink = func(fn func()) { fn() }
+	if !deliverOnlyPendingWatchSend(t, restored) {
+		t.Fatal("restored pending session watch was not delivered")
+	}
+	got, err := schema.LoadSessionMeta(stateDir, workerSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ObservedBy) != 1 || got.ObservedBy[0] != observerSessionID {
+		t.Fatalf("restored delivery ObservedBy = %v, want [%s]", got.ObservedBy, observerSessionID)
+	}
+}
+
+func TestSessionWatchSchedulesObservedByAfterDeliveredState(t *testing.T) {
+	jm := newTestJM(t)
+	const (
+		workerSessionID   = "WORKER"
+		observerSessionID = "child_job_obs"
+	)
+	var signals atomic.Int32
+	workerJobID := seedRunningDelegate(t, jm, encodeRef("", workerSessionID), &signals)
+	if err := schema.SaveSessionMeta(stateDirForJM(jm), schema.SessionMeta{ID: workerSessionID}); err != nil {
+		t.Fatal(err)
+	}
+	recordSessionJobNotification(t, jm, observerSessionID, workerJobID, "dlg_worker")
+
+	scheduled := make(chan func(), 1)
+	jm.scheduleObserverLink = func(fn func()) {
+		if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+			t.Errorf("observer link scheduled before delivered state settled: %+v", pending)
+		}
+		scheduled <- fn
+	}
+	if !deliverOnlyPendingWatchSend(t, jm) {
+		t.Fatal("session watch was not delivered")
+	}
+	got, err := schema.LoadSessionMeta(stateDirForJM(jm), workerSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ObservedBy) != 0 {
+		t.Fatalf("metadata closure ran inline; ObservedBy = %v", got.ObservedBy)
+	}
+	fn := <-scheduled
+	fn()
+	got, err = schema.LoadSessionMeta(stateDirForJM(jm), workerSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ObservedBy) != 1 || got.ObservedBy[0] != observerSessionID {
+		t.Fatalf("scheduled ObservedBy = %v, want [%s]", got.ObservedBy, observerSessionID)
+	}
+}
+
+func TestSessionWatchSkipsShellAndSelfObserverLinks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		seedTarget func(*testing.T, *jobManager, string) string
+	}{
+		{
+			name: "shell",
+			seedTarget: func(t *testing.T, jm *jobManager, _ string) string {
+				rec, err := jm.createShell(createShellOpts{Command: "true"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return rec.JobID
+			},
+		},
+		{
+			name: "self",
+			seedTarget: func(t *testing.T, jm *jobManager, observerSessionID string) string {
+				var signals atomic.Int32
+				return seedRunningDelegate(t, jm, encodeRef("", observerSessionID), &signals)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			const observerSessionID = "child_job_obs"
+			jobID := tc.seedTarget(t, jm, observerSessionID)
+			recordSessionJobNotification(t, jm, observerSessionID, jobID, "dlg_worker")
+			var appended bool
+			jm.appendObservedBy = func(string, string, string) error {
+				appended = true
+				return nil
+			}
+			jm.scheduleObserverLink = func(fn func()) { fn() }
+			if !deliverOnlyPendingWatchSend(t, jm) {
+				t.Fatal("session watch was not delivered")
+			}
+			if appended {
+				t.Fatal("session delivery appended an observer link")
+			}
+		})
+	}
+}
+
+func TestObservedByWriteFailureDoesNotChangeDelivery(t *testing.T) {
+	jm := newTestJM(t)
+	const (
+		workerSessionID   = "WORKER"
+		observerSessionID = "child_job_obs"
+	)
+	var signals atomic.Int32
+	workerJobID := seedRunningDelegate(t, jm, encodeRef("", workerSessionID), &signals)
+	recordSessionJobNotification(t, jm, observerSessionID, workerJobID, "dlg_worker")
+
+	writeAttempted := false
+	jm.appendObservedBy = func(string, string, string) error {
+		writeAttempted = true
+		return errors.New("metadata write failed")
+	}
+	scheduled := make(chan func(), 1)
+	jm.scheduleObserverLink = func(fn func()) { scheduled <- fn }
+	if !deliverOnlyPendingWatchSend(t, jm) {
+		t.Fatal("metadata failure changed delivery result")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("delivered state remained pending: %+v", pending)
+	}
+	fn := <-scheduled
+	fn()
+	if !writeAttempted {
+		t.Fatal("scheduled observer metadata write was not attempted")
 	}
 }
 
