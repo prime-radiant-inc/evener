@@ -31,12 +31,15 @@ type OutputSnapshot struct {
 // Keeping raw metadata bytes also distinguishes stable malformed metadata from
 // a concurrent change without classifying errors by their text or position.
 type outputSnapshotObservation struct {
-	outputExists  bool
-	retainedBytes int64
-	metaExists    bool
-	meta          string
-	pendingExists bool
-	pending       string
+	outputObserved  bool
+	outputExists    bool
+	retainedBytes   int64
+	pendingObserved bool
+	pendingExists   bool
+	pending         string
+	metaObserved    bool
+	metaExists      bool
+	meta            string
 }
 
 // ReadOutputSnapshot reads a stable head or tail window without opening the
@@ -78,11 +81,14 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 
 	snapshot, readErr := readOutputSnapshotAttempt(fs, path, before.retainedBytes, maxBytes, fromHead)
 	after, observeErr := observeOutputSnapshot(fs, path)
+	if errors.Is(readErr, errOutputChanged) {
+		return OutputSnapshot{}, errOutputChanged
+	}
+	if after.changedFrom(before) {
+		return OutputSnapshot{}, errOutputChanged
+	}
 	if observeErr != nil {
 		return OutputSnapshot{}, observeErr
-	}
-	if before != after {
-		return OutputSnapshot{}, errOutputChanged
 	}
 	if readErr != nil {
 		return OutputSnapshot{}, readErr
@@ -112,7 +118,6 @@ func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, ma
 	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart {
 		return OutputSnapshot{}, errOutputChanged
 	}
-
 	return OutputSnapshot{
 		Content:       content,
 		TotalBytes:    totalBytes,
@@ -125,23 +130,42 @@ func observeOutputSnapshot(fs afero.Fs, path string) (outputSnapshotObservation,
 	var observation outputSnapshotObservation
 	info, err := fs.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
+		observation.outputObserved = true
 		return observation, nil
 	}
 	if err != nil {
-		return outputSnapshotObservation{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
+		return observation, fmt.Errorf("jobstore: stat output snapshot: %w", err)
 	}
+	observation.outputObserved = true
 	observation.outputExists = true
 	observation.retainedBytes = info.Size()
 
-	observation.meta, observation.metaExists, err = readOutputSnapshotMetadata(fs, outputMetaPath(path))
+	metaPath := outputMetaPath(path)
+	// OutputStore publishes pending metadata before rewriting a capped file and
+	// removes it only after publishing final metadata. Reading pending first
+	// prevents one observation from combining the old final bytes with a
+	// post-handoff missing pending file and aliasing the old stable state.
+	observation.pending, observation.pendingExists, err = readOutputSnapshotMetadata(fs, outputPendingMetaPath(metaPath))
 	if err != nil {
-		return outputSnapshotObservation{}, err
+		return observation, err
 	}
-	observation.pending, observation.pendingExists, err = readOutputSnapshotMetadata(fs, outputPendingMetaPath(outputMetaPath(path)))
+	observation.pendingObserved = true
+	observation.meta, observation.metaExists, err = readOutputSnapshotMetadata(fs, metaPath)
 	if err != nil {
-		return outputSnapshotObservation{}, err
+		return observation, err
 	}
+	observation.metaObserved = true
 	return observation, nil
+}
+
+func (after outputSnapshotObservation) changedFrom(before outputSnapshotObservation) bool {
+	if after.outputObserved && (after.outputExists != before.outputExists || after.retainedBytes != before.retainedBytes) {
+		return true
+	}
+	if after.pendingObserved && (after.pendingExists != before.pendingExists || after.pending != before.pending) {
+		return true
+	}
+	return after.metaObserved && (after.metaExists != before.metaExists || after.meta != before.meta)
 }
 
 func readOutputSnapshotMetadata(fs afero.Fs, path string) (string, bool, error) {

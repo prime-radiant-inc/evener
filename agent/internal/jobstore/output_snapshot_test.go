@@ -259,6 +259,56 @@ func TestReadOutputSnapshotPreservesStablePostReadMetadataError(t *testing.T) {
 	}
 }
 
+func TestReadOutputSnapshotRetriesCappedPrunePublicationHandoff(t *testing.T) {
+	fs := newSnapshotPruneProtocolFS(t, snapshotPruneDuringInitialHash)
+
+	attempts := 0
+	got, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+		attempts++
+		return readOutputSnapshotOnce(fs, fs.path, 1024, false)
+	})
+	if err != nil {
+		t.Fatalf("snapshot across capped prune publication: %v", err)
+	}
+	if attempts != 2 || string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
+		t.Fatalf("snapshot=%+v attempts=%d, want stable post-prune retry", got, attempts)
+	}
+}
+
+func TestReadOutputSnapshotKeepsPartialChangeWhenMetadataObservationFails(t *testing.T) {
+	fs := newSnapshotPruneProtocolFS(t, snapshotPruneAfterWindow)
+	fs.afterObservationMetaErr = errSnapshotAfterObservedChange
+
+	attempts := 0
+	got, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+		attempts++
+		return readOutputSnapshotOnce(fs, fs.path, 1024, false)
+	})
+	if err != nil {
+		t.Fatalf("snapshot after partial changed observation: %v", err)
+	}
+	if attempts != 2 || string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
+		t.Fatalf("snapshot=%+v attempts=%d, want stable retry after observed pending change", got, attempts)
+	}
+}
+
+func TestReadOutputSnapshotKeepsInnerCoordinateChangeWhenObservationFails(t *testing.T) {
+	fs := newSnapshotPruneProtocolFS(t, snapshotPruneAfterWindow)
+	fs.afterObservationStatErr = errSnapshotAfterObservedChange
+
+	attempts := 0
+	got, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+		attempts++
+		return readOutputSnapshotOnce(fs, fs.path, 1024, false)
+	})
+	if err != nil {
+		t.Fatalf("snapshot after changed coordinates and observation fault: %v", err)
+	}
+	if attempts != 2 || string(got.Content) != "BBBB" || got.TotalBytes != 8 || got.RetainedStart != 4 {
+		t.Fatalf("snapshot=%+v attempts=%d, want retry from inner coordinate change", got, attempts)
+	}
+}
+
 func mustWriteSnapshotFixture(t *testing.T, fs afero.Fs, path string, content []byte, total, retainedStart int64) {
 	t.Helper()
 	if err := writeSnapshotFixture(fs, path, content, total, retainedStart); err != nil {
@@ -274,6 +324,10 @@ func writeSnapshotFixture(fs afero.Fs, path string, content []byte, total, retai
 }
 
 func writeSnapshotMetadata(fs afero.Fs, path string, content []byte, total, retainedStart int64) error {
+	return writeSnapshotMetadataFile(fs, outputMetaPath(path), content, total, retainedStart)
+}
+
+func writeSnapshotMetadataFile(fs afero.Fs, metaPath string, content []byte, total, retainedStart int64) error {
 	sum := sha256.Sum256(content)
 	meta, err := json.Marshal(outputMeta{
 		TotalBytes:     total,
@@ -283,7 +337,7 @@ func writeSnapshotMetadata(fs afero.Fs, path string, content []byte, total, reta
 	if err != nil {
 		return err
 	}
-	return afero.WriteFile(fs, outputMetaPath(path), append(meta, '\n'), 0o644)
+	return afero.WriteFile(fs, metaPath, append(meta, '\n'), 0o644)
 }
 
 var errSnapshotMutation = errors.New("snapshot test: mutating filesystem operation")
@@ -439,4 +493,127 @@ func (fs *snapshotPostReadMetadataFaultFS) Open(name string) (afero.File, error)
 		return nil, errSnapshotPostReadMetadata
 	}
 	return fs.Fs.Open(name)
+}
+
+type snapshotPruneStart uint8
+
+const (
+	snapshotPruneDuringInitialHash snapshotPruneStart = iota
+	snapshotPruneAfterWindow
+)
+
+type snapshotPrunePhase uint8
+
+const (
+	snapshotPruneOld snapshotPrunePhase = iota
+	snapshotPrunePending
+	snapshotPruneFinal
+)
+
+var errSnapshotAfterObservedChange = errors.New("snapshot test: observation fault after change")
+
+type snapshotPruneProtocolFS struct {
+	afero.Fs
+	path                    string
+	start                   snapshotPruneStart
+	phase                   snapshotPrunePhase
+	outputOpens             int
+	outputStats             int
+	afterObservationMetaErr error
+	afterObservationStatErr error
+}
+
+func newSnapshotPruneProtocolFS(t *testing.T, start snapshotPruneStart) *snapshotPruneProtocolFS {
+	t.Helper()
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	mustWriteSnapshotFixture(t, base, path, []byte("AAAA"), 4, 0)
+	return &snapshotPruneProtocolFS{Fs: base, path: path, start: start}
+}
+
+func (fs *snapshotPruneProtocolFS) Open(name string) (afero.File, error) {
+	if name == fs.path {
+		fs.outputOpens++
+		if fs.start == snapshotPruneDuringInitialHash && fs.phase == snapshotPruneOld && fs.outputOpens == 1 {
+			if err := fs.publishPending(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if name == outputMetaPath(fs.path) && fs.phase == snapshotPrunePending {
+		if fs.afterObservationMetaErr != nil && fs.outputStats >= 3 {
+			err := fs.afterObservationMetaErr
+			fs.afterObservationMetaErr = nil
+			if publishErr := fs.publishFinal(); publishErr != nil {
+				return nil, publishErr
+			}
+			return nil, err
+		}
+		f, err := fs.Fs.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return &snapshotCloseHookFile{File: f, afterClose: fs.publishFinal}, nil
+	}
+	return fs.Fs.Open(name)
+}
+
+func (fs *snapshotPruneProtocolFS) Stat(name string) (os.FileInfo, error) {
+	if name == fs.path {
+		fs.outputStats++
+		if fs.start == snapshotPruneAfterWindow && fs.phase == snapshotPruneOld && fs.outputStats == 2 {
+			if err := fs.publishPending(); err != nil {
+				return nil, err
+			}
+		}
+		if fs.outputStats >= 3 && fs.afterObservationStatErr != nil {
+			err := fs.afterObservationStatErr
+			fs.afterObservationStatErr = nil
+			if publishErr := fs.publishFinal(); publishErr != nil {
+				return nil, publishErr
+			}
+			return nil, err
+		}
+	}
+	return fs.Fs.Stat(name)
+}
+
+func (fs *snapshotPruneProtocolFS) publishPending() error {
+	const retained = "BBBB"
+	if err := afero.WriteFile(fs.Fs, fs.path, []byte(retained), 0o644); err != nil {
+		return err
+	}
+	if err := writeSnapshotMetadataFile(fs.Fs, outputPendingMetaPath(outputMetaPath(fs.path)), []byte(retained), 8, 4); err != nil {
+		return err
+	}
+	fs.phase = snapshotPrunePending
+	return nil
+}
+
+func (fs *snapshotPruneProtocolFS) publishFinal() error {
+	if fs.phase != snapshotPrunePending {
+		return nil
+	}
+	const retained = "BBBB"
+	if err := writeSnapshotMetadata(fs.Fs, fs.path, []byte(retained), 8, 4); err != nil {
+		return err
+	}
+	if err := fs.Fs.Remove(outputPendingMetaPath(outputMetaPath(fs.path))); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	fs.phase = snapshotPruneFinal
+	return nil
+}
+
+type snapshotCloseHookFile struct {
+	afero.File
+	afterClose func() error
+}
+
+func (f *snapshotCloseHookFile) Close() error {
+	err := f.File.Close()
+	if hookErr := f.afterClose(); err == nil {
+		err = hookErr
+	}
+	return err
 }
