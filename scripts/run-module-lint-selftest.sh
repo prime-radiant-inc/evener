@@ -713,6 +713,12 @@ FAKE_GIT
 cat >"$bin/gofmt" <<'FAKE_GOFMT'
 #!/usr/bin/env bash
 printf 'gofmt %s\n' "$*" >>"$FAKE_STATE/families"
+if [ "${FAKE_GOFMT_FAIL:-0}" = 1 ]; then
+	exit 23
+fi
+if [ "${FAKE_GOFMT_FILES:-0}" = 1 ]; then
+	printf 'bad.go\n'
+fi
 FAKE_GOFMT
 cat >"$bin/golangci-lint" <<'FAKE_MAKE_LINT'
 #!/usr/bin/env bash
@@ -786,6 +792,33 @@ else
 	diff -u "$state/want-families" "$state/families" || :
 fi
 assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "healthy checks remove quiet-wrapper logs"
+
+# A formatter that fails without printing filenames must still fail the gate;
+# an empty listing from a successful formatter is the only clean result.
+out="$case_dir/gofmt-failure.out"
+if (
+	cd "$repo" || exit 1
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" FAKE_GOFMT_FAIL=1 make --no-print-directory lint-gofmt
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then
+	ok "a failed formatter with empty output fails lint-gofmt"
+else
+	bad "a failed formatter with empty output fails lint-gofmt"
+fi
+
+# Keep the pre-existing formatted-file diagnostic visible when the formatter
+# succeeds and reports paths.
+out="$case_dir/gofmt-files.out"
+if (
+	cd "$repo" || exit 1
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" FAKE_GOFMT_FILES=1 make --no-print-directory lint-gofmt
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then
+	ok "formatted files still fail lint-gofmt"
+else
+	bad "formatted files still fail lint-gofmt"
+fi
+assert_has "$out" "bad.go" "formatted-file diagnostics remain visible"
 
 # lint-generated must compare every file its go:generate directives write. A
 # committed stale TypeScript output is the regression the old Markdown-only
