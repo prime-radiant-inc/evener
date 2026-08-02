@@ -270,7 +270,7 @@ func namerFuzzSessionLifecycle(t *testing.T, mode byte, text, name string) {
 		}
 		return nil
 	}
-	sess.launchInitialPromptNamer(nil, text)
+	sess.launchInitialPromptNamer(context.Background(), text)
 	sess.sendersWG.Wait()
 	if launcherCalls != 1 {
 		t.Fatalf("initial launcher calls = %d, want 1", launcherCalls)
@@ -286,7 +286,7 @@ func namerFuzzSessionLifecycle(t *testing.T, mode byte, text, name string) {
 	if launcherCalls != 1 {
 		t.Fatal("empty initial prompt started a namer")
 	}
-	sess.launchCompactionNamer(nil, turn)
+	sess.launchCompactionNamer(context.Background(), turn)
 	sess.sendersWG.Wait()
 	if launcherCalls != 2 {
 		t.Fatalf("compaction launcher calls = %d, want 2", launcherCalls)

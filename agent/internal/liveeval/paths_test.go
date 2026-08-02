@@ -3,6 +3,8 @@ package liveeval
 import (
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/envvars"
 )
 
 func TestEnabledRequiresExplicitOptIn(t *testing.T) {
@@ -22,6 +24,7 @@ func TestEnabledRequiresExplicitOptIn(t *testing.T) {
 }
 
 func TestPathsUseConfiguredStateAndHomeRoots(t *testing.T) {
+	clearProviderPathEnv(t)
 	stateHome := filepath.Join(t.TempDir(), "state")
 	userHome := filepath.Join(t.TempDir(), "home")
 
@@ -35,6 +38,7 @@ func TestPathsUseConfiguredStateAndHomeRoots(t *testing.T) {
 }
 
 func TestPathsDefaultStateHomeFollowsUserHome(t *testing.T) {
+	clearProviderPathEnv(t)
 	userHome := filepath.Join(t.TempDir(), "home")
 
 	gotStateHome, gotProviders := Paths("", userHome)
@@ -44,4 +48,36 @@ func TestPathsDefaultStateHomeFollowsUserHome(t *testing.T) {
 	if want := filepath.Join(userHome, ".serf", "providers.toml"); gotProviders != want {
 		t.Fatalf("Paths default providers file = %q, want %q", gotProviders, want)
 	}
+}
+
+func TestPathsProviderConfigEnvOverridesStateDirAndHome(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	userHome := filepath.Join(t.TempDir(), "home")
+	explicit := filepath.Join(t.TempDir(), "explicit.toml")
+	t.Setenv(envvars.SERFProvidersConfig.Name, explicit)
+	t.Setenv(envvars.SERFStateDir.Name, stateDir)
+
+	_, got := Paths("", userHome)
+	if got != explicit {
+		t.Fatalf("Paths explicit provider config = %q, want %q", got, explicit)
+	}
+}
+
+func TestPathsProviderConfigUsesStateDirBeforeHome(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	userHome := filepath.Join(t.TempDir(), "home")
+	t.Setenv(envvars.SERFProvidersConfig.Name, "")
+	t.Setenv(envvars.SERFStateDir.Name, stateDir)
+
+	_, got := Paths("", userHome)
+	want := filepath.Join(stateDir, "providers.toml")
+	if got != want {
+		t.Fatalf("Paths state-dir provider config = %q, want %q", got, want)
+	}
+}
+
+func clearProviderPathEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(envvars.SERFProvidersConfig.Name, "")
+	t.Setenv(envvars.SERFStateDir.Name, "")
 }

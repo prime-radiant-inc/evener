@@ -124,11 +124,18 @@ func TestScenarioDocAnchorsAppearInTheDocTheyName(t *testing.T) {
 		text := string(raw)
 		for _, m := range scenarioBacktickedDocPath.FindAllStringSubmatchIndex(text, -1) {
 			cited := text[m[2]:m[3]]
-			quoted := scenarioQuotedAnchorRun(text, m[1])
+			quoted, issue := scenarioQuotedAnchorRun(text, m[1])
+			where := path + ":" + strconv.Itoa(strings.Count(text[:m[0]], "\n")+1)
+			if issue != "" || (len(quoted) == 0 && scenarioCitationRequiresAnchor(text, m[0], m[1])) {
+				if issue == "" {
+					issue = "has no quoted anchor in its paragraph"
+				}
+				findings = append(findings, where+": `"+cited+"` "+issue)
+				continue
+			}
 			if len(quoted) == 0 {
 				continue
 			}
-			where := path + ":" + strconv.Itoa(strings.Count(text[:m[0]], "\n")+1)
 			body, seen := docs[cited]
 			if !seen {
 				docRaw, err := os.ReadFile(cited)
@@ -169,21 +176,63 @@ func TestScenarioDocAnchorsAppearInTheDocTheyName(t *testing.T) {
 	}
 }
 
+func TestScenarioDocAnchorParsingFailsClosedAtParagraphBoundaries(t *testing.T) {
+	text := "Contract anchors: `docs/first.md`\n\n\"only belongs to the next paragraph\""
+	start := strings.Index(text, "`docs/first.md`") + len("`docs/first.md`")
+	quoted, issue := scenarioQuotedAnchorRun(text, start)
+	if len(quoted) != 0 {
+		t.Fatalf("anchor run crossed a paragraph boundary: %v", quoted)
+	}
+	if issue != "" {
+		t.Fatalf("paragraph boundary was reported as a malformed quote: %s", issue)
+	}
+	if !scenarioCitationRequiresAnchor(text, start-len("`docs/first.md`"), start) {
+		t.Fatal("explicit Contract anchors label was not recognized")
+	}
+	whitespaceParagraph := "Contract anchors: `docs/first.md`\r\n \t\r\n\"only belongs to the next paragraph\""
+	whitespaceStart := strings.Index(whitespaceParagraph, "`docs/first.md`") + len("`docs/first.md`")
+	if !scenarioCitationRequiresAnchor(whitespaceParagraph, whitespaceStart-len("`docs/first.md`"), whitespaceStart) {
+		t.Fatal("explicit Contract anchors label was not recognized across a whitespace-only CRLF paragraph boundary")
+	}
+
+	malformed := "Contract anchor: `docs/broken.md` \"unterminated"
+	brokenStart := strings.Index(malformed, "`docs/broken.md`") + len("`docs/broken.md`")
+	_, issue = scenarioQuotedAnchorRun(malformed, brokenStart)
+	if issue == "" {
+		t.Fatal("unterminated quoted anchor was silently ignored")
+	}
+	plain := "See `docs/ordinary-reference.md` for setup details."
+	plainStart := strings.Index(plain, "`docs/ordinary-reference.md`")
+	if scenarioCitationRequiresAnchor(plain, plainStart, plainStart+len("`docs/ordinary-reference.md`")) {
+		t.Fatal("ordinary document reference was treated as a required citation")
+	}
+	section := "`docs/sectioned.md` §\"Stable heading\""
+	sectionStart := strings.Index(section, "`docs/sectioned.md`") + len("`docs/sectioned.md`")
+	quoted, issue = scenarioQuotedAnchorRun(section, sectionStart)
+	if issue != "" || len(quoted) != 1 || quoted[0] != "Stable heading" {
+		t.Fatalf("section-sign citation = %v, %q; want one anchor: %v", quoted, issue, []string{"Stable heading"})
+	}
+}
+
 // scenarioQuotedAnchorRun returns the double-quoted spans that immediately
 // follow a doc citation ending at offset i — the anchor run. It stops at the
 // first byte that is neither a separator, the one connector word, nor the
 // opening quote of another span, so prose after the citation is never read as
-// an anchor.
-func scenarioQuotedAnchorRun(text string, i int) []string {
+// an anchor. The second return value is non-empty only for malformed quoted
+// syntax; a plain path reference is intentionally not an error.
+func scenarioQuotedAnchorRun(text string, i int) ([]string, string) {
 	var run []string
 	for {
-		j := scenarioSkipAnchorRunGap(text, i)
+		j, paragraphBoundary := scenarioSkipAnchorRunGap(text, i)
+		if paragraphBoundary {
+			return run, ""
+		}
 		if j >= len(text) || text[j] != '"' {
-			return run
+			return run, ""
 		}
 		end := strings.IndexByte(text[j+1:], '"')
 		if end < 0 {
-			return run
+			return run, "unterminated quoted anchor"
 		}
 		run = append(run, text[j+1:j+1+end])
 		i = j + end + 2
@@ -191,22 +240,60 @@ func scenarioQuotedAnchorRun(text string, i int) []string {
 }
 
 // scenarioSkipAnchorRunGap advances past the separators and connector words
-// that may sit between two members of an anchor run.
-func scenarioSkipAnchorRunGap(text string, i int) int {
+// that may sit between two members of an anchor run. It reports a blank line
+// before consuming the next paragraph, because a later paragraph is prose,
+// not another anchor for the preceding path.
+func scenarioSkipAnchorRunGap(text string, i int) (int, bool) {
+	lineBreaks := 0
 	for i < len(text) {
+		if text[i] == '\n' {
+			lineBreaks++
+			i++
+			if lineBreaks >= 2 {
+				return i, true
+			}
+			continue
+		}
 		if strings.IndexByte(scenarioAnchorRunSeparators, text[i]) >= 0 {
 			i++
+			continue
+		}
+		if strings.HasPrefix(text[i:], "§") {
+			i += len("§")
 			continue
 		}
 		next := i + len(scenarioAnchorRunConnector)
 		if strings.HasPrefix(text[i:], scenarioAnchorRunConnector) && next < len(text) &&
 			strings.IndexByte(scenarioAnchorRunSeparators, text[next]) >= 0 {
 			i = next
+			lineBreaks = 0
 			continue
 		}
-		return i
+		return i, false
 	}
-	return i
+	return i, false
+}
+
+func scenarioCitationRequiresAnchor(text string, start, end int) bool {
+	paragraphStart, paragraphEnd := scenarioParagraphBounds(text, start, end)
+	paragraph := strings.ToLower(text[paragraphStart:paragraphEnd])
+	return strings.Contains(paragraph, "contract anchor")
+}
+
+var scenarioParagraphBoundary = regexp.MustCompile(`\r?\n[ \t]*\r?\n`)
+
+func scenarioParagraphBounds(text string, start, end int) (int, int) {
+	paragraphStart, paragraphEnd := 0, len(text)
+	for _, boundary := range scenarioParagraphBoundary.FindAllStringIndex(text, -1) {
+		if boundary[0] < start {
+			paragraphStart = boundary[1]
+		}
+		if boundary[0] >= end {
+			paragraphEnd = boundary[0]
+			break
+		}
+	}
+	return paragraphStart, paragraphEnd
 }
 
 // scenarioCollapseForAnchor normalizes a card quote and a doc body to the same

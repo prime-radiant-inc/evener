@@ -85,12 +85,12 @@ var scenarioPatternKillAllowedMentions = map[string][]string{
 		"# by its COMMAND LINE with `pgrep -f` / `pkill -f`. That command line therefore",
 		// Cleanup for the run's OWN stall probe, after the assertion that it
 		// should already be dead has failed. The pattern is what makes this safe:
-		// the probe's duration carries this run's zero-padded pid, so it cannot
-		// match a concurrent selftest's probe. Before kata qw8e both runs spawned
-		// a fixed `sleep 987654` and this line reaped the other run's probe while
-		// that run was still polling for it.
-		`pkill -f "$stall_probe"`,
-		`pkill -f "$report_stall_probe"`,
+		// the probe's command-line token carries this run's unique work-directory
+		// suffix, so it cannot match a concurrent selftest's probe. Before kata
+		// qw8e both runs spawned a fixed `sleep 987654` and this line reaped the
+		// other run's probe while that run was still polling for it.
+		`pkill -f "$stall_probe_token"`,
+		`pkill -f "$report_stall_probe_token"`,
 	},
 	"test/scenarios/model-switch-providers-live.md": {
 		"never a `pkill -f 'serf serve'` pattern, which would also kill a",

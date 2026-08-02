@@ -9,14 +9,14 @@
 //
 // Column layout: PaneScaffold's `body` slot (the transcript, scrollable) is
 // the ONLY part of this pane that grows/shrinks with content - composer and
-// status row sit in the `footer` slot instead, which PaneScaffold pins
-// outside the scroll region (flex:none, always after body), so they never
-// scroll out of view regardless of transcript length. LivenessLine lives
+// status row sit in the `footer` slot instead, which PaneScaffold keeps
+// after the body; when AskDock is active, that footer can shrink to the
+// pane's actual allocation. LivenessLine lives
 // here too now (kata x47h): FlowOverlay's `top` slot is a non-reserved
 // absolute overlay floating over the scrollable transcript, so the one
 // thing every liveness message needs - never landing on top of transcript
-// text - is exactly what that slot cannot promise. The footer's flex:none
-// layout can. PendingChips travels with the composer (it's contextually
+// text - is exactly what that slot cannot promise. The footer's layout can.
+// PendingChips travels with the composer (it's contextually
 // "chips beside the composer", per its own doc comment) and shares its
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome (the status row) stays full-width beneath, reading

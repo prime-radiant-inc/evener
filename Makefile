@@ -153,7 +153,7 @@ override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 # aggregate lint runner. The six fuzz-*-selftest suites listed here are
 # fixture-contained: their git bisect, worktree, and go-test operations stay in
 # throwaway worlds rather than touching this repository.
-SELFTEST_SCRIPTS := run-module-lint run-module-tests merge-approval-gate disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation tmux-read tmux-send fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
+SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-debris merge-approval-gate disk-reclaim web-preflight report-orphaned-worktrees report-tmp-debris live-eval-isolation live-compaction-eval tmux-read tmux-send scenario-cite-migrate fuzz-bisect fuzz-continuous fuzz-coverage-global fuzz-drive fuzz-oracle-audit fuzz-triage
 
 # selftest hangs off `make test` because a script selftest is a test. The runner
 # starts this wave after protected wave one. It stays off `make lint` because
@@ -166,12 +166,30 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests merge-approval-gate disk-re
 # machine little while it overlaps the later streams. The six fuzz
 # selftests are fixture-contained (seam-driven stubs, mktemp worlds) and never
 # touch this repo, so they are safe in the same wave.
+# The worker wrapper owns the actual suite PID so an interrupted recipe can
+# forward a signal and wait before removing the diagnostic directory.
 selftest:
-	@set -u; fail=0; \
+	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
+	stop_children() { for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; }; \
+	cleanup() { \
+		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
+		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
+		rm -rf "$$dir"; \
+	}; \
+	trap 'status=$$?; cleanup; exit "$$status"' 0; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	run_worker() { \
+		s="$$1"; start="$$(date +%s)"; \
+		scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
+		trap 'kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
+		wait "$$child"; status="$$?"; end="$$(date +%s)"; \
+		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
+		trap - HUP INT TERM; echo "$$status" >"$$dir/$$s.status"; \
+	}; \
 	for s in $(SELFTEST_SCRIPTS); do \
-		{ /usr/bin/time -p scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1; \
-		  echo $$? >"$$dir/$$s.status"; } & \
+		run_worker "$$s" & \
+		pids="$$pids $$!"; \
 	done; \
 	wait; \
 	for s in $(SELFTEST_SCRIPTS); do \
@@ -180,8 +198,8 @@ selftest:
 		else \
 			printf 'FAIL  %-26s\n' "$$s"; cat "$$dir/$$s.log"; fail=1; \
 		fi; \
-	done; \
-	rm -rf "$$dir"; \
+		done; \
+	normal=1; \
 	exit $$fail
 
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
@@ -436,7 +454,7 @@ lint-naming:
 # configuration in golangci-lint is not the Makefile gate and may not run in
 # every lint mode.
 lint-gofmt:
-	$(call run_quiet_lint,files="$$(gofmt -l .)"; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
+	$(call run_quiet_lint,files="$$(gofmt -l .)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # lint-serffuzz is the compile floor for the //go:build serffuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and

@@ -1,11 +1,12 @@
 package serf_test
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -85,8 +86,9 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 //
 // A symbol is anything a card legitimately anchors to: a func or method, a
 // type, a package-level or grouped const or var, a struct field, an interface
-// method. `Type.Method` resolves on its last element, because that is the
-// declaration go/ast can see.
+// method. Receiver-qualified names such as `Type.Method` are preserved; an
+// unqualified alias remains available only when that name is unique in the
+// file, so a collision cannot make a citation appear to resolve by accident.
 func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	byBase := scenarioGoFilesByBase(t)
 	declared := map[string]map[string]bool{}
@@ -102,9 +104,6 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 				cited, symbol := m[1], m[2]
 				if symbol == "" {
 					continue
-				}
-				if dot := strings.LastIndexByte(symbol, '.'); dot >= 0 {
-					symbol = symbol[dot+1:]
 				}
 				checked++
 				found := false
@@ -144,6 +143,78 @@ func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	}
 }
 
+func TestScenarioDeclarationsPreserveReceiverQualification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "methods.go")
+	const source = `package fixture
+
+type Alpha struct {
+	Field int
+}
+type Beta struct {
+	Field int
+}
+type Contract interface {
+	Do()
+}
+
+func (Alpha) Run() {}
+func (*Beta) Run() {}
+`
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	names, err := scenarioDeclarationsIn(map[string]map[string]bool{}, path)
+	if err != nil {
+		t.Fatalf("scenarioDeclarationsIn: %v", err)
+	}
+	for _, want := range []string{"Alpha.Run", "Beta.Run", "Alpha.Field", "Contract.Do"} {
+		if !names[want] {
+			t.Fatalf("declarations missing qualified method %q: %v", want, names)
+		}
+	}
+	for _, ambiguous := range []string{"Run", "Field"} {
+		if names[ambiguous] {
+			t.Fatalf("ambiguous unqualified declaration %q was accepted: %v", ambiguous, names)
+		}
+	}
+	if !names["Do"] {
+		t.Fatalf("unique unqualified interface method was rejected: %v", names)
+	}
+}
+
+func TestScenarioTrackedGoFilesByBaseIgnoresUntrackedFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"tracked.go", "deleted.go", "untracked.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package fixture\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for _, args := range [][]string{{"init", "--quiet"}, {"add", "tracked.go", "deleted.go"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, "deleted.go")); err != nil {
+		t.Fatalf("remove deleted fixture: %v", err)
+	}
+
+	byBase, err := scenarioTrackedGoFilesByBase(root)
+	if err != nil {
+		t.Fatalf("scenarioTrackedGoFilesByBase: %v", err)
+	}
+	if got := byBase["tracked.go"]; len(got) != 1 || got[0] != "tracked.go" {
+		t.Fatalf("tracked Go files = %v, want tracked.go only", got)
+	}
+	if _, ok := byBase["untracked.go"]; ok {
+		t.Fatalf("untracked Go file appeared in tracked index: %v", byBase["untracked.go"])
+	}
+	if _, ok := byBase["deleted.go"]; ok {
+		t.Fatalf("deleted Go file appeared in checkout index: %v", byBase["deleted.go"])
+	}
+}
+
 // scenarioDeclarationsIn returns every name a Go file declares — funcs and
 // methods, types, package-level and grouped consts and vars, struct fields,
 // interface methods — memoized across citations into the same file.
@@ -156,22 +227,31 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 		return nil, err
 	}
 	names := map[string]bool{}
+	unqualifiedCounts := map[string]int{}
 	for _, decl := range parsed.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			names[decl.Name.Name] = true
+			unqualifiedCounts[decl.Name.Name]++
+			if receiver := scenarioReceiverName(decl.Recv); receiver != "" {
+				names[receiver+"."+decl.Name.Name] = true
+			}
 		case *ast.GenDecl:
 			for _, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
-					names[spec.Name.Name] = true
-					scenarioAddMemberNames(names, spec.Type)
+					unqualifiedCounts[spec.Name.Name]++
+					scenarioAddMemberNames(names, unqualifiedCounts, spec.Name.Name, spec.Type)
 				case *ast.ValueSpec:
 					for _, name := range spec.Names {
-						names[name.Name] = true
+						unqualifiedCounts[name.Name]++
 					}
 				}
 			}
+		}
+	}
+	for name, count := range unqualifiedCounts {
+		if count == 1 {
+			names[name] = true
 		}
 	}
 	cache[path] = names
@@ -179,8 +259,10 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 }
 
 // scenarioAddMemberNames records a struct type's field names and an interface
-// type's method names; cards anchor to both.
-func scenarioAddMemberNames(names map[string]bool, typ ast.Expr) {
+// type's method names; cards anchor to both. It records the qualified name
+// immediately and defers the unqualified alias until its file-wide count is
+// known, so same-named members cannot mask one another.
+func scenarioAddMemberNames(names map[string]bool, unqualifiedCounts map[string]int, typeName string, typ ast.Expr) {
 	var fields *ast.FieldList
 	switch typ := typ.(type) {
 	case *ast.StructType:
@@ -192,34 +274,69 @@ func scenarioAddMemberNames(names map[string]bool, typ ast.Expr) {
 	}
 	for _, field := range fields.List {
 		for _, name := range field.Names {
-			names[name.Name] = true
+			unqualifiedCounts[name.Name]++
+			names[typeName+"."+name.Name] = true
 		}
 	}
 }
 
-// scenarioGoFilesByBase indexes every Go file in the worktree by base name, so
-// a cited path suffix can be resolved without rewalking the tree per citation.
+// scenarioReceiverName returns the declared receiver type name, including the
+// base type inside pointer and generic receiver expressions.
+func scenarioReceiverName(fields *ast.FieldList) string {
+	if fields == nil || len(fields.List) == 0 {
+		return ""
+	}
+	var receiverName func(ast.Expr) string
+	receiverName = func(expr ast.Expr) string {
+		switch expr := expr.(type) {
+		case *ast.Ident:
+			return expr.Name
+		case *ast.StarExpr:
+			return receiverName(expr.X)
+		case *ast.IndexExpr:
+			return receiverName(expr.X)
+		case *ast.IndexListExpr:
+			return receiverName(expr.X)
+		case *ast.ParenExpr:
+			return receiverName(expr.X)
+		default:
+			return ""
+		}
+	}
+	return receiverName(fields.List[0].Type)
+}
+
+// scenarioTrackedGoFilesByBase indexes tracked Go files by base name, so a
+// cited path suffix can be resolved without rewalking the tree per citation.
+func scenarioTrackedGoFilesByBase(root string) (map[string][]string, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go")
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	byBase := map[string][]string{}
+	for _, path := range strings.Split(string(raw), "\x00") {
+		if path == "" {
+			continue
+		}
+		path = filepath.ToSlash(path)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat tracked Go file %s: %w", path, err)
+		}
+		byBase[filepath.Base(path)] = append(byBase[filepath.Base(path)], path)
+	}
+	return byBase, nil
+}
+
+// scenarioGoFilesByBase indexes tracked Go files in the worktree by base name.
 func scenarioGoFilesByBase(t *testing.T) map[string][]string {
 	t.Helper()
-	byBase := map[string][]string{}
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if name := d.Name(); name == ".git" || name == "node_modules" {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(path) == ".go" {
-			base := d.Name()
-			byBase[base] = append(byBase[base], filepath.ToSlash(path))
-		}
-		return nil
-	})
+	byBase, err := scenarioTrackedGoFilesByBase(".")
 	if err != nil {
-		t.Fatalf("walking the worktree for Go files: %v", err)
+		t.Fatalf("listing tracked Go files: %v", err)
 	}
 	return byBase
 }

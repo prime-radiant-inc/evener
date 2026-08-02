@@ -221,9 +221,11 @@ func TestCompactedHookToolExchangeProjectsValidProviderMessages(t *testing.T) {
 	tests := []struct {
 		name           string
 		preserveRecent int
+		steering       bool
 	}{
 		{name: "cutoff on tool results", preserveRecent: 2},
 		{name: "cutoff on hook marker", preserveRecent: 3},
+		{name: "cutoff on hook marker before steering", preserveRecent: 4, steering: true},
 	}
 
 	for _, tc := range tests {
@@ -243,10 +245,15 @@ func TestCompactedHookToolExchangeProjectsValidProviderMessages(t *testing.T) {
 						},
 					}},
 				}),
-				schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")),
-				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
-				{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 			}
+			history = append(history, schema.NewTurn(schema.TurnHookCompleted, llm.System("PreToolUse hook exit 0")))
+			if tc.steering {
+				history = append(history, schema.NewTurn(schema.TurnSteering, llm.User("continue after the hook")))
+			}
+			history = append(history,
+				schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", "ok", false)),
+				schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+			)
 			cm := contextmgr.NewManager(NewOpenAIProfile("gpt-5.2"), nil)
 			cm.PreserveRecentTurns = tc.preserveRecent
 			cm.ForceCompact(context.Background(), &history, "", func(events.EventKind, events.EventData) {})

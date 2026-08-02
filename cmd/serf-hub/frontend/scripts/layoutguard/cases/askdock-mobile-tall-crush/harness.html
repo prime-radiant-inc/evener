@@ -17,13 +17,15 @@
   }
   /* Mirrors the mobile chrome the ask dock lives inside:
      - .host: StackHost's full-bleed phone pane (PaneScaffold .pane:
-       height 100%, flex column, overflow hidden) at iPhone width.
+       height 100%, flex column, overflow hidden) at iPhone width. The
+       fixed height deliberately models a pane shorter than the viewport.
      - .transcript: PaneScaffold .body (flex 1, min-height 0, own scroll).
-     - .paneFooter: PaneScaffold .footer (flex: none, NO max-height) -
-       the Composer/AskDock mount point. */
+     - .paneFooter: PaneScaffold .footer when AskDock is present (a
+       shrinking flex item with a zero minimum) - the Composer/AskDock
+       mount point. */
   .host {
     width: 360px;
-    height: 100vh;
+    height: 360px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -36,7 +38,11 @@
     padding: var(--space-4);
   }
   .paneFooter {
-    flex: none;
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 70%;
+    display: flex;
+    flex-direction: column;
     padding: var(--space-3) var(--space-4);
     border-top: 1px solid var(--edge);
   }
@@ -93,6 +99,11 @@
               <input type="radio" name="g">
               <span class="optionChip"><span class="chip neutral">I'll quiet the other session</span></span>
               <span class="optionDetail">The kata-flake session's vitest farm (load avg 101) is the interference. If you stop it, I re-run the full suite on a quiet machine and finish normally.</span>
+            </label>
+            <label class="option">
+              <input type="radio" name="g">
+              <span class="optionChip"><span class="chip neutral">A deliberately long valid option label that must remain inside its chip without escaping the card</span></span>
+              <span class="optionDetail">The option label is valid content, not a reason for the card or pane to overflow.</span>
             </label>
             <div class="alternativeRow">
               <label><input type="radio" name="g"><span>Something else…</span></label>

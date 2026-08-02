@@ -2,6 +2,8 @@
  * PaneScaffold's footer slot, which already frames the whole footer group
  * (composer + status row) with the pane's edge padding and top hairline. */
 .composer {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

@@ -75,6 +75,37 @@ func TestCISetsStrictGitleaksModeOnScanSteps(t *testing.T) {
 	}
 }
 
+func TestMakeTargetsRunByWorkflowUsesShellCommandBoundaries(t *testing.T) {
+	path := t.TempDir() + "/workflow.yml"
+	const workflow = `jobs:
+  probe:
+    steps:
+      - run: |
+          # make comment-only should not count
+          echo make echoed
+          printf '%s\n' "make quoted"
+          echo ready # make inline-comment
+          make lint
+          true && make vet
+          make fuzz # a real command with a trailing comment
+`
+	if err := os.WriteFile(path, []byte(workflow), 0o600); err != nil {
+		t.Fatalf("write workflow fixture: %v", err)
+	}
+
+	targets := makeTargetsRunByWorkflow(t, path)
+	for _, want := range []string{"lint", "vet", "fuzz"} {
+		if !targets[want] {
+			t.Fatalf("fixture lost real make target %q: %v", want, targets)
+		}
+	}
+	for _, unwanted := range []string{"echoed", "quoted", "inline-comment"} {
+		if targets[unwanted] {
+			t.Fatalf("fixture treated shell text as make target %q: %v", unwanted, targets)
+		}
+	}
+}
+
 // TestEveryLintFamilyJoinsTheAggregateGate catches the other end of the same
 // drift: a `lint-*` rule that exists in the Makefile but hangs off nothing, so
 // neither `make lint` nor CI ever runs it. Name-based by necessity — a family
@@ -162,14 +193,12 @@ func makeTargetsRunByWorkflow(t *testing.T, path string) map[string]bool {
 	targets := map[string]bool{}
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
-			// Commands only: a `make lint` written in a comment is prose, and
-			// prose is exactly the state this audit rejects.
-			for _, command := range shellCommandLines(step.Run) {
-				fields := strings.Fields(command)
-				for i, field := range fields {
-					if field == "make" && i+1 < len(fields) {
-						targets[fields[i+1]] = true
-					}
+			// Inspect only the executable word at each shell command boundary.
+			// A `make lint` written in a comment or echoed as output is prose,
+			// and prose is exactly the state this audit rejects.
+			for _, command := range shellCommandInvocations(step.Run) {
+				if len(command) >= 2 && command[0] == "make" {
+					targets[command[1]] = true
 				}
 			}
 		}

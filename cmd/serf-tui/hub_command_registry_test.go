@@ -33,3 +33,13 @@ func TestHubSlashCommandHelpListsQuit(t *testing.T) {
 		t.Fatalf("help should advertise /quit:\n%s", help)
 	}
 }
+
+func TestHubSlashCommandHelpDescribesBrowseMessages(t *testing.T) {
+	help := hubCommandHelp(hubSessionCapabilities{Send: true})
+	if !strings.Contains(help, "Browse transcript / select messages") {
+		t.Fatalf("help should describe browse message selection:\n%s", help)
+	}
+	if strings.Contains(help, "Browse transcript / select turns") {
+		t.Fatalf("help should not describe browse rows as turns:\n%s", help)
+	}
+}

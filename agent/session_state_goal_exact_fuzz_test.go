@@ -157,7 +157,7 @@ func fuzzExactNamer(t *testing.T) {
 	launcher.closing = true
 	launcher.launchCompactionNamer(context.Background(), eligible)
 	launcher.closing = false
-	launcher.launchCompactionNamer(nil, eligible)
+	launcher.launchCompactionNamer(context.Background(), eligible)
 	launcher.sendersWG.Wait()
 
 	launcher.naming.value, launcher.naming.source = "manual", sessionNameSourceUser

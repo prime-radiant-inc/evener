@@ -212,11 +212,7 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	s.mu.Unlock()
 	go func() {
 		defer s.sendersWG.Done()
-		nameCtx := ctx
-		if nameCtx == nil {
-			nameCtx = context.Background()
-		}
-		err := s.nameSessionFromText(nameCtx, sessionNameSourcePrompt, input)
+		err := s.nameSessionFromText(ctx, sessionNameSourcePrompt, input)
 		s.clearPromptNamePendingAfterAttempt(err)
 	}()
 }
@@ -251,11 +247,7 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 	s.mu.Unlock()
 	go func() {
 		defer s.sendersWG.Done()
-		nameCtx := ctx
-		if nameCtx == nil {
-			nameCtx = context.Background()
-		}
-		_ = s.nameSessionFromCompactionTurn(nameCtx, turn)
+		_ = s.nameSessionFromCompactionTurn(ctx, turn)
 	}()
 }
 

@@ -8,7 +8,7 @@
 // the whole tree and the user gets a white page (kata 1s47). Scoped here, the
 // same failure costs the workspace and nothing else: the rail, the connection
 // banner, the toasts and the command palette all stay up.
-import { Component, lazy, type ReactNode, Suspense, useState } from "react";
+import { Component, type LazyExoticComponent, lazy, type ReactNode, Suspense, useState } from "react";
 import { Button, EmptyState } from "../widgets";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 
@@ -66,16 +66,14 @@ class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBound
   }
 }
 
-function lazyDockHost(cacheBust = false) {
+type DockHostComponent = () => ReactNode;
+type DockHostChunk = LazyExoticComponent<DockHostComponent>;
+
+function lazyDockHost(cacheBust = false): DockHostChunk {
   // DockHost is a named export, so the import() promise is adapted the same
   // way App.tsx's own DevHarnessRoute does for dev/DevHarness.tsx.
   return lazy(() => loadDockHost(cacheBust).then((m) => ({ default: m.DockHost })));
 }
-
-// A lazy() component carries a call signature, so useState would otherwise
-// read one as its own lazy-initializer callback and infer the state as
-// whatever that call returns. Naming the state type keeps it a component.
-type DockHostChunk = ReturnType<typeof lazyDockHost>;
 
 // Module scope, not per mount: a lazy() component caches its resolved module
 // on its own payload, so one shared component means the chunk is fetched once
@@ -101,7 +99,12 @@ export function DockRegion() {
   const [retryCount, setRetryCount] = useState(0);
   const retry = () => {
     setRetryCount((count) => count + 1);
-    setHost(() => lazyDockHost(true));
+    const nextHost = lazyDockHost(true);
+    // Publish the new payload before it resolves so an unmount/remount during
+    // the retry shares the in-flight request instead of restoring the rejected
+    // payload that caused the boundary.
+    dockHost = nextHost;
+    setHost(() => nextHost);
   };
 
   return (

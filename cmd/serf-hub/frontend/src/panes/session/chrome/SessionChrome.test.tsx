@@ -475,6 +475,7 @@ test("the chrome CSS keeps the menu off its own line (CSS source, jsdom has no l
   // The top-level row must not wrap: wrapping is what used to move .right
   // onto a line of its own.
   expect(chrome![1]).not.toContain("flex-wrap: wrap");
+  expect(chrome![1]).toContain("flex: none");
   const body = css.match(/\.body \{([^}]*)\}/);
   expect(body).not.toBeNull();
   // .body owns the wrapping instead, and may shrink below its content

@@ -7,10 +7,13 @@ type shellCommandLine struct {
 	indent int
 }
 
-var shellCommandOperators = []string{"&&", "||", "|&", "|", ";"}
+var shellCommandOperators = []string{";;&", "&&", "||", "|&", ";;", ";&", "|", ";"}
 
 func shellOperatorAt(command string, index int) string {
 	for _, operator := range shellCommandOperators {
+		if operator == "|" && index > 0 && command[index-1] == '>' {
+			continue
+		}
 		if strings.HasPrefix(command[index:], operator) {
 			return operator
 		}
@@ -30,6 +33,21 @@ func shellSyntheticBoundaryEnd(command string, end int) int {
 		return -1
 	}
 	return next
+}
+
+func shellCommentAt(command string, index, lineStart int) bool {
+	if index == lineStart {
+		return true
+	}
+	previous := command[index-1]
+	if previous != ' ' && previous != '\t' {
+		return false
+	}
+	backslashes := 0
+	for cursor := index - 2; cursor >= 0 && command[cursor] == '\\'; cursor-- {
+		backslashes++
+	}
+	return backslashes%2 == 0
 }
 
 func formatShellCommand(command string) []shellCommandLine {
@@ -106,7 +124,7 @@ func formatShellCommand(command string) []shellCommandLine {
 			continue
 		}
 
-		if character == '#' && (index == lineStart || command[index-1] == ' ' || command[index-1] == '\t') {
+		if character == '#' && shellCommentAt(command, index, lineStart) {
 			comment = true
 			index++
 			continue

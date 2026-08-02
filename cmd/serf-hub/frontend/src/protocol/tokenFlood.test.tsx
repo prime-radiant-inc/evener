@@ -207,6 +207,10 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     }
   });
 
+  // This probe intentionally performs 100 separate synchronous React commits.
+  // Its timeout is scoped here because scheduler starvation can stretch that
+  // real work without changing the render-isolation contract below. The
+  // 60-second ceiling is a hang tripwire, not a performance assertion.
   test("100 deltas on a live item do not re-render an already-settled sibling item in the same turn - render-count probe", async () => {
     // Established pattern for observing per-item render behavior:
     // TurnBlock.test.tsx registers a synthetic item type via
@@ -305,5 +309,5 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     // wrap was dropped - loosening this number is exactly the kind of
     // change that must be a conscious decision, not an accommodation.
     expect(rerendersDuringFlood).toBe(0);
-  });
+  }, 60_000);
 });

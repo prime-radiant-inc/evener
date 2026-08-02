@@ -113,6 +113,24 @@ test("Retry fetches the chunk again and mounts the host on the second attempt", 
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
 
+test("a successful retry is reused after DockRegion unmounts and remounts", async () => {
+  vi.mocked(loadDockHost)
+    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockResolvedValueOnce({ DockHost: StubDockHost });
+  const user = userEvent.setup();
+
+  const first = render(<DockRegion />);
+  await screen.findByText("Couldn't load the workspace");
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+
+  first.unmount();
+  render(<DockRegion />);
+
+  expect(await screen.findByText("dock host mounted")).toBeTruthy();
+  expect(vi.mocked(loadDockHost).mock.calls).toEqual([[false], [true]]);
+});
+
 test("a cache-busted retry that still names a stale hashed chunk offers a page reload", async () => {
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
   const reload = vi.fn();

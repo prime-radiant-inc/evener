@@ -1,6 +1,7 @@
 package codexlaunch
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -202,6 +203,151 @@ func TestCodexLauncherShutdownWaitsForPipeForwarders(t *testing.T) {
 			t.Fatalf("Shutdown returned an error after pipe forwarding finished: %v", err)
 		}
 	})
+}
+
+// A descendant can retain the app-server's write end after the direct process
+// exits, so the launch-owned read never reaches EOF. Shutdown gives buffered
+// output a grace period, then closes the read end and returns instead of
+// waiting forever on that descendant.
+func TestCodexLauncherBoundsDescendantHeldPipeDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const final = "codex: final output before the descendant-held pipe"
+		reader := &blockingCodexReader{
+			first:    []byte(final + "\n"),
+			released: make(chan struct{}),
+		}
+		process := newSeedProcess("", "")
+		process.stdout = reader
+		var log syncBuffer
+		logged := log.await(final)
+
+		l := NewCodexLauncher(nil)
+		l.client = seedClient(http.StatusOK, nil)
+		l.logOutput = &log
+		useSeedRuntime(l, process, 0, false)
+
+		launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{
+			ID:     "held",
+			Listen: "ws://127.0.0.1:4321",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case <-logged:
+		default:
+			t.Fatalf("final output was not forwarded before shutdown: %q", log.String())
+		}
+
+		process.Exit()
+		<-launched.Exited
+		shutdownDone := make(chan error, 1)
+		l.Running["held"] = launched
+		go func() { shutdownDone <- l.Shutdown(context.Background()) }()
+		time.Sleep(codexDrainGracePeriod)
+		synctest.Wait()
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				t.Fatalf("Shutdown returned an error: %v", err)
+			}
+		default:
+			t.Fatal("Shutdown remained blocked on a descendant-held pipe")
+		}
+		select {
+		case <-reader.released:
+		default:
+			t.Fatal("bounded shutdown did not close the held read end")
+		}
+		if !strings.Contains(log.String(), final) {
+			t.Fatalf("final output was lost before bounded shutdown: %q", log.String())
+		}
+	})
+}
+
+func TestReadCodexLogLineRemovesSplitCRLF(t *testing.T) {
+	tests := []struct {
+		name        string
+		chunks      [][]byte
+		wantLine    string
+		wantDropped int
+	}{
+		{
+			name: "terminator split after kept bytes",
+			chunks: [][]byte{
+				[]byte(strings.Repeat("k", maxCodexLogLine-1) + "\r"),
+				[]byte("\n"),
+			},
+			wantLine: strings.Repeat("k", maxCodexLogLine-1),
+		},
+		{
+			name: "terminator split after dropped bytes",
+			chunks: [][]byte{
+				[]byte(strings.Repeat("k", maxCodexLogLine)),
+				[]byte(strings.Repeat("d", maxCodexLogLine-1) + "\r"),
+				[]byte("\n"),
+			},
+			wantLine:    strings.Repeat("k", maxCodexLogLine),
+			wantDropped: maxCodexLogLine - 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := bufio.NewReaderSize(&chunkedCodexReader{chunks: tt.chunks}, maxCodexLogLine)
+			line, dropped, err := readCodexLogLine(reader)
+			if err != nil {
+				t.Fatalf("readCodexLogLine error = %v", err)
+			}
+			if string(line) != tt.wantLine {
+				t.Fatalf("line length/content = %d/%q, want %d/%q", len(line), tailOf(string(line)), len(tt.wantLine), tailOf(tt.wantLine))
+			}
+			if dropped != tt.wantDropped {
+				t.Fatalf("dropped = %d, want %d", dropped, tt.wantDropped)
+			}
+			if strings.Contains(string(line), "\r") {
+				t.Fatal("retained line contains a framing carriage return")
+			}
+		})
+	}
+}
+
+type blockingCodexReader struct {
+	first    []byte
+	released chan struct{}
+	once     sync.Once
+}
+
+func (r *blockingCodexReader) Read(p []byte) (int, error) {
+	if len(r.first) > 0 {
+		n := copy(p, r.first)
+		r.first = r.first[n:]
+		return n, nil
+	}
+	<-r.released
+	return 0, errors.New("reader closed")
+}
+
+func (r *blockingCodexReader) Close() error {
+	r.once.Do(func() { close(r.released) })
+	return nil
+}
+
+type chunkedCodexReader struct {
+	chunks  [][]byte
+	current []byte
+}
+
+func (r *chunkedCodexReader) Read(p []byte) (int, error) {
+	for len(r.current) == 0 && len(r.chunks) > 0 {
+		r.current, r.chunks = r.chunks[0], r.chunks[1:]
+	}
+	if len(r.current) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.current)
+	r.current = r.current[n:]
+	return n, nil
 }
 
 // A codex app-server that fails after launch says so on the pipes the hub is

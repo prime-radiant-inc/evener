@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -43,19 +44,35 @@ func ExplainJSONError(toolName string, params map[string]any, parseErr error, ra
 		toolName, parseErr, excerpt, minimalExample(params))
 }
 
-// parseExcerpt renders the region of raw that failed parsing. When the error
-// carries a byte offset (encoding/json.SyntaxError), it shows a window around
-// that offset; otherwise (e.g. truncated input) it shows the tail, which is
-// where the parser stopped. Returns "" when raw is empty.
+// parseExcerpt renders the region of raw that failed parsing. A decoder syntax
+// error shows a window around its one-based byte offset; an error that only
+// carries EOF shows the tail, which is where the parser stopped. Returns ""
+// when raw is empty.
 func parseExcerpt(parseErr error, raw []byte) string {
 	s := string(raw)
 	if s == "" {
 		return ""
 	}
 	const window = 120
+	if isUnexpectedJSONEOF(parseErr) {
+		tail := s
+		if len(tail) > window {
+			tail = "..." + tail[len(tail)-window:]
+		}
+		return fmt.Sprintf("Your input ended with: %q.", tail)
+	}
 	var se *json.SyntaxError
-	if errors.As(parseErr, &se) && se.Offset > 0 && se.Offset <= int64(len(s)) {
-		off := int(se.Offset)
+	if errors.As(parseErr, &se) && se.Offset > 0 {
+		position := se.Offset - 1 // SyntaxError.Offset is one-based.
+		if se.Error() == "unexpected end of JSON input" {
+			// The decoder stopped after the final byte; there is no offending
+			// byte to place the marker before, so keep the raw suffix contiguous.
+			position = int64(len(s))
+		}
+		if position > int64(len(s)) {
+			position = int64(len(s))
+		}
+		off := int(position)
 		start := max(off-window/2, 0)
 		end := min(off+window/2, len(s))
 		prefix, suffix := "", ""
@@ -73,6 +90,13 @@ func parseExcerpt(parseErr error, raw []byte) string {
 		tail = "..." + tail[len(tail)-window:]
 	}
 	return fmt.Sprintf("Your input ended with: %q.", tail)
+}
+
+func isUnexpectedJSONEOF(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return false
 }
 
 func requiredList(params map[string]any) []string {

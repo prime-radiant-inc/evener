@@ -16,6 +16,10 @@
 export default function assert(m) {
   const failures = [];
 
+  if (m.host.height >= m.viewport.h) {
+    failures.push(`fixture host is ${m.host.height}px, not shorter than the ${m.viewport.h}px viewport`);
+  }
+
   for (const opt of m.options) {
     if (opt.chipLineBoxes !== 1) {
       failures.push(`option "${opt.label}": chip label wrapped onto ${opt.chipLineBoxes} line boxes (chip width ${opt.chipWidth}px in a ${opt.rowWidth}px row)`);
@@ -40,7 +44,7 @@ export default function assert(m) {
   const transcriptFloor = 0.2 * m.host.height;
   if (m.transcriptHeight < transcriptFloor) {
     failures.push(
-      `transcript squeezed to ${m.transcriptHeight}px of a ${m.host.height}px host (floor: 20%) - the ask consumed the conversation`,
+      `transcript squeezed to ${m.transcriptHeight}px of a ${m.host.height}px host (floor: 20%); dock ${m.dock.rect.top}..${m.dock.rect.bottom}, ${m.dock.clientHeight}px client/${m.dock.scrollHeight}px content - the ask consumed the conversation`,
     );
   }
 

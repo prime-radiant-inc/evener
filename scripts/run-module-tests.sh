@@ -132,14 +132,69 @@ module_test_flags() {
 
 logdir=""
 keep_failed_logs=0
+# A signal can arrive while a stream is running through /usr/bin/time and a
+# shell subshell, so the job PID alone is not enough to stop the actual test
+# process. Keep every stream job here and snapshot its descendants on exit.
+# This stays false until all streams have been joined, so unexpected exits keep
+# their logs even when no stream has reported a test failure.
+normal_completion=0
+active_pids=()
+
+forget_pid() {
+	local pid="$1" i
+	for i in ${!active_pids[@]+"${!active_pids[@]}"}; do
+		[ "${active_pids[$i]}" = "$pid" ] && active_pids[$i]=""
+	done
+}
+
+process_descendants() {
+	local parent="$1" child
+	for child in $(ps -axo pid=,ppid= 2>/dev/null | awk -v parent="$parent" '$2 == parent {print $1}'); do
+		process_descendants "$child"
+		printf '%s\n' "$child"
+	done
+}
+
+stop_children() {
+	local pid descendant
+	local -a descendants=()
+	for pid in ${active_pids[@]+"${active_pids[@]}"}; do
+		[ -n "$pid" ] || continue
+		for descendant in $(process_descendants "$pid"); do
+			descendants+=("$descendant")
+		done
+	done
+	for pid in ${descendants[@]+"${descendants[@]}"} ${active_pids[@]+"${active_pids[@]}"}; do
+		[ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || :
+	done
+	for pid in ${active_pids[@]+"${active_pids[@]}"}; do
+		[ -n "$pid" ] && wait "$pid" 2>/dev/null || :
+	done
+	active_pids=()
+}
 
 cleanup() {
+	stop_children
+	[ "$normal_completion" -eq 1 ] || keep_failed_logs=1
 	if [ -n "$logdir" ] && [ "$keep_failed_logs" -eq 0 ]; then
 		rm -rf "$logdir"
 	fi
 }
 
 trap cleanup EXIT
+
+interrupted() {
+	local status="$1" signal="$2"
+	keep_failed_logs=1
+	stop_children
+	printf 'run-module-tests.sh: interrupted by %s\n' "$signal" >&2
+	[ -n "$logdir" ] && printf 'full logs: %s\n' "$logdir" >&2
+	exit "$status"
+}
+
+trap 'interrupted 129 SIGHUP' HUP
+trap 'interrupted 130 SIGINT' INT
+trap 'interrupted 143 SIGTERM' TERM
 
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
@@ -171,7 +226,14 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
-		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		if [ "$ROOT_FULL" -ne 0 ]; then
+			# ROOT_FULL removes the runner's regular name filter so the root
+			# module uses go test's complete non-fuzz test surface. Fuzz-owned
+			# sanity functions stay under the explicit make fuzz gate.
+			/usr/bin/time -p go test $test_flags $extra -skip "$fuzz_test_skip" "${packages[@]}"
+		else
+			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
+		fi
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -229,7 +291,7 @@ run_wave() {
 		log="$(logpath "$m")"
 		extra="$(module_extra "$m")"
 		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
-		pids+=("$!"); names+=("$m")
+		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i
 	for i in "${!pids[@]}"; do
@@ -239,6 +301,7 @@ run_wave() {
 		else
 			printf 'FAIL  %-8s\n' "$m"; fail=1; failed_modules+=("$m")
 		fi
+		forget_pid "${pids[$i]}"
 	done
 }
 
@@ -252,6 +315,7 @@ finish_stream() {
 		fail=1
 		failed_modules+=("$name")
 	fi
+	forget_pid "$pid"
 }
 
 # Start the frontend gate first so it runs across both Go waves. It is joined
@@ -260,6 +324,7 @@ web_pid=""
 if [ "$WEB" -ne 0 ]; then
 	/usr/bin/time -p "${MAKE:-make}" test-web >"$(logpath web)" 2>&1 &
 	web_pid="$!"
+	active_pids+=("$web_pid")
 fi
 
 run_wave $WAVE1
@@ -268,6 +333,7 @@ selftest_pid=""
 if [ "$SELFTEST" -ne 0 ]; then
 	/usr/bin/time -p "${MAKE:-make}" selftest >"$(logpath selftest)" 2>&1 &
 	selftest_pid="$!"
+	active_pids+=("$selftest_pid")
 fi
 
 run_wave $WAVE2
@@ -298,4 +364,5 @@ if [ "$fail" -ne 0 ]; then
 	keep_failed_logs=1
 fi
 
+normal_completion=1
 exit "$fail"

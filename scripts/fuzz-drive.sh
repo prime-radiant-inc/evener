@@ -41,6 +41,7 @@
 #   SERF_FUZZ_SERF_BIN     serf binary       (default: built from ./cmd/serf)
 #   SERF_FUZZ_HARVEST_BIN  harvester binary  (default: go run ./cmd/serf-fuzz-harvest)
 #   SERF_FUZZ_GH           gh binary         (default: gh)
+#   SERF_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
 # Self-test (offline, deterministic, no real provider calls):
 #   scripts/fuzz-drive-selftest.sh
@@ -88,6 +89,7 @@ harvest_bin="${SERF_FUZZ_HARVEST_BIN:-}"
 gh="${SERF_FUZZ_GH:-gh}"
 # Backoff sleep is a seam so the self-test can make retries instant.
 sleep_cmd="${SERF_FUZZ_DRIVE_SLEEP:-sleep}"
+timeout_cmd="${SERF_FUZZ_DRIVE_TIMEOUT:-timeout}"
 
 # --- staging dirs ------------------------------------------------------------
 if [ -z "$state_dir" ]; then
@@ -138,7 +140,7 @@ for pm in $providers; do
 		while :; do
 			err="$work/run.$attempt.err"
 			( cd "$work" && SERF_FUZZ_RECORD=1 SERF_STATE_DIR="$state_dir" \
-				timeout "$per_task_timeout" "$serf_bin" \
+				"$timeout_cmd" "$per_task_timeout" "$serf_bin" \
 					--model "$pm" --max-rounds "$max_rounds" \
 					--reasoning-effort "$effort" --verbose "$task" \
 					>"$work/run.$attempt.out" 2>"$err" )

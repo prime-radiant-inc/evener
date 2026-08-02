@@ -57,6 +57,10 @@ type LaunchedCodex struct {
 	// drainComplete is closed after both app-server pipe forwarders have
 	// finished, so shutdown cannot cut off output that was already written.
 	drainComplete <-chan struct{}
+	// closePipes interrupts a drain whose writer was inherited by a descendant
+	// that outlived the app-server. It is idempotent so normal EOF cleanup and a
+	// bounded shutdown can safely race.
+	closePipes func()
 }
 
 type launchProcess interface {
@@ -87,6 +91,19 @@ type execLaunchProcess struct {
 	// The launch's ends. Closed here only when Start fails and no scanner will
 	// ever read them, which is what os/exec does with its own pipes.
 	launchEnds []*os.File
+}
+
+// closeOnceReadCloser makes the launch's forced drain cutoff safe to race with
+// the forwarder's normal deferred Close.
+type closeOnceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (r *closeOnceReadCloser) Close() error {
+	r.once.Do(func() { r.err = r.ReadCloser.Close() })
+	return r.err
 }
 
 func (p *execLaunchProcess) Cmd() *exec.Cmd                     { return p.cmd }
@@ -258,18 +275,47 @@ func (l *CodexLauncher) Shutdown(ctx context.Context) error {
 		select {
 		case <-launched.Exited:
 		case <-ctx.Done():
+			if launched.closePipes != nil {
+				launched.closePipes()
+			}
 			return ctx.Err()
 		}
 		if launched.drainComplete == nil {
 			continue
 		}
+		drainTimer := time.NewTimer(codexDrainGracePeriod)
 		select {
 		case <-launched.drainComplete:
+			stopTimer(drainTimer)
 		case <-ctx.Done():
+			stopTimer(drainTimer)
+			if launched.closePipes != nil {
+				launched.closePipes()
+			}
 			return ctx.Err()
+		case <-drainTimer.C:
+			if launched.closePipes != nil {
+				launched.closePipes()
+			}
 		}
 	}
 	return nil
+}
+
+// codexDrainGracePeriod gives output already written by the app-server time to
+// reach the hub after the direct child exits. When a descendant inherited the
+// pipe's write end, the read cannot reach EOF on its own; closing the launch's
+// read ends after this bound releases Shutdown without discarding the normal
+// final-output path.
+const codexDrainGracePeriod = time.Second
+
+func stopTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig) (*LaunchedCodex, error) {
@@ -301,10 +347,15 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	}
 	stderr, err := process.StderrPipe()
 	if err != nil {
+		_ = stdout.Close()
 		return nil, appwire.HubLaunchError("prepare codex app-server stderr: " + err.Error())
 	}
+	stdout = &closeOnceReadCloser{ReadCloser: stdout}
+	stderr = &closeOnceReadCloser{ReadCloser: stderr}
 	endpoints := make(chan string, 4)
 	if err := process.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, appwire.HubLaunchError("start codex app-server: " + err.Error())
 	}
 	prefix := codexLogPrefix(cfg.ID)
@@ -313,7 +364,17 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// endpoint-shaped line becomes a log line instead of a send nobody will
 	// take (kata e1nh).
 	launchDone := make(chan struct{})
-	defer close(launchDone)
+	launchReturned := false
+	closePipes := func() {
+		_ = stdout.Close()
+		_ = stderr.Close()
+	}
+	defer func() {
+		close(launchDone)
+		if !launchReturned {
+			closePipes()
+		}
+	}()
 	var forwarders sync.WaitGroup
 	forwarders.Add(2)
 	drainComplete := make(chan struct{})
@@ -345,12 +406,14 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	defer ticker.Stop()
 	for {
 		if endpoint != "" && CodexReady(waitCtx, l.client, endpoint) {
+			launchReturned = true
 			return &LaunchedCodex{
 				Cmd:           process.Cmd(),
 				process:       process,
 				endpoint:      endpoint,
 				Exited:        exited,
 				drainComplete: drainComplete,
+				closePipes:    closePipes,
 			}, nil
 		}
 		select {
@@ -514,12 +577,28 @@ func readCodexLogLine(reader *bufio.Reader) (line []byte, dropped int, err error
 		return dropCodexLineEnd(line), 0, err
 	}
 	kept := bytes.Clone(line)
+	pendingCR := false
 	for {
 		rest, restErr := reader.ReadSlice('\n')
-		dropped += len(dropCodexLineEnd(rest))
-		if !errors.Is(restErr, bufio.ErrBufferFull) {
-			return kept, dropped, restErr
+		if pendingCR {
+			if len(rest) == 0 || rest[0] != '\n' {
+				dropped++
+			}
+			pendingCR = false
 		}
+		if len(rest) > 0 && rest[0] == '\n' && bytes.HasSuffix(kept, []byte{'\r'}) {
+			kept = kept[:len(kept)-1]
+		}
+		if errors.Is(restErr, bufio.ErrBufferFull) {
+			if bytes.HasSuffix(rest, []byte{'\r'}) {
+				rest = rest[:len(rest)-1]
+				pendingCR = true
+			}
+			dropped += len(rest)
+			continue
+		}
+		dropped += len(dropCodexLineEnd(rest))
+		return kept, dropped, restErr
 	}
 }
 

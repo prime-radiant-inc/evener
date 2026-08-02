@@ -18,7 +18,7 @@ This spec is the authoritative UX design for the TUI dashboard, project drill-do
 - Make projects the primary grouping and drill-down path.
 - Keep history out of the home dashboard while still making project history reachable.
 - Let users open a session and stay in a chat-first flow without accidental dashboard exits.
-- Make `esc` useful for transcript review, selecting previous turns, and forking.
+- Make `esc` useful for transcript review, selecting previous messages, and forking.
 - Provide a reliable way back to the dashboard from any view.
 - Keep the TUI aligned with the hub API and remote-ready session refs.
 
@@ -271,11 +271,11 @@ ctrl+o            Go to dashboard.
 ### Session browse keys
 
 ```text
-up/down, j/k      Move selected turn or tool annotation.
+up/down, j/k      Move selected message or tool annotation.
 pgup/pgdn         Scroll transcript.
 home/end          Jump to transcript start/end.
 enter             Expand/collapse selected tool annotation or select a message.
-f                 Fork at the selected user turn.
+f                 Fork at the selected user message.
 c                 Copy selected message or tool summary.
 i                 Return to compose focus.
 esc               Return to compose focus.
@@ -287,37 +287,38 @@ ctrl+o            Go to dashboard.
 
 ## Transcript Browse And Fork
 
-`esc` from compose enters transcript browse. Browse makes previous turns selectable and exposes fork as a first-class action.
+`esc` from compose enters transcript browse. Browse makes transcript messages selectable and exposes fork as a first-class action.
 
 Selection behavior:
 
-- The initial browse selection is the most recent user turn.
-- Up/down moves across user and assistant messages.
-- Tool annotations are selectable below their parent message.
+- The initial browse selection is the most recent renderable transcript message.
+- Up/down moves across renderable user, assistant, and tool messages.
+- `f` forks only a selected user message.
 - The selected item is visually marked with a left rail and a short footer summary.
 
 Fork flow:
 
-1. User selects a prior user turn.
+1. User selects a persisted user message.
 2. User presses `f`.
-3. TUI opens a fork editor overlay with the selected message prefilled.
-4. User edits the message and optionally labels the original branch.
-5. Confirm calls the hub fork API with parent ref, selected turn, edited message, and label.
+3. TUI returns to the ordinary composer with the selected message prefilled. The composer enters `fork draft` mode and shows `enter: fork`, `esc: cancel`, and `ctrl+o: dashboard`.
+4. User edits the composer input. The fork draft uses the fixed label `original before fork`; there is no separate fork editor or label editor.
+5. Enter sends the parent ref, the selected message's `TranscriptEntryIndex` as the fork source index, the edited input, and the fixed label to the hub fork API.
 6. Hub creates the new session using the same fork semantics as the web UI.
-7. TUI navigates to the returned child ref, refreshes the project/dashboard cache, and lands in compose focus.
+7. TUI navigates to the returned child ref and lands in compose focus.
 
 If the selected row is not forkable, `f` shows a short inline reason:
 
-- Assistant messages: "select a user turn to fork."
-- Tool annotations: "select the parent user turn to fork."
-- Sessions without persisted transcript: "fork requires persisted transcript."
-- Hub or daemon capability disabled: "fork is not available for this session."
+- No selected user message, including assistant and tool messages: "Select a user message to fork."
+- User messages without a persisted transcript position: "fork requires a persisted transcript position."
+- Hub or daemon capability disabled: "Fork is not available for this session."
+- Invalid session refs: "Session ref is invalid."
 
-Overlay behavior:
+Fork draft behavior:
 
-- `esc` closes the fork overlay and returns to transcript browse.
-- `ctrl+o` closes the overlay and goes to dashboard.
-- Confirming with unchanged text is allowed only if the user supplied a label; otherwise it is a no-op with an explanation.
+- `esc` cancels the draft, clears the composer, and returns to transcript browse.
+- `ctrl+o` goes to the dashboard through the global overview action.
+- Empty input is rejected with "Fork message cannot be empty."
+- If the hub fork fails, the draft remains active and the inline error begins "Fork failed: ".
 
 ## Empty States
 
@@ -444,7 +445,7 @@ Unit tests:
 - `esc` in session browse returns to compose focus.
 - `ctrl+o` from session returns to dashboard.
 - `/project` from session opens the current project.
-- Browse `f` opens fork overlay only on forkable user turns.
+- Browse `f` starts a fork draft in the ordinary composer for a forkable user message.
 - Fork success navigates to the returned child ref.
 - Disabled capabilities produce visible reasons instead of silent no-ops.
 
@@ -462,7 +463,7 @@ Manual UX checks:
 - Project with many recent sessions.
 - Session browse/fork flow using only keyboard.
 - Accidental `esc` in session does not lose session context.
-- `ctrl+o` works from compose, browse, details overlay, and fork overlay.
+- `ctrl+o` works from compose, browse, details overlay, and fork draft.
 
 ## Acceptance Criteria
 

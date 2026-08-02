@@ -4,6 +4,10 @@
 # the agent must carry MANY facts through the compaction? (The 7-clean-fact task
 # showed no difference; this stresses it with 15 facts + heavy bulk.)
 set -eu
+if [ "${SERF_LIVE_TESTS:-}" != "1" ]; then
+	printf 'set SERF_LIVE_TESTS=1 to opt into the live compaction eval\n' >&2
+	exit 1
+fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$SCRIPT_DIR/../scripts/live-eval-isolation.sh"
 # Run with SERF_LIVE_ENV pointing at the operator's private handoff file and
@@ -76,7 +80,10 @@ Step 4: Now write a file answers.txt answering the following, one answer per lin
 $QUESTIONS
 Step 5: reply with the single word DONE."
 
-  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
+  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" \
+    SERF_PROVIDERS_CONFIG="$LIVE_EVAL_HOME/.serf/providers.toml" \
+    SERF_STATE_DIR="$LIVE_EVAL_STATE/serf" \
+    "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
     --state-dir "$LIVE_EVAL_STATE/serf" --dir "$work" --max-rounds 24 "$prompt" \
     > "$work/run.log" 2>&1
 
