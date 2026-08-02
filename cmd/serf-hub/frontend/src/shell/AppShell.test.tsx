@@ -1150,16 +1150,19 @@ test("mobile: the shell content frame drops its padding so the workspace is full
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
-  const shellRule = css.match(/\.shell \{([^}]*)\}/);
+  const shellRule = css.match(/(^|\n)\.shell \{([\s\S]*?)\n\}/);
   expect(shellRule).not.toBeNull();
-
-  const fallback = shellRule![1]!.indexOf("height: 100vh");
-  expect(fallback).toBeGreaterThanOrEqual(0);
+  expect(shellRule![0]).toContain("height: 100vh");
+  expect(shellRule![0]).not.toContain("height: 100dvh");
 
   const supportsBlock = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
   expect(supportsBlock).not.toBeNull();
-  expect(supportsBlock![1]!).toContain(".shell {");
-  expect(supportsBlock![1]!).toContain("height: 100dvh");
+  expect(supportsBlock!.index).toBeGreaterThan(shellRule!.index ?? -1);
+
+  const supportsShellRule = supportsBlock![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
+  expect(supportsShellRule).not.toBeNull();
+  expect(supportsShellRule![0]).toContain("height: 100dvh");
+  expect(supportsShellRule![0]).not.toContain("height: 100vh");
 });
 
 // --- kata bbsv: a mobile deep link outlives the wait for the tree --------
