@@ -112,7 +112,7 @@ func waitForServeState(addr, want string, timeout time.Duration) bool {
 	return false
 }
 
-func dialServeToolResultClient(t *testing.T, ctx context.Context, addr, name, ref string) (*appwire.Client, *serveShellNotificationSignals) {
+func dialServeToolResultClient(ctx context.Context, t *testing.T, addr, name, ref string) (*appwire.Client, *serveShellNotificationSignals) {
 	t.Helper()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+addr+"/rpc", http.DefaultClient)
 	if err != nil {
@@ -185,7 +185,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	var client *appwire.Client
 	var signals *serveShellNotificationSignals
 	if mode != foregroundShellNoSubscriber {
-		client, signals = dialServeToolResultClient(t, ctx, entry.Address, string(mode), ref)
+		client, signals = dialServeToolResultClient(ctx, t, entry.Address, string(mode), ref)
 		defer client.Close()
 		if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
 			ClientMutationID: "foreground-shell-turn",
@@ -213,7 +213,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 			t.Fatalf("foreground shell never emitted item/started: %v", ctx.Err())
 		}
 		client.Close()
-		client, signals = dialServeToolResultClient(t, ctx, entry.Address, "cold-reattach", ref)
+		client, signals = dialServeToolResultClient(ctx, t, entry.Address, "cold-reattach", ref)
 		defer client.Close()
 	}
 	if err := os.WriteFile(gatePath, []byte("release"), 0o600); err != nil {
