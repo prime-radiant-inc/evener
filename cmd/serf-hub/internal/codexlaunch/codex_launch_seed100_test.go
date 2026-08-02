@@ -67,6 +67,17 @@ func (p *seedProcess) Kill() error {
 }
 func (p *seedProcess) Exit() { p.killOnce.Do(func() { close(p.wait) }) }
 
+type closeTrackingReader struct {
+	io.Reader
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
 type seedTicker struct{ ch chan time.Time }
 
 func (t *seedTicker) C() <-chan time.Time { return t.ch }
@@ -286,7 +297,13 @@ func checkSeed100LaunchPipeFailures(t *testing.T) {
 	for _, stderr := range []bool{false, true} {
 		l := NewCodexLauncher(nil)
 		process := newSeedProcess("", "")
+		var stdout *closeTrackingReader
 		if stderr {
+			stdout = &closeTrackingReader{
+				Reader: strings.NewReader(""),
+				closed: make(chan struct{}),
+			}
+			process.stdout = stdout
 			process.stderrErr = errors.New("stderr pipe")
 		} else {
 			process.stdoutErr = errors.New("stdout pipe")
@@ -294,6 +311,13 @@ func checkSeed100LaunchPipeFailures(t *testing.T) {
 		useSeedRuntime(l, process, 0, false)
 		if _, err := l.launchLocked(context.Background(), CodexLaunchConfig{Listen: "ws://127.0.0.1:1"}); err == nil {
 			t.Fatalf("stderr=%v: preconfigured pipe succeeded", stderr)
+		}
+		if stdout != nil {
+			select {
+			case <-stdout.closed:
+			default:
+				t.Fatal("stdout pipe remained open after stderr setup failed")
+			}
 		}
 	}
 }
