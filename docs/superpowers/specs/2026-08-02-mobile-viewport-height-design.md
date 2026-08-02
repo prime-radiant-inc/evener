@@ -18,7 +18,7 @@ Update the shared shell height in `cmd/serf-hub/frontend/src/shell/AppShell.modu
 1. Keep `height: 100vh` as a fallback for browsers without dynamic viewport units.
 2. Add `height: 100dvh` after it so supported mobile browsers track the visible viewport as browser chrome expands and retracts.
 
-Keep `StackHost`, `PaneScaffold`, and the composer footer unchanged. Their existing `height: 100%`, flex sizing, and internal scrolling should inherit the corrected shell height.
+Keep `StackHost`, `PaneScaffold`, and the composer footer unchanged. Their existing `height: 100%`, flex sizing, and internal scrolling will inherit the corrected shell height.
 
 Do not hide document overflow. `overflow: hidden` would conceal the sizing error and could block legitimate pane scrolling.
 
