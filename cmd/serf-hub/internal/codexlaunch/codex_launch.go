@@ -54,6 +54,9 @@ type LaunchedCodex struct {
 	// a broadcast: any number of observers may select on it, repeatedly, without
 	// consuming a single-shot signal.
 	Exited <-chan struct{}
+	// drainComplete is closed after both app-server pipe forwarders have
+	// finished, so shutdown cannot cut off output that was already written.
+	drainComplete <-chan struct{}
 }
 
 type launchProcess interface {
@@ -257,6 +260,14 @@ func (l *CodexLauncher) Shutdown(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		if launched.drainComplete == nil {
+			continue
+		}
+		select {
+		case <-launched.drainComplete:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
@@ -303,8 +314,21 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	// take (kata e1nh).
 	launchDone := make(chan struct{})
 	defer close(launchDone)
-	go forwardCodexPipe(stdout, endpoints, launchDone, l.logOutput, prefix)
-	go forwardCodexPipe(stderr, endpoints, launchDone, l.logOutput, prefix)
+	var forwarders sync.WaitGroup
+	forwarders.Add(2)
+	drainComplete := make(chan struct{})
+	go func() {
+		forwarders.Wait()
+		close(drainComplete)
+	}()
+	go func() {
+		defer forwarders.Done()
+		forwardCodexPipe(stdout, endpoints, launchDone, l.logOutput, prefix)
+	}()
+	go func() {
+		defer forwarders.Done()
+		forwardCodexPipe(stderr, endpoints, launchDone, l.logOutput, prefix)
+	}()
 	// exitErr is published before close(exited); a receive on exited
 	// happens-after the close, so reading exitErr after the receive is race-free.
 	exited := make(chan struct{})
@@ -321,7 +345,13 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	defer ticker.Stop()
 	for {
 		if endpoint != "" && CodexReady(waitCtx, l.client, endpoint) {
-			return &LaunchedCodex{Cmd: process.Cmd(), process: process, endpoint: endpoint, Exited: exited}, nil
+			return &LaunchedCodex{
+				Cmd:           process.Cmd(),
+				process:       process,
+				endpoint:      endpoint,
+				Exited:        exited,
+				drainComplete: drainComplete,
+			}, nil
 		}
 		select {
 		case next := <-endpoints:

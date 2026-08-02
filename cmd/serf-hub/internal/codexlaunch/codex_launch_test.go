@@ -152,6 +152,58 @@ func TestCodexLaunchKeepsTheAppServersDyingWordsAcrossWait(t *testing.T) {
 	}
 }
 
+// Shutdown must wait for the scanners after Wait has reaped the process. The
+// held write is the scanner's last step; process exit happens while it is
+// held, so returning from Shutdown before the release would cut off the
+// app-server output that is already in the pipe.
+func TestCodexLauncherShutdownWaitsForPipeForwarders(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const held = "codex: warning: still forwarding"
+		process := newSeedProcess(held+"\n", "")
+		var log gatedLog
+		log.hold = held
+		log.entered = make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseLog := func() { releaseOnce.Do(func() { close(release) }) }
+		log.release = release
+		defer releaseLog()
+
+		l := NewCodexLauncher(nil)
+		l.client = seedClient(http.StatusOK, nil)
+		l.logOutput = &log
+		useSeedRuntime(l, process, 0, false)
+
+		launched, err := l.launchLocked(context.Background(), CodexLaunchConfig{
+			ID:     "live",
+			Listen: "ws://127.0.0.1:4321",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Running["live"] = launched
+
+		<-log.entered
+		process.Exit()
+		<-launched.Exited
+
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- l.Shutdown(context.Background()) }()
+		synctest.Wait()
+		select {
+		case err := <-shutdownDone:
+			t.Fatalf("Shutdown returned before pipe forwarding finished: %v", err)
+		default:
+		}
+
+		releaseLog()
+		synctest.Wait()
+		if err := <-shutdownDone; err != nil {
+			t.Fatalf("Shutdown returned an error after pipe forwarding finished: %v", err)
+		}
+	})
+}
+
 // A codex app-server that fails after launch says so on the pipes the hub is
 // scanning, and the hub owns both of them — nothing else can read that output,
 // so a line the scanner drops is a line nobody will ever see. Every line that
