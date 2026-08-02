@@ -404,14 +404,27 @@ func subagentRailClass(status string) string {
 	}
 }
 
-// ShellBody renders shell command output, optionally with bash chroma highlighting.
-// It prepends the command (from args) as a styled prompt line so that long or
-// multi-line commands are visible in the expanded view.
+// renderShellCommand formats and highlights a shell command for display.
+func renderShellCommand(command string) string {
+	formatted := formatShellCommand(command)
+	sourceLines := make([]string, 0, len(formatted))
+	for _, line := range formatted {
+		sourceLines = append(sourceLines, strings.Repeat(" ", line.indent)+line.text)
+	}
+	source := strings.Join(sourceLines, "\n")
+	highlighted := highlightBlock(source, "bash")
+	if highlighted == "" {
+		highlighted = source
+	}
+	prompt := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().TextMuted).Render("$ ")
+	return prompt + highlighted
+}
+
+// ShellBody renders formatted shell commands above optionally highlighted output.
 func ShellBody(args ToolArgs, output string, width int) string {
 	var lines []string
-	if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
-		cmdStyled := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().TextMuted).Render("$ " + cmd)
-		lines = append(lines, cmdStyled)
+	if command := args.Str("command"); command != "" {
+		lines = append(lines, renderShellCommand(command))
 	}
 	if output != "" {
 		highlighted := highlightBlock(output, "bash")

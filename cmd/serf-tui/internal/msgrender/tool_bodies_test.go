@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/chroma/v2"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
 
@@ -106,7 +107,8 @@ func TestDelegateBodyHandlesNarrowWidth(t *testing.T) {
 func TestShellBodyHighlightsOutput(t *testing.T) {
 	withTestColorProfile(t)
 	got := ShellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
-	if !strings.Contains(got, "$ ls") {
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "$ ls") {
 		t.Errorf("ShellBody should include the styled command prompt: %q", got)
 	}
 	if !strings.Contains(got, "file1.go") {
@@ -114,6 +116,48 @@ func TestShellBodyHighlightsOutput(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[") {
 		t.Errorf("ShellBody should emit ANSI escapes with TrueColor profile: %q", got)
+	}
+}
+
+func TestShellBodyFormatsAndHighlightsCommand(t *testing.T) {
+	withTestColorProfile(t)
+	command := "cd /tmp && echo \"a;b\"; printf '%s\\n' \"$HOME\" | tee out"
+	got := ShellBody(ToolArgs{"command": command}, "ok", 60)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	want := "$ cd /tmp && \n  echo \"a;b\"; \n  printf '%s\\n' \"$HOME\" | \n  tee out\n"
+	if !strings.Contains(plain, want) {
+		t.Fatalf("ShellBody command layout = %q, want command block %q", plain, want)
+	}
+	if strings.Index(plain, "tee out") > strings.Index(plain, "ok") {
+		t.Fatalf("command must precede output: %q", plain)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("formatted command should use Chroma styling: %q", got)
+	}
+}
+
+func TestShellBodyRendersCommandOnlyWithoutTrimmingWhitespace(t *testing.T) {
+	withTestColorProfile(t)
+	command := "  echo \"$HOME\"  "
+	got := ShellBody(ToolArgs{"command": command}, "", 60)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "$   echo \"$HOME\"  ") {
+		t.Fatalf("ShellBody command-only text = %q, want leading and trailing command whitespace", plain)
+	}
+}
+
+func TestShellBodyFallsBackToFormattedPlainCommand(t *testing.T) {
+	withTestColorProfile(t)
+	previousLexer := getChromaLexer
+	getChromaLexer = func(string) chroma.Lexer { return nil }
+	t.Cleanup(func() {
+		getChromaLexer = previousLexer
+	})
+
+	got := ShellBody(ToolArgs{"command": "echo \"a;b\"; printf '%s' \"$HOME\""}, "", 60)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "$ echo \"a;b\"; \n  printf '%s' \"$HOME\"") {
+		t.Fatalf("ShellBody fallback lost formatted command source: %q", plain)
 	}
 }
 
