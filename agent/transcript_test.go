@@ -3489,12 +3489,14 @@ func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testin
 }
 
 func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
-	jm, err := newJobManagerNoSync(t.TempDir(), "session", nil)
+	stateDir := t.TempDir()
+	ownerSessionID := identifier.MustNewSessionID()
+	jm, err := newJobManagerNoSync(stateDir, ownerSessionID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = jm.store.Close() })
-	const jobID = "large-job"
+	jobID := identifier.MustNewJobID(ownerSessionID)
 	started := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	output, err := jobstore.OpenOutputNoSync(outputPath, maxJobOutputRetentionBytes)
@@ -3515,7 +3517,7 @@ func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := readJobTranscript(&toolDeps{jobRead: sessionJobRead(&Session{jobManager: jm})}, "job:"+jobID, "", formatMarkdown)
+	result, err := readJobTranscript(&toolDeps{stateDir: stateDir, sessionID: ownerSessionID}, "job:"+jobID, "", formatMarkdown)
 	if err != nil {
 		t.Fatal(err)
 	}

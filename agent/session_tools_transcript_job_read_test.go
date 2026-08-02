@@ -2,293 +2,170 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/identifier"
 )
 
-// readJobTranscriptFor spends the model-facing job:<job_id> read for one
-// session, through the same dependency surface newToolDeps installs.
-func readJobTranscriptFor(t *testing.T, s *Session, jobID string) (readMarkdownEnvelope, error) {
+func readLocalJobTranscriptForTest(t *testing.T, stateDir, sessionID, jobID string) (readMarkdownEnvelope, error) {
 	t.Helper()
-	result, err := readJobTranscript(&toolDeps{jobRead: sessionJobRead(s)}, "job:"+jobID, "", formatMarkdown)
+	value, err := execReadTranscript(&toolDeps{
+		stateDir:  stateDir,
+		sessionID: sessionID,
+	}, map[string]any{"transcript_ref": "job:" + jobID})
 	if err != nil {
 		return readMarkdownEnvelope{}, err
 	}
-	envelope, ok := result.(readMarkdownEnvelope)
+	envelope, ok := value.(readMarkdownEnvelope)
 	if !ok {
-		t.Fatalf("readJobTranscript returned %T, want readMarkdownEnvelope", result)
+		t.Fatalf("read_transcript returned %T, want readMarkdownEnvelope", value)
 	}
 	return envelope, nil
 }
 
-// TestReadTranscriptServesGrantedJobOutput is the spec §5.1 consumption
-// direction on the sanctioned surface: the observer cannot resolve the watched
-// job locally (it lives in the parent's store), so the read resolves through
-// the durable grant the job.notification delivery minted, and returns the
-// terminal job's retained output with honest byte accounting.
-func TestReadTranscriptServesGrantedJobOutput(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
+func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	callerSessionID := identifier.MustNewSessionID()
+	foreignSessionID := identifier.MustNewSessionID()
 
-	envelope, err := readJobTranscriptFor(t, fx.observer, fx.watched)
-	if err != nil {
-		t.Fatalf("granted read_transcript: %v", err)
-	}
-	if envelope.TranscriptRef != "job:"+fx.watched {
-		t.Fatalf("transcript_ref = %q, want job:%s", envelope.TranscriptRef, fx.watched)
-	}
-	if !strings.Contains(envelope.Content, grantReadWatchedOutput) {
-		t.Fatalf("content = %q, want the watched job's retained output", envelope.Content)
-	}
-	wantBytes := fmt.Sprintf("total_bytes: %d", len(grantReadWatchedOutput))
-	if !strings.Contains(envelope.Content, wantBytes) {
-		t.Fatalf("content = %q, want %q", envelope.Content, wantBytes)
-	}
-	if strings.Contains(envelope.Content, "dropped_bytes") {
-		t.Fatalf("content = %q, want no dropped bytes for a fully retained job", envelope.Content)
-	}
-	if envelope.Meta.Truncated {
-		t.Fatalf("meta = %+v, want an untruncated read of a fully retained job", envelope.Meta)
-	}
-}
-
-// TestReadTranscriptStrangerKeepsOriginalNotFound: a session holding no grant
-// gets back the byte-identical error it would get for a job id that does not
-// exist anywhere. The message must never become an oracle for "this job is
-// real, you just cannot read it".
-func TestReadTranscriptStrangerKeepsOriginalNotFound(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-
-	strangerJM := newWalkJobManager(t, "child_job_other")
-	t.Cleanup(func() { _ = strangerJM.store.Close() })
-	stranger := &Session{id: "child_job_other", jobManager: strangerJM, subagents: newSubagentManager(nil, 0)}
-	stranger.cfg.spawn.parentGrantedJobRead = fx.parent.lookupGrantedJobRead
-
-	_, err := readJobTranscriptFor(t, stranger, fx.watched)
-	if err == nil {
-		t.Fatal("stranger read succeeded, want the original not-found")
-	}
-	want := errJobNotFound(fx.watched).Error()
-	if err.Error() != want {
-		t.Fatalf("stranger error = %q, want %q", err.Error(), want)
-	}
-
-	// The same session asking for an id that exists nowhere gets the same shape,
-	// so the two answers are indistinguishable.
-	_, invented := readJobTranscriptFor(t, stranger, "job_does_not_exist")
-	if invented == nil || invented.Error() != errJobNotFound("job_does_not_exist").Error() {
-		t.Fatalf("invented-id error = %v, want the same not-found shape", invented)
-	}
-}
-
-// TestReadTranscriptResolvesDescendantJobAtDepthTwo is Jesse's ruling 6: the
-// one-hop resolver reaches only direct children, so a job owned at depth >= 2
-// resolves through the live-subtree walk. cf84923c6 left this with no
-// model-facing tool at all; the job: read path is now that tool.
-func TestReadTranscriptResolvesDescendantJobAtDepthTwo(t *testing.T) {
-	t.Parallel()
-	root, _, worker, workerJobID := newDepthTwoJobTree(t)
-
-	envelope, err := readJobTranscriptFor(t, root, workerJobID)
-	if err != nil {
-		t.Fatalf("depth-2 read_transcript: %v", err)
-	}
-	if !strings.Contains(envelope.Content, "worker grandchild line") {
-		t.Fatalf("content = %q, want the worker's bytes", envelope.Content)
-	}
-	// Served from the OWNER's store: the root never held these bytes.
-	if _, err := findJobRecord(root.jobManager, workerJobID); err == nil {
-		t.Fatal("root store holds the worker job; the walk assertion would be vacuous")
-	}
-	if _, err := findJobRecord(worker.jobManager, workerJobID); err != nil {
-		t.Fatalf("owner store missing the worker job: %v", err)
-	}
-}
-
-// TestReadTranscriptChainFallsThroughWalkToGrantThenError pins the resolution
-// ORDER (ruling 6): with a live subtree that owns nothing matching, the walk
-// falls through to the grant table, and an id absent from both keeps the error
-// the earlier steps produced.
-func TestReadTranscriptChainFallsThroughWalkToGrantThenError(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-
-	// Give the granted observer a live child of its own. The walk now has a
-	// subtree to search, finds nothing, and must continue to the grant.
-	childJM := newWalkJobManager(t, "child_of_observer")
-	t.Cleanup(func() { _ = childJM.store.Close() })
-	child := &Session{id: "child_of_observer", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
-	fx.observer.subagents = newSubagentManager(nil, 0)
-	fx.observer.subagents.track(&subagent{id: "child_of_observer", sess: child, status: SubagentRunning})
-
-	envelope, err := readJobTranscriptFor(t, fx.observer, fx.watched)
-	if err != nil {
-		t.Fatalf("granted read after a fruitless walk: %v", err)
-	}
-	if !strings.Contains(envelope.Content, grantReadWatchedOutput) {
-		t.Fatalf("content = %q, want the watched job's output", envelope.Content)
-	}
-
-	// A parent job the observer was never granted stops at the original error.
-	ungranted, err := fx.parentJM.createShell(createShellOpts{Command: "other"})
-	if err != nil {
-		t.Fatalf("create ungranted job: %v", err)
-	}
-	if _, err := readJobTranscriptFor(t, fx.observer, ungranted.JobID); err == nil || err.Error() != errJobNotFound(ungranted.JobID).Error() {
-		t.Fatalf("ungranted read error = %v, want %q", err, errJobNotFound(ungranted.JobID).Error())
-	}
-}
-
-// TestReadTranscriptRendersDelegateJobAsDelegate: the jobs named in a
-// job.notification frame are usually delegate jobs, and a delegate has no
-// command, reports prose rather than a process log, and carries a
-// structured_result. Rendering that under a "# Shell Job" heading with a
-// missing command line would be a lie in the model's evidence stream.
-func TestReadTranscriptRendersDelegateJobAsDelegate(t *testing.T) {
-	t.Parallel()
-	jm := newWalkJobManager(t, testOwnerSessionID)
-	t.Cleanup(func() { _ = jm.store.Close() })
-	const report = "reviewed 3 files; no blocking findings\n"
-	jobID := seedTerminalDelegateJob(t, jm, report, map[string]any{"verdict": "clean"})
-
-	envelope, err := readJobTranscriptFor(t, &Session{id: testOwnerSessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}, jobID)
-	if err != nil {
-		t.Fatalf("delegate read_transcript: %v", err)
-	}
-	if strings.Contains(envelope.Content, "Shell Job") {
-		t.Fatalf("content = %q, want a delegate heading", envelope.Content)
-	}
-	for _, want := range []string{
-		"# Delegate Job " + jobID,
-		"- status: completed",
-		"- task: audit the diff",
-		report,
-		`structured_result (valid=true): {"verdict":"clean"}`,
+	for _, scope := range []struct {
+		name     string
+		stateDir string
+		owner    string
+	}{
+		{name: "owner", stateDir: current, owner: callerSessionID},
+		{name: "foreign", stateDir: foreign, owner: foreignSessionID},
 	} {
-		if !strings.Contains(envelope.Content, want) {
-			t.Fatalf("content = %q, want it to contain %q", envelope.Content, want)
+		for _, jobType := range []jobstore.JobType{jobstore.JobShell, jobstore.JobDelegate} {
+			for _, terminal := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/terminal=%t", scope.name, jobType, terminal)
+				t.Run(name, func(t *testing.T) {
+					jobID := identifier.MustNewJobID(scope.owner)
+					marker := "MARKER " + name + "\n"
+					var structured map[string]any
+					if jobType == jobstore.JobDelegate && terminal {
+						structured = map[string]any{"verdict": "clean"}
+					}
+					seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", marker, jobType, terminal, int64(len(marker)), structured)
+
+					envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
+					if err != nil {
+						t.Fatalf("read local job: %v", err)
+					}
+					for _, want := range []string{
+						jobID,
+						marker,
+						fmt.Sprintf("total_bytes: %d", len(marker)),
+					} {
+						if !strings.Contains(envelope.Content, want) {
+							t.Fatalf("content = %q, want %q", envelope.Content, want)
+						}
+					}
+					wantStatus := "status: running"
+					if terminal {
+						wantStatus = "status: completed"
+						if !strings.Contains(envelope.Content, "reason: exit_zero") {
+							t.Fatalf("terminal content = %q, want durable reason", envelope.Content)
+						}
+					}
+					if !strings.Contains(envelope.Content, wantStatus) {
+						t.Fatalf("content = %q, want %q", envelope.Content, wantStatus)
+					}
+					if jobType == jobstore.JobDelegate && terminal && !strings.Contains(envelope.Content, `structured_result (valid=true): {"verdict":"clean"}`) {
+						t.Fatalf("delegate content = %q, want structured result", envelope.Content)
+					}
+					if envelope.TranscriptRef != "job:"+jobID || envelope.Meta.Range != "shell-log" || envelope.Meta.Truncated {
+						t.Fatalf("envelope = %+v", envelope)
+					}
+				})
+			}
 		}
 	}
 }
 
-// TestJobStatusOnGrantedJobPointsAtReadTranscript is Jesse's ruling 2: a
-// watch-granted job stays denied on job_status, because status projects a
-// delegate job's SESSION transcript_ref and session refs are not
-// access-controlled — a grant-aware job_status would silently turn a one-job
-// output grant into full read access to the child's conversation (spec
-// non-goal 4). The frame already carries status, reason, exit_code, and
-// output_bytes, so the only thing the denial owes the observer is the name of
-// the read it IS allowed.
-func TestJobStatusOnGrantedJobPointsAtReadTranscript(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
+func TestReadTranscriptLocalJobRejectsOldIDBeforeIO(t *testing.T) {
+	oldOpen := openLocalJobProjectDirectory
+	openLocalJobProjectDirectory = func(string) (localJobProjectDirectory, error) {
+		t.Fatal("malformed job identifier reached filesystem lookup")
+		return nil, nil
+	}
+	t.Cleanup(func() { openLocalJobProjectDirectory = oldOpen })
 
-	_, err := jobStatusTool(fx.observer, map[string]any{"job_id": fx.watched}, 20000)
-	if err == nil {
-		t.Fatal("job_status on a granted job succeeded, want it to stay denied")
-	}
-	if !strings.Contains(err.Error(), `read_transcript(transcript_ref="job:`+fx.watched+`")`) {
-		t.Fatalf("denial = %q, want it to name the sanctioned read", err.Error())
-	}
-	// The denial must disclose nothing about the delegate's own conversation.
-	for _, leak := range []string{"local:", "proj:", "transcript_ref\":"} {
-		if strings.Contains(err.Error(), leak) {
-			t.Fatalf("denial = %q, leaks %q", err.Error(), leak)
-		}
-	}
-
-	// A session holding no grant keeps the original not-found byte for byte, so
-	// the improved text is never an oracle for "this job exists".
-	strangerJM := newWalkJobManager(t, "child_job_other")
-	t.Cleanup(func() { _ = strangerJM.store.Close() })
-	stranger := &Session{id: "child_job_other", jobManager: strangerJM, subagents: newSubagentManager(nil, 0)}
-	stranger.cfg.spawn.parentGrantedJobRead = fx.parent.lookupGrantedJobRead
-	_, strangerErr := jobStatusTool(stranger, map[string]any{"job_id": fx.watched}, 20000)
-	if strangerErr == nil || strangerErr.Error() != errJobNotFound(fx.watched).Error() {
-		t.Fatalf("stranger job_status = %v, want %q", strangerErr, errJobNotFound(fx.watched).Error())
+	_, err := readLocalJobTranscriptForTest(t, filepath.Join(t.TempDir(), "serf", "projects", localJobCurrentProject), identifier.MustNewSessionID(), "job_legacy")
+	if err == nil || !strings.Contains(err.Error(), "invalid job identifier") {
+		t.Fatalf("old job ID error = %v, want invalid job identifier", err)
 	}
 }
 
-// seedTerminalDelegateJob writes one completed delegate job — report bytes on
-// disk, structured result in the durable record — straight into a store,
-// without a provider or a live child runtime.
-func seedTerminalDelegateJob(t *testing.T, jm *jobManager, report string, structured map[string]any) string {
-	t.Helper()
-	jobID := jobstore.NewJobID(jm.sessionID)
-	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jobstore.OpenOutputNoSync(outputPath, maxJobOutputRetentionBytes)
+func TestReadTranscriptLocalJobRejectsMiddleCorruption(t *testing.T) {
+	flat := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, flat, owner, jobID, "/decoy", "content\n", true)
+	path := filepath.Join(jobsDir(flat, owner), "jobs.jsonl")
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("open delegate output: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := output.Append([]byte(report)); err != nil {
-		_ = output.Close()
-		t.Fatalf("append delegate report: %v", err)
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("seeded event lines = %d, want 2", len(lines))
 	}
-	if err := output.Close(); err != nil {
-		t.Fatalf("close delegate output: %v", err)
+	corrupt := lines[0] + "\n{not-json}\n" + lines[1] + "\n"
+	if err := os.WriteFile(path, []byte(corrupt), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	started := jm.now()
-	ended := started.Add(time.Second)
-	valid := true
-	if err := jm.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobDelegate,
-		Task: "audit the diff", OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID,
-		DelegateID: "dlg_auditor", TranscriptRef: encodeRef("", "child_"+jobID),
-		StartedAt: &started, OutputPath: outputPath,
-	}); err != nil {
-		t.Fatalf("append delegate start: %v", err)
+
+	_, err = readLocalJobTranscriptForTest(t, flat, owner, jobID)
+	if err == nil || !strings.Contains(err.Error(), "parse event line 2") {
+		t.Fatalf("middle-corrupt read error = %v", err)
 	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID, Status: jobstore.StatusCompleted,
-		Reason: "completed", EndedAt: &ended, OutputBytes: int64(len(report)),
-		StructuredResult: structured, StructuredResultValid: &valid, TerminalGen: "term_" + jobID,
-	}); err != nil {
-		t.Fatalf("append delegate finish: %v", err)
-	}
-	return jobID
 }
 
-// newDepthTwoJobTree builds root -> coord -> worker with single-hop forwarding
-// and one running worker-owned shell job carrying output. It is the minimal
-// topology in which a job is owned at depth 2 relative to the root.
-func newDepthTwoJobTree(t *testing.T) (root, coord, worker *Session, workerJobID string) {
-	t.Helper()
-	rootJM := newWalkJobManager(t, testRootSessionID)
-	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
-	workerJM := newWalkJobManager(t, testWorkerSessionID)
-	t.Cleanup(func() {
-		_ = rootJM.store.Close()
-		_ = coordJM.store.Close()
-		_ = workerJM.store.Close()
-	})
-	coordJM.forward = rootJM.forwardEvent
-	coordJM.parentJobID = "job_root_delegate_coord"
-	workerJM.forward = coordJM.forwardEvent
-	workerJM.parentJobID = "job_coord_delegate_worker"
-
-	rec, err := workerJM.createShell(createShellOpts{Command: "sleep 1", Description: "worker job"})
+func TestReadTranscriptLocalJobToleratesTrailingPartialEvent(t *testing.T) {
+	flat := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, flat, owner, jobID, "/decoy", "still running\n", false)
+	path := filepath.Join(jobsDir(flat, owner), "jobs.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
-		t.Fatalf("create worker shell: %v", err)
+		t.Fatal(err)
 	}
-	workerJM.mu.Lock()
-	run := workerJM.running[rec.JobID]
-	workerJM.mu.Unlock()
-	if run == nil || run.output == nil {
-		t.Fatalf("worker job %q has no live output store", rec.JobID)
+	if _, err := f.WriteString(`{"kind":"job_finished"`); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
 	}
-	if _, err := workerJM.appendJobOutput(rec.JobID, run.output, []byte("worker grandchild line\n")); err != nil {
-		t.Fatalf("append worker output: %v", err)
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	worker = &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coord = &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coord.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
-	root = &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coord, status: SubagentRunning})
-	return root, coord, worker, rec.JobID
+	envelope, err := readLocalJobTranscriptForTest(t, flat, owner, jobID)
+	if err != nil {
+		t.Fatalf("trailing partial read: %v", err)
+	}
+	if !strings.Contains(envelope.Content, "still running") || !strings.Contains(envelope.Content, "status: running") {
+		t.Fatalf("content = %q", envelope.Content)
+	}
+}
+
+func TestReadTranscriptLocalJobReportsMissingOutput(t *testing.T) {
+	flat := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, flat, owner, jobID, "/decoy", "gone\n", true)
+	if err := os.Remove(filepath.Join(jobsDir(flat, owner), "jobs", jobID+".log")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := readLocalJobTranscriptForTest(t, flat, owner, jobID)
+	if err == nil || !strings.Contains(err.Error(), "output_unavailable") {
+		t.Fatalf("missing-output error = %v, want output_unavailable", err)
+	}
 }

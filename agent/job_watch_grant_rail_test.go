@@ -138,13 +138,13 @@ func TestParentSourceWatchRailGrantsObserverReadOnRealDelegateFinish(t *testing.
 		t.Fatalf("grant events in the journal = %d, want 1 (only the worker's completion mints)", got)
 	}
 
-	// Spend side: the observer's own live session resolves the read through the
-	// parent-injected grant seam, and gets the worker's report.
+	// Read side: the observer's own live session resolves the exact local job
+	// reference from the shared project bucket and gets the worker's report.
 	sub := parent.subagents.get(observerSessionID)
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("observer subagent %q is not tracked", observerSessionID)
 	}
-	envelope, err := readJobTranscriptFor(t, sub.sess, worker.JobID)
+	envelope, err := readLocalJobTranscriptForTest(t, sub.sess.stateDir, sub.sess.id, worker.JobID)
 	if err != nil {
 		t.Fatalf("observer granted read_transcript: %v", err)
 	}

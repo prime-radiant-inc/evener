@@ -527,19 +527,6 @@ func (r jobReadResolution) snapshot(jobID string, readBytes int, fromHead bool, 
 	return r.readSession.readJobOutputSnapshot(r.manager, r.fallbackTarget, jobID, readBytes, fromHead, grepRE)
 }
 
-// sessionJobRead binds one session's job:<job_id> read seam for read_transcript.
-// It resolves through the session at CALL time, not at tool-registration time,
-// so a session that gains its job manager after registration still reads.
-func sessionJobRead(s *Session) func(jobID string, readBytes int) (jobReadOutputSnapshot, error) {
-	return func(jobID string, readBytes int) (jobReadOutputSnapshot, error) {
-		res, err := s.resolveJobRead(jobID)
-		if err != nil {
-			return jobReadOutputSnapshot{}, err
-		}
-		return res.snapshot(jobID, readBytes, false, nil)
-	}
-}
-
 func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
