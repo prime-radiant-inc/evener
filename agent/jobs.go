@@ -1114,24 +1114,6 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 	return headOutputFile(path, headBytes, validatedTotal)
 }
 
-// readJobWindow reads either the head or the tail of a job's retained output
-// depending on fromHead. When fromHead is true it delegates to readOutputHead,
-// otherwise to readOutput (tail). This is the single dispatch point that lets
-// callers pass a direction flag without knowing the underlying method names. It
-// also reports dropped: the bytes permanently evicted off the head by retention.
-func (jm *jobManager) readJobWindow(jobID string, bytes int, fromHead bool) (content string, total int64, dropped int64, truncated bool, err error) {
-	if fromHead {
-		content, total, truncated, err = jm.readOutputHead(jobID, bytes)
-	} else {
-		content, total, truncated, err = jm.readOutput(jobID, bytes)
-	}
-	if err != nil {
-		return content, total, 0, truncated, err
-	}
-	dropped, err = jm.outputDropped(jobID)
-	return content, total, dropped, truncated, err
-}
-
 // outputDropped returns the number of bytes permanently evicted off the head of
 // jobID's output by the retention cap (0 when nothing has been pruned), for both
 // the live store and the closed-file fallback.

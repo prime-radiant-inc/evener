@@ -58,12 +58,12 @@ func JobOwnerSessionID(jobID string) (string, error) {
 }
 
 // AbbreviateJobID keeps a job's random suffix visible in compact summaries.
-func AbbreviateJobID(jobID string, max int) string {
-	if len(jobID) <= max {
+func AbbreviateJobID(jobID string, maxLength int) string {
+	if len(jobID) <= maxLength {
 		return jobID
 	}
 	const ellipsisWidth = 1
-	prefixLength := max - jobIDSuffixSize - ellipsisWidth
+	prefixLength := maxLength - jobIDSuffixSize - ellipsisWidth
 	if prefixLength <= 0 {
 		return jobID
 	}

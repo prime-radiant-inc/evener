@@ -439,7 +439,7 @@ type snapshotInitialValidationChangeFS struct {
 
 func (fs *snapshotInitialValidationChangeFS) Open(name string) (afero.File, error) {
 	if name == outputPendingMetaPath(outputMetaPath(fs.path)) && !fs.didAppend {
-		f, err := fs.Fs.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
+		f, err := fs.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -598,7 +598,7 @@ func (fs *snapshotPruneProtocolFS) publishFinal() error {
 	if err := writeSnapshotMetadata(fs.Fs, fs.path, []byte(retained), 8, 4); err != nil {
 		return err
 	}
-	if err := fs.Fs.Remove(outputPendingMetaPath(outputMetaPath(fs.path))); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := fs.Remove(outputPendingMetaPath(outputMetaPath(fs.path))); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	fs.phase = snapshotPruneFinal

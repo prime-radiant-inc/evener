@@ -322,11 +322,11 @@ type localJobDirEntry struct {
 func (e localJobDirEntry) Name() string               { return e.name }
 func (e localJobDirEntry) IsDir() bool                { return e.dir }
 func (e localJobDirEntry) Type() fs.FileMode          { return e.mode }
-func (e localJobDirEntry) Info() (fs.FileInfo, error) { return nil, errorsForUnusedInfo{} }
+func (e localJobDirEntry) Info() (fs.FileInfo, error) { return nil, unusedInfoError{} }
 
-type errorsForUnusedInfo struct{}
+type unusedInfoError struct{}
 
-func (errorsForUnusedInfo) Error() string { return "Info must not be called" }
+func (unusedInfoError) Error() string { return "Info must not be called" }
 
 type localJobDirReader struct {
 	entries    []fs.DirEntry

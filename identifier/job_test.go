@@ -7,7 +7,7 @@ import (
 
 func TestJobIDCarriesCompleteOwnerAndRandomSuffix(t *testing.T) {
 	const owner = "02wMz5TxvEMoJEDTDGOTil"
-	id, err := newJobID(owner, bytes.NewReader(bytes.Repeat([]byte{0}, 64)))
+	id, err := newJobID(owner, bytes.NewReader(make([]byte, 64)))
 	if err != nil {
 		t.Fatal(err)
 	}
