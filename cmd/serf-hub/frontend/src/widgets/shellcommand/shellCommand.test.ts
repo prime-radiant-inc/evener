@@ -132,6 +132,26 @@ describe("formatShellCommand", () => {
     ]);
     expect(sourceWithoutNewlines(got)).toBe(raw);
   });
+
+  test("keeps complete case terminators together", () => {
+    const raw = "case x in x) echo one ;; y) echo two ;& z) echo three ;;& esac";
+
+    expect(formatShellCommand(raw)).toEqual([
+      { text: "case x in x) echo one ;; ", indent: 0 },
+      { text: "y) echo two ;& ", indent: 2 },
+      { text: "z) echo three ;;& ", indent: 2 },
+      { text: "esac", indent: 2 },
+    ]);
+  });
+
+  test("does not treat an escaped space before hash as a comment", () => {
+    const raw = "echo foo\\ # && bar";
+
+    expect(formatShellCommand(raw)).toEqual([
+      { text: "echo foo\\ # && ", indent: 0 },
+      { text: "bar", indent: 2 },
+    ]);
+  });
 });
 
 test("tokenizes shell constructs without changing token text", () => {
@@ -184,6 +204,39 @@ test("tokenizes an embedded unquoted variable as adjacent source slices", () => 
     { kind: "plain", text: "prefix" },
     { kind: "variable", text: "$HOME" },
   ]);
+});
+
+test("resets command expectation at a source newline", () => {
+  const tokens = tokenizeShellCommand(formatShellCommand("echo first\necho second"));
+
+  expect(tokens[0]).toContainEqual({ kind: "command", text: "echo" });
+  expect(tokens[1]).toContainEqual({ kind: "command", text: "echo" });
+});
+
+test("keeps assignment-word context across variable slices", () => {
+  const tokens = tokenizeShellCommand(formatShellCommand("NAME=$VALUE echo ok"));
+
+  expect(tokens[0]).toEqual([
+    { kind: "plain", text: "NAME=" },
+    { kind: "variable", text: "$VALUE" },
+    { kind: "plain", text: " " },
+    { kind: "command", text: "echo" },
+    { kind: "plain", text: " " },
+    { kind: "plain", text: "ok" },
+  ]);
+});
+
+test("keeps redirection operators intact next to a word", () => {
+  const tokens = tokenizeShellCommand(formatShellCommand("echo value >| output"));
+
+  expect(tokens[0]).toContainEqual({ kind: "operator", text: ">|" });
+});
+
+test("does not tokenize an escaped-space hash as a comment", () => {
+  const tokens = tokenizeShellCommand(formatShellCommand("echo foo\\ # && bar"));
+
+  expect(tokens[0]).not.toContainEqual({ kind: "comment", text: expect.any(String) });
+  expect(tokens.flat()).toContainEqual({ kind: "operator", text: "&&" });
 });
 
 test("renders formatted shell lines, token kinds, and copies the raw command", async () => {

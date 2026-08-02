@@ -112,6 +112,25 @@ func TestFormatShellCommandFixtures(t *testing.T) {
 				{text: "echo done", indent: 2},
 			},
 		},
+		{
+			name: "case terminators and redirections",
+			raw:  "case x in x) echo one ;; y) echo two ;& z) echo three ;;& esac; echo value >| out",
+			want: []shellCommandLine{
+				{text: "case x in x) echo one ;; ", indent: 0},
+				{text: "y) echo two ;& ", indent: 2},
+				{text: "z) echo three ;;& ", indent: 2},
+				{text: "esac; ", indent: 2},
+				{text: "echo value >| out", indent: 2},
+			},
+		},
+		{
+			name: "escaped space before hash is not a comment",
+			raw:  "echo foo\\ # && bar",
+			want: []shellCommandLine{
+				{text: "echo foo\\ # && ", indent: 0},
+				{text: "bar", indent: 2},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

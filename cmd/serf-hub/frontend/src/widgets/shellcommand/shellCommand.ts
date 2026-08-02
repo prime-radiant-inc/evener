@@ -10,9 +10,42 @@ export interface ShellCommandToken {
   kind: ShellCommandTokenKind;
 }
 
-const SHELL_OPERATORS = ["&&", "||", "|&", "|", ";"] as const;
-const CONTROL_OPERATORS = new Set(["&&", "||", "|&", "|", ";"]);
-const TOKEN_OPERATORS = ["&&", "||", "|&", ">>", "<<", ">&", "&>", "|", ";", ">", "<"];
+const SHELL_OPERATORS = [";;&", "&&", "||", "|&", ";;", ";&", "|", ";"] as const;
+const CONTROL_OPERATORS = new Set<string>(SHELL_OPERATORS);
+const TOKEN_OPERATORS = [
+  ";;&",
+  "&&",
+  "||",
+  "|&",
+  ";;",
+  ";&",
+  "&>>",
+  ">|",
+  ">>",
+  "<<-",
+  "<<<",
+  "<<",
+  "<&",
+  "<>",
+  ">&",
+  "&>",
+  "|",
+  ";",
+  ">",
+  "<",
+];
+
+function isEscaped(raw: string, index: number): boolean {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && raw[cursor] === "\\"; cursor -= 1) backslashes += 1;
+  return backslashes % 2 === 1;
+}
+
+function startsComment(raw: string, index: number, lineStart: number): boolean {
+  if (index === lineStart) return true;
+  const previous = raw[index - 1];
+  return (previous === " " || previous === "\t") && !isEscaped(raw, index - 1);
+}
 
 function operatorAt(raw: string, index: number): string | undefined {
   return SHELL_OPERATORS.find((operator) => raw.startsWith(operator, index));
@@ -97,7 +130,7 @@ export function formatShellCommand(raw: string): ShellCommandLine[] {
       continue;
     }
 
-    if (character === "#" && (index === lineStart || raw[index - 1] === " " || raw[index - 1] === "\t")) {
+    if (character === "#" && startsComment(raw, index, lineStart)) {
       comment = true;
       index += 1;
       continue;
@@ -171,11 +204,11 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
   let quote: "'" | '"' | "`" | undefined;
   let quoteOpening = false;
   let escaped = false;
-  let expectCommand = true;
 
   return lines.map(({ text }) => {
     const tokens: ShellCommandToken[] = [];
     let index = 0;
+    let expectCommand = true;
 
     while (index < text.length) {
       const character = text[index] ?? "";
@@ -223,7 +256,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
         continue;
       }
 
-      if (character === "#" && (index === 0 || /\s/.test(text[index - 1] ?? ""))) {
+      if (character === "#" && startsComment(text, index, 0)) {
         tokens.push(token("comment", text.slice(index)));
         break;
       }
