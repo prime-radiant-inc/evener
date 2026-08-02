@@ -178,6 +178,8 @@ func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	return saveSessionMetaLocked(fs, dir, meta)
 }
 
+// AppendSessionObservedBy records a deduplicated observer UI relationship
+// without changing other persisted session metadata.
 func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) error {
 	return appendSessionObservedByWithFS(afero.NewOsFs(), dir, workerSessionID, observerSessionID)
 }
