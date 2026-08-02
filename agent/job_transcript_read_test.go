@@ -29,16 +29,16 @@ func localJobProjectBucket(t *testing.T, stateHome, projectID string) string {
 }
 
 func seedLocalJob(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, terminal bool) {
-	seedLocalJobRecord(t, stateDir, ownerSessionID, jobID, outputPath, output, jobstore.JobShell, terminal, int64(len(output)), nil)
+	seedLocalJobRecord(t, stateDir, ownerSessionID, jobID, outputPath, output, maxJobOutputRetentionBytes, jobstore.JobShell, terminal, int64(len(output)), nil)
 }
 
-func seedLocalJobRecord(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, jobType jobstore.JobType, terminal bool, terminalOutputBytes int64, structuredResult map[string]any) {
+func seedLocalJobRecord(t *testing.T, stateDir, ownerSessionID, jobID, outputPath, output string, retentionBytes int64, jobType jobstore.JobType, terminal bool, terminalOutputBytes int64, structuredResult map[string]any) {
 	t.Helper()
 	derivedOutputPath := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs", jobID+".log")
 	if err := os.MkdirAll(filepath.Dir(derivedOutputPath), 0o755); err != nil {
 		t.Fatalf("create job output dir: %v", err)
 	}
-	outputStore, err := jobstore.OpenOutputNoSync(derivedOutputPath, maxJobOutputRetentionBytes)
+	outputStore, err := jobstore.OpenOutputNoSync(derivedOutputPath, retentionBytes)
 	if err != nil {
 		t.Fatalf("open output: %v", err)
 	}
@@ -188,6 +188,43 @@ func TestLocateLocalJobReturnsLimitExceededEvenAfterPartialMatch(t *testing.T) {
 	if reader.readCounts[len(reader.readCounts)-1] != 1 {
 		t.Fatalf("ReadDir calls = %v, want one-entry sentinel last", reader.readCounts)
 	}
+	if !reader.closed {
+		t.Fatal("project directory was not closed")
+	}
+}
+
+func TestLocateLocalJobReturnsMatchAtExactLimit(t *testing.T) {
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	matchProject := "match-0000000005"
+	matchBucket := localJobProjectBucket(t, stateHome, matchProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, matchBucket, owner, jobID, "/decoy/match.log", "match\n", false)
+
+	entries := make([]fs.DirEntry, 0, localJobProjectLookupLimit)
+	entries = append(entries, localJobDirEntry{name: matchProject, dir: true})
+	for i := 1; i < localJobProjectLookupLimit; i++ {
+		entries = append(entries, localJobDirEntry{name: fmt.Sprintf("p%03d-0000000000", i), dir: true})
+	}
+	reader := &localJobDirReader{entries: entries}
+	oldOpen := openLocalJobProjectDirectory
+	openLocalJobProjectDirectory = func(string) (localJobProjectDirectory, error) { return reader, nil }
+	t.Cleanup(func() { openLocalJobProjectDirectory = oldOpen })
+
+	location, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("locate exact-limit match: %v", err)
+	}
+	if location.StateDir != matchBucket || location.Record.JobID != jobID {
+		t.Fatalf("location = %+v", location)
+	}
+	if got := reader.readCounts; len(got) != 2 || got[0] != localJobProjectLookupLimit || got[1] != 1 {
+		t.Fatalf("ReadDir calls = %v, want bounded prefix and one sentinel", got)
+	}
+	if !reader.closed {
+		t.Fatal("project directory was not closed")
+	}
 }
 
 func TestLocateLocalJobFlatStateDirDoesNotSearchSiblings(t *testing.T) {
@@ -252,11 +289,27 @@ func TestReadLocalJobSnapshotRejectsTerminalByteMismatch(t *testing.T) {
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
-	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", "bytes\n", jobstore.JobShell, true, 99, nil)
+	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", "bytes\n", maxJobOutputRetentionBytes, jobstore.JobShell, true, 99, nil)
 
 	_, err := readLocalJobSnapshot(flat, jobID, 1024)
 	if err == nil || !strings.Contains(err.Error(), "terminal output_bytes 99 does not match snapshot total_bytes 6") {
 		t.Fatalf("terminal byte mismatch error = %v", err)
+	}
+}
+
+func TestReadLocalJobSnapshotReportsRetainedMetadata(t *testing.T) {
+	flat := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	const output = "DROP_ME:RETAINED"
+	seedLocalJobRecord(t, flat, owner, jobID, "/decoy", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+
+	snapshot, err := readLocalJobSnapshot(flat, jobID, 1024)
+	if err != nil {
+		t.Fatalf("read retained snapshot: %v", err)
+	}
+	if snapshot.Content != "RETAINED" || snapshot.TotalBytes != 16 || snapshot.DroppedBytes != 8 || !snapshot.Truncated {
+		t.Fatalf("snapshot = %+v, want retained tail with lifetime metadata", snapshot)
 	}
 }
 
@@ -289,9 +342,6 @@ func (r *localJobDirReader) ReadDir(n int) ([]fs.DirEntry, error) {
 	take := min(n, len(r.entries))
 	entries := append([]fs.DirEntry(nil), r.entries[:take]...)
 	r.entries = r.entries[take:]
-	if len(r.entries) == 0 {
-		return entries, io.EOF
-	}
 	return entries, nil
 }
 

@@ -52,7 +52,7 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 					if jobType == jobstore.JobDelegate && terminal {
 						structured = map[string]any{"verdict": "clean"}
 					}
-					seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", marker, jobType, terminal, int64(len(marker)), structured)
+					seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", marker, maxJobOutputRetentionBytes, jobType, terminal, int64(len(marker)), structured)
 
 					envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
 					if err != nil {
@@ -86,6 +86,44 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestReadTranscriptLocalJobOwnerAndForeignRetainedMetadata(t *testing.T) {
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	callerSessionID := identifier.MustNewSessionID()
+
+	for _, scope := range []struct {
+		name     string
+		stateDir string
+		owner    string
+	}{
+		{name: "owner", stateDir: current, owner: callerSessionID},
+		{name: "foreign", stateDir: foreign, owner: identifier.MustNewSessionID()},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			const output = "DROP_ME:RETAINED"
+			jobID := identifier.MustNewJobID(scope.owner)
+			seedLocalJobRecord(t, scope.stateDir, scope.owner, jobID, "/untrusted/decoy.log", output, int64(len("RETAINED")), jobstore.JobShell, true, int64(len(output)), nil)
+
+			envelope, err := readLocalJobTranscriptForTest(t, current, callerSessionID, jobID)
+			if err != nil {
+				t.Fatalf("read retained local job: %v", err)
+			}
+			for _, want := range []string{"RETAINED", "total_bytes: 16", "dropped_bytes: 8"} {
+				if !strings.Contains(envelope.Content, want) {
+					t.Fatalf("content = %q, want %q", envelope.Content, want)
+				}
+			}
+			if strings.Contains(envelope.Content, "DROP_ME") {
+				t.Fatalf("content = %q, retained pruned prefix", envelope.Content)
+			}
+			if !envelope.Meta.Truncated {
+				t.Fatalf("meta = %+v, want truncated retained snapshot", envelope.Meta)
+			}
+		})
 	}
 }
 
@@ -152,6 +190,30 @@ func TestReadTranscriptLocalJobToleratesTrailingPartialEvent(t *testing.T) {
 	}
 	if !strings.Contains(envelope.Content, "still running") || !strings.Contains(envelope.Content, "status: running") {
 		t.Fatalf("content = %q", envelope.Content)
+	}
+}
+
+func TestReadTranscriptLocalJobRejectsNewlineTerminatedTrailingCorruption(t *testing.T) {
+	flat := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, flat, owner, jobID, "/decoy", "still running\n", false)
+	path := filepath.Join(jobsDir(flat, owner), "jobs.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"kind\":\"job_finished\"\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = readLocalJobTranscriptForTest(t, flat, owner, jobID)
+	if err == nil || !strings.Contains(err.Error(), "parse event line 2") {
+		t.Fatalf("newline-terminated trailing corruption error = %v", err)
 	}
 }
 

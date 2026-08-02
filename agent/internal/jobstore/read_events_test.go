@@ -72,6 +72,31 @@ func TestReadEvents_TolerateTrailingPartial(t *testing.T) {
 	}
 }
 
+func TestReadEvents_ErrorsOnNewlineTerminatedTrailingCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" +
+		`{"kind":"job_finished"` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEvents(path); err == nil {
+		t.Fatal("newline-terminated trailing corruption was treated as an in-flight partial append")
+	}
+}
+
+func TestReadEvents_ErrorsOnDefinitiveUnterminatedTrailingCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" + `{"kind":}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEvents(path); err == nil {
+		t.Fatal("definitively malformed trailing JSON was treated as an in-flight partial append")
+	}
+}
+
 func TestReadEvents_ErrorsOnMidFileCorruption(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
