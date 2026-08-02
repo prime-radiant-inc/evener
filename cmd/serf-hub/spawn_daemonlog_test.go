@@ -116,6 +116,45 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 	}
 }
 
+// A failed resume must explain this launch, not quote the tail of the session
+// history that happened to be in the file before it opened. The log remains an
+// append-only account of every run; only the failure diagnostic is scoped to
+// the bytes this resume wrote.
+func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	const sessionID = "01JRESUME"
+	const staleMarker = "STALE_OUTPUT_FROM_EARLIER_RUN"
+	const currentStdout = "CURRENT_RESUME_DIAGNOSTIC_STDOUT"
+	const currentStderr = "CURRENT_RESUME_DIAGNOSTIC_STDERR"
+	logPath := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	stale := strings.Repeat(staleMarker+"\n", daemonLaunchOutputLimit/len(staleMarker)+100)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(stale), 0o600); err != nil {
+		t.Fatalf("seed earlier log: %v", err)
+	}
+
+	bin := filepath.Join(dir, "fake-serf")
+	writeFakeSerf(t, bin, "#!/bin/sh\nprintf '%s\\n' '"+currentStdout+"'\nprintf '%s\\n' '"+currentStderr+"' >&2\nexit 42\n")
+
+	var hubLog bytes.Buffer
+	_, err := resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 10*time.Second, &hubLog)
+	if err == nil {
+		t.Fatal("resume succeeded, want the fake daemon to fail before rendezvous")
+	}
+	for _, want := range []string{currentStdout, currentStderr} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("resume failure dropped current-launch output %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), staleMarker) {
+		t.Fatalf("resume failure quoted stale output from an earlier run: %v", err)
+	}
+}
+
 // A hub-owned pipe on a daemon's stdout or stderr kills that daemon the moment
 // the hub exits: the child's next write gets EPIPE, and Go raises SIGPIPE to
 // the default handler for writes to fd 1 and 2. Spawned daemons must outlive a

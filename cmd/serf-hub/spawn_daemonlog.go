@@ -54,6 +54,10 @@ const daemonLogRetainedBytes = 1 << 20
 type daemonLog struct {
 	file *os.File
 	path string
+	// launchOffset marks the first byte written by this launch. A resume
+	// appends to a session log, but a failed-launch diagnostic must not quote
+	// the earlier runs that were already there.
+	launchOffset int64
 	// pending is true until a session id is known for this log. Only a pending
 	// log may be deleted: see removeIfPending.
 	pending bool
@@ -86,7 +90,12 @@ func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("daemon log: %w", err)
 	}
-	return &daemonLog{file: f, path: path}, nil
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("daemon log: %w", err)
+	}
+	return &daemonLog{file: f, path: path, launchOffset: info.Size()}, nil
 }
 
 // daemonLogTrimNotice is the line a trimmed log opens with. Without it the file
@@ -225,14 +234,19 @@ func (l *daemonLog) adopt(sessionID string) {
 	l.path = target
 }
 
-// tail returns the last limit bytes of the log, which is what a failed launch
-// quotes back to the operator as the reason the daemon would not start.
+// tail returns the last limit bytes written by this launch, which is what a
+// failed launch quotes back to the operator as the reason the daemon would not
+// start. A resume's log already contains earlier runs, so reading from the
+// beginning would present stale output as this launch's failure.
 func (l *daemonLog) tail(limit int) string {
 	f, err := os.Open(l.path)
 	if err != nil {
 		return ""
 	}
 	defer func() { _ = f.Close() }()
+	if _, err := f.Seek(l.launchOffset, io.SeekStart); err != nil {
+		return ""
+	}
 	var b tailBuffer
 	b.limit = limit
 	if _, err := io.Copy(&b, f); err != nil {
