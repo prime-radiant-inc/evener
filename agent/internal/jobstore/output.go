@@ -161,37 +161,21 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 }
 
 type outputArtifactCreation struct {
-	fs        afero.Fs
-	artifacts []createdOutputArtifact
-}
-
-type createdOutputArtifact struct {
-	path string
-	info os.FileInfo
+	fs    afero.Fs
+	paths []string
 }
 
 func (c *outputArtifactCreation) openFile(path string, flags int, perm os.FileMode) (afero.File, error) {
 	f, err := c.fs.OpenFile(path, flags, perm)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		c.paths = append(c.paths, path)
 	}
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("stat created output artifact %s: %w", path, err)
-	}
-	c.artifacts = append(c.artifacts, createdOutputArtifact{path: path, info: info})
-	return f, nil
+	return f, err
 }
 
 func (c *outputArtifactCreation) removeAll() {
-	for i := len(c.artifacts) - 1; i >= 0; i-- {
-		artifact := c.artifacts[i]
-		current, err := lstatOutputArtifact(c.fs, artifact.path)
-		if err != nil || !os.SameFile(artifact.info, current) {
-			continue
-		}
-		_ = c.fs.Remove(artifact.path)
+	for i := len(c.paths) - 1; i >= 0; i-- {
+		_ = c.fs.Remove(c.paths[i])
 	}
 }
 

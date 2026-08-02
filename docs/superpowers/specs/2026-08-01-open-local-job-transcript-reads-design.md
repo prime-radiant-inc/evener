@@ -83,6 +83,9 @@ be unique within that owner session; no durable counter or allocator is needed.
 Generation and validation share one definition. Validation requires the exact
 length, a valid owner session ID, and a base62 suffix. There is no legacy shape.
 Job creation must never overwrite an existing record or output artifact.
+Collision safety covers ordinary Serf concurrency and names present at the
+defined creation checks; adversarial same-user pathname substitution after Serf
+creates an artifact or between cleanup observation and removal is out of scope.
 
 UI summaries must abbreviate the identifier so the random suffix remains
 visible. Prefix-only clipping is invalid because every job owned by one session

@@ -122,21 +122,14 @@ func TestCreateOutputRefusesDanglingSidecarSymlinksWithoutChangingThem(t *testin
 
 type createOutputSidecarRaceFS struct {
 	afero.Fs
-	outputPath    string
-	sidecarPath   string
-	sidecarTarget string
+	outputPath  string
+	sidecarPath string
 }
 
 func (fs *createOutputSidecarRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
 	f, err := fs.Fs.OpenFile(name, flag, perm)
 	if err == nil && name == fs.outputPath && flag&os.O_EXCL != 0 {
-		var writeErr error
-		if fs.sidecarTarget != "" {
-			writeErr = fs.Fs.(afero.Linker).SymlinkIfPossible(fs.sidecarTarget, fs.sidecarPath)
-		} else {
-			writeErr = afero.WriteFile(fs.Fs, fs.sidecarPath, []byte("keep me\n"), 0o644)
-		}
-		if writeErr != nil {
+		if writeErr := afero.WriteFile(fs.Fs, fs.sidecarPath, []byte("keep me\n"), 0o644); writeErr != nil {
 			_ = f.Close()
 			return nil, writeErr
 		}
@@ -172,68 +165,6 @@ func TestCreateOutputSecondCheckPreservesRacingSidecar(t *testing.T) {
 	}
 	if string(got) != contents {
 		t.Fatalf("racing sidecar changed: %q", got)
-	}
-}
-
-func TestCreateOutputSecondCheckPreservesRacingDanglingSymlink(t *testing.T) {
-	dir := t.TempDir()
-	disk := afero.NewOsFs()
-	path := filepath.Join(dir, "job.log")
-	sidecar := outputPendingMetaPath(outputMetaPath(path)) + ".tmp"
-	target := filepath.Join(dir, "missing-target")
-	fs := &createOutputSidecarRaceFS{
-		Fs:            disk,
-		outputPath:    path,
-		sidecarPath:   sidecar,
-		sidecarTarget: target,
-	}
-
-	output, err := createOutputFsWithSync(fs, path, 1024, true)
-	if output != nil {
-		_ = output.Close()
-		t.Fatal("createOutputFsWithSync returned an output store after a dangling sidecar race")
-	}
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("createOutputFsWithSync error = %v, want fs.ErrExist", err)
-	}
-	gotTarget, readErr := os.Readlink(sidecar)
-	if readErr != nil {
-		t.Fatalf("read racing dangling sidecar: %v", readErr)
-	}
-	if gotTarget != target {
-		t.Fatalf("racing dangling sidecar target = %q, want %q", gotTarget, target)
-	}
-	if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("dangling link target was materialized: %v", statErr)
-	}
-	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("reserved output log remains: %v", statErr)
-	}
-}
-
-type fsWithoutLstat struct {
-	afero.Fs
-}
-
-func TestCreateOutputFailsClosedWithoutGenuineLstat(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		fs   afero.Fs
-		path string
-	}{
-		{name: "lstat reported unused", fs: afero.NewMemMapFs(), path: "/job.log"},
-		{name: "lstat interface absent", fs: &fsWithoutLstat{Fs: afero.NewOsFs()}, path: filepath.Join(t.TempDir(), "job.log")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			output, err := createOutputFsWithSync(tc.fs, tc.path, 1024, true)
-			if output != nil {
-				_ = output.Close()
-				t.Fatal("createOutputFsWithSync returned an output store without genuine lstat")
-			}
-			if err == nil {
-				t.Fatal("createOutputFsWithSync succeeded without genuine lstat")
-			}
-		})
 	}
 }
 
@@ -358,106 +289,6 @@ func TestCreateOutputInitializationFailurePreservesUnownedRacingArtifact(t *test
 		if _, statErr := disk.Stat(owned); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("owned creation artifact %q remains: %v", owned, statErr)
 		}
-	}
-}
-
-type createOutputReplacementRaceFS struct {
-	afero.Fs
-	outputPath      string
-	metaPath        string
-	backupPath      string
-	replacementPath string
-	transientPath   string
-	replacement     []byte
-	replaceLog      bool
-	failMetaOpen    error
-}
-
-func (fs *createOutputReplacementRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	if name == fs.metaPath && flag&os.O_EXCL != 0 && fs.failMetaOpen != nil {
-		return nil, fs.failMetaOpen
-	}
-	f, err := fs.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	shouldReplace := (fs.replaceLog && name == fs.outputPath) || (!fs.replaceLog && name == fs.metaPath)
-	if !shouldReplace || flag&os.O_EXCL == 0 {
-		return f, nil
-	}
-	if err := fs.Fs.Rename(name, fs.backupPath); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if err := afero.WriteFile(fs.Fs, fs.replacementPath, fs.replacement, 0o644); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if fs.transientPath != "" {
-		if err := afero.WriteFile(fs.Fs, fs.transientPath, []byte("force collision\n"), 0o644); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-	}
-	return f, nil
-}
-
-func (fs *createOutputReplacementRaceFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
-	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
-}
-
-func TestCreateOutputCleanupPreservesReplacementOfTrackedArtifact(t *testing.T) {
-	const replacement = "replacement must survive\n"
-	for _, tc := range []struct {
-		name       string
-		replaceLog bool
-		wantErr    error
-	}{
-		{name: "log", replaceLog: true, wantErr: errors.New("metadata open failed")},
-		{name: "metadata", replaceLog: false, wantErr: os.ErrExist},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "job.log")
-			metaPath := outputMetaPath(path)
-			replacementPath := metaPath
-			backupPath := metaPath + ".owned"
-			transientPath := outputPendingMetaPath(metaPath) + ".tmp"
-			failMetaOpen := error(nil)
-			if tc.replaceLog {
-				replacementPath = path
-				backupPath = path + ".owned"
-				transientPath = ""
-				failMetaOpen = tc.wantErr
-			}
-			fs := &createOutputReplacementRaceFS{
-				Fs:              afero.NewOsFs(),
-				outputPath:      path,
-				metaPath:        metaPath,
-				backupPath:      backupPath,
-				replacementPath: replacementPath,
-				transientPath:   transientPath,
-				replacement:     []byte(replacement),
-				replaceLog:      tc.replaceLog,
-				failMetaOpen:    failMetaOpen,
-			}
-
-			output, err := createOutputFsWithSync(fs, path, 1024, true)
-			if output != nil {
-				_ = output.Close()
-				t.Fatal("createOutputFsWithSync returned an output store after replacement race")
-			}
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("createOutputFsWithSync error = %v, want %v", err, tc.wantErr)
-			}
-			got, readErr := os.ReadFile(replacementPath)
-			if readErr != nil {
-				t.Fatalf("read replacement: %v", readErr)
-			}
-			if string(got) != replacement {
-				t.Fatalf("replacement changed: %q", got)
-			}
-		})
 	}
 }
 

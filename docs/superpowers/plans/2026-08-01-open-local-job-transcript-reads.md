@@ -11,6 +11,10 @@
 ## Global Constraints
 
 - The sole valid job ID is job_<22-character-owner-session-id>_<12-character-base62-suffix>, exactly 39 characters.
+- Collision safety covers ordinary Serf concurrency and names present at the
+  defined creation checks; adversarial same-user pathname substitution after
+  Serf creates an artifact or between cleanup observation and removal is out of
+  scope.
 - This is a flag day: no old-ID parser, migration, state detection, fallback scan, or compatibility branch may remain.
 - An exact job read checks the current project first; an exact current-project record wins immediately.
 - Sibling lookup examines at most 256 project entries, checks only sessions/<owner-session-id>/jobs.jsonl, and returns lookup_limit_exceeded if the bounded scan cannot establish a complete answer.
