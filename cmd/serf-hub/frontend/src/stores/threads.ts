@@ -899,20 +899,6 @@ function beginWatchedHydration(
   return pending;
 }
 
-function transferPendingHydration(previous: PendingThreadHydration | undefined, next: PendingThreadHydration): void {
-  if (!previous) return;
-
-  // Notifications are ordered events: equal payloads can be distinct
-  // streaming chunks. The array copy transfers the existing buffer once
-  // without inventing payload identity or changing event multiplicity.
-  //
-  // Routing is NOT transferred: `next` keeps the identity it seeded from the
-  // current published model, and re-seeds it from its own snapshot at the
-  // response cut. A superseded pending is not an authority on what this ref
-  // names - its id can predate a clear that rebound the ref (kata 5p1c).
-  next.notifications = [...previous.notifications];
-}
-
 function bufferPendingNotification(pending: PendingThreadHydration, notification: AnyNotification): void {
   pending.notifications.push(notification);
 }
@@ -1324,7 +1310,6 @@ async function refreshTrackedThread(
   const previous = pendingThreadHydrations.get(ref);
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
-  transferPendingHydration(previous, pending);
   // No pre-check here: pending.client is this `client` and pending.epoch is this
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
@@ -1374,7 +1359,6 @@ async function refreshWatchedThread(
   const previous = pendingWatchedHydrations.get(ref);
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
   const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
-  transferPendingHydration(previous, pending);
   const includeTurns = watchIncludeTurns.get(ref) ?? false;
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
