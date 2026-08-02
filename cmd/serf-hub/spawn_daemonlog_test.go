@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,9 +118,9 @@ func TestResumedDaemonAppendsToTheSessionsOwnLog(t *testing.T) {
 }
 
 // A failed resume must explain this launch, not quote the tail of the session
-// history that happened to be in the file before it opened. The log remains an
-// append-only account of every run; only the failure diagnostic is scoped to
-// the bytes this resume wrote.
+// history that happened to be in the file before it opened. The replacement
+// candidate scopes the failure diagnostic to the bytes this resume wrote,
+// while the canonical history remains untouched until a successful resume.
 func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -181,7 +182,10 @@ func TestResumedDaemonLogExcludesOutputFromAnExistingWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDaemonLog: %v", err)
 	}
-	defer dlog.close()
+	defer func() {
+		dlog.close()
+		dlog.removeIfUncommitted()
+	}()
 
 	const currentDiagnostic = "CURRENT_REPLACEMENT_DIAGNOSTIC\n"
 	if _, err := dlog.file.WriteString(currentDiagnostic); err != nil {
@@ -201,6 +205,63 @@ func TestResumedDaemonLogExcludesOutputFromAnExistingWriter(t *testing.T) {
 	}
 }
 
+// A failed replacement must not rename the canonical log away from an older
+// daemon that still has it open. The old writer's later output remains the
+// evidence for that live process, while the failed replacement's diagnostics
+// belong only to its temporary candidate and must not be promoted.
+func TestFailedReplacementResumeLeavesLiveDaemonLogNamed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	const sessionID = "01JRESUME"
+	logPath := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte("earlier run\n"), 0o600); err != nil {
+		t.Fatalf("seed earlier log: %v", err)
+	}
+
+	existingWriter, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open existing writer: %v", err)
+	}
+	defer func() { _ = existingWriter.Close() }()
+
+	const replacementDiagnostic = "FAILED_REPLACEMENT_DIAGNOSTIC"
+	bin := filepath.Join(dir, "fake-serf")
+	writeFakeSerf(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nprintf '%%s\\n' '%s' >&2\nexit 42\n", replacementDiagnostic, replacementDiagnostic))
+
+	var hubLog bytes.Buffer
+	_, err = resumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{SessionID: sessionID}, 10*time.Second, &hubLog)
+	if err == nil {
+		t.Fatal("resume succeeded, want the replacement daemon to fail before rendezvous")
+	}
+	if !strings.Contains(err.Error(), replacementDiagnostic) {
+		t.Fatalf("resume failure dropped replacement diagnostics: %v", err)
+	}
+
+	const oldDaemonOutput = "OLD_DAEMON_AFTER_FAILED_RESUME\n"
+	if _, err := existingWriter.WriteString(oldDaemonOutput); err != nil {
+		t.Fatalf("write existing daemon output: %v", err)
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read canonical daemon log: %v", err)
+	}
+	if !strings.Contains(string(got), oldDaemonOutput) {
+		t.Fatalf("failed replacement stranded output from the existing writer: %q", got)
+	}
+	if strings.Contains(string(got), replacementDiagnostic) {
+		t.Fatalf("failed replacement promoted its candidate over the canonical log: %q", got)
+	}
+	if candidates, globErr := filepath.Glob(filepath.Join(filepath.Dir(logPath), "daemon-replacement-*.log")); globErr != nil {
+		t.Fatalf("glob replacement candidates: %v", globErr)
+	} else if len(candidates) != 0 {
+		t.Fatalf("failed replacement left candidate logs behind: %v", candidates)
+	}
+}
+
 // A hub-owned pipe on a daemon's stdout or stderr kills that daemon the moment
 // the hub exits: the child's next write gets EPIPE, and Go raises SIGPIPE to
 // the default handler for writes to fd 1 and 2. Spawned daemons must outlive a
@@ -214,7 +275,10 @@ func TestDaemonStreamsAreInheritedFilesNotHubPipes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDaemonLog: %v", err)
 	}
-	defer dlog.close()
+	defer func() {
+		dlog.close()
+		dlog.removeIfUncommitted()
+	}()
 
 	cmd := exec.Command("/bin/echo") //nolint:noctx // never started; this inspects the wiring
 	dlog.attach(cmd)
@@ -359,6 +423,11 @@ func TestRemoveIfPendingSparesALogASessionOwns(t *testing.T) {
 			t.Fatalf("openDaemonLog(%q): %v", sessionID, err)
 		}
 		l.close()
+		if sessionID != "" {
+			if err := l.promote(); err != nil {
+				t.Fatalf("promote %q: %v", sessionID, err)
+			}
+		}
 		return l
 	}
 
@@ -406,6 +475,40 @@ func TestDaemonLogNameCannotEscapeItsDirectory(t *testing.T) {
 	}
 }
 
+type growingDaemonLogReader struct {
+	chunks []string
+	reads  int
+}
+
+func (r *growingDaemonLogReader) Read(p []byte) (int, error) {
+	if r.reads == len(r.chunks) {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[r.reads]
+	r.reads++
+	return copy(p, chunk), nil
+}
+
+// A live writer can append after the replacement captures the source size.
+// Snapshot copying must stop at that captured boundary rather than consuming
+// the later chunk or waiting for the writer to close.
+func TestDaemonLogSnapshotStopsAtCapturedSize(t *testing.T) {
+	t.Parallel()
+	const initial = "initial output\n"
+	source := &growingDaemonLogReader{chunks: []string{initial, "appended while snapshotting\n"}}
+	var got bytes.Buffer
+
+	if err := copyDaemonLogSnapshot(&got, source, int64(len(initial))); err != nil {
+		t.Fatalf("copyDaemonLogSnapshot: %v", err)
+	}
+	if got.String() != initial {
+		t.Fatalf("snapshot copied beyond its captured size: got %q, want %q", got.String(), initial)
+	}
+	if source.reads != 1 {
+		t.Fatalf("snapshot read %d growing-source chunks, want 1", source.reads)
+	}
+}
+
 // seedDaemonLogHistory writes want bytes of fixed-width, self-numbering lines
 // to a session's log, as an earlier run of that session would have left them,
 // and returns the line function and the highest number it got to. Every line is
@@ -447,13 +550,16 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDaemonLog: %v", err)
 	}
-	defer dlog.close()
+	defer func() {
+		dlog.close()
+		dlog.removeIfUncommitted()
+	}()
 
 	// Measured before this run writes anything: the bound is on what a launch
 	// inherits, which is the only part of the file the hub gets to decide.
-	info, err := os.Stat(logPath)
+	info, err := os.Stat(dlog.path)
 	if err != nil {
-		t.Fatalf("stat log: %v", err)
+		t.Fatalf("stat replacement log: %v", err)
 	}
 	if info.Size() > daemonLogRetainedBytes {
 		t.Fatalf("resume carried %d bytes of earlier runs into this one, past the %d byte cap", info.Size(), daemonLogRetainedBytes)
@@ -463,9 +569,9 @@ func TestResumingASessionBoundsTheHistoryItsLogCarriesIn(t *testing.T) {
 	if _, err := dlog.file.WriteString(thisRun); err != nil {
 		t.Fatalf("write this run's line: %v", err)
 	}
-	got, err := os.ReadFile(logPath)
+	got, err := os.ReadFile(dlog.path)
 	if err != nil {
-		t.Fatalf("read log: %v", err)
+		t.Fatalf("read replacement log: %v", err)
 	}
 	if !strings.HasSuffix(string(got), thisRun) {
 		t.Fatalf("this run appends to the log it inherited; its first line is not at the end")
@@ -509,7 +615,11 @@ func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDaemonLog: %v", err)
 	}
-	child, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	defer func() {
+		dlog.close()
+		dlog.removeIfUncommitted()
+	}()
+	child, err := os.OpenFile(dlog.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatalf("inherit child descriptor: %v", err)
 	}
@@ -530,7 +640,7 @@ func TestATrimNeverCutsTheRunItOpenedFor(t *testing.T) {
 		t.Fatalf("write last: %v", err)
 	}
 
-	got, err := os.ReadFile(logPath)
+	got, err := os.ReadFile(dlog.path)
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}

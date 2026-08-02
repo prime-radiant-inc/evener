@@ -408,6 +408,7 @@ func resumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		dlog.close()
+		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	// The child holds its own descriptor from here on.
@@ -421,7 +422,16 @@ func resumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", err), err, dlog.tail(daemonLaunchOutputLimit))
+		failure := launchFailureError(launchFailurePrefix("resume", err), err, dlog.tail(daemonLaunchOutputLimit))
+		dlog.removeIfUncommitted()
+		return rendezvous.Entry{}, failure
+	}
+	if err := dlog.promote(); err != nil {
+		_ = cmd.Process.Kill()
+		promotionErr := fmt.Errorf("promote daemon log: %w", err)
+		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, dlog.tail(daemonLaunchOutputLimit))
+		dlog.removeIfUncommitted()
+		return rendezvous.Entry{}, failure
 	}
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil

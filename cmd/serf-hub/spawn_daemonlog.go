@@ -53,7 +53,13 @@ const daemonLogRetainedBytes = 1 << 20
 // (SpawnDaemon, hubcore.Roster).
 type daemonLog struct {
 	file *os.File
+	// path is the file the child currently writes. For a resume this is a
+	// replacement candidate until promote succeeds; for a fresh spawn it is
+	// the pending file until adopt names it.
 	path string
+	// replacementTarget is the canonical session path a successful resume
+	// promotes over. It stays untouched while the candidate is in flight.
+	replacementTarget string
 	// launchOffset marks the first byte written by this launch. A resume
 	// appends to a session log, but a failed-launch diagnostic must not quote
 	// the earlier runs that were already there.
@@ -65,10 +71,11 @@ type daemonLog struct {
 
 // openDaemonLog opens the file a daemon's output goes to, under runDir.
 //
-// sessionID names the file when the caller already knows it: a resume keeps
-// its session's id, so it keeps — and appends to — that session's log. An
-// empty id opens a pending file instead, which adopt names once the daemon
-// reports the id it minted for itself.
+// sessionID identifies the file when the caller already knows it. A resume
+// snapshots that session's log into a candidate and promotes the candidate
+// only after rendezvous, so a failed replacement leaves the canonical path and
+// inode untouched. An empty id opens a pending file instead, which adopt names
+// once the daemon reports the id it minted for itself.
 func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 	if runDir == "" {
 		return nil, errors.New("daemon log: no run dir to write it under")
@@ -84,21 +91,45 @@ func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 		}
 		return &daemonLog{file: f, path: f.Name(), pending: true}, nil
 	}
-	path := filepath.Join(dir, daemonLogName(sessionID))
-	trimDaemonLog(path)
-	if err := isolateDaemonLog(path); err != nil {
-		return nil, fmt.Errorf("daemon log: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	canonicalPath := filepath.Join(dir, daemonLogName(sessionID))
+	f, err := openDaemonLogReplacement(dir, canonicalPath)
 	if err != nil {
 		return nil, fmt.Errorf("daemon log: %w", err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return nil, fmt.Errorf("daemon log: %w", err)
 	}
-	return &daemonLog{file: f, path: path, launchOffset: info.Size()}, nil
+	return &daemonLog{
+		file:              f,
+		path:              f.Name(),
+		replacementTarget: canonicalPath,
+		launchOffset:      info.Size(),
+	}, nil
+}
+
+func openDaemonLogReplacement(dir, canonicalPath string) (*os.File, error) {
+	tmp, err := os.CreateTemp(dir, "daemon-replacement-*.log")
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := tmp.Name()
+	if err := writeDaemonLogSnapshot(tmp, canonicalPath); err != nil {
+		cleanUpDaemonLogTemp(tmp)
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+	return f, nil
 }
 
 // daemonLogTrimNotice is the line a trimmed log opens with. Without it the file
@@ -109,9 +140,59 @@ var daemonLogTrimNotice = fmt.Sprintf(
 	"[hub] earlier output dropped: this log is trimmed to its most recent %d bytes at each launch\n",
 	daemonLogRetainedBytes)
 
+// writeDaemonLogSnapshot copies one bounded view of sourcePath into dst. The
+// source size is captured once, so a daemon that still writes the canonical
+// inode cannot make preparation follow EOF forever. A source that changes
+// after that point remains the old daemon's file; the replacement candidate
+// never observes bytes outside its captured range.
+func writeDaemonLogSnapshot(dst *os.File, sourcePath string) error {
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	snapshotSize := info.Size()
+	if snapshotSize <= daemonLogRetainedBytes {
+		if _, err := src.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		return copyDaemonLogSnapshot(dst, src, snapshotSize)
+	}
+
+	keep := int64(daemonLogRetainedBytes) - int64(len(daemonLogTrimNotice))
+	if keep <= 0 {
+		return errors.New("daemon log retention is smaller than its trim notice")
+	}
+	if _, err := src.Seek(snapshotSize-keep, io.SeekStart); err != nil {
+		return err
+	}
+	var tail bytes.Buffer
+	if err := copyDaemonLogSnapshot(&tail, src, keep); err != nil {
+		return err
+	}
+	retained := tail.Bytes()
+	if nl := bytes.IndexByte(retained, '\n'); nl >= 0 && nl+1 < len(retained) {
+		retained = retained[nl+1:]
+	}
+	if _, err := io.WriteString(dst, daemonLogTrimNotice); err != nil {
+		return err
+	}
+	_, err = dst.Write(retained)
+	return err
+}
+
 // trimDaemonLog reduces path to its most recent whole lines within
 // daemonLogRetainedBytes. A log already inside the cap, and a session opening
-// its first log, are both left alone.
+// its first log, are both left alone. Resumed launches use
+// writeDaemonLogSnapshot instead so the canonical path is not changed until
+// the replacement reaches rendezvous.
 //
 // It runs at open, before the daemon this launch is for holds a descriptor,
 // which is the only honest moment for it: a trim during the run would cut the
@@ -183,9 +264,10 @@ func trimDaemonLog(path string) {
 	}
 }
 
-// isolateDaemonLog replaces path with a copy of its current contents. A daemon
-// from an earlier launch may still hold the old inode; after the rename, its
-// writes stay there and cannot enter the new launch's log.
+// isolateDaemonLog replaces path with a bounded copy of its current contents.
+// It is a legacy helper for callers that intentionally commit the replacement
+// immediately; resumed launches use openDaemonLogReplacement so a failed
+// launch can leave the canonical path and inode untouched.
 func isolateDaemonLog(path string) error {
 	src, err := os.Open(path)
 	if err != nil {
@@ -199,7 +281,13 @@ func isolateDaemonLog(path string) error {
 		_ = src.Close()
 		return err
 	}
-	if _, err := io.Copy(tmp, src); err != nil {
+	info, err := src.Stat()
+	if err != nil {
+		_ = src.Close()
+		cleanUpDaemonLogTemp(tmp)
+		return err
+	}
+	if err := copyDaemonLogSnapshot(tmp, src, info.Size()); err != nil {
 		_ = src.Close()
 		cleanUpDaemonLogTemp(tmp)
 		return err
@@ -226,6 +314,24 @@ func isolateDaemonLog(path string) error {
 func cleanUpDaemonLogTemp(tmp *os.File) {
 	_ = tmp.Close()
 	_ = os.Remove(tmp.Name())
+}
+
+// copyDaemonLogSnapshot is the bounded-copy seam used when a replacement
+// launch snapshots a live daemon log. It consumes exactly the bytes visible at
+// the captured boundary; it never waits for the source to report EOF after
+// that boundary.
+func copyDaemonLogSnapshot(dst io.Writer, src io.Reader, snapshotSize int64) error {
+	if snapshotSize < 0 {
+		return errors.New("daemon log snapshot size is negative")
+	}
+	copied, err := io.Copy(dst, io.LimitReader(src, snapshotSize))
+	if err != nil {
+		return err
+	}
+	if copied != snapshotSize {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
 }
 
 // daemonLogName is the file name a session's log goes by. A session id reaches
@@ -273,6 +379,21 @@ func (l *daemonLog) adopt(sessionID string) {
 	l.path = target
 }
 
+// promote makes a replacement candidate canonical only after its daemon has
+// reached rendezvous. Until then, a failed launch can be discarded without
+// changing the path and inode an older daemon still writes.
+func (l *daemonLog) promote() error {
+	if l.replacementTarget == "" {
+		return nil
+	}
+	if err := os.Rename(l.path, l.replacementTarget); err != nil {
+		return err
+	}
+	l.path = l.replacementTarget
+	l.replacementTarget = ""
+	return nil
+}
+
 // tail returns the last limit bytes written by this launch, which is what a
 // failed launch quotes back to the operator as the reason the daemon would not
 // start. A resume's log already contains earlier runs, so reading from the
@@ -309,6 +430,16 @@ func (l *daemonLog) removeIfPending() {
 		return
 	}
 	_ = os.Remove(l.path)
+}
+
+// removeIfUncommitted drops a replacement candidate or an unclaimed fresh
+// spawn log. A promoted or adopted log is never removed by a launch failure.
+func (l *daemonLog) removeIfUncommitted() {
+	if l.replacementTarget != "" {
+		_ = os.Remove(l.path)
+		return
+	}
+	l.removeIfPending()
 }
 
 // close releases the hub's own descriptor. Call it once the child has been
