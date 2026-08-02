@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>mobile-shell-viewport-height layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+  }
+
+  .fixture[hidden] {
+    display: none !important;
+  }
+
+  .fixture {
+    width: 390px;
+    min-width: 390px;
+    max-width: 390px;
+  }
+
+  /* Layoutguard flattens CSS modules into one resolved.css file with plain
+     selectors, so StackHost's `.body` and PaneScaffold's `.body` would
+     otherwise collide. This alias removes the pane body's extra scroll/padding
+     from the StackHost wrapper while leaving the real `.body` rule on the pane
+     body itself. */
+  .stackBody {
+    overflow: visible;
+    padding: 0;
+  }
+
+  .paneBodyContent {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .paneBodyContent p,
+  .paneBodyContent h2 {
+    margin: 0;
+  }
+
+  .composerLabel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    font-size: var(--font-size-ui);
+    color: var(--ink-hi);
+  }
+
+  .composerLabel textarea {
+    width: 100%;
+    min-height: 4.5rem;
+    padding: var(--space-2);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-control);
+    background: var(--surface-0);
+    color: inherit;
+    font: inherit;
+    resize: none;
+  }
+</style>
+</head>
+<body>
+<section class="fixture" data-fixture="session">
+  <div data-shell class="shell">
+    <main class="content">
+      <section class="host">
+        <div class="body stackBody">
+          <article data-pane class="pane">
+            <div data-pane-body class="body">
+              <div class="paneBodyContent">
+                <h2>Session transcript</h2>
+                <p>Turn 1 — a long-running session still needs its composer visible at the bottom of the mobile pane.</p>
+                <p>Turn 2 — the transcript body owns the scrolling, not the outer document.</p>
+                <p>Turn 3 — this content is intentionally tall so the pane body has real vertical pressure.</p>
+                <p>Turn 4 — if the shell inherits an oversized 100vh chain, the footer drops below the visible screen.</p>
+                <p>Turn 5 — StackHost and PaneScaffold should inherit the corrected AppShell height without overrides.</p>
+                <p>Turn 6 — footer visibility matters because this is where the composer lives in a real session pane.</p>
+                <p>Turn 7 — the transcript remains in the scrollable body above the footer.</p>
+                <p>Turn 8 — the document itself must not grow taller than the visible viewport.</p>
+                <p>Turn 9 — this line keeps the content tall enough to exercise the min-height: 0 chain.</p>
+                <p>Turn 10 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 11 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 12 — another line of transcript content for internal scrolling.</p>
+              </div>
+            </div>
+            <footer data-footer class="footer">
+              <label class="composerLabel">Message <textarea rows="2">Draft reply that should stay above the screen edge.</textarea></label>
+            </footer>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+</section>
+
+<section class="fixture" data-fixture="non-session" hidden>
+  <div data-shell class="shell">
+    <main class="content">
+      <section class="host">
+        <div class="body stackBody">
+          <article data-pane class="pane">
+            <div data-pane-body class="body">
+              <div class="paneBodyContent">
+                <h2>Non-session pane</h2>
+                <p>This fixture omits the footer but keeps the same shell, host, and pane height chain.</p>
+                <p>Non-session panes should still inherit the corrected shared shell height.</p>
+                <p>The pane body fills the remaining viewport height and owns its own scrolling.</p>
+                <p>Another tall block keeps the body under real pressure instead of relying on an empty pane.</p>
+                <p>Line 5.</p>
+                <p>Line 6.</p>
+                <p>Line 7.</p>
+                <p>Line 8.</p>
+                <p>Line 9.</p>
+                <p>Line 10.</p>
+                <p>Line 11.</p>
+                <p>Line 12.</p>
+                <p>Line 13.</p>
+                <p>Line 14.</p>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+</section>
+
+<script>
+const FIXTURES = ["session", "non-session"];
+
+function rectOf(element) {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function fixtureRoot(name) {
+  return document.querySelector(`[data-fixture="${name}"]`);
+}
+
+async function showFixture(name) {
+  for (const fixtureName of FIXTURES) {
+    fixtureRoot(fixtureName).hidden = fixtureName !== name;
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function measureFixture(name) {
+  const root = fixtureRoot(name);
+  const shell = root.querySelector("[data-shell]");
+  const pane = root.querySelector("[data-pane]");
+  const paneBody = root.querySelector("[data-pane-body]");
+  const footer = root.querySelector("[data-footer]");
+
+  return {
+    fixture: name,
+    assets: {
+      resolvedCssHref: new URL("resolved.css", location.href).href,
+    },
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    },
+    visualViewport: window.visualViewport
+      ? {
+          width: window.visualViewport.width,
+          height: window.visualViewport.height,
+          scale: window.visualViewport.scale,
+        }
+      : null,
+    document: {
+      scrollHeight: document.documentElement.scrollHeight,
+      clientHeight: document.documentElement.clientHeight,
+    },
+    shell: rectOf(shell),
+    pane: rectOf(pane),
+    paneBody: paneBody
+      ? {
+          rect: rectOf(paneBody),
+          scrollHeight: paneBody.scrollHeight,
+          clientHeight: paneBody.clientHeight,
+        }
+      : null,
+    footer: rectOf(footer),
+  };
+}
+
+window.measure = async function () {
+  const measurements = [];
+  for (const fixture of FIXTURES) {
+    await showFixture(fixture);
+    measurements.push(measureFixture(fixture));
+  }
+  await showFixture(FIXTURES[0]);
+  return measurements;
+};
+</script>
+</body>
+</html>

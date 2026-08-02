@@ -1,0 +1,11 @@
+{
+  "name": "mobile-shell-viewport-height",
+  "description": "mobile shell height chain at a 390px-wide phone fixture: the shared shell, host, pane body, and optional session footer must stay inside the visible viewport for both session and non-session fixtures",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/AppShell.module.css",
+    "shell/mobile/StackHost.module.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ]
+}
