@@ -82,7 +82,9 @@ run_make() {
 }
 
 wait_for_file() {
-	local path="$1" attempts=200
+	local path="$1" attempts=1000
+	# The full selftest wave starts this fixture alongside many other workers.
+	# Give both probe processes time to start before testing interruption cleanup.
 	while [ "$attempts" -gt 0 ]; do
 		[ -f "$path" ] && return 0
 		sleep 0.01
