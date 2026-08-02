@@ -86,6 +86,9 @@ func openDaemonLog(runDir, sessionID string) (*daemonLog, error) {
 	}
 	path := filepath.Join(dir, daemonLogName(sessionID))
 	trimDaemonLog(path)
+	if err := isolateDaemonLog(path); err != nil {
+		return nil, fmt.Errorf("daemon log: %w", err)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("daemon log: %w", err)
@@ -164,11 +167,11 @@ func trimDaemonLog(path string) {
 		return
 	}
 	if _, err := tmp.WriteString(daemonLogTrimNotice); err != nil {
-		cleanUpDaemonLogTrim(tmp)
+		cleanUpDaemonLogTemp(tmp)
 		return
 	}
 	if _, err := tmp.Write(tail); err != nil {
-		cleanUpDaemonLogTrim(tmp)
+		cleanUpDaemonLogTemp(tmp)
 		return
 	}
 	if err := tmp.Close(); err != nil {
@@ -180,11 +183,47 @@ func trimDaemonLog(path string) {
 	}
 }
 
-// cleanUpDaemonLogTrim drops a half-written trim. The log it was going to
+// isolateDaemonLog replaces path with a copy of its current contents. A daemon
+// from an earlier launch may still hold the old inode; after the rename, its
+// writes stay there and cannot enter the new launch's log.
+func isolateDaemonLog(path string) error {
+	src, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "daemon-isolate-*.log")
+	if err != nil {
+		_ = src.Close()
+		return err
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = src.Close()
+		cleanUpDaemonLogTemp(tmp)
+		return err
+	}
+	if err := src.Close(); err != nil {
+		cleanUpDaemonLogTemp(tmp)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// cleanUpDaemonLogTemp drops a half-written daemon log copy. The log it was going to
 // replace is untouched, so there is nothing to roll back — only this file to
 // avoid leaving behind, since nothing in the hub sweeps <run-dir>/logs (kata
 // dd8d).
-func cleanUpDaemonLogTrim(tmp *os.File) {
+func cleanUpDaemonLogTemp(tmp *os.File) {
 	_ = tmp.Close()
 	_ = os.Remove(tmp.Name())
 }

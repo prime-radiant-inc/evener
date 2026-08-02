@@ -155,6 +155,52 @@ func TestFailedResumeReportsOnlyCurrentLaunchOutput(t *testing.T) {
 	}
 }
 
+// A replacement resume must get a new inode before it records its launch
+// offset. An older daemon can still hold the previous descriptor and append to
+// it after the replacement has opened the session's path; those bytes must not
+// displace the replacement's diagnostic tail.
+func TestResumedDaemonLogExcludesOutputFromAnExistingWriter(t *testing.T) {
+	t.Parallel()
+	runDir := filepath.Join(t.TempDir(), "run")
+	const sessionID = "01JRESUME"
+	logPath := filepath.Join(runDir, daemonLogDirName, daemonLogName(sessionID))
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte("earlier run\n"), 0o600); err != nil {
+		t.Fatalf("seed earlier log: %v", err)
+	}
+
+	existingWriter, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open existing writer: %v", err)
+	}
+	defer func() { _ = existingWriter.Close() }()
+
+	dlog, err := openDaemonLog(runDir, sessionID)
+	if err != nil {
+		t.Fatalf("openDaemonLog: %v", err)
+	}
+	defer dlog.close()
+
+	const currentDiagnostic = "CURRENT_REPLACEMENT_DIAGNOSTIC\n"
+	if _, err := dlog.file.WriteString(currentDiagnostic); err != nil {
+		t.Fatalf("write replacement diagnostic: %v", err)
+	}
+	oldOutput := strings.Repeat("OLD_DAEMON_OUTPUT\n", daemonLaunchOutputLimit/len("OLD_DAEMON_OUTPUT\n")+1)
+	if _, err := existingWriter.WriteString(oldOutput); err != nil {
+		t.Fatalf("write existing daemon output: %v", err)
+	}
+
+	got := dlog.tail(daemonLaunchOutputLimit)
+	if !strings.Contains(got, currentDiagnostic) {
+		t.Fatalf("replacement diagnostic was displaced by an existing writer: %q", got)
+	}
+	if strings.Contains(got, "OLD_DAEMON_OUTPUT") {
+		t.Fatalf("existing daemon output leaked into replacement diagnostic: %q", got)
+	}
+}
+
 // A hub-owned pipe on a daemon's stdout or stderr kills that daemon the moment
 // the hub exits: the child's next write gets EPIPE, and Go raises SIGPIPE to
 // the default handler for writes to fd 1 and 2. Spawned daemons must outlive a
