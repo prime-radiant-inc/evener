@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>session ask pane allocation layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--surface-0); color: var(--ink-hi); font-family: var(--font-sans); }
+  .fixture { width: 390px; height: 844px; padding: 12px; }
+  .bodyContent { height: 1800px; }
+  .footerContent { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+  .questionDock { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .questionContent { height: 900px; }
+  .statusFooter { flex: none; height: 42px; border-top: 1px solid var(--edge); }
+</style>
+</head>
+<body>
+<main class="fixture">
+  <section class="pane" data-pane>
+    <header class="header">Active session</header>
+    <div class="body" data-pane-body><div class="bodyContent">Long transcript</div></div>
+    <footer class="footer" data-pane-footer>
+      <div class="footerContent">
+        <div class="questionDock" data-ask-response-dock><div class="questionContent">Questions and choices</div></div>
+        <div class="statusFooter" data-status-footer>Session status</div>
+      </div>
+    </footer>
+  </section>
+</main>
+<script>
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, height: r.height };
+}
+window.measure = function () {
+  const pane = document.querySelector("[data-pane]");
+  const body = document.querySelector("[data-pane-body]");
+  const footer = document.querySelector("[data-pane-footer]");
+  const dock = document.querySelector("[data-ask-response-dock]");
+  const status = document.querySelector("[data-status-footer]");
+  return {
+    viewportHeight: window.innerHeight,
+    documentHeight: document.documentElement.scrollHeight,
+    pane: rect(pane),
+    body: { ...rect(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, overflowY: getComputedStyle(body).overflowY },
+    footer: rect(footer),
+    dock: { ...rect(dock), clientHeight: dock.clientHeight, scrollHeight: dock.scrollHeight, overflowY: getComputedStyle(dock).overflowY },
+    status: rect(status),
+  };
+};
+</script>
+</body>
+</html>

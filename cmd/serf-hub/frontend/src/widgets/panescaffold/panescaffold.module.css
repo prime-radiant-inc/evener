@@ -60,7 +60,10 @@
 }
 
 .body {
-  flex: 1 1 auto;
+  /* A zero basis makes the body consume the pane's remaining allocation,
+   * independent of the transcript's (potentially enormous) content height.
+   * The body itself owns that overflow below. */
+  flex: 1 1 0;
   /* min-height: 0 is required for a flex child to actually be able to
    * scroll instead of stretching its column parent to fit its content. */
   min-height: 0;
@@ -83,7 +86,10 @@
  * Let only that footer shrink against the pane, leaving other panes' fixed
  * footer contract unchanged. */
 .footer:has([data-ask-response-dock]) {
-  flex: 0 1 auto;
+  /* Reserve the same pane-relative share this footer is capped to. Using an
+   * auto basis lets a long transcript win flex shrink and crush AskDock down
+   * to its status chrome. */
+  flex: 0 1 70%;
   min-height: 0;
   max-height: 70%;
   display: flex;
