@@ -92,9 +92,6 @@ var scenarioPortAllowedMentions = map[string][]string{
 	"test/scenarios/tui-paste-image-path.md": {
 		"never Jesse's port `9180`",
 	},
-	"test/scenarios/tui-queue-then-completes.md": {
-		"never Jesse's port `9180`",
-	},
 	"test/scenarios/tui-queue-then-drain-as-steer.md": {
 		"never Jesse's port `9180`",
 	},

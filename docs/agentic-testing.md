@@ -488,51 +488,45 @@ So the driving surface is the DOM, and only the DOM:
 4. The REST shim and the on-disk transcript, for anything the DOM can
    only hint at.
 
-### Claim your own Chrome instance first (kata `8ecz`)
+### Coordinate browser ownership first (kata `8ecz`)
 
-`use_browser` auto-starts Chrome on first use under whatever profile is
-currently set — the shared default (`superpowers-chrome`) if nothing
-ever set one. Every concurrent browsing agent that skips this joins the
-*same* Chrome process and shares its tabs: `new_tab` followed by an
-`eval` can land on another agent's tab, `switch_tab` can land you on a
-backgrounded tab whose `requestAnimationFrame`/`ResizeObserver` silently
-never fire (a confidently wrong measurement, not a visible failure),
-and one agent's `navigate` can pull the page out from under another
-mid-measurement. `set_profile` refuses once Chrome is already running,
-so this has to happen before your first `use_browser` call of the
-session — there's no fixing it after the fact, and killing the shared
-Chrome to reprofile would disrupt every other agent using it:
+The shared `use_browser` service drives one Chrome process. Concurrent
+browser agents therefore share its tabs: `new_tab` followed by an `eval`
+can land on another agent's tab, and `switch_tab` can land on a backgrounded
+tab whose `requestAnimationFrame`/`ResizeObserver` never fire. A successful
+measurement can consequently be for the wrong page.
 
-```text
-set_profile <profile-name>     # e.g. the worktree/branch name — literally
-                                # the first use_browser call of the run
-```
+`set_profile` does **not** create a private browser and must not be called. It
+changes one sticky value on the shared MCP server process, redirecting every
+agent that uses that server. The authoritative measured behavior and fleet
+rule are in `docs/conventions/agent-fleets.md` under “Chrome is one shared
+instance.”
 
-Use the git worktree or branch name as the profile name: git already
-guarantees it's unique among your concurrent siblings (`git worktree add
--b <name>` refuses a name already in use), so it costs nothing to derive
-and can't collide the way a name picked "by taste" can. This gives every
-agent its own Chrome process — its own tabs, its own profile directory —
-so tab-stealing and cross-agent navigation become structurally
-impossible rather than merely detectable.
+Use one of these ownership modes before browser verification:
 
-Keep asserting `location.port` (or another page-identity check) inside
-`eval` payloads regardless. A unique profile stops *other* agents from
-landing on your tabs; it doesn't stop your own script from targeting the
-wrong tab within your own profile (e.g. after a `new_tab` you forgot to
-`switch_tab` to). The assertion still converts a wrong measurement into
-a loud failure — it just no longer has to defend against the whole
-fleet.
+1. Serialize browser verification to one designated agent at a time. While
+   holding that exclusive slot, use only a new run tab and its unique-port
+   origin. Never close or reprofile the shared browser/server, clear its
+   profile, or mutate any pre-existing tab.
+2. If the tooling provides it, launch a genuinely distinct browser server and
+   process for the run, with its exact PID and data directory owned by the run.
+   A profile name on the existing shared server does not qualify.
+
+If neither mode is available, skip the browser and use a focused static-file
+harness, then report that live browser verification was not performed. In
+either browser mode, assert `location.port` (or another page-identity check)
+inside every `eval`; this converts a wrong-tab measurement into a loud
+failure.
 
 **The human's keyboard wins.** A visible shared Chrome takes real window
 focus, so a human using the same machine can interleave keystrokes or a
 paste with your `type` action — measured once as a vite dev-server URL
 landing inside a word mid-type, storing
 `askttp://192.168.118.83:5173/_user` where `ask_user` was typed, all the
-way into the daemon transcript. When a human may be active, either drive
-an isolated profile or read the field (or the stored turn) back and
-compare against what you sent before trusting any result derived from
-typed input.
+way into the daemon transcript. When a human may be active, either use a
+genuinely distinct browser process, or hold the designated serialized slot
+and read the field (or the stored turn) back and compare against what you sent
+before trusting any result derived from typed input.
 
 **Report the gap, don't paper over it.** If a browser step is skipped,
 degraded, or gives an ambiguous read (an assertion failed, a tab looked
@@ -1017,4 +1011,4 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
 - **Rate-limited provider for retry/liveness checks**: `scripts/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.
-- **Browser profile** (own-Chrome-instance isolation): `set_profile` with a name derived from your worktree/branch — see "Driving the web UI" below. Do this before the first `use_browser` call of the run; a shared default profile is the root cause of kata `8ecz`.
+- **Browser verification ownership**: serialize the shared browser to one designated verifier, or use a genuinely distinct browser server/process owned by the run. Never call `set_profile`; see "Driving the web UI" above and `docs/conventions/agent-fleets.md`.

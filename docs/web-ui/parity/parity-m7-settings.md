@@ -124,9 +124,12 @@ per-browser" per the page copy.
       `window.SerfSidebar.applySidebarMode(v)` when present, else falls back to writing localStorage
       key `serf-hub.sidebar.rail` directly — `assets/settings-appearance.js:26-33`,
       `templates/partials/settings/theme.html:27-35`
-- [ ] "Font size" radio (s/m/l/xl), default **m**; localStorage key
-      `serf-hub.appearance.fontSize`; mirrored onto `document.body.dataset.fontSize` —
-      `assets/settings-appearance.js:36-40,84-87`, `templates/partials/settings/theme.html:39-46`
+- [ ] "Font size" radio (s/m/l/xl), default **m**. The current React frontend
+      stores it under localStorage key `serf.prefs.fontSize` and mirrors it onto
+      `document.body.dataset.fontSize` via `setFontSize` / `applyFontSize` —
+      `cmd/serf-hub/frontend/src/stores/prefs.ts`. The retired legacy page used
+      `serf-hub.appearance.fontSize` — `assets/settings-appearance.js:36-40,84-87`,
+      `templates/partials/settings/theme.html:39-46`
 - [ ] None of the 4 radio groups carry a server-rendered `checked` attribute — correctness depends
       entirely on `applyAppearanceState()` running after load/swap; if it doesn't run, no option
       appears selected even though a default is in effect — `templates/partials/settings/theme.html:8-46`
