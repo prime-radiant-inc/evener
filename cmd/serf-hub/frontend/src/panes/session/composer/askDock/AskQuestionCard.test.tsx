@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -55,6 +58,31 @@ test("renders each option's label and detail, tagging only the recommended one",
   expect(screen.getByText("Ship it")).toBeTruthy();
   expect(screen.getByText("No")).toBeTruthy();
   expect(screen.getAllByText(/recommended/i)).toHaveLength(1);
+});
+
+test("keeps an arbitrarily long valid option label inside a single-line chip contract", () => {
+  const label = `${"A valid option label that remains available to the user ".repeat(19)}A valid option label that remains available to the user`;
+  render(
+    <Harness
+      q={question({
+        options: [{ label, detail: "The detail remains separate from the bounded label." }],
+      })}
+    />,
+  );
+
+  const radio = screen.getByRole("radio", { name: label });
+  const chipWrapper = radio.nextElementSibling;
+  expect(chipWrapper?.textContent).toBe(label);
+  expect(chipWrapper?.firstElementChild?.textContent).toBe(label);
+
+  // jsdom does not lay out text, so the browser-visible ellipsis contract is
+  // checked in the component stylesheet while the React assertions above
+  // verify that the full accessible label remains at the real boundary.
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
+  expect(css).toContain(".optionChip > span");
+  expect(css).toContain("overflow: hidden");
+  expect(css).toContain("text-overflow: ellipsis");
+  expect(css).toContain("white-space: nowrap");
 });
 
 test("the recommended option renders first regardless of input order", () => {

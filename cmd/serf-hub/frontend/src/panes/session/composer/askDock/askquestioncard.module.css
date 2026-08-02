@@ -69,7 +69,20 @@
    * comment); the detail is what gives way. max-width guards a label
    * longer than the whole row from pushing sideways. */
   flex: none;
+  min-width: 0;
   max-width: 100%;
+}
+
+/* Chip owns a fixed-height control for ordinary short labels. An option label
+ * is model-provided content, though, so keep that control one line and make
+ * the loss explicit when the label is wider than its row. The radio's full
+ * aria-label still preserves the complete value for assistive technology. */
+.optionChip > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Checked ring is --accent, not --attention: this is ordinary control

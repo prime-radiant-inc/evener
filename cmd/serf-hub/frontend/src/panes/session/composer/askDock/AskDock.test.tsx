@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -120,6 +123,14 @@ test("renders nothing when there is no pending ask for this ref", async () => {
 
   const { container } = render(<AskDock ref="ref_a" />);
   expect(container.firstChild).toBeNull();
+});
+
+test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
+  expect(css).toContain("flex: 1 1 auto");
+  expect(css).toContain("min-height: 0");
+  expect(css).toContain("max-height: 100%");
+  expect(css).toContain("overflow-y: auto");
 });
 
 test("renders the pending question's header and question text once acked", async () => {
