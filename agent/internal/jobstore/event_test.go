@@ -162,7 +162,6 @@ func TestEventKindsAreStable(t *testing.T) {
 		EventWatchSendDelivered:       "watch_send_delivered",
 		EventWatchSendDropped:         "watch_send_dropped",
 		EventWatchSendEvicted:         "watch_send_evicted",
-		EventWatchReadGrant:           "watch_read_grant",
 		EventDelegateCreated:          "delegate_created",
 		EventDelegateStopGateClosed:   "delegate_stop_gate_closed",
 		EventWatchRegistered:          "watch_registered",

@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -45,18 +44,6 @@ func seed100ToolsRangeA(t *testing.T) {
 		{"job_id": "missing", "max_wait_ms": -1},
 	}
 	for _, args := range invalidReadArgs {
-		_, _ = jobReadOutputTool(context.Background(), bare, args, 100)
-	}
-	readFault := errors.New("range a read fault")
-	bare.cfg.spawn.parentGrantedJobRead = func(string, string) (*grantedJobRead, bool) {
-		return &grantedJobRead{
-			record: &jobstore.JobRecord{JobID: "missing"},
-			readWindow: func(int, bool) (string, int64, int64, bool, error) {
-				return "", 0, 0, false, readFault
-			},
-		}, true
-	}
-	for _, args := range invalidReadArgs[2:] {
 		_, _ = jobReadOutputTool(context.Background(), bare, args, 100)
 	}
 	_, _ = jobReadOutputTool(context.Background(), bare, map[string]any{
@@ -116,10 +103,6 @@ func seed100ToolsRangeA(t *testing.T) {
 		TestJobWatchParentSourcePublicClearRoutesToParent,
 		TestJobWatchAllowsDescendantConcreteJobSource,
 		TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt,
-		TestGrantedReadServesWatchedJobCrossStore,
-		TestNonGrantedReadPreservesTargetNotFound,
-		TestGrantedReadAfterParentClosedPreservesTargetNotFound,
-		TestGrantedReadRejectsBlock,
 		TestJobReadOutputHeadLinesReadsFromStart,
 		TestJobReadOutputFromLineExclusiveWithHeadTail,
 		TestJobReadOutputZeroHeadTailTreatedAsUnset,

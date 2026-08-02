@@ -171,6 +171,35 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	}
 }
 
+func TestJobFinishedWatchFrameNamesTranscriptRead(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{
+		JobID: "job_finished", DelegateID: "dlg_worker", Status: "completed",
+	})
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending watch sends = %d, want 1", len(pending))
+	}
+	for _, state := range pending {
+		if state.NotificationJobID != "job_finished" || state.NotificationDelegateID != "dlg_worker" {
+			t.Fatalf("notification identity = (%q, %q)", state.NotificationJobID, state.NotificationDelegateID)
+		}
+		if !strings.Contains(state.Frame, `read_transcript(transcript_ref="job:job_finished")`) {
+			t.Fatalf("watch frame = %q, want job transcript read", state.Frame)
+		}
+	}
+}
+
 func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
@@ -220,16 +249,6 @@ func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
 	got := delegates[observer.DelegateID]
 	if got == nil || got.LatestJobID == observer.JobID {
 		t.Fatalf("observer delegate = %+v, want resumed under same delegate_id", got)
-	}
-	// An output_match fire mints no read grant (spec §5.1: grants come from a
-	// job.notification payload). The grant-across-resume property this test used
-	// to ride on lives in TestGrantSurvivesObserverResumeUnderNewJobID.
-	grants, err := s.jobManager.store.LoadGrants()
-	if err != nil {
-		t.Fatalf("LoadGrants: %v", err)
-	}
-	if len(grants) != 0 {
-		t.Fatalf("grants = %+v, want none from an output_match fire", grants)
 	}
 }
 

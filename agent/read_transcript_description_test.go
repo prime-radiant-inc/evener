@@ -46,7 +46,7 @@ func TestReadTranscriptDescriptionTeachesBothJobKinds(t *testing.T) {
 
 // TestReadTranscriptDescriptionAdmitsTheWatchFrameAsARefSource pins the second
 // thing the shipped description hid. A granted observer's watch frame carries
-// the call verbatim (appendWatchFrameGrantedRead) and job_status on that job is
+// the call verbatim (appendWatchFrameJobRead) and job_status on that job is
 // denied, so the frame is the observer's ONLY source for the ref. A description
 // that names job_status/job_list as the sources tells that observer its ref
 // came from somewhere it cannot reach (kata w2fk).
@@ -58,7 +58,7 @@ func TestReadTranscriptDescriptionAdmitsTheWatchFrameAsARefSource(t *testing.T) 
 	}
 	// The frame's own wording is the contract the description has to match: it
 	// hands the observer a job: ref, not a session ref.
-	frame := appendWatchFrameGrantedRead("watched something\n", "job_abc")
+	frame := appendWatchFrameJobRead("watched something\n", "job_abc")
 	if !strings.Contains(frame, `read_transcript(transcript_ref="job:job_abc")`) {
 		t.Fatalf("watch frame = %q, want it to teach the job: read this description describes", frame)
 	}

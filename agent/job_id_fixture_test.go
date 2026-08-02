@@ -12,5 +12,5 @@ const (
 	testWorkerSessionID      = "02wMz5Txv733WHFsVy66SR"
 	testDeadSessionID        = "02wMz5Txv8Vo4rqb3QYZuV"
 	testDeadChildSessionID   = "02wMz5Txv9yYdSRJat13MZ"
-	testObserverSessionID    = "02wMz5TxvBRJC3228LTWod"
+	testObserverID           = "02wMz5TxvBRJC3228LTWod"
 )

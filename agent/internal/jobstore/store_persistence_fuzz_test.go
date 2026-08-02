@@ -248,9 +248,6 @@ func drawEvent(r *progReader, ec *int) Event {
 			UpdateSeq:  uint64(*ec),
 			Message:    "m",
 		}
-	case 9:
-		e.Kind = EventWatchReadGrant
-		e.ObserverSessionID = sess
 	}
 	return e
 }

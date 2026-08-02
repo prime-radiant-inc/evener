@@ -221,21 +221,6 @@ func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	return FoldWatchSends(events), nil
 }
 
-// LoadGrants reads every event and folds the observer read-grant table
-// (observer session id → watched job ids).
-func (s *Store) LoadGrants() (map[string]map[string]bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ensureOpenLocked(); err != nil {
-		return nil, err
-	}
-	events, err := s.readAllLocked()
-	if err != nil {
-		return nil, err
-	}
-	return FoldGrants(events), nil
-}
-
 // LoadEvents reads every durable event in append order.
 func (s *Store) LoadEvents() ([]Event, error) {
 	s.mu.Lock()

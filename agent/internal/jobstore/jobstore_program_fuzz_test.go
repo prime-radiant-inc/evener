@@ -115,7 +115,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		{Kind: EventDelegateCreated, TS: jcpTime(r.next()), JobID: started.JobID, DelegateID: "dlg-primary", Delegate: &DelegateEvent{ChildSessionID: "child", TranscriptRef: "local:child", OwnerSessionID: "owner", VisibleSessionID: "visible", Generation: "dg-primary", Resumable: true}},
 		{Kind: EventWatchRegistered, TS: jcpTime(r.next()), WatchID: "watch-primary", Watch: &WatchEvent{Generation: "wg-primary", OwnerSessionID: "owner", VisibleSessionID: "visible", Target: started.JobID, SendTo: "visible", ConfigHash: "cfg", Condition: "output", Deliveries: 1}},
 		{Kind: EventWatchSendPending, TS: jcpTime(r.next()), JobID: started.JobID, WatchSend: &WatchSendState{Key: WatchSendKey{VisibleSessionID: "visible", WatchID: "watch-primary", WatchTarget: started.JobID, ResolvedWatchedIdentity: started.JobID, ResolvedSendTo: "visible", WatchGeneration: "wg-primary"}, DeliveryID: "wd-primary", UpdateSeq: 1, Message: "ready", CreatedAt: jcpTime(r.next()), Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)}},
-		{Kind: EventWatchReadGrant, TS: jcpTime(r.next()), JobID: started.JobID, ObserverSessionID: "observer"},
 		{Kind: EventJobFinished, TS: jcpTime(r.next()), JobID: started.JobID, Status: StatusCompleted, Reason: "done", EndedAt: &finishedAt, OutputBytes: 23, TerminalGen: "terminal-primary", StructuredResult: map[string]any{"byte": int(r.next())}, StructuredResultValid: &valid},
 		{Kind: EventJobNotificationPending, TS: jcpTime(r.next()), JobID: started.JobID, TerminalGen: "terminal-primary", Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)},
 		{Kind: EventJobNotificationDelivered, TS: jcpTime(r.next()), JobID: started.JobID, TerminalGen: "terminal-primary"},
@@ -171,10 +170,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 	if err != nil || len(sends.Pending) != 0 {
 		t.Fatalf("LoadWatchSends = %#v, %v", sends, err)
 	}
-	grants, err := s.LoadGrants()
-	if err != nil || !grants["observer"][started.JobID] {
-		t.Fatalf("LoadGrants = %#v, %v", grants, err)
-	}
 	loaded, err := s.LoadEvents()
 	if err != nil || len(loaded) != len(events) {
 		t.Fatalf("LoadEvents = %d/%v, want %d", len(loaded), err, len(events))
@@ -203,7 +198,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		func() error { _, err := s.LoadDelegates(); return err },
 		func() error { _, err := s.LoadWatches(); return err },
 		func() error { _, err := s.LoadWatchSends(); return err },
-		func() error { _, err := s.LoadGrants(); return err },
 		func() error { _, err := s.LoadEvents(); return err },
 		func() error { _, err := s.readAll(); return err },
 	} {
@@ -924,7 +918,6 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		{"LoadDelegates", func(s *Store) error { _, err := s.LoadDelegates(); return err }},
 		{"LoadWatches", func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{"LoadWatchSends", func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
-		{"LoadGrants", func(s *Store) error { _, err := s.LoadGrants(); return err }},
 		{"readAll", func(s *Store) error { _, err := s.readAll(); return err }},
 	} {
 		s := &Store{path: "/read-error.jsonl", fs: &jcpHookFS{Fs: afero.NewMemMapFs(), statErr: jcpInjectedErr}}

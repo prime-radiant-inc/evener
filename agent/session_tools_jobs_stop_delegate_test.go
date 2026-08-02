@@ -1324,37 +1324,6 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 }
 
-// TestGrantedReadBlockUnsupportedErrReword verifies that the production code
-// path — a job_read_output call with max_wait_ms>0 against a watch-granted
-// cross-session job — emits grantedReadBlockUnsupportedErr (spec §3). A
-// mutation that replaces errors.New(grantedReadBlockUnsupportedErr) with a
-// different message escapes a constant-equality check but is caught here
-// because the actual error returned by jobReadOutputTool is asserted.
-func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	// Inject a parentGrantedJobRead that grants one specific job_id. The job
-	// does not exist in the local store, so nestedOrLocalJobManager fails and
-	// the granted path is reached.
-	const grantedID = "job_fakeForCrossSessionRead"
-	s.cfg.spawn.parentGrantedJobRead = func(_ string, jobID string) (*grantedJobRead, bool) {
-		if jobID != grantedID {
-			return nil, false
-		}
-		return &grantedJobRead{record: &jobstore.JobRecord{JobID: jobID}}, true
-	}
-	_, err := jobReadOutputTool(context.Background(), s, map[string]any{
-		"job_id":      grantedID,
-		"max_wait_ms": float64(1000),
-	}, jobToolResultDefaultMaxChar)
-	if err == nil {
-		t.Fatal("jobReadOutputTool with max_wait_ms on cross-session read succeeded, want error")
-	}
-	if !strings.Contains(err.Error(), grantedReadBlockUnsupportedErr) {
-		t.Fatalf("error = %q, want it to contain grantedReadBlockUnsupportedErr", err.Error())
-	}
-}
-
 // TestJobReadOutputHeadBytesReadsFromStart verifies that head_lines reads from
 // the beginning of retained output — the symmetric counterpart to tail_lines.
 // A job whose head output was pushed out of the default tail window is only

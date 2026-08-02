@@ -437,7 +437,6 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	if s.jobManager != nil {
 		subCfg.spawn.parentMarkCallerCallbackDelivered = s.jobManager.markWatchOriginCallerCallbackDelivered
 	}
-	subCfg.spawn.parentGrantedJobRead = s.lookupGrantedJobRead
 	if s.cfg.ShareTasksWithChildren {
 		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
 	} else {

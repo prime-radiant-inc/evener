@@ -57,9 +57,6 @@ func TestClosedStoreLoadOperationsReturnErrStoreClosed(t *testing.T) {
 	if _, err := s.LoadWatchSends(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadWatchSends after close = %v, want ErrStoreClosed", err)
 	}
-	if _, err := s.LoadGrants(); !errors.Is(err, ErrStoreClosed) {
-		t.Errorf("LoadGrants after close = %v, want ErrStoreClosed", err)
-	}
 	if _, err := s.LoadEvents(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadEvents after close = %v, want ErrStoreClosed", err)
 	}
@@ -576,7 +573,6 @@ func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 		{name: "LoadDelegates", read: func(s *Store) error { _, err := s.LoadDelegates(); return err }},
 		{name: "LoadWatches", read: func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{name: "LoadWatchSends", read: func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
-		{name: "LoadGrants", read: func(s *Store) error { _, err := s.LoadGrants(); return err }},
 		{name: "LoadEvents", read: func(s *Store) error { _, err := s.LoadEvents(); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

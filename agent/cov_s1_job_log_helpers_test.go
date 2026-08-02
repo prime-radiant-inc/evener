@@ -9,8 +9,6 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-// s1cov_writeJobLog opens (creating) session sessID's jobs.jsonl under stateDir
-// and appends the given events, mirroring the durable on-disk shape.
 func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore.Event) string {
 	t.Helper()
 	dir := jobsDir(stateDir, sessID)
@@ -22,9 +20,9 @@ func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore
 	if err != nil {
 		t.Fatalf("open jobstore: %v", err)
 	}
-	for _, e := range events {
-		if err := store.Append(e); err != nil {
-			t.Fatalf("append %s: %v", e.Kind, err)
+	for _, event := range events {
+		if err := store.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
 		}
 	}
 	if err := store.Close(); err != nil {
@@ -33,8 +31,6 @@ func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore
 	return path
 }
 
-// s1cov_corruptJobLog appends a garbage line so the store's readAllLocked
-// returns a parse error, exercising the historical record loader's error tail.
 func s1cov_corruptJobLog(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
@@ -49,71 +45,44 @@ func s1cov_corruptJobLog(t *testing.T, path string) {
 	}
 }
 
-// A populated jobs.jsonl folds into flattened HistoricalJobRecords carrying the
-// origin coordinates, task, transcript ref, and terminal status/output bytes.
 func TestS1Cov_LoadSessionHistoricalJobRecords_FoldsRecords(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	now := time.Now().UTC()
 	out := int64(4096)
 	s1cov_writeJobLog(t, stateDir, "SESS",
-		jobstore.Event{
-			Kind: jobstore.EventJobStarted, TS: now, JobID: "job_d1",
-			Type: jobstore.JobDelegate, OwnerSessionID: "SESS", StartedAt: &now,
-			DelegateID: "dlg_1", Task: "do the thing",
-			OriginTurnID: "turn_1", OriginToolCallID: "call_1", OriginItemID: "item_1",
-		},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_d1", Type: jobstore.JobDelegate, OwnerSessionID: "SESS", StartedAt: &now, DelegateID: "dlg_1", Task: "do the thing", OriginTurnID: "turn_1", OriginToolCallID: "call_1", OriginItemID: "item_1"},
 		jobstore.Event{Kind: jobstore.EventJobSessionAssigned, TS: now, JobID: "job_d1", TranscriptRef: encodeRef("", "CHILD")},
 		jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "job_d1", Status: jobstore.StatusCompleted, Reason: "done", OutputBytes: out, EndedAt: &now},
 	)
-
 	got, err := LoadSessionHistoricalJobRecords(stateDir, "SESS")
 	if err != nil {
 		t.Fatalf("LoadSessionHistoricalJobRecords: %v", err)
 	}
 	rec, ok := got["job_d1"]
-	if !ok {
-		t.Fatalf("job_d1 missing from %v", got)
-	}
-	if rec.Type != string(jobstore.JobDelegate) || rec.Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("type/status = %q/%q", rec.Type, rec.Status)
-	}
-	if rec.DelegateID != "dlg_1" || rec.Task != "do the thing" || rec.Reason != "done" {
-		t.Fatalf("delegate/task/reason = %q/%q/%q", rec.DelegateID, rec.Task, rec.Reason)
-	}
-	if rec.OriginTurnID != "turn_1" || rec.OriginToolCallID != "call_1" || rec.OriginItemID != "item_1" {
-		t.Fatalf("origin coords = %q/%q/%q", rec.OriginTurnID, rec.OriginToolCallID, rec.OriginItemID)
-	}
-	if rec.TranscriptRef != encodeRef("", "CHILD") || rec.OutputBytes != out {
-		t.Fatalf("ref/bytes = %q/%d", rec.TranscriptRef, rec.OutputBytes)
+	if !ok || rec.Type != string(jobstore.JobDelegate) || rec.Status != string(jobstore.StatusCompleted) || rec.DelegateID != "dlg_1" || rec.Task != "do the thing" || rec.Reason != "done" || rec.OriginTurnID != "turn_1" || rec.OriginToolCallID != "call_1" || rec.OriginItemID != "item_1" || rec.TranscriptRef != encodeRef("", "CHILD") || rec.OutputBytes != out {
+		t.Fatalf("historical record = %+v", rec)
 	}
 }
 
-// A session with no jobs.jsonl returns an empty map and creates no file.
 func TestS1Cov_LoadSessionHistoricalJobRecords_MissingLogEmpty(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	got, err := LoadSessionHistoricalJobRecords(stateDir, "NOLOG")
-	if err != nil {
-		t.Fatalf("LoadSessionHistoricalJobRecords: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("missing log must be empty; got %v", got)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing log = %v, %v", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(jobsDir(stateDir, "NOLOG"), "jobs.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("must not create jobs.jsonl; stat err = %v", err)
+		t.Fatalf("missing log created a file: %v", err)
 	}
 }
 
-// A corrupt jobs.jsonl surfaces the store.Load() decode error.
 func TestS1Cov_LoadSessionHistoricalJobRecords_CorruptLogErrors(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	now := time.Now().UTC()
-	path := s1cov_writeJobLog(t, stateDir, "SESS",
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x", Type: jobstore.JobShell, OwnerSessionID: "SESS", StartedAt: &now})
+	path := s1cov_writeJobLog(t, stateDir, "SESS", jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x", Type: jobstore.JobShell, OwnerSessionID: "SESS", StartedAt: &now})
 	s1cov_corruptJobLog(t, path)
-
 	if _, err := LoadSessionHistoricalJobRecords(stateDir, "SESS"); err == nil {
 		t.Fatal("corrupt log must return an error")
 	}

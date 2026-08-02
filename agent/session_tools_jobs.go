@@ -466,9 +466,6 @@ type jobReadResolution struct {
 	// in the owner's parent store, not the root). For a direct child of the
 	// caller the owner's parent IS the caller, so depth-1 stays identical.
 	fallbackTarget *Session
-	// granted is the parent's read-only view for a watch-granted cross-session
-	// read (spec §5.1). Non-nil excludes every other field.
-	granted *grantedJobRead
 	// deepDescendant marks a resolved depth >= 2 read, which is snapshot-only
 	// like a granted read.
 	deepDescendant bool
@@ -505,25 +502,11 @@ func (s *Session) resolveJobRead(jobID string) (jobReadResolution, error) {
 	if err == nil {
 		return res, nil
 	}
-	// Local + nested resolution failed: consult the parent-injected watch
-	// read-grant seam (spec §5.1) before failing. A grant hit serves the read
-	// from the parent's store; a miss preserves the original target_not_found.
-	lookup := s.cfg.spawn.parentGrantedJobRead
-	if lookup == nil {
-		return jobReadResolution{}, err
-	}
-	granted, ok := lookup(s.id, jobID)
-	if !ok {
-		return jobReadResolution{}, err
-	}
-	return jobReadResolution{granted: granted}, nil
+	return jobReadResolution{}, err
 }
 
 // snapshot serves one byte window through whichever path resolveJobRead chose.
 func (r jobReadResolution) snapshot(jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	if r.granted != nil {
-		return r.granted.snapshot(readBytes, fromHead, grepRE)
-	}
 	return r.readSession.readJobOutputSnapshot(r.manager, r.fallbackTarget, jobID, readBytes, fromHead, grepRE)
 }
 
@@ -539,7 +522,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
-	jm, granted, deepDescendant := resolved.manager, resolved.granted, resolved.deepDescendant
+	jm, deepDescendant := resolved.manager, resolved.deepDescendant
 	headLines, hasHead, err := strictZeroJobBytesArg(args, "head_lines")
 	if err != nil {
 		return "", err
@@ -586,7 +569,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		maxWaitMS = n
 	}
 	if maxWaitMS > 0 {
-		if granted != nil || deepDescendant {
+		if deepDescendant {
 			return "", errors.New(grantedReadBlockUnsupportedErr)
 		}
 		timeout := clampJobBlockTimeout(maxWaitMS)
@@ -677,24 +660,6 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	return tool.StateResult{Output: formatJobReadOutput(&result, header, maxChars), State: result}, nil
 }
 
-// jobStatusDeniedError keeps job_status denied for a watch-granted job while
-// naming the read the observer IS allowed. Status stays denied because
-// jobTranscriptRef projects a DELEGATE job's session transcript_ref, and
-// session refs are not access-controlled — answering here would silently turn a
-// one-job output grant into full read access to the child's conversation (spec
-// §5.1). A job with no grant keeps its original error unchanged, so the
-// improved text never becomes an oracle for "this job exists".
-func (s *Session) jobStatusDeniedError(jobID string, err error) error {
-	lookup := s.cfg.spawn.parentGrantedJobRead
-	if lookup == nil {
-		return err
-	}
-	if _, granted := lookup(s.id, jobID); !granted {
-		return err
-	}
-	return fmt.Errorf("job %q belongs to another session; read its output with read_transcript(transcript_ref=%q)", jobID, "job:"+jobID)
-}
-
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
@@ -705,7 +670,7 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	jm, rec, err := s.nestedOrLocalJobManager(jobID)
 	if err != nil {
-		return "", s.jobStatusDeniedError(jobID, err)
+		return "", err
 	}
 	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
 		rec = live
@@ -885,33 +850,6 @@ var (
 		return target.jobReadClosedStoreFallback(jm, err)
 	}
 )
-
-// snapshot serves a watch-granted cross-session read from the parent store's
-// read-only view: the same content/grep shape as readJobOutputSnapshot, but
-// the record is the lookup-time clone, Manager stays nil (the observer has no
-// handle on the parent's jobManager), and there is no closed-store fallback
-// chain — a failed parent-side read is a real error.
-func (g *grantedJobRead) snapshot(readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	content, totalBytes, dropped, truncated, err := g.readWindow(readBytes, fromHead)
-	if err != nil {
-		return jobReadOutputSnapshot{}, err
-	}
-	var matches []jobstore.Match
-	if grepRE != nil {
-		matches, err = g.grepOutput(grepRE)
-		if err != nil {
-			return jobReadOutputSnapshot{}, err
-		}
-	}
-	return jobReadOutputSnapshot{
-		Record:       g.record,
-		Content:      content,
-		TotalBytes:   totalBytes,
-		DroppedBytes: dropped,
-		Truncated:    truncated,
-		Matches:      matches,
-	}, nil
-}
 
 // jobReadClosedStoreFallback redirects a closed-store read to the receiver's own
 // store, which holds the single-hop forwarded copy of the closed owner's job.

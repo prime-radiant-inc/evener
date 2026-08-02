@@ -116,17 +116,6 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 		_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(strings.Repeat("x", 100))}, limit)
 	}
 
-	// Granted reads expose both independent provider error paths.
-	want := errors.New("seed read fault")
-	granted := &grantedJobRead{
-		record:     &jobstore.JobRecord{JobID: "job_x"},
-		readWindow: func(int, bool) (string, int64, int64, bool, error) { return "", 0, 0, false, want },
-	}
-	_, _ = granted.snapshot(1, false, nil)
-	granted.readWindow = func(int, bool) (string, int64, int64, bool, error) { return "x", 1, 0, false, nil }
-	granted.grepOutput = func(*regexp.Regexp) ([]jobstore.Match, error) { return nil, want }
-	_, _ = granted.snapshot(1, false, regexp.MustCompile("x"))
-
 	// Closed managers cover the transient grep scanner and output-read failures.
 	closed := newTestJM(t)
 	if err := closed.store.Close(); err != nil {

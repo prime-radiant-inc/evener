@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/runetrim"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -107,6 +108,8 @@ type jobManager struct {
 	openOutput             outputStoreOpener
 	createOutput           outputStoreOpener
 	newJobID               func(string) (string, error)
+	appendObservedBy       func(string, string, string) error
+	scheduleObserverLink   func(func())
 	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
 	appendTeardown         func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
 	appendRegistry         func([]jobstore.Event) error
@@ -507,6 +510,8 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		openOutput:            openOutput,
 		createOutput:          createOutput,
 		newJobID:              identifier.NewJobID,
+		appendObservedBy:      schema.AppendSessionObservedBy,
+		scheduleObserverLink:  func(fn func()) { go fn() },
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),

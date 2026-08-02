@@ -200,9 +200,6 @@ func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
 	}
-	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after failed create = %+v, want none", grants)
-	}
 }
 
 func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {

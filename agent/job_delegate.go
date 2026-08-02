@@ -1085,7 +1085,6 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentWatchGranted:      desc.ParentWatchGranted,
 			parentInstallWatch:      restoredParentInstallWatch(s, desc),
 			parentClearWatch:        restoredParentClearWatch(s, desc),
-			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
 			delegationAllowance:     desc.DelegationAllowance,

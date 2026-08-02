@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +17,6 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/schema"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -181,24 +179,6 @@ type watchConfig struct {
 	// reconstructed into terminalFlush on restore are never built via
 	// newWatchConfig and so are intentionally left zero (they are not live).
 	createdAt time.Time
-	// grantsMinted records (send target, watched job) pairs whose observer
-	// read grant was appended during this config's lifetime (spec §5.1);
-	// per-fire minting skips them to control append noise (FoldGrants is
-	// idempotent, so a duplicate would be harmless). Guarded by jm.mu after
-	// install; marked only on successful append so a failed mint retries on
-	// the next fire. A replacement config starts fresh and simply re-mints.
-	grantsMinted map[watchGrantKey]bool
-}
-
-// watchGrantKey identifies a minted (observer send target, watched job) read-
-// grant pair within one watch config's lifetime. It keys on job ids rather
-// than the observer's session id so the per-fire dedup check needs no store
-// read: within a config's lifetime a send-target job id never remaps to a
-// different child session (resuming an idle observer mints a NEW job id for
-// the same session).
-type watchGrantKey struct {
-	sendTo       string
-	watchedJobID string
 }
 
 type watchArgs struct {
@@ -3203,16 +3183,14 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
-	if terr == nil {
-		// Mint the observer read grant BEFORE the pending persist so a durable
-		// pending send always implies its grant was at least attempted
-		// (restore re-delivers pendings without re-running this path). The
-		// frame learns the read only once the grant behind it exists.
-		if grantedJobID := jm.mintWatchSendReadGrant(d.cfg, target, d.eventData); grantedJobID != "" {
-			d.frame = appendWatchFrameGrantedRead(d.frame, grantedJobID)
-		}
+	notificationJobID, notificationDelegateID := "", ""
+	if jobID, delegateID, ok := watchFrameJob(d.eventData); ok {
+		d.frame = appendWatchFrameJobRead(d.frame, jobID)
+		notificationJobID, notificationDelegateID = jobID, delegateID
 	}
 	state = jm.watchSendState(d, target)
+	state.NotificationJobID = notificationJobID
+	state.NotificationDelegateID = notificationDelegateID
 	// Coalescing (recordWatchSendPending) unions the superseded pending's
 	// provenance into the survivor and recomputes the self-influence depth on
 	// the union — two below-threshold branches with disjoint delivered priors
@@ -3295,25 +3273,8 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	}
 }
 
-// appendWatchReadGrant durably records that observerSessionID may read
-// watchedJobID's output, which it spends through
-// read_transcript(transcript_ref="job:<watchedJobID>"). Grants are append-only
-// capabilities: never revoked on watch clear or expiry, because the grant names
-// a job that is already terminal and whose retained bytes are immutable; output
-// lifetime is bounded by retention (spec §5.1).
-func (jm *jobManager) appendWatchReadGrant(observerSessionID, watchedJobID string) error {
-	return jm.appendEvent(jobstore.Event{
-		Kind:              jobstore.EventWatchReadGrant,
-		TS:                jm.now(),
-		JobID:             watchedJobID,
-		ObserverSessionID: observerSessionID,
-	})
-}
-
-// watchReadGrantObserver resolves a delegate watch-send target to the child
-// session id its read grant keys on. ok=false with nil err means the target is
-// not a grantable observer; delivery itself reports that route failure.
-func (jm *jobManager) watchReadGrantObserver(sendTo string) (childSessionID string, ok bool, err error) {
+// watchTargetSessionID resolves a delegate target to its child session.
+func (jm *jobManager) watchTargetSessionID(sendTo string) (childSessionID string, ok bool, err error) {
 	if !strings.HasPrefix(sendTo, "dlg_") {
 		return "", false, nil
 	}
@@ -3329,7 +3290,7 @@ func (jm *jobManager) watchReadGrantObserver(sendTo string) (childSessionID stri
 }
 
 // watchedWorkerSessionID resolves a concrete watched job to the worker child
-// session id its transcript ref names, mirroring watchReadGrantObserver. ok is
+// session id its transcript ref names. ok is
 // false when the job has no local worker session to stamp: not found, not a
 // delegate, a cross-project (proj:) transcript ref the hub cannot read meta for,
 // or an undecodable ref. There is no error return: this feeds a best-effort
@@ -3348,37 +3309,20 @@ func (jm *jobManager) watchedWorkerSessionID(watchedJobID string) (workerSession
 	return childID, true
 }
 
-// stampObservedBy records that observerSessionID observes the worker session, on
-// the worker's SessionMeta. It is append-only and deduped, mirroring the durable
-// read grant it accompanies. Best-effort: the watch's load-bearing artifact is
-// the read grant; an unwritable or absent worker meta only costs the hub its
-// auto-open convenience, so any error is returned for the caller to swallow
-// rather than failing watch installation. Skipped when no project state dir is
-// configured (temp/test fallback) or the worker meta cannot be loaded (e.g. the
-// worker session has not persisted one yet; inventing one here would race the
-// worker's own writes).
+// stampObservedBy records an append-only, deduplicated observer relationship on
+// the worker's metadata. It is best-effort because errors only cost the hub its
+// auto-open convenience.
 func (jm *jobManager) stampObservedBy(workerSessionID, observerSessionID string) error {
 	if jm.stateDir == "" || workerSessionID == "" || observerSessionID == "" {
 		return nil
 	}
-	meta, err := schema.LoadSessionMeta(jm.stateDir, workerSessionID)
-	if err != nil {
-		return err
-	}
-	if slices.Contains(meta.ObservedBy, observerSessionID) {
-		return nil
-	}
-	meta.ObservedBy = append(meta.ObservedBy, observerSessionID)
-	return schema.SaveSessionMeta(jm.stateDir, meta)
+	return jm.appendObservedBy(jm.stateDir, workerSessionID, observerSessionID)
 }
 
 // stampObserverLinkAtInstall surfaces the observer link for a sidecar watch
-// (concrete job target, concrete delegate delivery) the moment the watch is
-// configured. This is the install-time HALF of what the deleted create-time
-// grant mint used to do: the grant is gone by ruling (terminal-only, minted
-// per delivery), but the hub's observed-by stamp carries no capability and
-// waiting for the first fire would leave a long-running worker unlinked.
-// Best-effort throughout: every failure only costs the hub auto-open.
+// (concrete job target, concrete delegate delivery) when the watch is
+// configured. Waiting for the first fire would leave a long-running worker
+// unlinked. Best-effort throughout: every failure only costs hub auto-open.
 func (jm *jobManager) stampObserverLinkAtInstall(cfg *watchConfig) {
 	if cfg == nil || cfg.send == nil || isWatchSessionTarget(cfg.target) {
 		return
@@ -3389,7 +3333,7 @@ func (jm *jobManager) stampObserverLinkAtInstall(cfg *watchConfig) {
 	}
 	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
 	if observerSessionID == "" {
-		resolved, ok, err := jm.watchReadGrantObserver(cfg.send.To)
+		resolved, ok, err := jm.watchTargetSessionID(cfg.send.To)
 		if err != nil || !ok {
 			return
 		}
@@ -3409,60 +3353,9 @@ func (jm *jobManager) recordObserverLink(watchedJobID, observerSessionID string)
 	_ = jm.stampObservedBy(workerSessionID, observerSessionID)
 }
 
-// grantedJobRead is the read-only view the parent returns for a watch-granted
-// cross-session read (spec §5.1): a snapshot of the watched job's record
-// (clone, never a live pointer) plus closures over the parent jobManager's
-// retained-output readers. Everything reachable through it is jobstore-level
-// access guarded by the parent jobManager's own locking — the observer child
-// never touches parent Session state.
-type grantedJobRead struct {
-	record     *jobstore.JobRecord
-	readWindow func(bytes int, fromHead bool) (content string, total int64, dropped int64, truncated bool, err error)
-	grepOutput func(re *regexp.Regexp) ([]jobstore.Match, error)
-}
-
-// lookupGrantedJobRead consults the durable watch read-grant table for
-// (observerSessionID, jobID) and, on a hit, returns the read-only view of the
-// granted job. A miss, an unreadable or closed store (parent session gone),
-// and a granted job whose record is no longer retained all return ok=false:
-// the caller preserves its original target_not_found instead of inventing a
-// new failure mode for a read the observer was never promised. The method is
-// injected into observer children as cfg.spawn.parentGrantedJobRead and is
-// called from child goroutines, so it must stay jobstore-level (jobManager +
-// store locking only, no Session state).
-func (s *Session) lookupGrantedJobRead(observerSessionID, jobID string) (*grantedJobRead, bool) {
-	if s == nil || s.jobManager == nil || s.jobManager.store == nil {
-		return nil, false
-	}
-	jm := s.jobManager
-	grants, err := jm.store.LoadGrants()
-	if err != nil || !grants[observerSessionID][jobID] {
-		return nil, false
-	}
-	rec, err := findJobRecord(jm, jobID)
-	if err != nil {
-		return nil, false
-	}
-	return &grantedJobRead{
-		record: cloneJobRecord(rec),
-		readWindow: func(bytes int, fromHead bool) (string, int64, int64, bool, error) {
-			return jm.readJobWindow(jobID, bytes, fromHead)
-		},
-		grepOutput: func(re *regexp.Regexp) ([]jobstore.Match, error) {
-			return jm.grepOutput(jobID, re)
-		},
-	}, true
-}
-
-// watchGrantableJob returns the concrete job a delivered watch event
-// structurally names, plus the delegate that ran it. Only
-// events.EventJobFinished payloads name a job, which is what makes every read
-// grant terminal-only by construction (spec §5.1): the job is already finished
-// when the payload naming it is built. Every other trigger — communicate,
-// assistant.tool, and the output_match/progress/catch-up fires whose root
-// event carries no data at all — grants nothing, because a job id guessed out
-// of free text would be a capability minted from a guess.
-func watchGrantableJob(data events.EventData) (jobID, delegateID string, ok bool) {
+// watchFrameJob returns the job and delegate structurally named by a finished
+// job event. Other event kinds never annotate a transcript read.
+func watchFrameJob(data events.EventData) (jobID, delegateID string, ok bool) {
 	switch d := data.(type) {
 	case events.JobFinishedData:
 		return d.JobID, d.DelegateID, d.JobID != ""
@@ -3474,74 +3367,6 @@ func watchGrantableJob(data events.EventData) (jobID, delegateID string, ok bool
 	default:
 		return "", "", false
 	}
-}
-
-// mintWatchSendReadGrant appends the observer read grant for a fired
-// delegate-targeted send, keyed on the concrete job the delivered event payload
-// names (spec §5.1). It returns that job id when the observer now holds the
-// grant, and "" when this delivery granted nothing — the caller uses it to
-// decide whether the frame may name the read.
-//
-// The grant is derived from the payload the runtime constructed, never from a
-// job id a model supplied, and never from the watch's own target: that is what
-// keeps the capability push-only. Pairs already minted in this config's
-// lifetime are skipped (append-noise control; duplicates fold harmlessly) but
-// still report the job id, because the observer does hold that grant. A failed
-// mint is NOT remembered, so the next fire retries. Failure policy: enqueue one
-// diagnostic notification and let the send proceed — delivery outranks the
-// grant (the observer still learns about the job; at worst it cannot read
-// output until a later fire re-mints).
-func (jm *jobManager) mintWatchSendReadGrant(cfg *watchConfig, resolvedSendTo string, data events.EventData) string {
-	if cfg == nil || resolvedSendTo == runtimeMessageAliasCaller {
-		return ""
-	}
-	watchedJobID, delegateID, ok := watchGrantableJob(data)
-	if !ok {
-		return ""
-	}
-	// A source:"parent" watch on job.notification fires for every job the
-	// watched session completes, including the observer's own resumed callback
-	// jobs. Granting the observer a read on its own output confers nothing, and
-	// grants are never revoked, so the row would be permanent junk and would
-	// surface the observer as its own observer in the hub's grant projection.
-	if delegateID != "" && delegateID == strings.TrimSpace(cfg.receiverDelegateID) {
-		return ""
-	}
-	key := watchGrantKey{sendTo: resolvedSendTo, watchedJobID: watchedJobID}
-	jm.mu.Lock()
-	minted := cfg.grantsMinted[key]
-	jm.mu.Unlock()
-	if minted {
-		return watchedJobID
-	}
-	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
-	var err error
-	if observerSessionID == "" {
-		var ok bool
-		observerSessionID, ok, err = jm.watchReadGrantObserver(resolvedSendTo)
-		if err == nil && !ok {
-			return ""
-		}
-	}
-	if err == nil {
-		err = jm.appendWatchReadGrant(observerSessionID, watchedJobID)
-	}
-	if err != nil {
-		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(watchedJobID, "watch read grant failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-		})
-		return ""
-	}
-	// Surface the observer link to the hub. Best-effort: the durable grant
-	// above is the load-bearing capability; this only buys the hub auto-open.
-	jm.recordObserverLink(watchedJobID, observerSessionID)
-	jm.mu.Lock()
-	if cfg.grantsMinted == nil {
-		cfg.grantsMinted = make(map[watchGrantKey]bool)
-	}
-	cfg.grantsMinted[key] = true
-	jm.mu.Unlock()
-	return watchedJobID
 }
 
 // sendMessageFunc delivers a watch-send frame to its resolved target. The
@@ -3593,6 +3418,7 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 			})
 			return false, err
 		}
+		jm.scheduleDeliveredObserverLink(cfg, state)
 		return true, nil
 	case watchSendBusy:
 		return false, nil
@@ -3605,6 +3431,26 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	default:
 		return false, nil
 	}
+}
+
+func (jm *jobManager) scheduleDeliveredObserverLink(cfg *watchConfig, state jobstore.WatchSendState) {
+	if cfg == nil || !isWatchSessionTarget(cfg.target) || state.NotificationJobID == "" ||
+		(state.NotificationDelegateID != "" && state.NotificationDelegateID == cfg.receiverDelegateID) {
+		return
+	}
+	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
+	if observerSessionID == "" {
+		var ok bool
+		var err error
+		observerSessionID, ok, err = jm.watchTargetSessionID(state.Key.ResolvedSendTo)
+		if err != nil || !ok {
+			return
+		}
+	}
+	if observerSessionID == jm.sessionID {
+		return
+	}
+	jm.scheduleObserverLink(func() { jm.recordObserverLink(state.NotificationJobID, observerSessionID) })
 }
 
 func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (bool, string, error) {
@@ -4957,13 +4803,10 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	return limitWatchText(b.String(), watchFrameMaxChars)
 }
 
-// appendWatchFrameGrantedRead names the one call this delivery's read grant
-// answers. The frame is the observer's only teaching surface for a capability
-// it acquires mid-run, so without this line the mechanism has to be explained
-// in a task prompt. It is appended after buildWatchFrame applied its cap, for
-// the same reason selfInfluenceNotice is prepended after it: the annotation
-// must not be what the cap eats.
-func appendWatchFrameGrantedRead(frame, jobID string) string {
+// appendWatchFrameJobRead teaches a recipient how to read the concrete job
+// named by a finished-job notification. It is appended after the frame cap so
+// the annotation is never truncated away.
+func appendWatchFrameJobRead(frame, jobID string) string {
 	if frame == "" || jobID == "" {
 		return frame
 	}
