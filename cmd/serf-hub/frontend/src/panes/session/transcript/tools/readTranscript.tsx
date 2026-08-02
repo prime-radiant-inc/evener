@@ -105,7 +105,7 @@ function isJobRead(item: ItemModel): boolean {
 function target(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   const ref = resolvedRef(item);
-	if (ref.startsWith("job:")) return `job log ${clipJobID(refId(ref))}`;
+  if (ref.startsWith("job:")) return `job log ${clipJobID(refId(ref))}`;
   if (str(args, "source") === "api_log") return `API log ${refId(ref)}`;
   // An absent/"current" ref means the session the agent is already in.
   if (ref === "" || ref === "current") return "this session's transcript";
