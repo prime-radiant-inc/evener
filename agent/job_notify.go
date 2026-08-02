@@ -41,6 +41,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:            rec.JobID,
 		JobType:          string(rec.Type),
+		Description:      rec.Description,
 		Status:           string(rec.Status),
 		Reason:           rec.Reason,
 		ExhaustionBudget: rec.ExhaustionBudget,
@@ -184,6 +185,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 		notificationAttr("job_id", n.JobID),
 		notificationAttr("event", event),
 		notificationAttr("job_type", n.JobType),
+		notificationAttr("description", n.Description),
 		notificationAttr("status", n.Status),
 		notificationAttr("reason", n.Reason),
 	}

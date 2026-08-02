@@ -417,12 +417,12 @@ type jobRuntimeHandle struct {
 
 // jobNotification is the in-memory wake record for a durable job notification.
 type jobNotification struct {
-	JobID, JobType, Status, Reason, TranscriptRef string
-	ExhaustionBudget                              string
-	ExhaustionLimit                               int
-	Resumable                                     *bool
-	OutputBytes                                   int64
-	ExitCode                                      *int
+	JobID, JobType, Status, Reason, Description, TranscriptRef string
+	ExhaustionBudget                                           string
+	ExhaustionLimit                                            int
+	Resumable                                                  *bool
+	OutputBytes                                                int64
+	ExitCode                                                   *int
 	// Provenance is the causal origin carried with this notification: the
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.

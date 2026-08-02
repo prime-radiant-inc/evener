@@ -41,6 +41,15 @@ test("a delegate-completion job-notification parses one block", () => {
   expect(n.secondary).toContain("delegate");
 });
 
+test("prefers the job description over the generic delegate type", () => {
+  const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" description="Inspect the workspace" status="completed" reason="" output_bytes="12">
+Job job_42 completed.
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.description).toBe("Inspect the workspace");
+  expect(n.secondary).toBe("Inspect the workspace");
+});
+
 test("retains validated child identity and useful job fields from a completion", () => {
   const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" status="completed" reason="" output_bytes="12" exit_code="0" transcript_ref="local:child">
 Job job_42 completed.

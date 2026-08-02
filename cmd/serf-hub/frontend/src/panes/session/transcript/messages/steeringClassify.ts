@@ -17,6 +17,7 @@ export interface ParsedNotification {
   secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
   jobId?: string;
   jobType?: string;
+  description?: string;
   status?: string;
   reason?: string;
   outputBytes?: number;
@@ -215,9 +216,10 @@ function parseJobNotification(block: string): ParsedNotification | null {
     type,
     title: titleForJobNotification(attrs, type),
     tone,
-    secondary: notificationSecondary(attrs, tone),
+    secondary: decodeNotificationEntities(attrs.description ?? "").trim() || notificationSecondary(attrs, tone),
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
+    description: decodeNotificationEntities(attrs.description ?? "").trim() || undefined,
     status: attrs.status?.trim() || undefined,
     reason: attrs.reason?.trim() || undefined,
     outputBytes: optionalNonNegativeInteger(attrs, "output_bytes"),

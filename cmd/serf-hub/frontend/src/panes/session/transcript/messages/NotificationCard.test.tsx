@@ -69,6 +69,12 @@ test("the secondary line surfaces the demoted metadata", () => {
   expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
 });
 
+test("the collapsed row prefers a job description to its generic job type", () => {
+  render(<NotificationCard notification={notif({ secondary: "Inspect the workspace" })} />);
+  expect(screen.getByTestId("notification-card").textContent).toContain("Inspect the workspace");
+  expect(screen.getByTestId("notification-card").textContent).not.toContain("delegate");
+});
+
 test("renders parsed job fields and excerpt as ordinary readable text", async () => {
   const user = userEvent.setup();
   render(
