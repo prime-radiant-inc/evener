@@ -258,7 +258,7 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary,
 		TestRenderHubSessionStatusBandsContextPressure,
 		TestRenderHubSessionStatusRendersDiagnosticsSections,
-		TestRenderHubSessionStatusShortensLongDelegateJobIDs,
+		TestRenderHubSessionStatusKeepsJobSuffixesDistinct,
 		TestFormatContextFragment,
 		TestHubDetailFromThreadMapsWorkingStateFields,
 		TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone,
