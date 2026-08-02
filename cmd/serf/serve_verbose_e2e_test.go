@@ -154,6 +154,10 @@ func runVerboseE2EChild(t *testing.T) {
 
 	var live *agent.Session
 	newSession := func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		// This detector measures the live bridge and verbose sink. Metadata
+		// autosave has its own durability contract and would add synchronous
+		// disk backpressure to the setter counter without changing event delivery.
+		cfg.StateDir = ""
 		sess, err := agent.NewSession(client, profile, env, cfg)
 		if err == nil {
 			live = sess
@@ -225,12 +229,14 @@ func runVerboseE2EChild(t *testing.T) {
 		if emitted.Load() >= verboseE2EEmitTarget {
 			fmt.Fprintln(os.Stdout, verboseE2EProgress)
 		}
+		// Cancel while the emitter is still in flight so shutdown still has a
+		// buffered tail to drain. Then stop and join the producer here: once
+		// Session.Close marks the session closing, SetReasoningEffort is a no-op,
+		// so leaving this loop alive until test cleanup creates a hot spin that
+		// competes with the drain whose lifetime the test is measuring.
 		cancelServe()
-		// The emitter keeps running into shutdown; Session.Close silences it.
-		t.Cleanup(func() {
-			close(stop)
-			<-emitting
-		})
+		close(stop)
+		<-emitting
 		return http.ErrServerClosed
 	}
 
