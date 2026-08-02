@@ -1,6 +1,12 @@
 {
   "name": "mobile-shell-viewport-height",
-  "description": "mobile shell height chain at a 390px-wide phone fixture: the shared shell, host, pane body, and optional session footer must stay inside the visible viewport for both session and non-session fixtures",
+  "description": "mobile shell height chain at an explicit 390x844 phone viewport: the shared shell, StackHost top bar/body, pane body, and optional session footer must stay inside the visible viewport for both session and non-session fixtures",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

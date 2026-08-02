@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 export default function assert(measurements) {
   const failures = [];
   const tolerance = 1;
+  const expectedViewport = { width: 390, height: 844 };
 
   const resolvedCssHref = measurements[0]?.assets?.resolvedCssHref ?? null;
   const resolvedCss = resolvedCssHref ? readFileSync(fileURLToPath(resolvedCssHref), "utf8") : "";
@@ -23,6 +24,14 @@ export default function assert(measurements) {
   for (const measurement of measurements) {
     const fixtureName = measurement.fixture;
     const visibleViewportHeight = measurement.visualViewport?.height ?? measurement.viewport.height;
+
+    if (measurement.viewport.width !== expectedViewport.width || measurement.viewport.height !== expectedViewport.height) {
+      failures.push(
+        `${fixtureName}: viewport is ${measurement.viewport.width}x${measurement.viewport.height}, expected ${expectedViewport.width}x${expectedViewport.height}`,
+      );
+    }
+
+    if (!measurement.topBar) failures.push(`${fixtureName}: missing StackHost .topBar`);
 
     if (measurement.document.scrollHeight > visibleViewportHeight + tolerance) {
       failures.push(

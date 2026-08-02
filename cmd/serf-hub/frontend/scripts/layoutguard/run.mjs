@@ -21,7 +21,9 @@
 //
 // ADDING A CASE: make a directory under cases/<name>/ with:
 //   - case.json    { "cssFiles": [...paths relative to frontend/src] }, plus
-//                  an optional "forcePseudoStates":
+//                  an optional "viewport": { "width": 390, "height": 844,
+//                  "deviceScaleFactor": 2, "mobile": true } and/or
+//                  optional "forcePseudoStates":
 //                  [{ "selector": ".x", "pseudoClasses": ["hover"] }] for a
 //                  state no page script can reach (see cdp.mjs's own doc)
 //   - harness.html a hand-authored DOM fragment reproducing the real
@@ -73,6 +75,7 @@ async function runCase(caseDir) {
       `file://${harnessPath}`,
       "window.measure()",
       caseJson.forcePseudoStates ?? [],
+      caseJson.viewport ?? null,
     );
     const result = assert(measurement);
     return { name, description: caseJson.description, measurement, ...result };

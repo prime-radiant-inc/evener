@@ -40,9 +40,12 @@ function findChrome() {
  *   pins the SELECTOR match, so it proves the cascade applies the rule and nothing overrides
  *   it; whether Chrome's own heuristic decides a given focus is "visible" is Chrome's contract,
  *   not ours. A selector that matches no element is an error, never a silent no-op.
+ * @param {{width: number, height: number, deviceScaleFactor?: number, mobile?: boolean} | null} [viewport]
+ *   explicit viewport metrics for a case that must run at fixed browser dimensions rather than
+ *   inheriting Chrome's ambient default window size.
  * @returns {Promise<unknown>} the JSON-serializable value the expression evaluates to
  */
-export async function evalInFreshChrome(fileUrl, expr, forcePseudoStates = []) {
+export async function evalInFreshChrome(fileUrl, expr, forcePseudoStates = [], viewport = null) {
   if (!fileUrl.startsWith("file://")) {
     throw new Error(
       "evalInFreshChrome only navigates file:// URLs - layoutguard cases are static files, no dev server",
@@ -86,7 +89,7 @@ export async function evalInFreshChrome(fileUrl, expr, forcePseudoStates = []) {
 
   try {
     await waitForCdp(port);
-    return await withPage(port, fileUrl, expr, forcePseudoStates);
+    return await withPage(port, fileUrl, expr, forcePseudoStates, viewport);
   } finally {
     cleanup();
   }
@@ -105,7 +108,7 @@ async function waitForCdp(port) {
   throw new Error("chrome devtools endpoint never came up");
 }
 
-async function withPage(port, fileUrl, expr, forcePseudoStates) {
+async function withPage(port, fileUrl, expr, forcePseudoStates, viewport) {
   const listRes = await fetch(`http://127.0.0.1:${port}/json/list`);
   const targets = await listRes.json();
   const page = targets.find((t) => t.type === "page");
@@ -136,6 +139,18 @@ async function withPage(port, fileUrl, expr, forcePseudoStates) {
     };
 
     await send("Page.enable");
+
+	    if (viewport) {
+	      await send("Emulation.setDeviceMetricsOverride", {
+	        width: viewport.width,
+	        height: viewport.height,
+	        deviceScaleFactor: viewport.deviceScaleFactor ?? 1,
+	        mobile: viewport.mobile ?? false,
+	        screenWidth: viewport.width,
+	        screenHeight: viewport.height,
+	      });
+	    }
+
     const navDone = new Promise((resolve) => {
       const handler = (ev) => {
         const msg = JSON.parse(ev.data);

@@ -25,9 +25,9 @@
   }
 
   .fixture {
-    width: 390px;
-    min-width: 390px;
-    max-width: 390px;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
   }
 
   /* Layoutguard flattens CSS modules into one resolved.css file with plain
@@ -77,6 +77,11 @@
   <div data-shell class="shell">
     <main class="content">
       <section class="host">
+        <div class="topBar">
+          <div class="leading" aria-hidden="true"></div>
+          <span class="title">local:session-viewport</span>
+          <button type="button" aria-label="Sessions">Sessions</button>
+        </div>
         <div class="body stackBody">
           <article data-pane class="pane">
             <div data-pane-body class="body">
@@ -110,6 +115,11 @@
   <div data-shell class="shell">
     <main class="content">
       <section class="host">
+        <div class="topBar">
+          <div class="leading" aria-hidden="true"></div>
+          <span class="title">welcome</span>
+          <button type="button" aria-label="Sessions">Sessions</button>
+        </div>
         <div class="body stackBody">
           <article data-pane class="pane">
             <div data-pane-body class="body">
@@ -181,6 +191,7 @@ function measureFixture(name) {
       width: window.innerWidth,
       height: window.innerHeight,
     },
+    topBar: rectOf(root.querySelector(".topBar")),
     visualViewport: window.visualViewport
       ? {
           width: window.visualViewport.width,
