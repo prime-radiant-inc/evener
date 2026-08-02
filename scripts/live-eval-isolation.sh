@@ -50,6 +50,10 @@ live_eval_prepare_trial() {
 		printf 'live eval source has no .serf directory: %s\n' "$HOMEISO" >&2
 		return 1
 	fi
+	if [ ! -f "$HOMEISO/.serf/providers.toml" ]; then
+		printf 'live eval source has no providers.toml: %s\n' "$HOMEISO/.serf" >&2
+		return 1
+	fi
 	cp -R "$ISO/serf/auth/." "$LIVE_EVAL_STATE/serf/auth/"
 	cp -R "$HOMEISO/.serf/." "$LIVE_EVAL_HOME/.serf/"
 	cp "$SERF_LIVE_BINARY" "$LIVE_EVAL_SERF"

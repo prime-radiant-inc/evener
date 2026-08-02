@@ -5,6 +5,10 @@
 # Task: read 7 facts + filler (so facts fall outside preserved-recent), compact,
 # then answer 7 questions from post-compaction memory. Score = facts recalled / 7.
 set -eu
+if [ "${SERF_LIVE_TESTS:-}" != "1" ]; then
+	printf 'set SERF_LIVE_TESTS=1 to opt into the live compaction eval\n' >&2
+	exit 1
+fi
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$SCRIPT_DIR/../scripts/live-eval-isolation.sh"
 # Run with SERF_LIVE_ENV pointing at the operator's private handoff file and
@@ -62,7 +66,10 @@ Step 4: Now write a file answers.txt that answers, one answer per line, the foll
 $QUESTIONS
 Step 5: reply with the single word DONE."
 
-  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
+  HOME="$LIVE_EVAL_HOME" XDG_STATE_HOME="$LIVE_EVAL_STATE" \
+    SERF_PROVIDERS_CONFIG="$LIVE_EVAL_HOME/.serf/providers.toml" \
+    SERF_STATE_DIR="$LIVE_EVAL_STATE/serf" \
+    "$LIVE_EVAL_SERF" --model openai/gpt-5.5 \
     --state-dir "$LIVE_EVAL_STATE/serf" --dir "$work" --max-rounds 20 "$prompt" \
     > "$work/run.log" 2>&1
 
@@ -81,7 +88,7 @@ Step 5: reply with the single word DONE."
   local compacted="no" reread="?" notelen=0
   if [ -n "$tr" ]; then
     grep -q 'NOTE TO SELF' "$tr" && compacted="yes-note" || { grep -q '"compact"' "$tr" && compacted="yes-empty"; }
-    reread=$(grep -c 'facts.md' "$tr" 2>/dev/null)
+    reread=$(grep -c 'facts.md' "$tr" 2>/dev/null || true)
     notelen=$(grep -o '\[NOTE TO SELF\].*\[END NOTE TO SELF\]' "$tr" 2>/dev/null | head -1 | wc -c)
   fi
   echo "ARM=$arm trial=$trial recall=$kept/7 compaction=$compacted facts.md_mentions=$reread note_chars=$notelen | $tokfound" | tee -a "$RESULTS"
