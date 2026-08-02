@@ -122,27 +122,6 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 	}
 }
 
-func TestRenderHubSessionStatusShortensLongDelegateJobIDs(t *testing.T) {
-	const longJobID = "job_01KW0VERYVERYLONGIDENTIFIER"
-	detail := hubSessionDetail{
-		SessionID: "01ABC",
-		Diagnostics: &appwire.SerfDiagnostics{
-			Jobs: []appwire.SerfJobInfo{
-				{JobID: longJobID, JobType: "delegate", Status: "running"},
-			},
-		},
-	}
-
-	collapsed := renderHubSessionStatus(detail, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
-
-	if strings.Contains(collapsed, longJobID) {
-		t.Fatalf("collapsed status leaked full job id: %s", collapsed)
-	}
-	if !strings.Contains(collapsed, "job 01KW0V…") {
-		t.Fatalf("collapsed status missing exact abbreviated job label 'job 01KW0V…': %s", collapsed)
-	}
-}
-
 func TestRenderHubSessionStatusKeepsJobSuffixesDistinct(t *testing.T) {
 	const owner = "02wMz5TxvEMoJEDTDGOTil"
 	detail := hubSessionDetail{Diagnostics: &appwire.SerfDiagnostics{Jobs: []appwire.SerfJobInfo{

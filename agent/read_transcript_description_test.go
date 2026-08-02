@@ -11,7 +11,7 @@ import (
 // words to the code that enforces them. A model reads the description, not
 // session_tools_transcript.go: a rejection the description does not name is a
 // call the model makes once, gets invalid_request for, and has to repair — and
-// on a watch grant, with no job_status to fall back on, there is nothing else
+// for a watch observer, with no job_status to fall back on, there is nothing else
 // to try. Adding a fifth entry to jobRefRejectedParams fails this test until
 // the description admits it (kata w2fk).
 func TestReadTranscriptDescriptionNamesEveryJobRefRejection(t *testing.T) {
@@ -32,8 +32,7 @@ func TestReadTranscriptDescriptionNamesEveryJobRefRejection(t *testing.T) {
 // description hid: a job: ref serves DELEGATE jobs too, and
 // renderDelegateJobTranscript gives them their own heading, report, and
 // structured_result. Calling the ref "shell output logs" left a model with no
-// reason to spend it on a delegate's report — the surface that replaced
-// job_read_output for exactly that job (kata w2fk).
+// reason to use it on a delegate's report (kata w2fk).
 func TestReadTranscriptDescriptionTeachesBothJobKinds(t *testing.T) {
 	t.Parallel()
 	desc := tool.DefReadTranscript().Description
@@ -45,9 +44,8 @@ func TestReadTranscriptDescriptionTeachesBothJobKinds(t *testing.T) {
 }
 
 // TestReadTranscriptDescriptionAdmitsTheWatchFrameAsARefSource pins the second
-// thing the shipped description hid. A granted observer's watch frame carries
-// the call verbatim (appendWatchFrameJobRead) and job_status on that job is
-// denied, so the frame is the observer's ONLY source for the ref. A description
+// thing the shipped description hid. An observer's watch frame carries the call
+// verbatim (appendWatchFrameJobRead), while job_status remains scoped. A description
 // that names job_status/job_list as the sources tells that observer its ref
 // came from somewhere it cannot reach (kata w2fk).
 func TestReadTranscriptDescriptionAdmitsTheWatchFrameAsARefSource(t *testing.T) {

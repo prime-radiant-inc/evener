@@ -654,27 +654,6 @@ func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
 	}
 }
 
-func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
-	t.Parallel()
-	if maxJobOutputBytes != 1024*1024 {
-		t.Fatalf("maxJobOutputBytes = %d, want 1 MiB", maxJobOutputBytes)
-	}
-	if maxJobOutputRetentionBytes != 8*1024*1024 {
-		t.Fatalf("maxJobOutputRetentionBytes = %d, want 8 MiB", maxJobOutputRetentionBytes)
-	}
-
-	got, present, err := strictZeroJobBytesArg(map[string]any{"tail_lines": maxJobOutputRetentionBytes}, "tail_lines")
-	if err != nil {
-		t.Fatalf("strictZeroJobBytesArg: %v", err)
-	}
-	if !present {
-		t.Fatalf("strictZeroJobBytesArg: present = false, want true")
-	}
-	if got != maxJobOutputBytes {
-		t.Fatalf("bounded tail_lines = %d, want model-facing cap %d", got, maxJobOutputBytes)
-	}
-}
-
 func TestJobOutputShellStoreEnforcesRetentionCap(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

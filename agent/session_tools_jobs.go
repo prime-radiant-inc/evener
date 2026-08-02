@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,15 +17,6 @@ import (
 )
 
 const (
-	// digestHeadLines/digestTailLines size the bare job_read_output default: a
-	// head+tail line digest (first N + last N lines) with the middle elided. The
-	// agent pages with explicit head_lines/tail_lines for more.
-	digestHeadLines = 100
-	digestTailLines = 100
-	// jobLineReadBudget bounds the bytes read per side when slicing lines, so a
-	// pathological run of very long lines can't blow context.
-	jobLineReadBudget           = 256 * 1024
-	maxJobOutputBytes           = 1048576
 	maxJobOutputRetentionBytes  = 8 * 1024 * 1024
 	defaultJobListLimit         = 50
 	maxJobListLimit             = 100
@@ -38,7 +27,6 @@ const (
 	jobManagerUnavailableReason = "job manager is not available"
 	maxJobGrepMatches           = 100
 	maxJobGrepLineBytes         = 4096
-	maxJobGrepPatternBytes      = 4096
 	jobKindAgent                = "agent"
 	jobKindShell                = "shell"
 	jobPhaseStarting            = "starting"
@@ -46,15 +34,6 @@ const (
 	jobPhaseModelStreaming      = "model_streaming"
 	jobPhaseToolRunning         = "tool_running"
 	jobPhaseProcessRunning      = "process_running"
-	// grantedReadBlockUnsupportedErr is the rejection for max_wait_ms>0 on a
-	// cross-session read: a watch-granted read (spec §5.1) or a depth >= 2
-	// descendant read resolved through the recursive owner path (spec §2). Both
-	// are snapshot-only by decision: the blocking wait helpers are coupled to a
-	// resolvable jobManager (done channels, output polling) that these
-	// cross-session views do not own at the caller, and half-supporting the wait
-	// by silently degrading it to a snapshot would lie to the model about having
-	// waited.
-	grantedReadBlockUnsupportedErr = "invalid_request: max_wait_ms is not supported for cross-session reads"
 )
 
 // clampJobBlockTimeout clamps a positive max_wait_ms request into the supported
@@ -410,256 +389,6 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	return marshalDelegateResult(res, maxChars)
 }
 
-// jobReadWindowMode names the read window jobReadOutputTool serves for a call.
-type jobReadWindowMode int
-
-const (
-	jobReadModeGrep     jobReadWindowMode = iota // grep scan of the retained output
-	jobReadModeFromLine                          // explicit from_line/line_count range
-	jobReadModeHeadTail                          // head+tail digest
-	jobReadModeHead                              // one-sided head slice
-	jobReadModeTail                              // one-sided tail slice
-	jobReadModeDigest                            // default head+tail digest
-)
-
-// classifyJobReadWindow selects which read window jobReadOutputTool serves, from
-// the presence of a grep pattern and the head/tail/from_line line-window args.
-// Precedence mirrors the request contract: a grep scan dominates, then an explicit
-// from_line range, then a head+tail digest, then a one-sided head or tail slice,
-// then the default digest. Pure over the presence flags so the dispatch order is
-// fuzzable in isolation. (jobReadOutputTool rejects from_line combined with
-// head/tail before reaching this, so that conflicting shape is unreachable live.)
-func classifyJobReadWindow(hasGrep, hasFromLine, hasHead, hasTail bool) jobReadWindowMode {
-	switch {
-	case hasGrep:
-		return jobReadModeGrep
-	case hasFromLine:
-		return jobReadModeFromLine
-	case hasHead && hasTail:
-		return jobReadModeHeadTail
-	case hasHead:
-		return jobReadModeHead
-	case hasTail:
-		return jobReadModeTail
-	default:
-		return jobReadModeDigest
-	}
-}
-
-// jobReadResolution names where a model-facing job output read is served from
-// once the resolution chain has run. read_transcript's job:<job_id> path is the
-// one model-facing reader, and this is the single answer it acts on, so every
-// reachability rule — own store, direct child, deep descendant, watch grant —
-// is decided here rather than re-derived at a call site.
-type jobReadResolution struct {
-	// manager is the store the read runs against for every non-granted path.
-	manager *jobManager
-	// readSession is the session whose store the snapshot is served from: the
-	// caller for own/depth-1 reads, the resolved OWNER for a depth >= 2
-	// descendant (the T11 advisory — projection, resumability, and the
-	// closed-store fallback all key on the owner).
-	readSession *Session
-	// fallbackTarget is the session the closed-store read fallback resolves its
-	// replacement store from: the caller for own/depth-1 reads (its store holds
-	// the depth-1 forwarded copy), and the OWNER'S DIRECT PARENT for a depth >= 2
-	// descendant (forwarding is single-hop, so the forwarded terminal copy lands
-	// in the owner's parent store, not the root). For a direct child of the
-	// caller the owner's parent IS the caller, so depth-1 stays identical.
-	fallbackTarget *Session
-	// deepDescendant marks a resolved depth >= 2 read, which is snapshot-only
-	// like a granted read.
-	deepDescendant bool
-}
-
-// resolveJobRead walks the model-facing job read chain in one place — the
-// caller's own store, a direct child's, a live descendant at depth >= 2, then
-// the durable watch read-grant table — so every job output read resolves
-// identically. A miss at every step returns the error the earlier steps
-// produced: a caller holding no grant learns nothing about whether the job
-// exists. The grant step is a lookup keyed on (session id, job id), never a
-// search, so nothing enumerates and no session is visited that the walk would
-// not already have visited.
-func (s *Session) resolveJobRead(jobID string) (jobReadResolution, error) {
-	jm, resolvedRec, err := s.nestedOrLocalJobManager(jobID)
-	res := jobReadResolution{manager: jm, readSession: s, fallbackTarget: s}
-	// The one-hop resolver reaches only the caller and its direct children. A
-	// job that is missing locally, or surfaced only as a forwarded copy of a
-	// non-self owner, may be owned by a descendant at depth >= 2 (spec §2):
-	// resolve it through the recursive owner path. A live direct-child read
-	// (jm != local) and a job the caller itself owns are left untouched. A miss
-	// (e.g. the owning branch is closed, or the job truly does not exist) leaves
-	// the original resolution — including its error — unchanged.
-	oneHopLocalMiss := jm == s.jobManager && (err != nil || (resolvedRec != nil && resolvedRec.OwnerSessionID != s.id))
-	if oneHopLocalMiss {
-		if owner, ownerSess, ownerParent, _, ok := s.resolveDescendantJobOwner(jobID); ok {
-			res.manager = owner
-			res.readSession = ownerSess
-			res.fallbackTarget = ownerParent
-			res.deepDescendant = true
-			return res, nil
-		}
-	}
-	if err == nil {
-		return res, nil
-	}
-	return jobReadResolution{}, err
-}
-
-// snapshot serves one byte window through whichever path resolveJobRead chose.
-func (r jobReadResolution) snapshot(jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	return r.readSession.readJobOutputSnapshot(r.manager, r.fallbackTarget, jobID, readBytes, fromHead, grepRE)
-}
-
-func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (any, error) {
-	jobID := strings.TrimSpace(stringArg(args, "job_id"))
-	if jobID == "" {
-		return "", errors.New("invalid_request: job_id is required")
-	}
-	if strings.HasPrefix(jobID, "dlg_") {
-		return "", errors.New("invalid_request: delegate_id is a conversation handle; read output from job_id")
-	}
-	resolved, err := s.resolveJobRead(jobID)
-	if err != nil {
-		return "", err
-	}
-	jm, deepDescendant := resolved.manager, resolved.deepDescendant
-	headLines, hasHead, err := strictZeroJobBytesArg(args, "head_lines")
-	if err != nil {
-		return "", err
-	}
-	tailLines, hasTail, err := strictZeroJobBytesArg(args, "tail_lines")
-	if err != nil {
-		return "", err
-	}
-	fromLine, hasFromLine, err := strictZeroJobBytesArg(args, "from_line")
-	if err != nil {
-		return "", err
-	}
-	lineCount, _, err := strictZeroJobBytesArg(args, "line_count")
-	if err != nil {
-		return "", err
-	}
-	if hasFromLine && (hasHead || hasTail) {
-		return "", errors.New("invalid_request: from_line cannot be combined with head_lines/tail_lines")
-	}
-	if hasFromLine && lineCount <= 0 {
-		lineCount = digestHeadLines // default window when from_line has no line_count
-	}
-	maxChars := registryMaxChars
-	grep := stringArg(args, "grep")
-	var grepRE *regexp.Regexp
-	if grep != "" {
-		if err := validateJobGrepPattern(grep, maxChars); err != nil {
-			return "", err
-		}
-		re, err := regexp.Compile(grep)
-		if err != nil {
-			return "", fmt.Errorf("invalid_request: invalid grep pattern: %w", err)
-		}
-		grepRE = re
-	}
-
-	// max_wait_ms: 0/absent = snapshot now; positive = bounded wait;
-	// negative = invalid_request. Zero reads as unset (strict-provider safe).
-	maxWaitMS := 0
-	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
-		if n < 0 {
-			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
-		}
-		maxWaitMS = n
-	}
-	if maxWaitMS > 0 {
-		if deepDescendant {
-			return "", errors.New(grantedReadBlockUnsupportedErr)
-		}
-		timeout := clampJobBlockTimeout(maxWaitMS)
-		if grepRE != nil {
-			waitForJobGrepMatch(ctx, jm, jobID, grepRE, timeout)
-		} else {
-			waitForJobDoneOrOutput(ctx, jm, jobID, timeout)
-		}
-	}
-
-	// readWindow reads one byte window (head or tail) through whichever path
-	// the resolution chose — granted cross-session read, descendant owner
-	// store, or the own/closed-store fallback.
-	readWindow := func(budget int, fromHead bool) (jobReadOutputSnapshot, error) {
-		return resolved.snapshot(jobID, budget, fromHead, nil)
-	}
-
-	var snap jobReadOutputSnapshot
-	switch classifyJobReadWindow(grepRE != nil, hasFromLine, hasHead, hasTail) {
-	case jobReadModeGrep:
-		snap, err = resolved.snapshot(jobID, jobLineReadBudget, false, grepRE)
-	case jobReadModeFromLine:
-		snap, err = readWindow(maxJobOutputBytes, true)
-		if err == nil {
-			sliced, _, before, after := midLineBytes([]byte(snap.Content), fromLine, lineCount)
-			snap.Content = string(sliced)
-			if before || after {
-				snap.Truncated = true // lines outside the requested range exist
-			}
-		}
-	case jobReadModeHeadTail:
-		snap, err = readJobOutputDigest(readWindow, headLines, tailLines)
-	case jobReadModeHead:
-		snap, err = readWindow(jobLineReadBudget, true)
-		if err == nil {
-			sliced, _, more := firstLineBytes([]byte(snap.Content), headLines)
-			snap.Content = string(sliced)
-			if more {
-				snap.Truncated = true // the line slice dropped later lines
-			}
-		}
-	case jobReadModeTail:
-		snap, err = readWindow(jobLineReadBudget, false)
-		if err == nil {
-			sliced, _, more := lastLineBytes([]byte(snap.Content), tailLines)
-			snap.Content = string(sliced)
-			if more {
-				snap.Truncated = true // the line slice dropped earlier lines
-			}
-		}
-	default:
-		snap, err = readJobOutputDigest(readWindow, digestHeadLines, digestTailLines)
-	}
-	if err != nil {
-		return "", err
-	}
-	rec := snap.Record
-
-	result := jobReadOutputResult{
-		JobID:        rec.JobID,
-		Type:         string(rec.Type),
-		Status:       string(rec.Status),
-		Reason:       stringPtrOrNil(rec.Reason),
-		Content:      snap.Content,
-		TotalBytes:   snap.TotalBytes,
-		DroppedBytes: snap.DroppedBytes,
-		OutputStatus: outputWindowStatus(snap.TotalBytes, snap.DroppedBytes, snap.Truncated),
-		Truncated:    snap.Truncated,
-		ExitCode:     rec.ExitCode,
-		LastActivity: lastActivityProjection(rec),
-	}
-	if rec.StructuredResult != nil {
-		result.StructuredResult = rec.StructuredResult
-	}
-	if rec.StructuredResultValid != nil {
-		result.StructuredResultValid = rec.StructuredResultValid
-	}
-	result.StructuredResultReason = rec.StructuredResultReason
-	if grep != "" {
-		result.Grep = &grep
-		projected := projectJobOutputMatches(snap.Matches)
-		result.Matches = &projected
-	}
-	header := ""
-	if hasFromLine {
-		header = fmt.Sprintf("--- from line %d ---", fromLine)
-	}
-	return tool.StateResult{Output: formatJobReadOutput(&result, header, maxChars), State: result}, nil
-}
-
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
@@ -681,196 +410,6 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		return "", err
 	}
 	return tool.StateResult{Output: rendered, State: out}, nil
-}
-
-// formatJobReadOutput renders a job_read_output result as plain text: an optional
-// line-range header, the output (or grep matches), then a bracketed footer with
-// job_id, status, exit code, output_status, and the retained/dropped byte counts.
-// A delegate's structured_result is appended as JSON since it is genuinely
-// structured data the caller requested. Graceful degradation (spec): if including
-// the structured_result would overflow maxChars it is dropped from the model wire
-// and flagged (projection_too_large) — mutating out so the State reflects the drop
-// — while the durable record keeps the full value. The footer always survives so
-// the model can re-read with a narrower window.
-func formatJobReadOutput(out *jobReadOutputResult, header string, maxChars int) string {
-	if out.Matches != nil {
-		var b strings.Builder
-		for _, m := range *out.Matches {
-			fmt.Fprintf(&b, "%d: %s\n", m.ByteOffset, m.Line)
-		}
-		fmt.Fprintf(&b, "[%d match(es) for %q in job %s]", len(*out.Matches), derefString(out.Grep), out.JobID)
-		return b.String()
-	}
-
-	var body strings.Builder
-	if header != "" {
-		body.WriteString(header)
-		body.WriteByte('\n')
-	}
-	if out.Content != "" {
-		body.WriteString(out.Content)
-		if !strings.HasSuffix(out.Content, "\n") {
-			body.WriteByte('\n')
-		}
-	}
-	foot := []string{"job " + out.JobID, out.Status}
-	if out.ExitCode != nil {
-		foot = append(foot, fmt.Sprintf("exit %d", *out.ExitCode))
-	}
-	if out.OutputStatus != "" {
-		foot = append(foot, out.OutputStatus)
-	}
-	if out.TotalBytes > 0 {
-		foot = append(foot, humanBytes(out.TotalBytes)+" total")
-	}
-	if out.DroppedBytes > 0 {
-		foot = append(foot, humanBytes(out.DroppedBytes)+" dropped")
-	}
-	base := body.String() + "[" + strings.Join(foot, " · ") + "]"
-
-	if out.StructuredResult == nil {
-		return base
-	}
-	srText := ""
-	if sr, err := json.Marshal(out.StructuredResult); err == nil {
-		valid := out.StructuredResultValid != nil && *out.StructuredResultValid
-		srText = fmt.Sprintf("\nstructured_result (valid=%v): %s", valid, sr)
-	}
-	if maxChars <= 0 || len([]rune(base+srText)) <= maxChars {
-		return base + srText
-	}
-	// Too large to fit: drop the structured_result from the wire and flag it, so the
-	// State the hub renders reflects the drop while the durable record is untouched.
-	out.StructuredResult = nil
-	invalid := false
-	out.StructuredResultValid = &invalid
-	out.StructuredResultReason = structuredResultReasonProjectionTooLarge
-	return base + "\n[structured_result omitted: projection_too_large — re-read this job to retrieve it]"
-}
-
-func derefString(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
-}
-
-type jobReadOutputSnapshot struct {
-	Manager      *jobManager
-	Record       *jobstore.JobRecord
-	Content      string
-	TotalBytes   int64
-	DroppedBytes int64
-	Truncated    bool
-	Matches      []jobstore.Match
-}
-
-// readJobOutputSnapshot reads jobID's snapshot from jm, retrying through the
-// closed-store fallback when jm's store has closed. fallbackTarget is the
-// session whose store the fallback redirects to: the caller for own/depth-1
-// reads, the OWNER'S DIRECT PARENT for a resolved depth >= 2 descendant (where
-// the single-hop forwarded copy lands). The receiver s remains the read/owner
-// session (the T11 projection key); only the fallback's replacement-store
-// resolution keys on fallbackTarget.
-func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session, jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	for {
-		_, err := findJobRecordForSnapshot(jm, jobID)
-		if err != nil {
-			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
-			if ok {
-				jm = next
-				continue
-			}
-			return jobReadOutputSnapshot{}, fallbackErr
-		}
-
-		content, totalBytes, dropped, truncated, err := readJobWindowForSnapshot(jm, jobID, readBytes, fromHead)
-		if err != nil {
-			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
-			if ok {
-				jm = next
-				continue
-			}
-			return jobReadOutputSnapshot{}, fallbackErr
-		}
-
-		rec, err := findJobRecordForSnapshot(jm, jobID)
-		if err != nil {
-			next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
-			if ok {
-				jm = next
-				continue
-			}
-			return jobReadOutputSnapshot{}, fallbackErr
-		}
-
-		var matches []jobstore.Match
-		if grepRE != nil {
-			matches, err = grepJobOutputForSnapshot(jm, jobID, grepRE)
-			if err != nil {
-				next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
-				if ok {
-					jm = next
-					continue
-				}
-				return jobReadOutputSnapshot{}, fallbackErr
-			}
-			rec, err = findJobRecordForSnapshot(jm, jobID)
-			if err != nil {
-				next, ok, fallbackErr := jobReadFallbackForSnapshot(fallbackTarget, jm, err)
-				if ok {
-					jm = next
-					continue
-				}
-				return jobReadOutputSnapshot{}, fallbackErr
-			}
-		}
-
-		return jobReadOutputSnapshot{
-			Manager:      jm,
-			Record:       rec,
-			Content:      content,
-			TotalBytes:   totalBytes,
-			DroppedBytes: dropped,
-			Truncated:    truncated,
-			Matches:      matches,
-		}, nil
-	}
-}
-
-var (
-	findJobRecordForSnapshot = findJobRecord
-	readJobWindowForSnapshot = func(jm *jobManager, jobID string, bytes int, fromHead bool) (string, int64, int64, bool, error) {
-		return jm.readJobWindow(jobID, bytes, fromHead)
-	}
-	grepJobOutputForSnapshot = func(jm *jobManager, jobID string, re *regexp.Regexp) ([]jobstore.Match, error) {
-		return jm.grepOutput(jobID, re)
-	}
-	jobReadFallbackForSnapshot = func(target *Session, jm *jobManager, err error) (*jobManager, bool, error) {
-		return target.jobReadClosedStoreFallback(jm, err)
-	}
-)
-
-// jobReadClosedStoreFallback redirects a closed-store read to the receiver's own
-// store, which holds the single-hop forwarded copy of the closed owner's job.
-// The receiver is the fallback target: the caller for own/depth-1 reads (whose
-// store holds the depth-1 forwarded copy), the OWNER'S DIRECT PARENT for a
-// depth >= 2 descendant. The current == local guard keeps the redirect a no-op
-// when the closed store IS the receiver's store (nothing further to fall back
-// to); for depth >= 2 the owner's-parent store differs from the closed owner
-// store, so the forwarded copy is recovered.
-func (s *Session) jobReadClosedStoreFallback(current *jobManager, err error) (*jobManager, bool, error) {
-	if !errors.Is(err, jobstore.ErrStoreClosed) {
-		return nil, false, err
-	}
-	local, localErr := sessionJobManager(s)
-	if localErr != nil {
-		return nil, false, localErr
-	}
-	if local == current {
-		return nil, false, err
-	}
-	return local, true, nil
 }
 
 func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
@@ -1186,28 +725,6 @@ var stopDelegateSubtreeForJobStop = func(s *Session, child *Session) ([]*jobstor
 	return s.stopDelegateSubtree(child)
 }
 
-type jobReadOutputResult struct {
-	JobID                  string            `json:"job_id"`
-	Type                   string            `json:"type"`
-	Status                 string            `json:"status"`
-	Reason                 *string           `json:"reason"`
-	Content                string            `json:"output"`
-	Grep                   *string           `json:"grep,omitempty"`
-	Matches                *[]jobOutputMatch `json:"matches,omitempty"`
-	TotalBytes             int64             `json:"total_bytes"`
-	DroppedBytes           int64             `json:"dropped_bytes,omitempty"`
-	OutputStatus           string            `json:"output_status,omitempty"`
-	Truncated              bool              `json:"truncated"`
-	ExitCode               *int              `json:"exit_code"`
-	StructuredResult       any               `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool             `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string            `json:"structured_result_reason,omitempty"`
-	// LastActivity mirrors job_list's supervision signal: the most recent
-	// parent-observable activity timestamp, with the same EndedAt/StartedAt
-	// fallback for terminal records.
-	LastActivity *string `json:"last_activity"`
-}
-
 type jobStatusResult struct {
 	JobID            string  `json:"job_id"`
 	Kind             string  `json:"kind"`
@@ -1225,11 +742,6 @@ type jobStatusResult struct {
 	LastEventAt      *string `json:"last_event_at,omitempty"`
 	TranscriptRef    string  `json:"transcript_ref"`
 	ExitCode         *int    `json:"exit_code,omitempty"`
-}
-
-type jobOutputMatch struct {
-	ByteOffset int64  `json:"byte_offset"`
-	Line       string `json:"line"`
 }
 
 // turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
@@ -1332,7 +844,7 @@ type jobListEntry struct {
 	LastActivity *string `json:"last_activity"`
 	ExitCode     *int    `json:"exit_code,omitempty"`
 	// TotalBytes is the lifetime output byte count — the same name and concept the
-	// shell result and job_read_output report, so the field is consistent across
+	// shell result and job transcript report, so the field is consistent across
 	// every tool the agent reads.
 	TotalBytes int64 `json:"total_bytes"`
 	// Command is the shell command line for a shell job, omitted for delegates (which
@@ -1889,23 +1401,6 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 	return s.jobManager, nil
 }
 
-// strictZeroJobBytesArg reads a head_bytes/tail_bytes arg under the strict-zero
-// rule: absent or 0 → (0, false, nil); positive → (capped, true, nil);
-// negative → (0, false, invalid_request error). Mirrors max_wait_ms behavior.
-func strictZeroJobBytesArg(args map[string]any, key string) (int, bool, error) {
-	n, ok := shellIntArg(args, key)
-	if !ok || n == 0 {
-		return 0, false, nil
-	}
-	if n < 0 {
-		return 0, false, fmt.Errorf("invalid_request: %s must be non-negative", key)
-	}
-	if n > maxJobOutputBytes {
-		n = maxJobOutputBytes
-	}
-	return n, true, nil
-}
-
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	limit := defaultJobListLimit
 	if n, ok := shellIntArg(args, "limit"); ok {
@@ -2104,32 +1599,6 @@ func isEmptyWatchSend(values map[string]any) bool {
 		!shellBoolArg(values, "include_excerpt")
 }
 
-func validateJobGrepPattern(pattern string, maxChars int) error {
-	if len([]byte(pattern)) > maxJobGrepPatternBytes {
-		return fmt.Errorf("grep must be at most %d bytes", maxJobGrepPatternBytes)
-	}
-	b, err := marshalJobGrepPattern(pattern)
-	if err != nil {
-		return err
-	}
-	if jsonCharLen(b) > maxJobGrepPatternJSONChars(maxChars) {
-		return errors.New("grep is too large after JSON escaping")
-	}
-	return nil
-}
-
-var marshalJobGrepPattern = func(pattern string) ([]byte, error) {
-	return json.Marshal(pattern)
-}
-
-func maxJobGrepPatternJSONChars(maxChars int) int {
-	limit := maxChars / 4
-	if limit < 64 {
-		return 64
-	}
-	return limit
-}
-
 func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error) {
 	raw, ok := args[key]
 	if !ok {
@@ -2182,211 +1651,6 @@ func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout t
 	}
 }
 
-func waitForJobDoneOrOutput(ctx context.Context, jm *jobManager, jobID string, timeout time.Duration) {
-	initial, _ := jobOutputBytes(jm, jobID)
-	done, ok := jobDone(jm, jobID)
-	if !ok {
-		return
-	}
-	timer := jm.clock.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := jm.clock.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C():
-			current, err := jobOutputBytes(jm, jobID)
-			if err == nil && current > initial {
-				return
-			}
-		case <-timer.C():
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// waitForJobGrepMatch blocks until the job's retained output contains a line
-// matching re, the job goes terminal, or timeout elapses. The retained output
-// is checked before the first wait so an existing match returns immediately;
-// afterwards each output-size change is re-evaluated incrementally from the
-// last scanned line boundary instead of re-grepping the full retained buffer.
-// The final snapshot re-greps for the result's matches, so correctness never
-// depends on this wait's incremental state.
-func waitForJobGrepMatch(ctx context.Context, jm *jobManager, jobID string, re *regexp.Regexp, timeout time.Duration) {
-	maxLineBytes := maxJobGrepLineBytes
-	var scan jobGrepScan
-	if scan.step(jm, jobID, re, maxLineBytes) {
-		return
-	}
-	done, ok := jobDone(jm, jobID)
-	if !ok {
-		return
-	}
-	timer := jm.clock.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := jm.clock.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C():
-			if scan.step(jm, jobID, re, maxLineBytes) {
-				return
-			}
-		case <-timer.C():
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// jobGrepScan tracks incremental grep progress over a job's lifetime output.
-// scanned always sits at a line boundary (or inside a dead line), so a token
-// split across appends is re-evaluated once its line grows; lastTotal gates
-// re-scans to output-size changes.
-type jobGrepScan struct {
-	scanned    int64 // lifetime offset where the next scan starts
-	lastTotal  int64 // lifetime total at the end of the previous scan
-	inDeadLine bool  // scanned sits inside a line already too long to ever match
-}
-
-// step reports whether the job's retained output gained a grep match since the
-// previous step. It reads only bytes at or beyond the last scanned line
-// boundary; transient read errors leave the scan state unchanged for the next
-// poll.
-func (g *jobGrepScan) step(jm *jobManager, jobID string, re *regexp.Regexp, maxLineBytes int) bool {
-	total, err := jobOutputBytesForScan(jm, jobID)
-	if err != nil || total <= g.lastTotal {
-		return false
-	}
-	content, start, ok := readJobOutputFrom(jm, jobID, g.scanned, total)
-	if !ok {
-		return false
-	}
-	seg := []byte(content)
-	if start < g.scanned {
-		seg = seg[g.scanned-start:]
-		start = g.scanned
-	}
-	// start can exceed scanned when retention pruned bytes below it; scan the
-	// retained remainder from where it begins.
-	g.scanned = start
-	g.lastTotal = start + int64(len(seg))
-	return g.scanSegment(seg, re, maxLineBytes)
-}
-
-// scanSegment consumes seg, which begins at lifetime offset g.scanned, with
-// the snapshot grep's line semantics: a complete line matches without its
-// trailing newline (and a carriage return before it), lines whose content
-// exceeds maxLineBytes never match, and the trailing unterminated line is
-// matched as-is, like the snapshot grep does at end of output. g.scanned is
-// left at the start of a trailing incomplete line so the next step re-reads it
-// once it grows (partial-line carry); a fragment already too long to ever
-// match is instead skipped as it streams.
-func (g *jobGrepScan) scanSegment(seg []byte, re *regexp.Regexp, maxLineBytes int) bool {
-	for len(seg) > 0 {
-		nl := bytes.IndexByte(seg, '\n')
-		if g.inDeadLine {
-			if nl < 0 {
-				g.scanned += int64(len(seg))
-				return false
-			}
-			g.inDeadLine = false
-			g.scanned += int64(nl + 1)
-			seg = seg[nl+1:]
-			continue
-		}
-		if nl < 0 {
-			break
-		}
-		line := seg[:nl]
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
-		matched := len(line) <= maxLineBytes && re.Match(line)
-		g.scanned += int64(nl + 1)
-		seg = seg[nl+1:]
-		if matched {
-			return true
-		}
-	}
-	if len(seg) == 0 {
-		return false
-	}
-	if len(seg) > maxLineBytes+1 {
-		// Even completed by a bare "\r\n" this line's content exceeds
-		// maxLineBytes, so it can never match; skip its remainder as it
-		// streams instead of re-carrying it every poll.
-		g.inDeadLine = true
-		g.scanned += int64(len(seg))
-		return false
-	}
-	return len(seg) <= maxLineBytes && re.Match(seg)
-}
-
-// readJobOutputFrom reads the job's retained output from lifetime offset from
-// (or from the start of retention if those bytes were pruned) through the
-// current end, returning the lifetime offset of the first returned byte.
-// readOutput sizes the request and reads under separate lock acquisitions, so
-// concurrent appends can move the tail past the requested window; widen and
-// retry a bounded number of times; legitimate short windows (retention floor)
-// return ok, while a window still racing after the retry budget reports not-ok
-// so the caller retries.
-//
-// Three conditions legitimately allow returning a window with start > from
-// (bytes below start are genuinely unavailable, not just a race):
-//   - start <= from: we received all wanted bytes — no gap.
-//   - req < want: request was clamped at maxJobOutputRetentionBytes, so bytes
-//     below start are beyond the retention cap and truly gone.
-//   - len(c) < req: the file is shorter than requested; start is the true
-//     retention floor and everything available was returned.
-//
-// When tries are exhausted but none of those conditions hold, the output was
-// still growing during our retry window and [from, start) bytes are still
-// retained — returning the short window would make the caller treat those
-// bytes as pruned and skip them permanently. Return not-ok instead so the
-// caller leaves its scan state unchanged and retries on the next tick.
-func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content string, start int64, ok bool) {
-	want := total - from
-	for tries := 0; ; tries++ {
-		req := min(want, maxJobOutputRetentionBytes)
-		c, totalNow, _, err := readJobOutputForScan(jm, jobID, int(req))
-		if err != nil {
-			return "", 0, false
-		}
-		start = totalNow - int64(len(c))
-		if start <= from || req < want || int64(len(c)) < req {
-			return c, start, true
-		}
-		if tries >= 3 {
-			// The output kept growing past our window for the full retry budget
-			// and [from, start) is still retained (not pruned). Returning this
-			// short window would make the caller treat those still-retained bytes
-			// as gone and skip them forever; report not-ok so the caller retries
-			// on the next tick.
-			return "", 0, false
-		}
-		want = totalNow - from
-	}
-}
-
-var readJobOutputForScan = func(jm *jobManager, jobID string, bytes int) (string, int64, bool, error) {
-	return jm.readOutput(jobID, bytes)
-}
-
-var jobOutputBytesForScan = jobOutputBytes
-
-func jobOutputBytes(jm *jobManager, jobID string) (int64, error) {
-	_, total, _, err := jm.readOutput(jobID, 0)
-	return total, err
-}
-
 func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -2395,31 +1659,6 @@ func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 		return nil, false
 	}
 	return run.done, true
-}
-
-func boundedMatchLine(line string) string {
-	if len([]byte(line)) <= maxJobGrepLineBytes {
-		return line
-	}
-	runes := []rune(line)
-	for len(runes) > 0 && len([]byte(string(runes))) > maxJobGrepLineBytes {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes)
-}
-
-func projectJobOutputMatches(matches []jobstore.Match) []jobOutputMatch {
-	out := make([]jobOutputMatch, 0, len(matches))
-	for i, match := range matches {
-		if i >= maxJobGrepMatches {
-			break
-		}
-		out = append(out, jobOutputMatch{
-			ByteOffset: match.ByteOffset,
-			Line:       boundedMatchLine(match.Line),
-		})
-	}
-	return out
 }
 
 func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {

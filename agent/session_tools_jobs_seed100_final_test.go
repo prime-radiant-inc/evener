@@ -5,14 +5,8 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"testing"
-	"time"
-
-	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"testing"
 )
 
 func seed100ToolsFinal(t *testing.T) {
@@ -56,68 +50,4 @@ func seed100ToolsFinal(t *testing.T) {
 	t.Cleanup(func() { stopNestedOrLocalForJobStop = origStopLocal })
 	delete(jm.running, runID)
 
-	seed100WaitSelectArms(t, jm)
-
-	origRead := readJobOutputForScan
-	readJobOutputForScan = func(_ *jobManager, _ string, bytes int) (string, int64, bool, error) {
-		return strings.Repeat("x", bytes), int64(bytes + 1), false, nil
-	}
-	_, _, _ = readJobOutputFrom(jm, "growing", 0, 1)
-	readJobOutputForScan = origRead
-	t.Cleanup(func() { readJobOutputForScan = origRead })
-}
-
-func seed100WaitSelectArms(t *testing.T, jm *jobManager) {
-	t.Helper()
-	clk := agenttest.NewFakeClock()
-	jm.clock = clk
-
-	closed := make(chan struct{})
-	close(closed)
-	doneOutput, err := jm.openOutput(filepath.Join(jm.dir, "jobs", "done-final.log"), 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jm.running["done"] = &runningJob{rec: &jobstore.JobRecord{JobID: "done"}, done: closed, output: doneOutput}
-	_ = waitForJobDone(context.Background(), jm, "done", time.Second)
-	waitForJobDoneOrOutput(context.Background(), jm, "done", time.Second)
-	waitForJobGrepMatch(context.Background(), jm, "done", regexp.MustCompile("never"), time.Second)
-	delete(jm.running, "done")
-
-	timerOutput, err := jm.openOutput(filepath.Join(jm.dir, "jobs", "wait-timer.log"), 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jm.running["wait-timer"] = &runningJob{rec: &jobstore.JobRecord{JobID: "wait-timer"}, done: make(chan struct{}), output: timerOutput}
-	waited := make(chan struct{})
-	go func() { _ = waitForJobDone(context.Background(), jm, "wait-timer", time.Second); close(waited) }()
-	clk.BlockUntil(1)
-	clk.Advance(time.Second)
-	<-waited
-	delete(jm.running, "wait-timer")
-
-	for _, grep := range []bool{false, true} {
-		id := "timer"
-		if grep {
-			id = "grep-timer"
-		}
-		output, err := jm.openOutput(filepath.Join(jm.dir, "jobs", id+".log"), 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		jm.running[id] = &runningJob{rec: &jobstore.JobRecord{JobID: id}, done: make(chan struct{}), output: output}
-		finished := make(chan struct{})
-		go func() {
-			defer close(finished)
-			if grep {
-				waitForJobGrepMatch(context.Background(), jm, id, regexp.MustCompile("never"), time.Second)
-			} else {
-				waitForJobDoneOrOutput(context.Background(), jm, id, time.Second)
-			}
-		}()
-		clk.BlockUntil(2)
-		clk.Advance(time.Second)
-		<-finished
-		delete(jm.running, id)
-	}
 }

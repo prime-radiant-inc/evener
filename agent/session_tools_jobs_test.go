@@ -26,61 +26,6 @@ func toolResultJSON(res tooldefs.ExecResult) []byte {
 	return []byte(res.Output)
 }
 
-func executeJobReadOutputForTest(t *testing.T, s *Session, call llm.ToolCallData) tooldefs.ExecResult {
-	t.Helper()
-	args := map[string]any{}
-	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
-			return tooldefs.ExecResult{
-				ToolName:   "job_read_output",
-				CallID:     call.ID,
-				Output:     msg,
-				FullOutput: msg,
-				IsError:    true,
-			}
-		}
-	}
-	callID := call.ID
-	if strings.TrimSpace(callID) == "" {
-		callID = "job_read_output_test"
-	}
-	v, err := jobReadOutputTool(context.Background(), s, args, jobToolResultDefaultMaxChar)
-	if err != nil {
-		msg := fmt.Sprintf("%v", err)
-		return tooldefs.ExecResult{
-			ToolName:   "job_read_output",
-			CallID:     callID,
-			Output:     msg,
-			FullOutput: msg,
-			IsError:    true,
-		}
-	}
-	if st, ok := v.(tooldefs.StateResult); ok {
-		res := tooldefs.ExecResult{
-			ToolName:   "job_read_output",
-			CallID:     callID,
-			Output:     st.Output,
-			FullOutput: st.Output,
-		}
-		if st.State != nil {
-			data, err := json.Marshal(st.State)
-			if err != nil {
-				t.Fatalf("marshal job_read_output test state: %v", err)
-			}
-			res.ToolState = data
-		}
-		return res
-	}
-	out := fmt.Sprint(v)
-	return tooldefs.ExecResult{
-		ToolName:   "job_read_output",
-		CallID:     callID,
-		Output:     out,
-		FullOutput: out,
-	}
-}
-
 // handlerJSON returns the structured JSON from a tool handler called directly
 // (not via the registry), whose return is now a tooldefs.StateResult: it marshals
 // the State. Tools still returning a JSON string yield that string verbatim.
@@ -196,44 +141,6 @@ func appendManualJobOutput(jm *jobManager, jobID string, output string) {
 	}
 }
 
-func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS int) (jobReadOutputTestResult, time.Duration) {
-	t.Helper()
-	started := time.Now()
-	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-		ID: "read",
-
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q,"max_wait_ms":%d}`, jobID, grep, timeoutMS)),
-	})
-	elapsed := time.Since(started)
-	if res.IsError {
-		t.Fatalf("job_read_output returned error: %s", res.Output)
-	}
-	var out jobReadOutputTestResult
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-	}
-	return out, elapsed
-}
-
-type jobReadOutputTestResult struct {
-	JobID   string  `json:"job_id"`
-	Type    string  `json:"type"`
-	Status  string  `json:"status"`
-	Reason  *string `json:"reason"`
-	Content string  `json:"output"`
-	Grep    string  `json:"grep"`
-	Matches []struct {
-		ByteOffset *int64 `json:"byte_offset"`
-		Line       string `json:"line"`
-	} `json:"matches"`
-	TotalBytes            int64          `json:"total_bytes"`
-	Truncated             bool           `json:"truncated"`
-	ExitCode              *int           `json:"exit_code"`
-	StructuredResult      map[string]any `json:"structured_result"`
-	StructuredResultValid bool           `json:"structured_result_valid"`
-	LastActivity          *string        `json:"last_activity"`
-}
-
 func assertStructuredResultInvalidReason(t *testing.T, out, reason string) {
 	t.Helper()
 	var parsed map[string]any
@@ -266,65 +173,6 @@ func assertStructuredResultFieldsAbsent(t *testing.T, out string) {
 	if _, ok := parsed["structured_result_reason"]; ok {
 		t.Fatal("structured_result_reason present without schema or structured output")
 	}
-}
-
-func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {
-	t.Helper()
-	return waitForJobOutputWithGrep(t, s, jobID, "ready", want)
-}
-
-func waitForJobOutputWithGrep(t *testing.T, s *Session, jobID, grep, want string) jobReadOutputTestResult {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var last string
-	for time.Now().Before(deadline) {
-		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-			ID: "read",
-
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":%q}`, jobID, grep)),
-		})
-		if res.IsError {
-			t.Fatalf("job_read_output returned error: %s", res.Output)
-		}
-		last = res.Output
-		var out jobReadOutputTestResult
-		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-		}
-		if strings.Contains(out.Content, want) {
-			return out
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("job_read_output never contained %q; last output: %s", want, last)
-	return jobReadOutputTestResult{}
-}
-
-func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tailBytes int) jobReadOutputTestResult {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var last string
-	for time.Now().Before(deadline) {
-		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-			ID: "read",
-
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":%d,"grep":%q}`, jobID, tailBytes, want)),
-		})
-		if res.IsError {
-			t.Fatalf("job_read_output returned error: %s", res.Output)
-		}
-		last = res.Output
-		var out jobReadOutputTestResult
-		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-		}
-		if out.TotalBytes > int64(tailBytes) && len(out.Matches) > 0 {
-			return out
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("job_read_output never found grep match %q; last output: %s", want, last)
-	return jobReadOutputTestResult{}
 }
 
 type jobListToolOutput struct {
@@ -558,33 +406,6 @@ func findJobListToolOutput(records []jobListToolEntry, jobID string) *jobListToo
 
 func containsString(values []string, want string) bool {
 	return slices.Contains(values, want)
-}
-
-func waitForJobOutputContent(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var last string
-	for time.Now().Before(deadline) {
-		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-			ID: "read-wait",
-
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536}`, jobID)),
-		})
-		if res.IsError {
-			t.Fatalf("job_read_output returned error: %s", res.Output)
-		}
-		last = res.Output
-		var out jobReadOutputTestResult
-		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-		}
-		if strings.Contains(out.Content, want) {
-			return out
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("job_read_output never contained %q; last output: %s", want, last)
-	return jobReadOutputTestResult{}
 }
 
 func requiredParams(t *testing.T, name string, raw any) []string {

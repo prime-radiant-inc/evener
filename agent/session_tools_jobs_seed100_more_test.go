@@ -3,8 +3,6 @@
 package agent
 
 import (
-	"errors"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -29,37 +27,19 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 		TestLiveSteerWaitIgnoredReason,
 		TestClassifyStopOutcome,
 		TestJobStopReportsOutcomeAndPreviousStatus,
-		TestJobReadOutputReportsStatus,
-		TestJobReadOutputHeadAndTailTogether,
-		TestJobReadOutputFromLineMiddleSlice,
-		TestJobReadOutputReturnsBackgroundDelegateStructuredResult,
-		TestJobReadOutputBlockGrepWaitsForMatchNotJustNewOutput,
-		TestJobGrepScanCarriesPartialLineAcrossSteps,
-		TestJobGrepScanNeverMatchesOverlongLines,
-		TestReadJobOutputFromWidensPastStaleTotal,
-		TestJobReadOutputRejectsInvalidArgs,
-		TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult,
 		TestJobListIncludesDelegatesRecoverySurface,
 		TestJobListDelegatesDoNotExposeFilteredCurrentJob,
 		TestJobListToolIncludeNestedSurfacesForwardedRecords,
 		TestJobListIncludeDescendantsWalksLiveTree,
 		TestJobListWatchConditionSummaryFormats,
 		TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure,
-		TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy,
-		TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation,
 		TestJobListIncludeDescendantsSurfacesOwnStoreError,
 		TestStopDelegateIncludeChildrenSurfacesChildStopError,
-		TestW2Conc_WaitForJobDoneOrOutputNotRunningReturns,
-		TestW2Conc_WaitForJobDoneOrOutputTimeout,
-		TestW2Conc_WaitForJobDoneOrOutputCtxCancel,
-		TestW2Conc_WaitForJobGrepMatchNotRunningReturns,
-		TestW2Conc_WaitForJobGrepMatchCtxCancel,
 	} {
 		t.Run("job-tool-fixture", test)
 	}
 
 	// Pure validation branches.
-	_, _, _ = strictZeroJobBytesArg(map[string]any{"x": maxJobOutputBytes + 1}, "x")
 	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "source": "self", "every": 2})
 	for _, args := range []map[string]any{
 		{"max_wait_ms": minJobBlockTimeoutMS - 1},
@@ -67,12 +47,6 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	} {
 		_, _ = decodeDelegateArgs(args)
 	}
-	originalMarshal := marshalJobGrepPattern
-	marshalJobGrepPattern = func(string) ([]byte, error) { return nil, errors.New("seed marshal fault") }
-	t.Cleanup(func() { marshalJobGrepPattern = originalMarshal })
-	_ = validateJobGrepPattern("x", 100)
-	marshalJobGrepPattern = originalMarshal
-
 	// Nil guards and stable watch ordering.
 	_, _, _ = (*Session)(nil).configureDescendantReceiverWatch(watchArgs{Target: "job_x"})
 	_ = (*Session)(nil).liveDescendantSessions()
@@ -116,20 +90,6 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 		_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(strings.Repeat("x", 100))}, limit)
 	}
 
-	// Closed managers cover the transient grep scanner and output-read failures.
-	closed := newTestJM(t)
-	if err := closed.store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	g := &jobGrepScan{}
-	_ = g.step(closed, "missing", regexp.MustCompile("x"), 10)
-	g.lastTotal = -1
-	_ = g.step(closed, "missing", regexp.MustCompile("x"), 10)
-
-	// Retention clamping is reachable with a synthetic lifetime total even when
-	// the underlying record is absent.
-	_, _, _ = readJobOutputFrom(closed, "missing", 0, maxJobOutputRetentionBytes+1)
-
 	// Closed-store front doors surface their durable lookup/load errors.
 	closedSession := newSession(t)
 	if err := closedSession.jobManager.store.Close(); err != nil {
@@ -138,94 +98,4 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 	_, _ = jobWatchTool(closedSession, map[string]any{"operation": "clear", "watch_id": "watch_x"}, 100)
 	_, _ = jobStatusTool(closedSession, map[string]any{"job_id": "job_x"}, 100)
 	_, _ = jobListTool(closedSession, nil, 100)
-	_, _ = jobReadOutputTool(nil, closedSession, map[string]any{"job_id": "job_x"}, 100)
-
-	// Each snapshot phase fails once, falls back, and is retried successfully.
-	origFind := findJobRecordForSnapshot
-	origWindow := readJobWindowForSnapshot
-	origGrep := grepJobOutputForSnapshot
-	origFallback := jobReadFallbackForSnapshot
-	rec := &jobstore.JobRecord{JobID: "job_snapshot", Status: jobstore.StatusRunning}
-	findCalls := 0
-	findJobRecordForSnapshot = func(*jobManager, string) (*jobstore.JobRecord, error) {
-		findCalls++
-		if findCalls == 2 || findCalls == 4 || findCalls == 9 {
-			return nil, errors.New("seed find fault")
-		}
-		return rec, nil
-	}
-	windowCalls := 0
-	readJobWindowForSnapshot = func(*jobManager, string, int, bool) (string, int64, int64, bool, error) {
-		windowCalls++
-		if windowCalls == 1 {
-			return "", 0, 0, false, errors.New("seed window fault")
-		}
-		return "match", 5, 0, false, nil
-	}
-	grepCalls := 0
-	grepJobOutputForSnapshot = func(*jobManager, string, *regexp.Regexp) ([]jobstore.Match, error) {
-		grepCalls++
-		if grepCalls == 1 {
-			return nil, errors.New("seed grep fault")
-		}
-		return []jobstore.Match{{Line: "match"}}, nil
-	}
-	jobReadFallbackForSnapshot = func(*Session, *jobManager, error) (*jobManager, bool, error) {
-		return closedSession.jobManager, true, nil
-	}
-	_, _ = root.readJobOutputSnapshot(closedSession.jobManager, root, rec.JobID, 10, false, regexp.MustCompile("match"))
-	findCalls = 0
-	findJobRecordForSnapshot = func(*jobManager, string) (*jobstore.JobRecord, error) {
-		findCalls++
-		if findCalls == 3 {
-			return nil, errors.New("seed terminal find fault")
-		}
-		return rec, nil
-	}
-	readJobWindowForSnapshot = func(*jobManager, string, int, bool) (string, int64, int64, bool, error) {
-		return "match", 5, 0, false, nil
-	}
-	grepJobOutputForSnapshot = func(*jobManager, string, *regexp.Regexp) ([]jobstore.Match, error) { return nil, nil }
-	jobReadFallbackForSnapshot = func(*Session, *jobManager, error) (*jobManager, bool, error) {
-		return nil, false, errors.New("seed fallback fault")
-	}
-	_, _ = root.readJobOutputSnapshot(closedSession.jobManager, root, rec.JobID, 10, false, regexp.MustCompile("match"))
-	findJobRecordForSnapshot = origFind
-	readJobWindowForSnapshot = origWindow
-	grepJobOutputForSnapshot = origGrep
-	jobReadFallbackForSnapshot = origFallback
-	t.Cleanup(func() {
-		findJobRecordForSnapshot = origFind
-		readJobWindowForSnapshot = origWindow
-		grepJobOutputForSnapshot = origGrep
-		jobReadFallbackForSnapshot = origFallback
-	})
-
-	// Script a continuously growing output window to exhaust the retry budget,
-	// then feed that not-ok result through the incremental scanner.
-	originalRead := readJobOutputForScan
-	originalBytes := jobOutputBytesForScan
-	calls := 0
-	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
-		calls++
-		return "x", int64(calls + 1), false, nil
-	}
-	_, _, _ = readJobOutputFrom(nil, "job_x", 0, 1)
-	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
-		return "abc", 3, false, nil
-	}
-	jobOutputBytesForScan = func(*jobManager, string) (int64, error) { return 3, nil }
-	g = &jobGrepScan{scanned: 2, lastTotal: 0}
-	_ = g.step(nil, "job_x", regexp.MustCompile("x"), 10)
-	readJobOutputForScan = func(*jobManager, string, int) (string, int64, bool, error) {
-		return "", 0, false, errors.New("seed scan fault")
-	}
-	g = &jobGrepScan{lastTotal: 0}
-	_ = g.step(nil, "job_x", regexp.MustCompile("x"), 10)
-	readJobOutputForScan = originalRead
-	jobOutputBytesForScan = originalBytes
-	t.Cleanup(func() {
-		readJobOutputForScan = originalRead
-		jobOutputBytesForScan = originalBytes
-	})
 }

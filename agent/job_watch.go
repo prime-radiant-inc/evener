@@ -593,11 +593,8 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if err != nil {
 		return watchResult{}, err
 	}
-	// Watch installation mints no read grant: grants are minted per delivery,
-	// from the delivered event payload, so a grant can only ever name a job
-	// that has already finished (spec §5.1). The OBSERVER LINK is different:
-	// stamping the watched worker's meta only buys the hub its auto-open
-	// convenience, confers no read capability, and must exist from the moment
+	// Stamp the observer UI relationship when the watch is installed. It confers
+	// no read capability and must exist from the moment
 	// the sidecar is installed — a worker can run a long time before its first
 	// matching event, and the hub should show its observer for all of it.
 	jm.stampObserverLinkAtInstall(cfg)

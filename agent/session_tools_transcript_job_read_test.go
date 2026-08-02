@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -33,6 +35,7 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
 	callerSessionID := identifier.MustNewSessionID()
 	foreignSessionID := identifier.MustNewSessionID()
+	descendantSessionID := identifier.MustNewSessionID()
 
 	for _, scope := range []struct {
 		name     string
@@ -40,6 +43,7 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 		owner    string
 	}{
 		{name: "owner", stateDir: current, owner: callerSessionID},
+		{name: "descendant", stateDir: current, owner: descendantSessionID},
 		{name: "foreign", stateDir: foreign, owner: foreignSessionID},
 	} {
 		for _, jobType := range []jobstore.JobType{jobstore.JobShell, jobstore.JobDelegate} {
@@ -86,6 +90,88 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestReadTranscriptLocalJobUsesDerivedOutputAfterStoreClose(t *testing.T) {
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	decoy := filepath.Join(t.TempDir(), "decoy.log")
+	if err := os.WriteFile(decoy, []byte("DECOY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedLocalJob(t, current, owner, jobID, decoy, "CLOSED_STORE_REAL\n", true)
+	store, err := jobstore.OpenNoSync(filepath.Join(jobsDir(current, owner), "jobs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	envelope, err := readLocalJobTranscriptForTest(t, current, owner, jobID)
+	if err != nil {
+		t.Fatalf("read after store close: %v", err)
+	}
+	if !strings.Contains(envelope.Content, "CLOSED_STORE_REAL") || strings.Contains(envelope.Content, "DECOY") {
+		t.Fatalf("content = %q, want derived retained output after store close", envelope.Content)
+	}
+}
+
+func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	caller := newSession(t, withConfig(SessionConfig{StateDir: current, MaxSubagentDepth: 1}))
+	foreignOwner := identifier.MustNewSessionID()
+	foreignJobID := identifier.MustNewJobID(foreignOwner)
+	seedLocalJobRecord(t, foreign, foreignOwner, foreignJobID, "/untrusted/decoy.log", "FOREIGN_MARKER\n", maxJobOutputRetentionBytes, jobstore.JobDelegate, false, 0, nil)
+	location, found, err := findLocalJobInProject(foreign, foreignOwner, foreignJobID)
+	if err != nil || !found {
+		t.Fatalf("load foreign fixture: found=%t err=%v", found, err)
+	}
+	foreignDelegateID := location.Record.DelegateID
+
+	value, err := execReadTranscript(&toolDeps{
+		stateDir:  current,
+		sessionID: caller.ID(),
+	}, map[string]any{"transcript_ref": "job:" + foreignJobID})
+	if err != nil {
+		t.Fatalf("foreign read: %v", err)
+	}
+	envelope := value.(readMarkdownEnvelope)
+	if !strings.Contains(envelope.Content, "FOREIGN_MARKER") || envelope.TranscriptRef != "job:"+foreignJobID {
+		t.Fatalf("foreign envelope = %+v", envelope)
+	}
+
+	listedValue, err := jobListTool(caller, map[string]any{}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("job_list: %v", err)
+	}
+	listed := listedValue.(tool.StateResult).State.(jobListResult)
+	for _, job := range listed.Jobs {
+		if job.JobID == foreignJobID {
+			t.Fatalf("job_list disclosed foreign job %q", foreignJobID)
+		}
+	}
+	if _, err := jobStatusTool(caller, map[string]any{"job_id": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
+		t.Fatalf("job_status error = %v, want scoped not found", err)
+	}
+	if _, err := jobStopTool(context.Background(), caller, map[string]any{"job_id": foreignJobID}, jobToolResultDefaultMaxChar); !isJobNotFoundErr(err) {
+		t.Fatalf("job_stop error = %v, want scoped not found", err)
+	}
+	if _, err := jobWatchTool(caller, map[string]any{
+		"operation": "create", "source": foreignJobID,
+		"events": []any{"job.notification"},
+	}, jobToolResultDefaultMaxChar); err == nil {
+		t.Fatal("job_watch accepted foreign source")
+	}
+	if _, err := delegateSendTool(context.Background(), caller, map[string]any{
+		"to": foreignDelegateID, "message": "ping",
+	}, jobToolResultDefaultMaxChar); err == nil {
+		t.Fatal("delegate_send accepted foreign delegate")
 	}
 }
 

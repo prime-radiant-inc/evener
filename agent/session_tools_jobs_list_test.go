@@ -369,7 +369,7 @@ func TestJobListRowIsLean(t *testing.T) {
 		t.Errorf("shell job_list row must report its output size:\n%s", body)
 	}
 	// The structured row (State) names the size field total_bytes everywhere the
-	// agent reads it (shell result, job_read_output, job_list) — not output_bytes.
+	// agent reads it (shell result, job transcript, job_list) — not output_bytes.
 	state := string(toolResultJSON(listRes))
 	if !strings.Contains(state, "total_bytes") || strings.Contains(state, "output_bytes") {
 		t.Errorf("job_list state must use total_bytes, not output_bytes:\n%s", state)

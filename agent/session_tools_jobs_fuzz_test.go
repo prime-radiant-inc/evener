@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -23,8 +22,8 @@ import (
 // the pure formatters those tools render through. Two targets split the surface
 // by what property is truthful to assert:
 //
-//   - FuzzJobtoolsExec drives the STATEFUL tool handlers (jobReadOutputTool,
-//     jobListTool, jobStopTool, jobWatchTool) against a real Session whose
+//   - FuzzJobtoolsExec drives the STATEFUL tool handlers (jobListTool,
+//     jobStopTool, jobWatchTool) against a real Session whose
 //     jobstore is populated from fuzzed job/watch events, with fuzzed tool-call
 //     args and a fuzzer-derived FAULT PLAN wired onto the store's append seams so
 //     the persist-error branches (which adversarial input alone cannot reach) run.
@@ -237,16 +236,12 @@ func FuzzJobtoolsExec(f *testing.F) {
 			targetID = seededIDs[r.intn(len(seededIDs))]
 		}
 
-		// Determinism oracle (PRE-fault, read-only): job_list and job_read_output
-		// must render byte-identically across back-to-back calls on an unchanged
-		// store. Faults are armed only afterward, so this stays a pure read.
+		// Determinism oracle (PRE-fault, read-only): job_list must render
+		// byte-identically across back-to-back calls on an unchanged store. Faults
+		// are armed only afterward, so this stays a pure read.
 		listArgs := jobtools_listArgs(r)
 		jobtools_assertReadDeterministic(t, func() (any, error) {
 			return jobListTool(sess, jobtools_cloneArgs(listArgs), maxChars)
-		})
-		readArgs := jobtools_readArgs(r, targetID)
-		jobtools_assertReadDeterministic(t, func() (any, error) {
-			return jobReadOutputTool(ctx, sess, jobtools_cloneArgs(readArgs), maxChars)
 		})
 
 		// Arm the persist-fault plan on the append seams.
@@ -270,9 +265,6 @@ func FuzzJobtoolsExec(f *testing.F) {
 		// with faults live. A rejected call must return ("", non-nil err).
 		res, err := jobListTool(sess, jobtools_cloneArgs(listArgs), maxChars)
 		jobtools_assertClean(t, "job_list", res, err)
-
-		res, err = jobReadOutputTool(ctx, sess, jobtools_cloneArgs(readArgs), maxChars)
-		jobtools_assertClean(t, "job_read_output", res, err)
 
 		res, err = jobWatchTool(sess, jobtools_watchArgs(r, targetID), maxChars)
 		jobtools_assertClean(t, "job_watch", res, err)
@@ -306,29 +298,6 @@ func jobtools_listArgs(r *jobtools_reader) map[string]any {
 
 func jobtools_statusArg(r *jobtools_reader) any {
 	return string(jobtools_statuses[r.intn(len(jobtools_statuses))])
-}
-
-// jobtools_readArgs builds a fuzzed job_read_output arg map exercising the
-// head/tail/from_line/grep/max_wait window selectors, including the mutually
-// exclusive and negative-value rejection branches.
-func jobtools_readArgs(r *jobtools_reader, jobID string) map[string]any {
-	args := map[string]any{"job_id": jobID}
-	if r.booln() {
-		args["head_lines"] = float64(r.intn(300) - 20)
-	}
-	if r.booln() {
-		args["tail_lines"] = float64(r.intn(300) - 20)
-	}
-	if r.booln() {
-		args["from_line"] = float64(r.intn(300) - 20)
-	}
-	if r.booln() {
-		args["line_count"] = float64(r.intn(300) - 20)
-	}
-	if r.booln() {
-		args["grep"] = r.str()
-	}
-	return args
 }
 
 // jobtools_watchArgs builds a fuzzed job_watch arg map across all operations.
@@ -464,11 +433,6 @@ func FuzzJobtoolsFormat(f *testing.F) {
 		}
 		oracle.Deterministic(t, formatJobStop, stop, func(a, b string) bool { return a == b })
 
-		read := jobtools_buildReadResult(r)
-		header := r.str()
-		oracle.Deterministic(t, func(in jobReadOutputResult) string {
-			return formatJobReadOutput(&in, header, jobToolResultDefaultMaxChar)
-		}, read, func(a, b string) bool { return a == b })
 	})
 }
 
@@ -575,37 +539,6 @@ func jobtools_buildWatchResult(r *jobtools_reader) jobWatchToolResult {
 	}
 	if r.booln() {
 		out.Send = &jobWatchToolSendArgs{To: r.str(), Message: r.str(), IncludeExcerpt: r.booln()}
-	}
-	return out
-}
-
-func jobtools_buildReadResult(r *jobtools_reader) jobReadOutputResult {
-	out := jobReadOutputResult{
-		JobID:        r.str(),
-		Type:         r.str(),
-		Status:       r.str(),
-		Reason:       jobtools_optStr(r),
-		Content:      r.str(),
-		TotalBytes:   int64(r.intn(1 << 20)),
-		DroppedBytes: int64(r.intn(1 << 16)),
-		OutputStatus: r.str(),
-		Truncated:    r.booln(),
-		ExitCode:     jobtools_optInt(r),
-	}
-	if r.booln() {
-		g := r.str()
-		out.Grep = &g
-		matches := []jobOutputMatch{{ByteOffset: int64(r.intn(1024)), Line: r.str()}}
-		out.Matches = &matches
-	}
-	if r.booln() {
-		out.StructuredResult = map[string]any{"k": r.str(), "n": r.intn(100)}
-		valid := r.booln()
-		out.StructuredResultValid = &valid
-	}
-	if r.booln() {
-		la := time.Unix(int64(r.intn(1<<20)), 0).UTC().Format(time.RFC3339Nano)
-		out.LastActivity = &la
 	}
 	return out
 }

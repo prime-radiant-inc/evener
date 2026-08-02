@@ -134,29 +134,37 @@ func finishLocalJobLookup(match localJobLocation, found bool, jobID string) (loc
 	return localJobLocation{}, errJobNotFound(jobID)
 }
 
-func readLocalJobSnapshot(currentStateDir, jobID string, readBytes int) (jobReadOutputSnapshot, error) {
+type localJobSnapshot struct {
+	Record       *jobstore.JobRecord
+	Content      string
+	TotalBytes   int64
+	DroppedBytes int64
+	Truncated    bool
+}
+
+func readLocalJobSnapshot(currentStateDir, jobID string, readBytes int) (localJobSnapshot, error) {
 	location, err := locateLocalJob(currentStateDir, jobID)
 	if err != nil {
-		return jobReadOutputSnapshot{}, err
+		return localJobSnapshot{}, err
 	}
 	outputPath := filepath.Join(jobsDir(location.StateDir, location.OwnerSessionID), "jobs", jobID+".log")
 	snapshot, err := jobstore.ReadOutputSnapshot(outputPath, readBytes, false)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
-		return jobReadOutputSnapshot{}, fmt.Errorf("output_changed_during_read: job %q: %w", jobID, err)
+		return localJobSnapshot{}, fmt.Errorf("output_changed_during_read: job %q: %w", jobID, err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return jobReadOutputSnapshot{}, fmt.Errorf("output_unavailable: job %q retained output is missing or pruned: %w", jobID, err)
+		return localJobSnapshot{}, fmt.Errorf("output_unavailable: job %q retained output is missing or pruned: %w", jobID, err)
 	}
 	if err != nil {
-		return jobReadOutputSnapshot{}, err
+		return localJobSnapshot{}, err
 	}
 	if location.Record.Status.IsTerminal() && location.Record.OutputBytes != snapshot.TotalBytes {
-		return jobReadOutputSnapshot{}, fmt.Errorf(
+		return localJobSnapshot{}, fmt.Errorf(
 			"corrupt local job %q: terminal output_bytes %d does not match snapshot total_bytes %d",
 			jobID, location.Record.OutputBytes, snapshot.TotalBytes,
 		)
 	}
-	return jobReadOutputSnapshot{
+	return localJobSnapshot{
 		Record:       location.Record,
 		Content:      string(snapshot.Content),
 		TotalBytes:   snapshot.TotalBytes,

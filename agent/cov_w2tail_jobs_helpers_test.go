@@ -12,16 +12,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestW2Tail_derefString(t *testing.T) {
-	if derefString(nil) != "" {
-		t.Errorf("nil deref != empty")
-	}
-	v := "hi"
-	if derefString(&v) != "hi" {
-		t.Errorf("deref wrong")
-	}
-}
-
 func TestW2Tail_projectDelegateRecord(t *testing.T) {
 	if got := projectDelegateRecord(nil); got != (delegateListEntry{}) {
 		t.Errorf("nil record = %+v", got)
@@ -94,16 +84,6 @@ func TestW2Tail_jobToolResultMaxChars(t *testing.T) {
 	}
 }
 
-func TestW2Tail_validateJobGrepPattern(t *testing.T) {
-	if err := validateJobGrepPattern("ok", 20_000); err != nil {
-		t.Errorf("small pattern err = %v", err)
-	}
-	big := strings.Repeat("x", maxJobGrepPatternBytes+1)
-	if err := validateJobGrepPattern(big, 20_000); err == nil {
-		t.Errorf("expected too-many-bytes error")
-	}
-}
-
 func TestW2Tail_jobTranscriptRef(t *testing.T) {
 	if jobTranscriptRef(nil) != "" {
 		t.Errorf("nil ref")
@@ -158,18 +138,5 @@ func TestW2Tail_watchArgsFromToolArgs(t *testing.T) {
 				t.Errorf("expected error")
 			}
 		})
-	}
-}
-
-// readJobOutputSnapshot returns the non-closed-store lookup error (not the
-// closed-store retry) when the job id is unknown.
-func TestW2Tail_readJobOutputSnapshot_MissingJob(t *testing.T) {
-	s := newSession(t)
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		t.Fatalf("sessionJobManager: %v", err)
-	}
-	if _, err := s.readJobOutputSnapshot(jm, s, "job_missing", 100, true, nil); err == nil {
-		t.Fatalf("expected error for missing job")
 	}
 }
