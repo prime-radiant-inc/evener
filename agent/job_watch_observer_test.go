@@ -200,6 +200,30 @@ func TestJobFinishedWatchFrameNamesTranscriptRead(t *testing.T) {
 	}
 }
 
+func TestSessionWatchSkipsShellAndSelfObserverLinks(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	stateDir := stateDirForJM(jm)
+	const worker = "WORKER"
+	var signals atomic.Int32
+	delegateJobID := seedRunningDelegate(t, jm, encodeRef("", worker), &signals)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: worker}); err != nil {
+		t.Fatal(err)
+	}
+	jm.recordObserverLink(delegateJobID, worker)
+	if got, err := schema.LoadSessionMeta(stateDir, worker); err != nil || len(got.ObservedBy) != 0 {
+		t.Fatalf("self observer meta = %+v, %v", got, err)
+	}
+	shell, err := jm.createShell(createShellOpts{Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.recordObserverLink(shell.JobID, "observer")
+	if got, err := schema.LoadSessionMeta(stateDir, worker); err != nil || len(got.ObservedBy) != 0 {
+		t.Fatalf("shell observer meta = %+v, %v", got, err)
+	}
+}
+
 func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()

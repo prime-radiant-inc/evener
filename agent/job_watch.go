@@ -3294,8 +3294,7 @@ func (jm *jobManager) watchTargetSessionID(sendTo string) (childSessionID string
 // false when the job has no local worker session to stamp: not found, not a
 // delegate, a cross-project (proj:) transcript ref the hub cannot read meta for,
 // or an undecodable ref. There is no error return: this feeds a best-effort
-// stamp (the read grant is the load-bearing capability; the observer-link stamp
-// is a hub convenience), so every "cannot resolve" reason collapses to ok=false.
+// stamp, so every "cannot resolve" reason collapses to ok=false.
 func (jm *jobManager) watchedWorkerSessionID(watchedJobID string) (workerSessionID string, ok bool) {
 	rec, err := findJobRecord(jm, watchedJobID)
 	if err != nil || rec.Type != jobstore.JobDelegate {
@@ -3347,7 +3346,7 @@ func (jm *jobManager) stampObserverLinkAtInstall(cfg *watchConfig) {
 // an unresolvable worker or a write error only deprives the hub of auto-open.
 func (jm *jobManager) recordObserverLink(watchedJobID, observerSessionID string) {
 	workerSessionID, ok := jm.watchedWorkerSessionID(watchedJobID)
-	if !ok {
+	if !ok || workerSessionID == observerSessionID {
 		return
 	}
 	_ = jm.stampObservedBy(workerSessionID, observerSessionID)
@@ -3434,8 +3433,7 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 }
 
 func (jm *jobManager) scheduleDeliveredObserverLink(cfg *watchConfig, state jobstore.WatchSendState) {
-	if cfg == nil || !isWatchSessionTarget(cfg.target) || state.NotificationJobID == "" ||
-		(state.NotificationDelegateID != "" && state.NotificationDelegateID == cfg.receiverDelegateID) {
+	if cfg == nil || !isWatchSessionTarget(cfg.target) || state.NotificationJobID == "" {
 		return
 	}
 	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
