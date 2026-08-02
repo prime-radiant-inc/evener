@@ -20,10 +20,10 @@ func TestFormatJobNotification(t *testing.T) {
 	t.Parallel()
 	code := 0
 	block := formatJobNotificationBlock(jobNotification{
-		JobID: "job_X", JobType: "shell", Status: "completed", Reason: "exit_zero",
+		JobID: "job_X", JobType: "shell", Description: `Run "go test"`, Status: "completed", Reason: "exit_zero",
 		OutputBytes: 42, ExitCode: &code,
 	}, notificationExcerpt{})
-	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, `reason="exit_zero"`, "read_transcript", `transcript_ref="job:job_X"`} {
+	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `description="Run &quot;go test&quot;"`, `status="completed"`, `reason="exit_zero"`, "read_transcript", `transcript_ref="job:job_X"`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("notification missing %q:\n%s", want, block)
 		}
