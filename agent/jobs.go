@@ -98,9 +98,9 @@ type jobManager struct {
 	watchLineage      map[watchKey][]string
 	watchLineageOrder []watchKey
 	// watchesLostAtRestore holds the durable records of the watches this restore
-	// ended (clearUnrestoredActiveWatches), owed one end notice each by
-	// noticeUnrestoredWatchEnds. Written once at construction, read once in the
-	// restore sequence, both before the manager is shared.
+	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
+	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
+	// once in the restore sequence, both before the manager is shared.
 	watchesLostAtRestore   []*jobstore.WatchRecord
 	closing                bool
 	appendEvent            func(jobstore.Event) error
@@ -119,6 +119,10 @@ type jobManager struct {
 	forward     func(jobstore.Event) error
 	parentJobID string
 	enqueue     func(jobNotification)
+	// notifySystem routes a restart-owned system notification to the session
+	// that held a callback watch. It uses the durable steering queue rather than
+	// the lost callback closure, so the notice survives the restore boundary.
+	notifySystem func(receiverSessionID, message string) bool
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -1267,8 +1271,9 @@ func (jm *jobManager) clearUnrestoredActiveWatches() error {
 	// Nothing has told these watchers their watch is gone. This runs inside the
 	// constructor, before the session wires the notification and send rails and
 	// before reconcileLostJobs makes the targets' terminal outcomes durable, so
-	// the end notice is left to noticeUnrestoredWatchEnds later in the restore
-	// sequence; the records are what it has to speak from.
+	// the callback-cancellation or send notice is left to
+	// noticeUnrestoredWatchEnds later in the restore sequence; the records are
+	// what it has to speak from.
 	for _, event := range cleared {
 		if watch := watches[event.WatchID]; watch != nil {
 			jm.watchesLostAtRestore = append(jm.watchesLostAtRestore, watch)

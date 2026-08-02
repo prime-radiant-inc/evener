@@ -192,6 +192,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}()
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
+	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
 	jm.emit = s.emitWithProvenance
 	jm.currentProvenance = s.activeCausalProvenance
@@ -570,12 +571,21 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
+	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
 	jm.emit = s.emitWithProvenance
 	jm.currentProvenance = s.activeCausalProvenance
 	jm.clock = s.clock
 	jm.now = s.clock.Now
 	s.jobManager = jm
+	// Restore daemon steering before restore side effects can enqueue a
+	// restart-owned notification. Loading it later would overwrite that new
+	// notification with the pre-restart snapshot.
+	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
+	} else {
+		s.steeringQueue = daemonSourcedSteering(steering)
+	}
 	if !restoreCfg.deferRestoreSideEffects {
 		if err := s.restoreSideEffect("reconcile_lost_jobs", jm.reconcileLostJobs); err != nil {
 			return nil, fmt.Errorf("job reconcile: %w", err)
@@ -609,20 +619,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// happens once, at creation time, not on every resume.
 	s.origin = meta.Origin
 
-	// Restore any steering/input queue entries that survived a crash (queue
-	// persistence: restart parity for turn/queue and mid-turn Steer). Loaded
-	// directly onto the fields here, before the session is visible to any
-	// other goroutine, so the very first QueueState projection a reconnecting
-	// client sees already reflects the restored queue. A load failure (e.g. a
-	// corrupt queue file) is non-fatal — same posture as a parse failure in
-	// the pending-ask restore below — so a damaged queue snapshot degrades to
-	// "queue lost" (today's status quo for every crash) rather than blocking
-	// the whole session from resuming.
-	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
-	} else {
-		s.steeringQueue = daemonSourcedSteering(steering)
-	}
 	s.restoreDurableClientMutationQueues()
 
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume

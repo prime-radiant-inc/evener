@@ -29,6 +29,12 @@ func restartJobManager(t *testing.T, stateDir, sessionID string, enqueue func(jo
 	if err != nil {
 		t.Fatalf("restart job manager: %v", err)
 	}
+	jm.notifySystem = func(_ string, message string) bool {
+		if enqueue != nil {
+			enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: message})
+		}
+		return true
+	}
 	freezeClock(jm)
 	t.Cleanup(func() { _ = jm.close() })
 	if err := jm.reconcileLostJobs(); err != nil {
@@ -247,12 +253,10 @@ func TestRestartEndsWatchesRuntimeLostBeforeReconcileCanSeeThem(t *testing.T) {
 	}
 }
 
-// The notification rail keeps its silence on restore, and this is a decision
-// rather than an oversight: the durable registry records no per-fire evidence
-// for a no-send watch, so a restart cannot tell "never matched" from "already
-// matched" — and the watcher is the owner session, which hears the target's own
-// job-stopped notification on this same restore.
-func TestRestartSendsNoWatchChannelNoticeForNoSendWatch(t *testing.T) {
+// A no-send callback watch is process-local. Restore cancels it and tells the
+// watcher through the standard system-notification route, while the target's
+// own job-stopped notification remains on the ordinary job-notification rail.
+func TestRestartSendsSystemNotificationForNoSendWatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
@@ -272,15 +276,15 @@ func TestRestartSendsNoWatchChannelNoticeForNoSendWatch(t *testing.T) {
 	var notified []jobNotification
 	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(n jobNotification) { notified = append(notified, n) })
 
-	if notices := watchChannelNotices(notified); len(notices) != 0 {
-		t.Errorf("watch-channel notices after restart = %+v, want none on the notification rail", notices)
+	if notices := watchChannelNotices(notified); len(notices) != 1 || notices[0].Reason != callbackWatchesCancelledAtRestartMessage {
+		t.Errorf("watch-channel notices after restart = %+v, want one callback-cancellation system notification", notices)
 	}
 	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 0 {
 		t.Errorf("pending watch sends = %+v, want none for a no-send watch", pending)
 	}
 	// The backstop the decision above leans on: the owner still learns its target
 	// died, so it is not left waiting in silence.
-	if len(notified) != 1 || notified[0].JobID != rec.JobID {
-		t.Fatalf("owner queue = %+v, want the target's job-stopped notification", notified)
+	if len(notified) != 2 || notified[0].JobID != rec.JobID {
+		t.Fatalf("owner queue = %+v, want the target's job-stopped notification and cancellation notice", notified)
 	}
 }

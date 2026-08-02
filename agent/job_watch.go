@@ -113,6 +113,8 @@ func watchLostAtRestartMessage(target string, status jobstore.Status) string {
 	)
 }
 
+const callbackWatchesCancelledAtRestartMessage = "<system-notification>All your callback watches were cancelled because the agent restarted. No further deliveries will occur. If you still want a callback, re-register it with the job_watch tool.</system-notification>"
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -2774,22 +2776,19 @@ func watchEverDelivered(cfg *watchConfig) bool {
 	return cfg != nil && (cfg.deliveries > 0 || cfg.nextUpdateSeq > 0)
 }
 
-// noticeUnrestoredWatchEnds is the restart-side half of the end-notice contract
-// completeExpiredJobWatchesLocked keeps on the live path: a watch that ends
-// without ever firing tells its watcher once, instead of ending in a silence the
-// watcher waits out. Here the watch died with the runtime, so there is no live
-// config to deliver from and only the durable registry to speak from, which
-// bounds what the notice can honestly cover:
+// noticeUnrestoredWatchEnds is the restart-side half of the watch teardown
+// contract completeExpiredJobWatchesLocked keeps on the live path. A no-send
+// callback watch is process-local, so restore cancels it and tells its receiver
+// through the durable steering queue. Send watches retain their separate
+// restart end-notice path below.
 //
-//   - The send rail only. A no-send watch notifies its owner session, and that
-//     session hears the target's own job-stopped notification on this same
-//     restore; the registry also records no per-fire evidence for that rail, so
-//     restore cannot tell a watch that already matched from one that never did
-//     and would risk telling it "condition never matched" untruthfully.
-//   - A recorded target only. The notice's whole content is what became of the
-//     target, and a target this log never recorded leaves nothing to say.
-//   - Never fired, proven durably: any watch-send frame ever persisted for this
-//     watch generation, settled or still pending, means it already spoke.
+// Callback cancellation is coalesced once per receiver session. A single notice
+// is enough to tell an agent that every callback closure from the lost runtime is
+// invalid, and avoids one startup reminder per watch.
+//
+// Send notices still require a recorded target and durable watch-send evidence:
+// any watch-send frame ever persisted for that generation, settled or pending,
+// means the watch already spoke.
 //
 // The target's state picks WHICH notice, and the two are different claims. A
 // terminal target gets watchEndedUnfiredMessage — the condition can never match
@@ -2805,6 +2804,9 @@ func watchEverDelivered(cfg *watchConfig) bool {
 func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if len(jm.watchesLostAtRestore) == 0 {
 		return nil
+	}
+	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil {
+		return err
 	}
 	recs, err := jm.store.Load()
 	if err != nil {
@@ -2849,6 +2851,45 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 		// Teardown, not a condition fire: no delivery count and no self-influence
 		// depth, for the reasons the live notice records.
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	}
+	return nil
+}
+
+func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
+	receivers := make(map[string]struct{})
+	for _, watch := range jm.watchesLostAtRestore {
+		if watch == nil || watch.SendTo != "" {
+			continue
+		}
+		receiver := strings.TrimSpace(watch.ReceiverSessionID)
+		if receiver == "" {
+			receiver = jm.sessionID
+		}
+		receivers[receiver] = struct{}{}
+	}
+	if len(receivers) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(receivers))
+	for receiver := range receivers {
+		ids = append(ids, receiver)
+	}
+	sort.Strings(ids)
+	for _, receiver := range ids {
+		if jm.notifySystem != nil {
+			if !jm.notifySystem(receiver, callbackWatchesCancelledAtRestartMessage) {
+				return fmt.Errorf("route callback cancellation notification to session %q: session unavailable", receiver)
+			}
+			continue
+		}
+		// Job-manager-only tests and legacy restore fixtures have no Session
+		// tree to route through. Keep their local notification behavior on the
+		// standard queue; production managers always install notifySystem.
+		if receiver != jm.sessionID || jm.enqueue == nil {
+			return fmt.Errorf("route callback cancellation notification to session %q: no system-notification route", receiver)
+		}
+		jm.enqueue(jobNotification{Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
 	return nil
 }

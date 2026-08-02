@@ -434,6 +434,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSteerDelivered = s.trySteerWithProvenanceAndNotify
+	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
 	if s.jobManager != nil {
 		subCfg.spawn.parentMarkCallerCallbackDelivered = s.jobManager.markWatchOriginCallerCallbackDelivered
 	}

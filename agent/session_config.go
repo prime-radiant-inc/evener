@@ -381,6 +381,10 @@ type spawnConfig struct {
 	// events.SteeringKind*.
 	parentSteerDelivered func(string, *provenance.Causal, string) bool
 
+	// parentSystemNotification routes a child-owned restart notice up the live
+	// session tree to the callback receiver.
+	parentSystemNotification func(receiverSessionID, message string) bool
+
 	// parentMarkCallerCallbackDelivered records that the current parent delegate
 	// job has already delivered a caller callback. Watch-origin delegate jobs use
 	// this to avoid a duplicate terminal owner notification after the callback.
