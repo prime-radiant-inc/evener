@@ -1154,9 +1154,12 @@ test("mobile: the shared shell follows the visible viewport while retaining a vh
   expect(shellRule).not.toBeNull();
 
   const fallback = shellRule![1]!.indexOf("height: 100vh");
-  const dynamic = shellRule![1]!.indexOf("height: 100dvh");
   expect(fallback).toBeGreaterThanOrEqual(0);
-  expect(dynamic).toBeGreaterThan(fallback);
+
+  const supportsBlock = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
+  expect(supportsBlock).not.toBeNull();
+  expect(supportsBlock![1]!).toContain(".shell {");
+  expect(supportsBlock![1]!).toContain("height: 100dvh");
 });
 
 // --- kata bbsv: a mobile deep link outlives the wait for the tree --------
