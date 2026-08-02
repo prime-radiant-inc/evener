@@ -530,12 +530,12 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 }
 
 func (jm *jobManager) createJobOutput() (string, string, *jobstore.OutputStore, error) {
+	records, err := jm.store.Load()
+	if err != nil {
+		return "", "", nil, err
+	}
 	for range jobIDAllocationAttempts {
 		jobID, err := jm.newJobID(jm.sessionID)
-		if err != nil {
-			return "", "", nil, err
-		}
-		records, err := jm.store.Load()
 		if err != nil {
 			return "", "", nil, err
 		}

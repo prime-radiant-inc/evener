@@ -120,155 +120,96 @@ func TestCreateOutputRefusesDanglingSidecarSymlinksWithoutChangingThem(t *testin
 	}
 }
 
-type createOutputSidecarRaceFS struct {
+type sameIDOutputCreateFS struct {
 	afero.Fs
-	outputPath  string
-	sidecarPath string
+	outputPath string
+	ready      chan<- struct{}
+	release    <-chan struct{}
 }
 
-func (fs *createOutputSidecarRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := fs.Fs.OpenFile(name, flag, perm)
-	if err == nil && name == fs.outputPath && flag&os.O_EXCL != 0 {
-		if writeErr := afero.WriteFile(fs.Fs, fs.sidecarPath, []byte("keep me\n"), 0o644); writeErr != nil {
-			_ = f.Close()
-			return nil, writeErr
-		}
+func (fs *sameIDOutputCreateFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if name == fs.outputPath {
+		fs.ready <- struct{}{}
+		<-fs.release
 	}
-	return f, err
+	return fs.Fs.OpenFile(name, flag, perm)
 }
 
-func (fs *createOutputSidecarRaceFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+func (fs *sameIDOutputCreateFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
 	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
 }
 
-func TestCreateOutputSecondCheckPreservesRacingSidecar(t *testing.T) {
-	const contents = "keep me\n"
-	disk := afero.NewOsFs()
+func TestCreateOutputSerializesSameIDAtExclusiveLogOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job.log")
-	sidecar := outputMetaPath(path) + ".tmp"
-	fs := &createOutputSidecarRaceFS{Fs: disk, outputPath: path, sidecarPath: sidecar}
-
-	output, err := createOutputFsWithSync(fs, path, 1024, true)
-	if output != nil {
-		_ = output.Close()
-		t.Fatal("createOutputFsWithSync returned an output store after a sidecar race")
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	fs := &sameIDOutputCreateFS{
+		Fs:         afero.NewOsFs(),
+		outputPath: path,
+		ready:      ready,
+		release:    release,
 	}
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("createOutputFsWithSync error = %v, want fs.ErrExist", err)
+	type result struct {
+		output *OutputStore
+		err    error
 	}
-	if _, err := disk.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("reserved output log remains: %v", err)
-	}
-	got, err := afero.ReadFile(disk, sidecar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != contents {
-		t.Fatalf("racing sidecar changed: %q", got)
-	}
-}
-
-type createOutputInitializationRaceFS struct {
-	afero.Fs
-	metaPath    string
-	racerPath   string
-	contents    []byte
-	writeErr    error
-	racerPlaced bool
-}
-
-func (fs *createOutputInitializationRaceFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	isMetadataCreation := name == fs.metaPath || name == fs.metaPath+".tmp"
-	if !fs.racerPlaced && isMetadataCreation && flag&os.O_CREATE != 0 {
-		fs.racerPlaced = true
-		if err := afero.WriteFile(fs.Fs, fs.racerPath, fs.contents, 0o644); err != nil {
-			return nil, err
-		}
-	}
-	f, err := fs.Fs.OpenFile(name, flag, perm)
-	if err != nil || fs.writeErr == nil || !isMetadataCreation {
-		return f, err
-	}
-	return &createOutputInitializationWriteErrorFile{File: f, err: fs.writeErr}, nil
-}
-
-func (fs *createOutputInitializationRaceFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
-	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
-}
-
-type createOutputInitializationWriteErrorFile struct {
-	afero.File
-	err error
-}
-
-func (f *createOutputInitializationWriteErrorFile) Write([]byte) (int, error) {
-	return 0, f.err
-}
-
-func TestCreateOutputPreservesSidecarsRacingInitialMetadata(t *testing.T) {
-	const contents = "keep me\n"
-	for _, artifact := range []struct {
-		name string
-		path func(string) string
-	}{
-		{name: "final metadata", path: outputMetaPath},
-		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
-		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
-		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
-	} {
-		t.Run(artifact.name, func(t *testing.T) {
-			disk := afero.NewOsFs()
-			path := filepath.Join(t.TempDir(), "job.log")
-			metaPath := outputMetaPath(path)
-			racerPath := artifact.path(path)
-			fs := &createOutputInitializationRaceFS{
-				Fs:        disk,
-				metaPath:  metaPath,
-				racerPath: racerPath,
-				contents:  []byte(contents),
-			}
-
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
 			output, err := createOutputFsWithSync(fs, path, 1024, true)
-			if output != nil {
-				_ = output.Close()
-				t.Fatal("createOutputFsWithSync returned an output store after a sidecar race")
+			results <- result{output: output, err: err}
+		}()
+	}
+	<-ready
+	<-ready
+	close(release)
+
+	successes := 0
+	collisions := 0
+	for range 2 {
+		got := <-results
+		switch {
+		case got.err == nil:
+			successes++
+			if got.output == nil {
+				t.Fatal("successful creation returned nil output")
 			}
-			if !errors.Is(err, os.ErrExist) {
-				t.Fatalf("createOutputFsWithSync error = %v, want fs.ErrExist", err)
+			if err := got.output.Close(); err != nil {
+				t.Fatalf("close output: %v", err)
 			}
-			got, readErr := afero.ReadFile(disk, racerPath)
-			if readErr != nil {
-				t.Fatalf("read racing sidecar: %v", readErr)
-			}
-			if string(got) != contents {
-				t.Fatalf("racing sidecar changed: %q", got)
-			}
-			if _, statErr := disk.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("reserved output log remains: %v", statErr)
-			}
-			if racerPath != metaPath {
-				if _, statErr := disk.Stat(metaPath); !errors.Is(statErr, os.ErrNotExist) {
-					t.Fatalf("owned initial metadata remains: %v", statErr)
-				}
-			}
-		})
+		case errors.Is(got.err, os.ErrExist):
+			collisions++
+		default:
+			t.Fatalf("same-ID creation error = %v, want fs.ErrExist", got.err)
+		}
+	}
+	if successes != 1 || collisions != 1 {
+		t.Fatalf("same-ID creations = %d successes/%d collisions, want 1/1", successes, collisions)
 	}
 }
 
-func TestCreateOutputInitializationFailurePreservesUnownedRacingArtifact(t *testing.T) {
-	const contents = "keep me\n"
-	want := errors.New("initial metadata write failed")
+type outputMetadataRenameErrorFS struct {
+	afero.Fs
+	metaPath string
+	err      error
+}
+
+func (fs *outputMetadataRenameErrorFS) Rename(oldname, newname string) error {
+	if newname == fs.metaPath {
+		return fs.err
+	}
+	return fs.Fs.Rename(oldname, newname)
+}
+
+func (fs *outputMetadataRenameErrorFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
+}
+
+func TestCreateOutputMetadataPersistenceFailureRemovesArtifacts(t *testing.T) {
+	want := errors.New("metadata rename failed")
 	disk := afero.NewOsFs()
 	path := filepath.Join(t.TempDir(), "job.log")
-	metaPath := outputMetaPath(path)
-	racerPath := outputPendingMetaPath(metaPath) + ".tmp"
-	fs := &createOutputInitializationRaceFS{
-		Fs:        disk,
-		metaPath:  metaPath,
-		racerPath: racerPath,
-		contents:  []byte(contents),
-		writeErr:  want,
-	}
+	fs := &outputMetadataRenameErrorFS{Fs: disk, metaPath: outputMetaPath(path), err: want}
 
 	output, err := createOutputFsWithSync(fs, path, 1024, true)
 	if output != nil {
@@ -278,16 +219,9 @@ func TestCreateOutputInitializationFailurePreservesUnownedRacingArtifact(t *test
 	if !errors.Is(err, want) {
 		t.Fatalf("createOutputFsWithSync error = %v, want %v", err, want)
 	}
-	got, readErr := afero.ReadFile(disk, racerPath)
-	if readErr != nil {
-		t.Fatalf("read unowned racing sidecar: %v", readErr)
-	}
-	if string(got) != contents {
-		t.Fatalf("unowned racing sidecar changed: %q", got)
-	}
-	for _, owned := range []string{path, metaPath, metaPath + ".tmp"} {
-		if _, statErr := disk.Stat(owned); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("owned creation artifact %q remains: %v", owned, statErr)
+	for _, artifact := range outputArtifactPaths(path) {
+		if _, statErr := os.Lstat(artifact); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("output artifact %q remains: %v", artifact, statErr)
 		}
 	}
 }

@@ -171,7 +171,7 @@ Expected: FAIL because output creation still uses create-or-append and jobManage
 
 - [ ] **Step 6: Implement collision-safe allocation at all three creation sites**
 
-Refactor the output opener around an internal flags parameter. OpenOutput keeps reopen semantics. CreateOutput must preserve fs.ErrExist through wrapping and treat any pre-existing path in RemoveOutputArtifacts' five-path set as a collision without overwriting it. Check the sidecars before reserving the log with O_CREATE|O_EXCL|O_RDWR|O_APPEND, check them again after reservation, and remove only artifacts that this CreateOutput call created if initialization or the second check fails. Add createOutput and newJobID fields to jobManager, populated by sync and no-sync constructors.
+Refactor the output opener around an internal flags parameter. OpenOutput keeps reopen semantics. CreateOutput must preserve fs.ErrExist through wrapping and treat any pre-existing path in RemoveOutputArtifacts' five-path set as a collision without overwriting it. Perform one genuine non-following preflight across all five names, then reserve the log with O_CREATE|O_EXCL|O_RDWR|O_APPEND as the same-ID serialization point, reuse normal metadata persistence, and remove the five-path set if initialization fails. Add createOutput and newJobID fields to jobManager, populated by sync and no-sync constructors.
 
 createJobOutput performs a small bounded retry for shell jobs whose ID has not escaped. For each candidate it checks the durable record map first, then calls exclusive CreateOutput on the derived path. It retries only record/artifact collisions; random-source, store, and ordinary filesystem errors return immediately. Exhaustion returns a named error.
 
