@@ -13,13 +13,21 @@ set -uo pipefail
 
 script="$(cd "$(dirname "$0")" && pwd)/fuzz-drive.sh"
 checks=0 fails=0
+selftest_root="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-selftest.XXXXXX")"
+cleanup() { rm -rf "$selftest_root"; }
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 ok() { checks=$((checks + 1)); printf '  ok: %s\n' "$1"; }
 bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; }
 
 # new_repo builds a throwaway git repo with fuzz-drive.sh, a 2-task corpus, and
-# the stub binaries; echoes its path. Each scenario gets a fresh one.
+# the stub binaries under the one root owned by this selftest; echoes its path.
+# The root trap covers normal completion and signal exits alike.
 new_repo() {
-	local r; r="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-test.XXXXXX")"
+	local r; r="$(mktemp -d "$selftest_root/scenario.XXXXXX")"
 	r="$(cd "$r" && pwd -P)"
 	mkdir -p "$r/scripts" "$r/fuzz/drive-tasks" "$r/bin"
 	cp "$script" "$r/scripts/fuzz-drive.sh"
@@ -57,6 +65,14 @@ cat >"\${SERF_STATE_DIR}/sessions/stub-\$api_n.api.jsonl" <<APILOG
 APILOG
 exit 0
 STUB
+	# timeout stub: records the duration and command, then runs it directly so
+	# the selftest never depends on GNU timeout being installed on the host.
+	cat >"$r/bin/timeout" <<STUB
+#!/usr/bin/env bash
+duration="\$1"; shift
+printf 'DURATION=%s COMMAND=%s\n' "\$duration" "\$1" >>"$r/timeout-invocations.log"
+exec "\$@"
+STUB
 	# harvest stub: records its args; writes a fake new seed so git sees a change.
 	cat >"$r/bin/harvest" <<STUB
 #!/usr/bin/env bash
@@ -72,17 +88,19 @@ STUB
 [ "\$1" = "pr" ] && echo "PR \$*" >>"$r/gh-invocations.log"
 echo "https://example/pr/1"; exit 0
 STUB
-	chmod +x "$r/bin/serf" "$r/bin/harvest" "$r/bin/gh"
+	chmod +x "$r/bin/serf" "$r/bin/timeout" "$r/bin/harvest" "$r/bin/gh"
 	echo "$r"
 }
 
 run_drive() { # repo, extra args...
 	local r="$1"; shift
+	PATH="/usr/bin:/bin" \
 	SERF_FUZZ_SERF_BIN="$r/bin/serf" \
 	SERF_FUZZ_HARVEST_BIN="$r/bin/harvest" \
 	SERF_FUZZ_GH="$r/bin/gh" \
+	SERF_FUZZ_DRIVE_TIMEOUT="$r/bin/timeout" \
 	SERF_FUZZ_DRIVE_SLEEP=true \
-		bash "$r/scripts/fuzz-drive.sh" "$@" >"$r/drive.out" 2>"$r/drive.err"
+		bash "$r/scripts/fuzz-drive.sh" --state-dir "$r/state" "$@" >"$r/drive.out" 2>"$r/drive.err"
 }
 
 echo "== scenario A: happy path (1 provider x 2 tasks, inspect-first) =="
@@ -95,6 +113,17 @@ grep -q 'RECORD=1 STATE=' "$r/serf-invocations.log" && ok "recording on (SERF_FU
 state_dir=$(sed -n 's/^fuzz-drive: state dir: //p' "$r/drive.err" | head -1)
 api_logs=("$state_dir"/sessions/*.api.jsonl)
 [ "${#api_logs[@]}" -eq 2 ] && ok "canonical per-session API attempts recorded" || bad "canonical API logs missing"
+if [ "$state_dir" = "$r/state" ]; then
+	ok "state dir stays under the scenario root"
+else
+	bad "state dir escaped the scenario root ($state_dir)"
+fi
+timeout_calls=0
+[ -f "$r/timeout-invocations.log" ] && timeout_calls="$(wc -l <"$r/timeout-invocations.log")"
+[ "$timeout_calls" -eq 2 ] && ok "portable timeout seam wrapped each run" || bad "timeout seam recorded $timeout_calls runs, want 2"
+timeout_durations=0
+[ -f "$r/timeout-invocations.log" ] && timeout_durations="$(grep -c '^DURATION=180s ' "$r/timeout-invocations.log" || :)"
+[ "$timeout_durations" -eq 2 ] && ok "timeout duration reached the injected seam" || bad "timeout duration was not forwarded"
 api_lines=0
 for api_log in "${api_logs[@]}"; do api_lines=$((api_lines + $(wc -l <"$api_log"))); done
 [ "$api_lines" -eq 4 ] && ok "one attempt and settlement per driven session" || bad "canonical API logs have $api_lines lines, want 4"
@@ -138,6 +167,11 @@ echo "== scenario F: --no-harvest drives but does not harvest =="
 r="$(new_repo)"
 run_drive "$r" --providers "openai/gpt-5.4-mini" --no-harvest
 [ ! -f "$r/harvest-invocations.log" ] && ok "--no-harvest skipped harvest" || bad "harvested despite --no-harvest"
+
+fixture_count="$(find "$selftest_root" -mindepth 1 -maxdepth 1 -type d -name 'scenario.*' | wc -l | tr -d ' ')"
+[ "$fixture_count" -eq 6 ] && ok "all scenarios stay under one tracked fixture root" || bad "found $fixture_count scenario roots outside the expected fixture set"
+cleanup
+[ ! -e "$selftest_root" ] && ok "the shared fixture root is removed at completion" || bad "the shared fixture root survived cleanup"
 
 echo
 echo "fuzz-drive-selftest: $checks checks, $fails failed"
