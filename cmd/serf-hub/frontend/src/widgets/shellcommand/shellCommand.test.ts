@@ -247,6 +247,7 @@ test("renders formatted shell lines, token kinds, and copies the raw command", a
   const { container } = render(createElement(ShellCommandBlock, { command }));
 
   expect(container.querySelector("code")?.textContent).toContain("\n");
+  expect(container.querySelector('[class*="language"]')).toBeNull();
   expect(container.querySelector('[data-shell-token-kind="command"]')).toBeTruthy();
   expect(container.querySelector('[data-shell-token-kind="operator"]')).toBeTruthy();
 
