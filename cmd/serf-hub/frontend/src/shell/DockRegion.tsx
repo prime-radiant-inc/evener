@@ -10,13 +10,14 @@
 // banner, the toasts and the command palette all stay up.
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { Button, EmptyState } from "../widgets";
-import { loadDockHost } from "./dockHostChunk";
+import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
 
 interface DockChunkBoundaryProps {
   // Swaps in a fresh lazy component to load the chunk again. The boundary
   // clears its own failure state alongside it - both halves are needed, and
   // neither is any use without the other.
   onRetry: () => void;
+  reloadAvailable: boolean;
   children: ReactNode;
 }
 
@@ -46,19 +47,29 @@ class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBound
         title="Couldn't load the workspace"
         hint={this.state.failure}
         action={
-          <Button size="sm" onClick={this.retry}>
-            Retry
-          </Button>
+          <span>
+            <Button size="sm" onClick={this.retry}>
+              Retry
+            </Button>
+            {this.props.reloadAvailable && isStaleDockHostChunkError(this.state.failure) && (
+              <>
+                {" "}
+                <Button size="sm" variant="quiet" onClick={() => window.location.reload()}>
+                  Reload page
+                </Button>
+              </>
+            )}
+          </span>
         }
       />
     );
   }
 }
 
-function lazyDockHost() {
+function lazyDockHost(cacheBust = false) {
   // DockHost is a named export, so the import() promise is adapted the same
   // way App.tsx's own DevHarnessRoute does for dev/DevHarness.tsx.
-  return lazy(() => loadDockHost().then((m) => ({ default: m.DockHost })));
+  return lazy(() => loadDockHost(cacheBust).then((m) => ({ default: m.DockHost })));
 }
 
 // A lazy() component carries a call signature, so useState would otherwise
@@ -87,10 +98,14 @@ export function DockRegion() {
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
   const [Host, setHost] = useState<DockHostChunk>(dockHost);
-  const retry = () => setHost(() => lazyDockHost());
+  const [retryCount, setRetryCount] = useState(0);
+  const retry = () => {
+    setRetryCount((count) => count + 1);
+    setHost(() => lazyDockHost(true));
+  };
 
   return (
-    <DockChunkBoundary onRetry={retry}>
+    <DockChunkBoundary onRetry={retry} reloadAvailable={retryCount > 0}>
       <Suspense
         fallback={
           <EmptyState
