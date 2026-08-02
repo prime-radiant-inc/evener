@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -127,78 +126,6 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 					t.Fatalf("worktree notification missing %q: %q", want, block)
 				}
 			}
-		}
-	})
-}
-
-type sndWindowProgram struct {
-	head, tail jobReadOutputSnapshot
-	headErr    error
-	tailErr    error
-	calls      []bool
-}
-
-func (p *sndWindowProgram) read(_ int, fromHead bool) (jobReadOutputSnapshot, error) {
-	p.calls = append(p.calls, fromHead)
-	if fromHead {
-		return p.head, p.headErr
-	}
-	return p.tail, p.tailErr
-}
-
-// FuzzShellDigestReadProgram covers the one-read and two-read digest state
-// machine, including both external read failures and overlapping line windows.
-func FuzzShellDigestReadProgram(f *testing.F) {
-	f.Add(uint8(0), "one line", "", uint8(5), uint8(5))
-	f.Add(uint8(1), "a\nb\nc\nd\n", "", uint8(1), uint8(1))
-	f.Add(uint8(2), "head-a\nhead-b\n", "tail-a\ntail-b\n", uint8(1), uint8(1))
-	f.Add(uint8(3), "head\n", "tail\n", uint8(0), uint8(0))
-
-	f.Fuzz(func(t *testing.T, mode uint8, head, tail string, headN, tailN uint8) {
-		if len(head) > 4096 {
-			head = head[:4096]
-		}
-		if len(tail) > 4096 {
-			tail = tail[:4096]
-		}
-		p := &sndWindowProgram{
-			head: jobReadOutputSnapshot{Content: head, TotalBytes: int64(len(head))},
-			tail: jobReadOutputSnapshot{Content: tail, TotalBytes: int64(len(head) + len(tail)), DroppedBytes: int64(mode >> 5)},
-		}
-		switch mode % 4 {
-		case 1:
-			// Whole retained output; line counts decide overlap versus digest.
-		case 2:
-			p.head.Truncated = true
-		case 3:
-			p.head.Truncated = true
-			p.tailErr = errors.New("scripted tail read")
-		default:
-			if mode&0x10 != 0 {
-				p.headErr = errors.New("scripted head read")
-			}
-		}
-		got, err := readJobOutputDigest(p.read, int(headN%8), int(tailN%8))
-		if p.headErr != nil || p.tailErr != nil {
-			if err == nil {
-				t.Fatal("scripted read failure was swallowed")
-			}
-			return
-		}
-		if err != nil {
-			t.Fatalf("readJobOutputDigest: %v", err)
-		}
-		if !utf8.ValidString(head) || !utf8.ValidString(tail) {
-			return
-		}
-		if !utf8.ValidString(got.Content) {
-			t.Fatalf("digest invalid UTF-8: %q", got.Content)
-		}
-		if len(p.calls) < 1 || !p.calls[0] {
-			t.Fatalf("first read was not head: %v", p.calls)
-		}
-		if p.head.Truncated && len(p.calls) != 2 {
-			t.Fatalf("truncated head reads = %v, want head+tail", p.calls)
 		}
 	})
 }

@@ -67,7 +67,7 @@ func FuzzJobDelegateSeed100Edges(f *testing.F) {
 			s := newTestSession(t)
 			child := newTestSession(t)
 			sub := w3dlg_attachSub(child)
-			run, err := s.attachDelegateJobWithRestore(s.jobManager, child.ID(), "seed attach restore", sub, jobstore.NewJobID(), nil, false, nil, nil)
+			run, err := s.attachDelegateJobWithRestore(s.jobManager, child.ID(), "seed attach restore", sub, jobstore.NewJobID(s.ID()), nil, false, nil, nil)
 			jd100CloseRun(t, s, run, err)
 		case 9:
 			s := newTestSession(t)
@@ -102,7 +102,7 @@ func FuzzJobDelegateSeed100Edges(f *testing.F) {
 
 func jd100Run(t *testing.T, jm *jobManager) *runningJob {
 	t.Helper()
-	run := &runningJob{rec: &jobstore.JobRecord{JobID: jobstore.NewJobID(), DelegateID: "dlg_seed", Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted}, done: make(chan struct{})}
+	run := &runningJob{rec: &jobstore.JobRecord{JobID: jobstore.NewJobID(jm.sessionID), DelegateID: "dlg_seed", Type: jobstore.JobDelegate, Status: jobstore.StatusCompleted}, done: make(chan struct{})}
 	output, err := jm.openOutput(filepath.Join(jm.dir, "jobs", run.rec.JobID+".log"), maxJobOutputRetentionBytes)
 	if err != nil {
 		t.Fatal(err)

@@ -140,22 +140,6 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 		t.Fatalf("job_list job = %+v, want running shell projection for %s", job, shellOut.JobID)
 	}
 
-	readOut := waitForJobOutput(t, s, shellOut.JobID, "ready-line")
-	if readOut.JobID != shellOut.JobID ||
-		readOut.Type != string(jobstore.JobShell) ||
-		readOut.Status != string(jobstore.StatusRunning) ||
-		readOut.Reason != nil ||
-		!strings.Contains(readOut.Content, "ready-line") ||
-		readOut.TotalBytes == 0 ||
-		readOut.Truncated ||
-		readOut.ExitCode != nil ||
-		readOut.Grep != "ready" ||
-		len(readOut.Matches) != 1 ||
-		!strings.Contains(readOut.Matches[0].Line, "ready-line") ||
-		readOut.Matches[0].ByteOffset == nil {
-		t.Fatalf("job_read_output = %+v, want running shell output with grep match", readOut)
-	}
-
 	stopRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "stop",
 		Name:      "job_stop",
@@ -1157,11 +1141,7 @@ func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 }
 
 // TestMaxWaitMSDecoders covers spec §2's decode table for delegate,
-// delegate_send, job_read_output, and job_stop: negative max_wait_ms must
-// return invalid_request; 0/absent must succeed with unset behavior.
-
-// TestMaxWaitMSDecoders covers spec §2's decode table for delegate,
-// delegate_send, job_read_output, and job_stop: negative max_wait_ms must
+// delegate_send, and job_stop: negative max_wait_ms must
 // return invalid_request; 0/absent must succeed with unset behavior.
 func TestMaxWaitMSDecoders(t *testing.T) {
 	t.Parallel()
@@ -1249,44 +1229,6 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 		}
 	})
 
-	t.Run("job_read_output_negative", func(t *testing.T) {
-		t.Parallel()
-		s := newTestSession(t)
-		// Use internal API to create a running job (avoids shell decoder chicken-and-egg).
-		rec := newManualRunningJob(t, s)
-		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-			ID: "read",
-
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":-1}`, rec.JobID)),
-		})
-		if !res.IsError {
-			t.Fatalf("job_read_output with max_wait_ms=-1: want error, got success: %s", res.Output)
-		}
-		if !strings.Contains(res.Output, wantNegErr) {
-			t.Fatalf("job_read_output error = %q, want %q", res.Output, wantNegErr)
-		}
-	})
-
-	t.Run("job_read_output_zero_is_snapshot", func(t *testing.T) {
-		t.Parallel()
-		s := newTestSession(t)
-		// Use internal API to create a running job.
-		rec := newManualRunningJob(t, s)
-		// max_wait_ms=0: snapshot now (should not block).
-		started := time.Now()
-		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-			ID: "read",
-
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":0}`, rec.JobID)),
-		})
-		if res.IsError {
-			t.Fatalf("job_read_output with max_wait_ms=0: %s", res.Output)
-		}
-		if elapsed := time.Since(started); elapsed > 2*time.Second {
-			t.Fatalf("job_read_output with max_wait_ms=0 blocked for %s, want immediate snapshot", elapsed)
-		}
-	})
-
 	t.Run("job_stop_negative", func(t *testing.T) {
 		t.Parallel()
 		s := newTestSession(t)
@@ -1322,37 +1264,6 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 			t.Fatalf("job_stop with max_wait_ms=0 blocked for %s, want return immediately", elapsed)
 		}
 	})
-}
-
-// TestGrantedReadBlockUnsupportedErrReword verifies that the production code
-// path — a job_read_output call with max_wait_ms>0 against a watch-granted
-// cross-session job — emits grantedReadBlockUnsupportedErr (spec §3). A
-// mutation that replaces errors.New(grantedReadBlockUnsupportedErr) with a
-// different message escapes a constant-equality check but is caught here
-// because the actual error returned by jobReadOutputTool is asserted.
-func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	// Inject a parentGrantedJobRead that grants one specific job_id. The job
-	// does not exist in the local store, so nestedOrLocalJobManager fails and
-	// the granted path is reached.
-	const grantedID = "job_fakeForCrossSessionRead"
-	s.cfg.spawn.parentGrantedJobRead = func(_ string, jobID string) (*grantedJobRead, bool) {
-		if jobID != grantedID {
-			return nil, false
-		}
-		return &grantedJobRead{record: &jobstore.JobRecord{JobID: jobID}}, true
-	}
-	_, err := jobReadOutputTool(context.Background(), s, map[string]any{
-		"job_id":      grantedID,
-		"max_wait_ms": float64(1000),
-	}, jobToolResultDefaultMaxChar)
-	if err == nil {
-		t.Fatal("jobReadOutputTool with max_wait_ms on cross-session read succeeded, want error")
-	}
-	if !strings.Contains(err.Error(), grantedReadBlockUnsupportedErr) {
-		t.Fatalf("error = %q, want it to contain grantedReadBlockUnsupportedErr", err.Error())
-	}
 }
 
 // TestJobReadOutputHeadBytesReadsFromStart verifies that head_lines reads from
@@ -1614,9 +1525,5 @@ func TestJobToolRequiredArgErrorsCarryInvalidRequestPrefix(t *testing.T) {
 	if _, err := jobStopTool(context.Background(), s, map[string]any{"job_id": ""}, 1<<20); err == nil ||
 		!strings.HasPrefix(err.Error(), "invalid_request:") {
 		t.Fatalf("stop empty job_id error = %v, want invalid_request: prefix", err)
-	}
-	if _, err := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": ""}, 1<<20); err == nil ||
-		!strings.HasPrefix(err.Error(), "invalid_request:") {
-		t.Fatalf("read empty job_id error = %v, want invalid_request: prefix", err)
 	}
 }

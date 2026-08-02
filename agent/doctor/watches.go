@@ -33,7 +33,7 @@ type WatchView struct {
 	// Receiver identity: WHO this watch reports to. A cross-session receiver watch
 	// installs on the OWNER's manager, so owner and visible both name the owner and
 	// neither answers "who is watching" — the question an operator asks first when a
-	// watch's read grant or delivery is missing. Empty means the owner watches for
+	// watch's receiver link or delivery is missing. Empty means the owner watches for
 	// itself, or the row predates the registry carrying the field.
 	ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
 	ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`

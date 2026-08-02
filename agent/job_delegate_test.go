@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -43,7 +44,7 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 func newLeanDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
-	sessionID := ulid.Make().String()
+	sessionID := identifier.MustNewSessionID()
 	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
@@ -63,7 +64,7 @@ func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRec
 	childID, childWorkDir := seedRetainedChildSessionWithWorkingDir(t, s)
 	delegateID := jobstore.NewDelegateID()
 	generation := jobstore.NewDelegateGeneration()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(s.ID())
 	now := time.Now().UTC()
 	ref := encodeRef("", childID)
 	desc := &jobstore.DelegateRestoreDescriptor{

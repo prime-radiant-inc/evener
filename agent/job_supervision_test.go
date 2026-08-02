@@ -310,7 +310,7 @@ func TestSubagentTurnReportsAwaitingModelAndToolRunning(t *testing.T) {
 	clk := newMutableClock(time.Unix(7200, 0).UTC())
 	parent.jobManager.now = clk.now
 
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(parent.ID())
 	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
 	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
@@ -453,42 +453,6 @@ func TestJobListDelegateLastActivitySeededAtStart(t *testing.T) {
 	}
 	if *entry.LastActivity != entry.StartedAt {
 		t.Fatalf("delegate last_activity = %q, want StartedAt %q", *entry.LastActivity, entry.StartedAt)
-	}
-}
-
-// TestJobReadOutputCarriesLastActivity proves job_read_output results carry
-// last_activity for a running job.
-func TestJobReadOutputCarriesLastActivity(t *testing.T) {
-	t.Parallel()
-	s := newTestSession(t)
-	jm := s.jobManager
-	clk := newMutableClock(time.Unix(3000, 0).UTC())
-	jm.now = clk.now
-
-	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
-	if err != nil {
-		t.Fatalf("createShell: %v", err)
-	}
-	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-
-	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-		ID: "read",
-
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, rec.JobID)),
-	})
-	if res.IsError {
-		t.Fatalf("job_read_output returned error: %s", res.Output)
-	}
-	var out jobReadOutputTestResult
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-	}
-	if out.LastActivity == nil {
-		t.Fatalf("job_read_output result missing last_activity: %s", res.Output)
-	}
-	want := clk.now().Format(time.RFC3339Nano)
-	if *out.LastActivity != want {
-		t.Fatalf("read_output last_activity = %q, want %q", *out.LastActivity, want)
 	}
 }
 

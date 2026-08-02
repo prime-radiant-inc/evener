@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -418,102 +416,6 @@ func TestProgressTickDeliversSameWatchProvenanceClassified(t *testing.T) {
 	}
 }
 
-func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	shellA, err := jm.createShell(createShellOpts{Command: "a"})
-	if err != nil {
-		t.Fatalf("create shellA: %v", err)
-	}
-	shellB, err := jm.createShell(createShellOpts{Command: "b"})
-	if err != nil {
-		t.Fatalf("create shellB: %v", err)
-	}
-
-	// Session-target watch with a delegate send target: the concrete watched
-	// job is unknown until a fire, so creation mints nothing.
-	if _, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure session-target watch: %v", err)
-	}
-	// Notify-only watch: no observer, no grant.
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      shellA.JobID,
-		OutputMatch: "ready",
-	}); err != nil {
-		t.Fatalf("configure notify-only watch: %v", err)
-	}
-	// Caller delivery: the caller reads through its own tools, never a grant.
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      shellB.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure caller watch: %v", err)
-	}
-
-	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after creates = %+v, want none", grants)
-	}
-}
-
-func TestWatchWildcardSendFireMintsGrantForResolvedWatchedJob(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	if got := countWatchReadGrantEvents(t, jm); got != 0 {
-		t.Fatalf("grant events before fire = %d, want 0", got)
-	}
-
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
-
-	grants := loadGrantTable(t, jm)
-	if !grants["child_job_obs"]["job_trigger_one"] {
-		t.Fatalf("grants after fire = %+v, want child_job_obs -> job_trigger_one", grants)
-	}
-}
-
-func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
-
-	if got := countWatchReadGrantEvents(t, jm); got != 1 {
-		t.Fatalf("grant events after repeat fire = %d, want 1 (per-config dedup)", got)
-	}
-	grants := loadGrantTable(t, jm)
-	if !grants["child_job_obs"]["job_trigger_one"] {
-		t.Fatalf("grants after repeat fire = %+v, want child_job_obs -> job_trigger_one", grants)
-	}
-
-	// A different watched job is a new (observer, job) pair: it mints its own.
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
-	if got := countWatchReadGrantEvents(t, jm); got != 2 {
-		t.Fatalf("grant events after second pair = %d, want 2", got)
-	}
-}
-
 func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -526,9 +428,6 @@ func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
 
-	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after rejected watched alias = %+v, want none", grants)
-	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("rejected watched alias recorded pending: %+v", pending)
 	}
@@ -550,327 +449,15 @@ func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("rejected watched alias recorded pending: %+v", pending)
 	}
-	if got := countWatchReadGrantEvents(t, jm); got != 0 {
-		t.Fatalf("grant events after rejected watched alias = %d, want 0", got)
-	}
 	if len(notified) != 0 {
 		t.Fatalf("rejected watched alias emitted diagnostics: %+v", notified)
 	}
 }
 
-// TestTerminalCatchupSendMintsNoReadGrant pins the structural half of spec
-// §5.1: a read grant is derived from the delivered event payload, and an
-// output_match catch-up fire carries no payload at all (its root
-// events.SessionEvent has nil Data). So the catch-up delivers its frame and
-// grants nothing, even though its target happens to be terminal. Only a
-// job.notification payload names a job, which is what makes "the grant names a
-// finished job" true by construction rather than by convention.
-func TestTerminalCatchupSendMintsNoReadGrant(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	jobID := terminalShellWithOutput(t, jm, "server ready\n")
-
-	res, err := jm.configureWatch(watchArgs{
-		Target:      jobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	})
-	if err != nil {
-		t.Fatalf("configureWatch terminal catch-up send: %v", err)
-	}
-	if !res.Fired || !res.TerminalCatchup {
-		t.Fatalf("result = %+v, want fired+terminal_catchup", res)
-	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("catch-up pending sends = %d, want 1 (the grant assertion below needs a real delivery)", len(pending))
-	}
-
-	if got := countWatchReadGrantEvents(t, jm); got != 0 {
-		t.Fatalf("grant events after catch-up = %d, want 0 (no job.notification payload)", got)
-	}
-}
-
-func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	var notified []jobNotification
-	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
-	if _, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	realAppend := jm.appendEvent
-	grantErr := errors.New("grant append failed")
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchReadGrant {
-			return grantErr
-		}
-		return realAppend(e)
-	}
-
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
-
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("pending after grant failure = %d, want 1 (delivery > grant)", len(pending))
-	}
-	var grantDiagnostics int
-	for _, n := range notified {
-		if strings.Contains(n.Reason, "watch read grant failed") {
-			grantDiagnostics++
-			if !strings.Contains(n.Reason, grantErr.Error()) {
-				t.Fatalf("diagnostic reason = %q, want underlying append error", n.Reason)
-			}
-		}
-	}
-	if grantDiagnostics != 1 {
-		t.Fatalf("grant diagnostics = %d, want 1: %+v", grantDiagnostics, notified)
-	}
-	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after failed fire mint = %+v, want none", grants)
-	}
-
-	// A failed mint must not poison the dedup set: once the store recovers,
-	// the next fire for the same pair mints the grant.
-	jm.appendEvent = realAppend
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
-	if !loadGrantTable(t, jm)["child_job_obs"]["job_trigger_one"] {
-		t.Fatal("grant not re-minted after append recovered")
-	}
-}
-
-// TestGrantedReadServesWatchedJobCrossStore is the spec §5.1 consumption
-// direction: the observer delegate's job_read_output cannot resolve the
-// watched job locally (it lives in the parent's store), so the read resolves
-// through the parent-injected grant lookup — content, status, and grep all
-// round-trip.
-func TestGrantedReadServesWatchedJobCrossStore(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-
-	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "tail_lines": 65536})
-	if err != nil {
-		t.Fatalf("granted read: %v", err)
-	}
-	if out.JobID != fx.watched || out.Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("granted read = %+v, want completed record for %s", out, fx.watched)
-	}
-	if out.Reason == nil || *out.Reason != "exit_zero" {
-		t.Fatalf("reason = %v, want exit_zero", out.Reason)
-	}
-	if out.Content != grantReadWatchedOutput {
-		t.Fatalf("content = %q, want %q", out.Content, grantReadWatchedOutput)
-	}
-	if out.TotalBytes != int64(len(grantReadWatchedOutput)) {
-		t.Fatalf("total_bytes = %d, want %d", out.TotalBytes, len(grantReadWatchedOutput))
-	}
-	if out.ExitCode == nil || *out.ExitCode != 0 {
-		t.Fatalf("exit_code = %v, want 0", out.ExitCode)
-	}
-
-	grepped, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "grep": "ready"})
-	if err != nil {
-		t.Fatalf("granted grep read: %v", err)
-	}
-	if grepped.Grep != "ready" {
-		t.Fatalf("grep echo = %q, want ready", grepped.Grep)
-	}
-	if len(grepped.Matches) != 1 || !strings.Contains(grepped.Matches[0].Line, "bravo ready") {
-		t.Fatalf("grep matches = %+v, want one 'bravo ready' match", grepped.Matches)
-	}
-	if grepped.Matches[0].ByteOffset == nil {
-		t.Fatalf("grep match byte_offset missing: %+v", grepped.Matches[0])
-	}
-}
-
-// TestNonGrantedReadPreservesTargetNotFound pins the miss path on both axes:
-// a granted observer reading an UNGRANTED parent job, and an ungranted child
-// session reading the granted watched job. Both keep the original
-// target_not_found error instead of leaking the parent store.
-func TestNonGrantedReadPreservesTargetNotFound(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-	ungranted, err := fx.parentJM.createShell(createShellOpts{Command: "other"})
-	if err != nil {
-		t.Fatalf("create ungranted job: %v", err)
-	}
-
-	if _, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": ungranted.JobID}); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("ungranted job read error = %v, want original not-found", err)
-	}
-
-	strangerJM, err := newJobManager(t.TempDir(), "child_job_other", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new stranger jobManager: %v", err)
-	}
-	t.Cleanup(func() { _ = strangerJM.store.Close() })
-	stranger := &Session{id: "child_job_other", jobManager: strangerJM}
-	stranger.cfg.spawn.parentGrantedJobRead = fx.parent.lookupGrantedJobRead
-
-	if _, err := observerReadOutput(t, stranger, map[string]any{"job_id": fx.watched}); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("stranger read error = %v, want original not-found", err)
-	}
-}
-
-// TestGrantSurvivesObserverResumeUnderNewJobID is the canonical fire ->
-// resume -> read flow the session-id grant keying exists for: frame delivery
-// to an idle observer resumes it under a NEW delegate job id, and the read
-// must still resolve. The real resume path (resumeOrFindRunningDelegate ->
-// attachDelegateJobFromWatch -> relinkDelegateChildToJob) needs a live
-// subagent runtime, so this reproduces its store-visible effects: the old
-// observer job goes terminal, a fresh job id starts for the SAME child
-// session (same transcript ref), and the child is relinked to the new job.
-func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-	ended := fx.parentJM.now().Add(time.Second)
-	if err := fx.parentJM.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          ended,
-		JobID:       "job_obs",
-		Status:      jobstore.StatusCompleted,
-		Reason:      "exit_zero",
-		EndedAt:     &ended,
-		TerminalGen: "term_job_obs",
-	}); err != nil {
-		t.Fatalf("finish observer job: %v", err)
-	}
-	if err := fx.parentJM.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               ended,
-		JobID:            "job_obs_resumed",
-		Type:             jobstore.JobDelegate,
-		OwnerSessionID:   "PARENT",
-		VisibleToSession: "PARENT",
-		TranscriptRef:    encodeRef("", "child_job_obs"),
-		StartedAt:        &ended,
-	}); err != nil {
-		t.Fatalf("start resumed observer job: %v", err)
-	}
-	relinkDelegateChildToJob(fx.observer, "job_obs_resumed")
-
-	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched})
-	if err != nil {
-		t.Fatalf("granted read after resume: %v", err)
-	}
-	if out.JobID != fx.watched || out.Status != string(jobstore.StatusCompleted) || !strings.Contains(out.Content, "bravo ready") {
-		t.Fatalf("read after resume = %+v, want watched job content", out)
-	}
-}
-
-// TestGrantSurvivesWatchClearAndStoreReopen pins the durable half of spec
-// §5.1: the grant is an append-only capability — clearing the watch does not
-// revoke it, and a parent store reopen refolds it from jobs.jsonl. The
-// re-wired seam mirrors restart, where delegate restore re-injects the lookup
-// from the rebuilt parent session.
-func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
-	t.Parallel()
-	parentStateDir := t.TempDir()
-	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new parent jobManager: %v", err)
-	}
-	observerJM, err := newJobManager(t.TempDir(), "child_job_obs", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new observer jobManager: %v", err)
-	}
-	t.Cleanup(func() { _ = observerJM.store.Close() })
-
-	seedCommonWatchSendTargets(t, parentJM)
-	watched, err := parentJM.createShell(createShellOpts{Command: "server"})
-	if err != nil {
-		t.Fatalf("create watched job: %v", err)
-	}
-	watchRes, err := parentJM.configureWatch(parentSourceWatchArgs("child_job_obs", "dlg_obs", "job.notification"))
-	if err != nil {
-		t.Fatalf("configure parent-source watch: %v", err)
-	}
-	if _, err := parentJM.appendJobOutput(watched.JobID, parentJM.running[watched.JobID].output, []byte(grantReadWatchedOutput)); err != nil {
-		t.Fatalf("append watched output: %v", err)
-	}
-	code := 0
-	if err := parentJM.finalize(watched.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize watched job: %v", err)
-	}
-	onSessionEventKD(parentJM, events.EventJobFinished, events.JobFinishedData{
-		JobID: watched.JobID, JobType: "shell", Status: string(jobstore.StatusCompleted), Reason: "exit_zero",
-	})
-	if _, err := parentJM.clearWatchByID(watchRes.WatchID); err != nil {
-		t.Fatalf("clear parent-source watch: %v", err)
-	}
-	if err := parentJM.store.Close(); err != nil {
-		t.Fatalf("close parent store: %v", err)
-	}
-
-	reopenedJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("reopen parent jobManager: %v", err)
-	}
-	t.Cleanup(func() { _ = reopenedJM.store.Close() })
-	grants, err := reopenedJM.store.LoadGrants()
-	if err != nil {
-		t.Fatalf("load grants after reopen: %v", err)
-	}
-	if !grants["child_job_obs"][watched.JobID] {
-		t.Fatalf("grants after clear+reopen = %+v, want child_job_obs -> %s", grants, watched.JobID)
-	}
-
-	reopenedParent := &Session{id: "PARENT", jobManager: reopenedJM, subagents: newSubagentManager(nil, 0)}
-	observer := &Session{id: "child_job_obs", jobManager: observerJM}
-	observer.cfg.spawn.parentGrantedJobRead = reopenedParent.lookupGrantedJobRead
-
-	out, err := observerReadOutput(t, observer, map[string]any{"job_id": watched.JobID})
-	if err != nil {
-		t.Fatalf("granted read after clear+reopen: %v", err)
-	}
-	if out.Status != string(jobstore.StatusCompleted) || out.Content != grantReadWatchedOutput {
-		t.Fatalf("read after clear+reopen = %+v, want full watched output", out)
-	}
-}
-
-// TestGrantedReadAfterParentClosedPreservesTargetNotFound: a closed parent
-// store makes the grant lookup unanswerable; the observer's read degrades to
-// its original target_not_found instead of surfacing a parent-side failure or
-// panicking.
-func TestGrantedReadAfterParentClosedPreservesTargetNotFound(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-	if err := fx.parentJM.close(); err != nil {
-		t.Fatalf("close parent job manager: %v", err)
-	}
-
-	_, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched})
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("read after parent close error = %v, want original not-found", err)
-	}
-}
-
-// TestGrantedReadRejectsBlock pins the decision that granted cross-session
-// reads are snapshot-only: max_wait_ms>0 fails loudly instead of silently
-// degrading to a snapshot.
-func TestGrantedReadRejectsBlock(t *testing.T) {
-	t.Parallel()
-	fx := newGrantReadFixture(t)
-
-	for name, args := range map[string]map[string]any{
-		"wait":      {"job_id": fx.watched, "max_wait_ms": 1000},
-		"wait+grep": {"job_id": fx.watched, "max_wait_ms": 1000, "grep": "ready"},
-	} {
-		_, err := observerReadOutput(t, fx.observer, args)
-		if err == nil || err.Error() != grantedReadBlockUnsupportedErr {
-			t.Fatalf("%s error = %v, want %q", name, err, grantedReadBlockUnsupportedErr)
-		}
-	}
-}
-
 func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	childJM := newWalkJobManager(t, "CHILD")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	childJM := newWalkJobManager(t, testChildSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = childJM.store.Close()
@@ -885,9 +472,9 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, childJM, childRec.JobID) })
 
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+	child := &Session{id: testChildSessionID, jobManager: childJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testChildSessionID, sess: child, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
 		"operation":    "create",
@@ -1019,9 +606,9 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 
 func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	t.Parallel()
-	rootJM := newWalkJobManager(t, "ROOT")
-	coordJM := newWalkJobManager(t, "COORD")
-	workerJM := newWalkJobManager(t, "WORK")
+	rootJM := newWalkJobManager(t, testRootSessionID)
+	coordJM := newWalkJobManager(t, testCoordinatorSessionID)
+	workerJM := newWalkJobManager(t, testWorkerSessionID)
 	t.Cleanup(func() {
 		_ = rootJM.store.Close()
 		_ = coordJM.store.Close()
@@ -1039,11 +626,11 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
-	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
-	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	worker := &Session{id: testWorkerSessionID, jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: testCoordinatorSessionID, jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	coordinator.subagents.track(&subagent{id: testWorkerSessionID, sess: worker, status: SubagentRunning})
+	root := &Session{id: testRootSessionID, jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
+	root.subagents.track(&subagent{id: testCoordinatorSessionID, sess: coordinator, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
 		"operation":    "create",

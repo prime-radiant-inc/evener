@@ -106,7 +106,7 @@ func TestDispose_ForwardedRecord_Refused(t *testing.T) {
 	// forwarded descendant copy). No disk lane is needed: ownership is checked
 	// before any lane inspection.
 	id := jobstore.NewDelegateID()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(r.s.ID())
 	now := time.Now().UTC()
 	desc := &jobstore.DelegateRestoreDescriptor{
 		Version:         1,

@@ -83,6 +83,16 @@ test("summary: a job log read says it read a job's output, not a conversation", 
   expect(d.summary(call({ transcript_ref: "job:01KJOB" }, JOB_ENVELOPE))).toBe("Read job log 01KJOB");
 });
 
+test("summary: same-owner job reads retain their complete distinct suffixes", () => {
+  const d = toolRendererFor("read_transcript");
+  const owner = "02wMz5TxvEMoJEDTDGOTil";
+  const first = d.summary(call({ transcript_ref: `job:job_${owner}_000000000001` }));
+  const second = d.summary(call({ transcript_ref: `job:job_${owner}_000000000002` }));
+  expect(first).toContain("000000000001");
+  expect(second).toContain("000000000002");
+  expect(first).not.toBe(second);
+});
+
 test("summary: an expand_turn read names the turn it expanded", () => {
   const d = toolRendererFor("read_transcript");
   const envelope = {

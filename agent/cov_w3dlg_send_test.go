@@ -116,7 +116,7 @@ func TestW3Dlg_SendStoreRunningNotInRuntimeStaysNonResumable(t *testing.T) {
 	childID, _ := seedRetainedChildSessionWithWorkingDir(t, sess)
 	delegateID := jobstore.NewDelegateID()
 	generation := jobstore.NewDelegateGeneration()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(sess.ID())
 	now := time.Now().UTC()
 	ref := encodeRef("", childID)
 	if err := sess.jobManager.appendEvent(jobstore.Event{

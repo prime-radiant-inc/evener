@@ -36,6 +36,20 @@ test("job_status: falls back to the job_id arg with no status suffix when output
   expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output: "" }))).toBe("Checked job_43");
 });
 
+test("job controls keep same-owner job suffixes distinct in summaries", () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil";
+  const first = `job_${owner}_000000000001`;
+  const second = `job_${owner}_000000000002`;
+  for (const toolName of ["job_status", "job_stop"] as const) {
+    const d = toolRendererFor(toolName);
+    const summary = (jobID: string) =>
+      d.summary(item({ toolName, argumentsJSON: JSON.stringify({ job_id: jobID }), output: "" }));
+    expect(summary(first)).toContain("000000000001");
+    expect(summary(second)).toContain("000000000002");
+    expect(summary(first)).not.toBe(summary(second));
+  }
+});
+
 test("job_status: body shows the raw JSON output text", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;

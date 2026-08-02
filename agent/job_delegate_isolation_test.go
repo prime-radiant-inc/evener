@@ -326,6 +326,10 @@ func TestDelegateIsolation_TreeAtCapacityAfterWorktreeCreateRollsBackLane(t *tes
 	if res.DelegateID == "" {
 		t.Fatal("createDelegate did not report the delegate_id it minted before failing")
 	}
+	if res.JobID == "" {
+		t.Fatal("createDelegate did not report the job_id bound before preparation")
+	}
+	requireNoOutputArtifacts(t, filepath.Join(r.s.jobManager.dir, "jobs", res.JobID+".log"))
 	lane := r.lanePath(t, res.DelegateID)
 	if _, err := os.Stat(lane); !os.IsNotExist(err) {
 		t.Fatalf("stat lane after rollback = (%v), want it removed", err)
@@ -387,6 +391,55 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 	}
 	if _, err := worktree.ReadSidecar(r.metaDir(t), res.DelegateID); err == nil {
 		t.Fatal("expected the sidecar to be removed by rollback")
+	}
+}
+
+func TestAttachDelegateJobCollisionDoesNotOverwriteOrLeakArtifacts(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	r := newScriptedWtDlgRepo(t, c)
+	jm, err := sessionJobManager(r.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jobID := "job_" + r.s.ID() + "_000000000000"
+	jm.newJobID = func(string) (string, error) { return jobID, nil }
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	if err := os.WriteFile(outputPath, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := r.s.createDelegate(context.Background(), delegateArgs{
+		Task:       "do isolated work",
+		Isolation:  "worktree",
+		Background: true,
+	})
+	if !errors.Is(res.Err, os.ErrExist) {
+		t.Fatalf("createDelegate error = %v, want fs.ErrExist", res.Err)
+	}
+	if got, err := os.ReadFile(outputPath); err != nil || string(got) != "keep me\n" {
+		t.Fatalf("occupied output = %q, err=%v", got, err)
+	}
+	for _, sidecar := range []string{
+		outputPath + ".meta.json",
+		outputPath + ".meta.json.tmp",
+		outputPath + ".meta.json.pending",
+		outputPath + ".meta.json.pending.tmp",
+	} {
+		if _, err := os.Stat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("output sidecar %q leaked: %v", sidecar, err)
+		}
+	}
+	if res.DelegateID == "" {
+		t.Fatal("createDelegate did not report the delegate ID bound before preparation")
+	}
+	lane := r.lanePath(t, res.DelegateID)
+	if _, err := os.Stat(lane); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("prepared worktree remains after collision: %v", err)
+	}
+	if got := r.s.subagents.directSubagents(); len(got) != 0 {
+		t.Fatalf("prepared subagent remains tracked after collision: %d", len(got))
 	}
 }
 

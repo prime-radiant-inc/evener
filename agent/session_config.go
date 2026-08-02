@@ -386,14 +386,6 @@ type spawnConfig struct {
 	// this to avoid a duplicate terminal owner notification after the callback.
 	parentMarkCallerCallbackDelivered func(jobID string)
 
-	// parentGrantedJobRead resolves watch-granted cross-session reads against
-	// the parent's job store (spec §5.1 read grants): given the child's
-	// (observer) session id and a job id the child cannot resolve locally, the
-	// parent returns a read-only view when a durable watch_read_grant covers
-	// the pair. The lookup is jobstore-level only — the child never touches
-	// parent Session state through it.
-	parentGrantedJobRead func(observerSessionID, jobID string) (*grantedJobRead, bool)
-
 	// parentWatchGranted allows this child to install watches on its immediate
 	// parent through parentInstallWatch. It is non-transitive and does not grant
 	// delegate.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/identifier"
 )
 
 // ToolArgs is a decoded JSON args map with a convenience Str() accessor.
@@ -472,7 +473,7 @@ func init() {
 	jobControl := func(verb string) ToolRenderer {
 		return ToolRenderer{
 			Verb:   func(_ ToolArgs) string { return verb },
-			Target: func(args ToolArgs) string { return shortID(args.Str("job_id")) },
+			Target: func(args ToolArgs) string { return identifier.AbbreviateJobID(args.Str("job_id"), 26) },
 			Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
 				if errStr != "" {
 					return "error"

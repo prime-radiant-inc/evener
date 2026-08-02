@@ -700,7 +700,7 @@ func ds_seedStoppedDelegateRestore(root *Session) (*jobstore.JobRecord, *Session
 
 	delegateID := jobstore.NewDelegateID()
 	generation := jobstore.NewDelegateGeneration()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(root.ID())
 	now := root.sclock().Now().UTC()
 	ref := encodeRef("", childID)
 	desc := &jobstore.DelegateRestoreDescriptor{

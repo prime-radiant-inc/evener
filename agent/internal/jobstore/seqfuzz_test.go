@@ -19,7 +19,7 @@ import (
 // operations — the exact event shapes the real writer emits — building up a
 // jobs.jsonl event log one op at a time while maintaining a thin parallel model
 // of the essential state (per-job status + notify, per-delegate current/latest
-// job, watch active flag, observer grant set, watch-send coalescing slots).
+// job, watch active flag, and watch-send coalescing slots).
 // After each op it re-folds the WHOLE log through all six reducers and checks,
 // weakest-first:
 //
@@ -42,9 +42,7 @@ import (
 //	I5 (watch active monotonic): a watch is active until cleared with its matching
 //	   generation; a wrong-generation clear is inert and a cleared watch never
 //	   reactivates.
-//	I6 (grants reference real jobs + match the model): every (observer, job) in
-//	   FoldGrants names a job that exists in Fold.
-//	I7 (watch-send coalescing): the pending set folds exactly to the highest
+//	I6 (watch-send coalescing): the pending set folds exactly to the highest
 //	   un-settled update_seq per key; a settle of seq≥pending clears it and a
 //	   stale (seq≤settled) pending is ignored.
 //
@@ -88,7 +86,6 @@ const (
 	opRegisterWatch
 	opClearWatch
 	opClearWatchStale
-	opGrant
 	opWatchSendPending
 	opWatchSendSettle
 	opWatchSendStalePending
@@ -135,7 +132,6 @@ type seqModel struct {
 	delegates []*delegateModel
 	delByID   map[string]*delegateModel
 	watches   []*watchModel
-	grants    map[string]map[string]bool
 	wsKeys    []*wsKeyModel
 
 	// Cross-fold monotonicity trackers, independent of the model so a buggy
@@ -145,17 +141,15 @@ type seqModel struct {
 }
 
 var (
-	seqSessions  = []string{"s1", "s2"}
-	seqObservers = []string{"obs1", "obs2"}
-	terminalSet  = []Status{StatusCompleted, StatusFailed, StatusCancelled, StatusStopped}
-	wsSendTerm   = []EventKind{EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted}
+	seqSessions = []string{"s1", "s2"}
+	terminalSet = []Status{StatusCompleted, StatusFailed, StatusCancelled, StatusStopped}
+	wsSendTerm  = []EventKind{EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted}
 )
 
 func newSeqModel() *seqModel {
 	return &seqModel{
 		jobByID:    make(map[string]*jobModel),
 		delByID:    make(map[string]*delegateModel),
-		grants:     make(map[string]map[string]bool),
 		prevStatus: make(map[string]Status),
 		prevNotify: make(map[string]int),
 		wsKeys: []*wsKeyModel{
@@ -185,7 +179,7 @@ func (m *seqModel) legalOps() []seqOp {
 	ops := []seqOp{opStartShell, opStartDelegate, opRegisterWatch, opWatchSendPending}
 
 	if len(m.jobs) > 0 {
-		ops = append(ops, opAssignSession, opMessageSent, opGrant, opArmNotifyStale)
+		ops = append(ops, opAssignSession, opMessageSent, opArmNotifyStale)
 	}
 	if len(m.nonterminalJobs()) > 0 {
 		ops = append(ops, opFinishJob)
@@ -401,15 +395,6 @@ func (m *seqModel) applyOp(rt *rapid.T, op seqOp) {
 		wm := pickOf(rt, "staleClearWatch", m.activeWatches())
 		m.emit(Event{Kind: EventWatchCleared, WatchID: wm.id, Watch: &WatchEvent{Generation: m.nextID("stale_"), EndReason: "x"}})
 
-	case opGrant:
-		jm := pickOf(rt, "grantJob", m.jobs)
-		obs := pickOf(rt, "grantObs", seqObservers)
-		m.emit(Event{Kind: EventWatchReadGrant, JobID: jm.id, ObserverSessionID: obs})
-		if m.grants[obs] == nil {
-			m.grants[obs] = make(map[string]bool)
-		}
-		m.grants[obs][jm.id] = true
-
 	case opWatchSendPending:
 		k := pickOf(rt, "wsPendKey", m.wsKeys)
 		k.lastSeq++
@@ -538,20 +523,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		}
 	}
 
-	// I6: grants match the model and reference real jobs.
-	grants := FoldGrants(m.log)
-	if eq, a, b := marshalEqual(grants, m.grants); !eq {
-		rt.Fatalf("step %d: FoldGrants diverged from model:\n got=%s\n model=%s", step, a, b)
-	}
-	for obs, jobs := range grants {
-		for j := range jobs {
-			if fold[j] == nil {
-				rt.Fatalf("step %d: grant (%s -> %s) references a job absent from Fold", step, obs, j)
-			}
-		}
-	}
-
-	// I7: watch-send pending set folds to exactly the highest un-settled seq per key.
+	// I6: watch-send pending set folds to exactly the highest un-settled seq per key.
 	ws := FoldWatchSends(m.log)
 	expPending := map[WatchSendKey]uint64{}
 	for _, k := range m.wsKeys {
@@ -601,7 +573,6 @@ func (m *seqModel) assertReplayIdempotent(rt *rapid.T, step int) {
 		{"FoldDelegates", FoldDelegates(m.log), FoldDelegates(withDup)},
 		{"FoldWatches", FoldWatches(m.log), FoldWatches(withDup)},
 		{"FoldWatchSends", canonicalWatchSends(FoldWatchSends(m.log)), canonicalWatchSends(FoldWatchSends(withDup))},
-		{"FoldGrants", FoldGrants(m.log), FoldGrants(withDup)},
 	}
 	for _, c := range cases {
 		if eq, a, b := marshalEqual(c.once, c.dupl); !eq {

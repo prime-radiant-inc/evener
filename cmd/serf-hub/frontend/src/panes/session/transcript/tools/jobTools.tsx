@@ -21,7 +21,7 @@ import type { ItemModel } from "../../../../protocol/model";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
-import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
+import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
 import { turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 
@@ -131,7 +131,7 @@ registerToolRenderer({
     const parsedOutput = parseJSONObject(item.output);
     const jobId = (parsedOutput && str(parsedOutput, "job_id")) ?? str(args, "job_id") ?? "";
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    return status ? `Checked ${clip(jobId, ID_CLIP)} · ${status}` : `Checked ${clip(jobId, ID_CLIP)}`;
+    return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
   },
   body(props: ToolRenderProps) {
     return (
@@ -175,7 +175,7 @@ registerToolRenderer({
     const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "job_id") ?? "";
     const footer = trailingBracketFooter(item.output ?? "");
-    return footer ? `Stopped ${clip(jobId, ID_CLIP)} · ${footer}` : `Stopped ${clip(jobId, ID_CLIP)}`;
+    return footer ? `Stopped ${clipJobID(jobId)} · ${footer}` : `Stopped ${clipJobID(jobId)}`;
   },
   body(props: ToolRenderProps) {
     return (

@@ -6,16 +6,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubtest"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -295,41 +291,5 @@ func fuzzScenarioRemainingPureBranches(t *testing.T) {
 	BuildTreeAt(metas, nil, nil, time.Now())
 	if _, ok := BuildProjectTreeAt([]schema.SessionMeta{{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}}}, nil, nil, time.Now(), project.ID); !ok {
 		t.Fatal("missing project")
-	}
-}
-
-// A session dir whose jobs.jsonl cannot be read contributes no grants and is
-// named in the skip report, the same silent-absence class as an unindexable
-// meta or project. The fold walks the sessions dir through the injected
-// afero.Fs while agent.LoadSessionObserverGrants reads the real filesystem, so
-// the fixture is seeded on both: the memfs entry makes the fold consider the
-// session at all, and the on-disk jobs.jsonl-as-a-directory is what makes the
-// load fail.
-func fuzzScenarioFoldObserverGrantsNamesUnreadableLog(t *testing.T) {
-	projectRoot := t.TempDir()
-	sessionID := hubtest.SessionID(t)
-	sessionDir := filepath.Join(projectRoot, "sessions", sessionID)
-
-	fs := afero.NewMemMapFs()
-	if err := fs.MkdirAll(sessionDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(sessionDir, "jobs.jsonl"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	into := make(map[string][]string)
-	skipped := make(map[string]string)
-	foldProjectObserverGrants(into, fs, projectRoot, skipped)
-
-	if len(into) != 0 {
-		t.Fatalf("unreadable log contributed grants: %v", into)
-	}
-	reason, ok := skipped[sessionDir]
-	if !ok {
-		t.Fatalf("skip report does not name %s, got %v", sessionDir, skipped)
-	}
-	if !strings.HasPrefix(reason, "load observer grants: ") {
-		t.Fatalf("skip reason = %q, want the load-error reason", reason)
 	}
 }

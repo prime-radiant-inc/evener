@@ -25,7 +25,7 @@ func seedIsolationLaneOn(t *testing.T, sess *Session) (delegateID, lanePath stri
 	if err != nil {
 		t.Fatalf("createDelegateWorktree on %s: %v", sess.ID(), err)
 	}
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(sess.ID())
 	now := time.Now().UTC()
 	ref := encodeRef("", "gchild-"+delegateID)
 	desc := &jobstore.DelegateRestoreDescriptor{

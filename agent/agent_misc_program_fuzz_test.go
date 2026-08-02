@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -26,7 +25,6 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -229,27 +227,9 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The grants path validates session ids (identifier.ValidateSessionID), so
-	// the fixture must mint real ones — human-readable stand-ins are skipped.
-	workerID, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	observerA, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	observerB, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
-	}
 	events := []jobstore.Event{
 		{Kind: jobstore.EventJobStarted, JobID: "good", Type: jobstore.JobDelegate},
-		{Kind: jobstore.EventJobSessionAssigned, JobID: "good", TranscriptRef: encodeRef("", workerID)},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: observerB},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: observerA},
 		{Kind: jobstore.EventJobStarted, JobID: "shell", Type: jobstore.JobShell},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "shell", ObserverSessionID: observerA},
 	}
 	if err := store.AppendBatch(events); err != nil {
 		t.Fatal(err)
@@ -261,13 +241,6 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	if err != nil || len(records) != 2 {
 		t.Fatalf("historical records = %#v, %v", records, err)
 	}
-	grants, err := LoadSessionObserverGrants(dir, "valid")
-	wantObservers := []string{observerA, observerB}
-	sort.Strings(wantObservers)
-	if err != nil || strings.Join(grants[workerID], ",") != strings.Join(wantObservers, ",") {
-		t.Fatalf("observer grants = %#v, %v", grants, err)
-	}
-
 	docsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(docsDir, "AGENTS.md"), []byte(strings.Repeat(token+"x", projectDocByteBudget+1)), 0o644); err != nil {
 		t.Fatal(err)
@@ -376,7 +349,6 @@ func miscFaultProgram(t *testing.T) {
 			}
 		}
 		_, _ = LoadSessionHistoricalJobRecords(dir, sessionID)
-		_, _ = LoadSessionObserverGrants(dir, sessionID)
 	}
 	_ = jobstore.JobRecord{}
 	oldStat, oldOpen := historicalJobsStat, historicalJobsOpen
@@ -392,9 +364,6 @@ func miscFaultProgram(t *testing.T) {
 	if _, err := LoadSessionHistoricalJobRecords(dir, "x"); !errors.Is(err, sentinel) {
 		t.Fatalf("historical stat fault = %v", err)
 	}
-	if _, err := LoadSessionObserverGrants(dir, "x"); !errors.Is(err, sentinel) {
-		t.Fatalf("grant stat fault = %v", err)
-	}
 	historicalJobsStat = oldStat
 	historicalJobsOpen = func(string) (historicalJobStore, error) { return nil, sentinel }
 	if _, err := LoadSessionHistoricalJobRecords(dir, "valid"); !errors.Is(err, sentinel) {
@@ -409,22 +378,6 @@ func miscFaultProgram(t *testing.T) {
 	}
 	if got, err := LoadSessionHistoricalJobRecords(dir, "valid"); err != nil || len(got) != 0 {
 		t.Fatalf("nil historical record = %#v, %v", got, err)
-	}
-	historicalJobsOpen = func(string) (historicalJobStore, error) { return &miscHistoricalStore{grantErr: sentinel}, nil }
-	if _, err := LoadSessionObserverGrants(dir, "valid"); !errors.Is(err, sentinel) {
-		t.Fatalf("grant load fault = %v", err)
-	}
-	historicalJobsOpen = func(string) (historicalJobStore, error) {
-		return &miscHistoricalStore{grants: map[string]map[string]bool{}}, nil
-	}
-	if got, err := LoadSessionObserverGrants(dir, "valid"); err != nil || len(got) != 0 {
-		t.Fatalf("empty grants = %#v, %v", got, err)
-	}
-	historicalJobsOpen = func(string) (historicalJobStore, error) {
-		return &miscHistoricalStore{grants: map[string]map[string]bool{"o": {"j": true}}, loadErr: sentinel}, nil
-	}
-	if _, err := LoadSessionObserverGrants(dir, "valid"); !errors.Is(err, sentinel) {
-		t.Fatalf("grant records fault = %v", err)
 	}
 }
 
@@ -447,10 +400,8 @@ func (miscDirEntry) Type() fs.FileMode          { return 0 }
 func (miscDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("unused") }
 
 type miscHistoricalStore struct {
-	records  map[string]*jobstore.JobRecord
-	grants   map[string]map[string]bool
-	loadErr  error
-	grantErr error
+	records map[string]*jobstore.JobRecord
+	loadErr error
 }
 
 func (*miscHistoricalStore) Close() error { return nil }
@@ -459,7 +410,4 @@ func (s *miscHistoricalStore) Load() (map[string]*jobstore.JobRecord, error) {
 }
 func (s *miscHistoricalStore) LoadOrdered() ([]*jobstore.JobRecord, error) {
 	return nil, s.loadErr
-}
-func (s *miscHistoricalStore) LoadGrants() (map[string]map[string]bool, error) {
-	return s.grants, s.grantErr
 }

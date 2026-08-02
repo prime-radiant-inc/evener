@@ -127,9 +127,6 @@ func FuzzJobEventLogReplay(f *testing.F) {
 		// Watch-send pending then delivered (FoldWatchSends coalescing).
 		`{"kind":"watch_send_pending","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_A","watch_send":{"key":{"visible_session_id":"s1","watch_id":"watch_1","watch_target":"job_A","resolved_watched_identity":"job_A","resolved_send_to":"s1","watch_generation":"wg_1"},"delivery_id":"wd_1","update_seq":1,"message":"hi","created_at":"2026-06-01T10:00:00Z"}}
 {"kind":"watch_send_delivered","seq":2,"ts":"2026-06-01T10:00:01Z","job_id":"job_A","watch_send":{"key":{"visible_session_id":"s1","watch_id":"watch_1","watch_target":"job_A","resolved_watched_identity":"job_A","resolved_send_to":"s1","watch_generation":"wg_1"},"delivery_id":"wd_1","update_seq":2}}`,
-		// Read grants (FoldGrants, order-insensitive, dedup).
-		`{"kind":"watch_read_grant","seq":1,"ts":"2026-06-01T10:00:00Z","job_id":"job_A","observer_session_id":"obs1"}
-{"kind":"watch_read_grant","seq":2,"ts":"2026-06-01T10:00:01Z","job_id":"job_A","observer_session_id":"obs1"}`,
 		`{}`,
 		``,
 		`not json
@@ -182,9 +179,6 @@ func assertFoldDeterministic(t *testing.T, events []Event) {
 	if eq, a, b := jsonEq(t, canonicalWatchSends(FoldWatchSends(events)), canonicalWatchSends(FoldWatchSends(events))); !eq {
 		t.Fatalf("FoldWatchSends is non-deterministic:\n a=%s\n b=%s", a, b)
 	}
-	if eq, a, b := jsonEq(t, FoldGrants(events), FoldGrants(events)); !eq {
-		t.Fatalf("FoldGrants is non-deterministic:\n a=%s\n b=%s", a, b)
-	}
 }
 
 // assertReloadMatchesFold compares each loader's reload against the in-memory
@@ -234,13 +228,6 @@ func assertReloadMatchesFold(t *testing.T, s *Store, sorted []Event) {
 		t.Fatalf("FoldWatchSends/LoadWatchSends persist→reload diverged:\n fold=%s\n load=%s", a, b)
 	}
 
-	loadGrants, err := s.LoadGrants()
-	if err != nil {
-		t.Fatalf("LoadGrants: %v", err)
-	}
-	if eq, a, b := jsonEq(t, FoldGrants(sorted), loadGrants); !eq {
-		t.Fatalf("FoldGrants/LoadGrants persist→reload diverged:\n fold=%s\n load=%s", a, b)
-	}
 }
 
 func assertAppendEqualsBatch(t *testing.T, sorted []Event) {

@@ -8,8 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -281,15 +279,6 @@ func seed100JobTools(t *testing.T, text string) {
 	for _, args := range []map[string]any{{}, {"task": "x", "tasks": []any{"y"}}, {"tasks": "bad"}, {"tasks": []any{1}}} {
 		_, _ = decodeDelegateArgs(args)
 	}
-	_ = validateJobGrepPattern(strings.Repeat("x", maxJobGrepPatternBytes+1), 10)
-	_ = validateJobGrepPattern(strings.Repeat("\n", 100), 10)
-
-	jm := newTestJM(t)
-	if err := jm.store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = (&Session{}).readJobOutputSnapshot(jm, &Session{}, "x", 1, false, nil)
-	_, _, _ = (&Session{}).jobReadClosedStoreFallback(nil, errors.New("x"))
 	_ = jobListDelegatesForJobs(&Session{}, nil, nil)
 
 	// Marshal failures and bounding fallbacks.
@@ -299,13 +288,6 @@ func seed100JobTools(t *testing.T, text string) {
 	_, _ = marshalBoundedDelegateResult(delegateToolResult{Output: ptrString(text), StructuredResult: make(chan int)}, 1)
 	_, _ = marshalWatchResult(watchResult{EventFilter: &watchEventFilter{}, Send: &watchSendArgs{}}, 1)
 
-	g := &jobGrepScan{lastTotal: 1}
-	_ = g.step(jm, "x", regexp.MustCompile("x"), 1)
-	_ = g.scanSegment([]byte(strings.Repeat("x", 4)), regexp.MustCompile("z"), 1)
-	g.inDeadLine = true
-	_ = g.scanSegment([]byte("tail"), regexp.MustCompile("z"), 1)
-	_, _, _ = readJobOutputFrom(jm, "x", 0, 1)
-	_ = projectJobOutputMatches(make([]jobstore.Match, maxJobGrepMatches+1))
 	_ = projectJobRecordForViewer(nil, nil, &jobstore.JobRecord{})
 	_ = projectDelegateRecord(nil)
 

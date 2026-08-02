@@ -98,7 +98,6 @@ func seed100ToolsRangeC(t *testing.T) {
 	_, _ = jobStatusArrayArg(map[string]any{}, "status")
 	_, _ = jobStatusArrayArg(map[string]any{"status": "running"}, "status")
 	_, _ = jobStatusArrayArg(map[string]any{"status": []any{"bogus"}}, "status")
-	_, _, _ = strictZeroJobBytesArg(map[string]any{"head_bytes": maxJobOutputBytes + 1}, "head_bytes")
 	_, _ = watchArgsFromToolArgs(map[string]any{"operation": "create", "target": "self"})
 	_, _ = watchArgsFromToolArgs(map[string]any{
 		"operation": "create", "source": "self", "progress_interval_ms": 10, "every": 2,

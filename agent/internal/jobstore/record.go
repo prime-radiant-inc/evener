@@ -203,22 +203,24 @@ type WatchSendKey struct {
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key                WatchSendKey       `json:"key"`
-	DeliveryID         string             `json:"delivery_id"`
-	UpdateSeq          uint64             `json:"update_seq,omitempty"`
-	Message            string             `json:"message,omitempty"`
-	Frame              string             `json:"frame,omitempty"`
-	TriggerIdentity    string             `json:"trigger_identity,omitempty"`
-	TriggerReason      string             `json:"trigger_reason,omitempty"`
-	CoalescedCount     int                `json:"coalesced_count,omitempty"`
-	DelegateGeneration string             `json:"delegate_generation,omitempty"`
-	ReceiverSessionID  string             `json:"receiver_session_id,omitempty"`
-	ReceiverDelegateID string             `json:"receiver_delegate_id,omitempty"`
-	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
-	SelfInfluenceDepth int                `json:"self_influence_depth,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	Provenance         *provenance.Causal `json:"provenance,omitempty"`
+	Key                    WatchSendKey       `json:"key"`
+	DeliveryID             string             `json:"delivery_id"`
+	UpdateSeq              uint64             `json:"update_seq,omitempty"`
+	Message                string             `json:"message,omitempty"`
+	Frame                  string             `json:"frame,omitempty"`
+	TriggerIdentity        string             `json:"trigger_identity,omitempty"`
+	TriggerReason          string             `json:"trigger_reason,omitempty"`
+	CoalescedCount         int                `json:"coalesced_count,omitempty"`
+	DelegateGeneration     string             `json:"delegate_generation,omitempty"`
+	ReceiverSessionID      string             `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID     string             `json:"receiver_delegate_id,omitempty"`
+	NotificationJobID      string             `json:"notification_job_id,omitempty"`
+	NotificationDelegateID string             `json:"notification_delegate_id,omitempty"`
+	DiagnosticReason       string             `json:"diagnostic_reason,omitempty"`
+	SelfInfluenceDepth     int                `json:"self_influence_depth,omitempty"`
+	CreatedAt              time.Time          `json:"created_at"`
+	UpdatedAt              time.Time          `json:"updated_at"`
+	Provenance             *provenance.Causal `json:"provenance,omitempty"`
 	// EndNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired: the watch is telling its watcher the condition can no longer
 	// match. It is not a condition fire, and the runtime does not count it as a
@@ -302,8 +304,8 @@ type JobRecord struct {
 	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
 }
 
-func NewJobID() string {
-	return identifier.MustNewJobID()
+func NewJobID(ownerSessionID string) string {
+	return identifier.MustNewJobID(ownerSessionID)
 }
 
 func NewDelegateID() string {

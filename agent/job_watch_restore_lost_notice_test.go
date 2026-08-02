@@ -55,7 +55,7 @@ func seedForeignOwnedWatchedJob(t *testing.T, jm *jobManager, jobID, watchID, ge
 func TestRestartTellsSendWatchItDidNotSurviveWhileItsTargetRuns(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "PARENT", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRestartTellsSendWatchItDidNotSurviveWhileItsTargetRuns(t *testing.T) {
 	seedForeignOwnedWatchedJob(t, original, "job_child_owned", "watch_foreign", "wg_foreign", "dlg_obs")
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "PARENT", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testParentSessionID, func(jobNotification) {})
 
 	// The premise: the child owner keeps the job, so this restore leaves it running.
 	recs, err := restarted.store.Load()
@@ -105,7 +105,7 @@ func TestRestartTellsSendWatchItDidNotSurviveWhileItsTargetRuns(t *testing.T) {
 func TestRestartKeepsTheTerminalFrameForATerminalTarget(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRestartKeepsTheTerminalFrameForATerminalTarget(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	var sent []sendMessageArgs
 	if err := drainWatchSendsVia(t, restarted, func(_ context.Context, a sendMessageArgs) sendMessageResult {
@@ -150,7 +150,7 @@ func TestRestartKeepsTheTerminalFrameForATerminalTarget(t *testing.T) {
 func TestRestartLostNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "PARENT", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testParentSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -159,10 +159,10 @@ func TestRestartLostNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 	seedForeignOwnedWatchedJob(t, original, "job_child_owned", "watch_foreign", "wg_foreign", "dlg_obs")
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "PARENT", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testParentSessionID, func(jobNotification) {})
 	crashJobManager(t, restarted)
 
-	again := restartJobManager(t, stateDir, "PARENT", func(jobNotification) {})
+	again := restartJobManager(t, stateDir, testParentSessionID, func(jobNotification) {})
 
 	pending := loadWatchSendRecord(t, again).Pending
 	if len(pending) != 1 {
@@ -179,7 +179,7 @@ func TestRestartLostNoticeIsNotRepeatedOnASecondRestart(t *testing.T) {
 func TestRestartSaysNothingForAWatchWhoseTargetIsUnrecorded(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	original, err := newJobManagerNoSync(stateDir, "S1", func(jobNotification) {})
+	original, err := newJobManagerNoSync(stateDir, testOwnerSessionID, func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
@@ -191,8 +191,8 @@ func TestRestartSaysNothingForAWatchWhoseTargetIsUnrecorded(t *testing.T) {
 		WatchID: "watch_orphan",
 		Watch: &jobstore.WatchEvent{
 			Generation:       "wg_orphan",
-			OwnerSessionID:   "S1",
-			VisibleSessionID: "S1",
+			OwnerSessionID:   testOwnerSessionID,
+			VisibleSessionID: testOwnerSessionID,
 			Target:           "job_never_recorded",
 			SendTo:           "dlg_obs",
 			ConfigHash:       "sha256:orphan",
@@ -202,7 +202,7 @@ func TestRestartSaysNothingForAWatchWhoseTargetIsUnrecorded(t *testing.T) {
 	}
 	crashJobManager(t, original)
 
-	restarted := restartJobManager(t, stateDir, "S1", func(jobNotification) {})
+	restarted := restartJobManager(t, stateDir, testOwnerSessionID, func(jobNotification) {})
 
 	if pending := loadWatchSendRecord(t, restarted).Pending; len(pending) != 0 {
 		t.Errorf("pending watch sends = %+v, want none for a watch with no target record", pending)

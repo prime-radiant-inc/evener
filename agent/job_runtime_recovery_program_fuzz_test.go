@@ -58,8 +58,6 @@ func FuzzJobRuntimeRecoveryProgram(f *testing.F) {
 		jrrpAssertFinalizationRetries(t, p)
 		jrrpAssertShellFailureEdges(t, p)
 		jrrpAssertSessionOutputAndStop(t, p)
-		jrrpAssertGrepWaitProgress(t, p)
-		jrrpAssertLargeOutputDigest(t, p)
 		jrrpAssertPrunedOutputLifecycle(t, p)
 		jrrpAssertStructuredProjection(t, p)
 		jrrpAssertRestartReconciliation(t, p)
@@ -655,23 +653,6 @@ func jrrpAssertShellFailureEdges(t *testing.T, p jrrpProgram) {
 	})
 }
 
-func jrrpReadState(t *testing.T, value any) jobReadOutputResult {
-	t.Helper()
-	state, ok := value.(tooldefs.StateResult)
-	if !ok {
-		t.Fatalf("job_read_output value type = %T, want StateResult", value)
-	}
-	b, err := json.Marshal(state.State)
-	if err != nil {
-		t.Fatalf("marshal job_read_output state: %v", err)
-	}
-	var out jobReadOutputResult
-	if err := json.Unmarshal(b, &out); err != nil {
-		t.Fatalf("unmarshal job_read_output state: %v", err)
-	}
-	return out
-}
-
 func jrrpStopState(t *testing.T, value any) jobStopResult {
 	t.Helper()
 	state, ok := value.(tooldefs.StateResult)
@@ -711,38 +692,6 @@ func jrrpAssertSessionOutputAndStop(t *testing.T, p jrrpProgram) {
 		t.Fatalf("append session job output = %d, %v", n, err)
 	}
 
-	// A positive grep wait must immediately observe an already-retained matching
-	// line. That takes the real incremental scan path without a polling race.
-	grepValue, err := jobReadOutputTool(context.Background(), s, map[string]any{
-		"job_id":      rec.JobID,
-		"grep":        regexp.QuoteMeta(p.marker),
-		"max_wait_ms": 1,
-	}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("grep job_read_output: %v", err)
-	}
-	grepResult := jrrpReadState(t, grepValue)
-	if grepResult.Matches == nil || len(*grepResult.Matches) != 1 || (*grepResult.Matches)[0].Line != p.marker {
-		t.Fatalf("grep state = %+v, want marker %q", grepResult, p.marker)
-	}
-
-	for _, args := range []map[string]any{
-		{"job_id": rec.JobID},
-		{"job_id": rec.JobID, "head_lines": 1},
-		{"job_id": rec.JobID, "tail_lines": 1},
-		{"job_id": rec.JobID, "from_line": 2, "line_count": 1},
-		{"job_id": rec.JobID, "head_lines": 1, "tail_lines": 1},
-	} {
-		value, err := jobReadOutputTool(context.Background(), s, args, jobToolResultDefaultMaxChar)
-		if err != nil {
-			t.Fatalf("job_read_output(%v): %v", args, err)
-		}
-		out := jrrpReadState(t, value)
-		if out.JobID != rec.JobID || out.TotalBytes != int64(len(p.liveOutput)) || out.Status != string(jobstore.StatusRunning) {
-			t.Fatalf("job_read_output(%v) = %+v", args, out)
-		}
-	}
-
 	statusValue, err := jobStatusTool(s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		t.Fatalf("job_status: %v", err)
@@ -761,35 +710,6 @@ func jrrpAssertSessionOutputAndStop(t *testing.T, p jrrpProgram) {
 	listState, ok := listValue.(tooldefs.StateResult)
 	if !ok || !strings.Contains(listState.Output, rec.JobID) {
 		t.Fatalf("job_list value = %#v, want running job", listValue)
-	}
-
-	// The output waiter must return on the next virtual ticker after a new chunk,
-	// not wait for the timeout. It owns a separate job so the stop lifecycle below
-	// cannot satisfy the wait accidentally.
-	wake, err := jm.createShell(createShellOpts{Command: "scripted-wake"})
-	if err != nil {
-		t.Fatalf("create output-wait job: %v", err)
-	}
-	jm.mu.Lock()
-	wakeRun := jm.running[wake.JobID]
-	jm.mu.Unlock()
-	if wakeRun == nil {
-		t.Fatalf("output-wait job %q is not running", wake.JobID)
-	}
-	waitReturned := make(chan struct{})
-	go func() {
-		waitForJobDoneOrOutput(context.Background(), jm, wake.JobID, time.Second)
-		close(waitReturned)
-	}()
-	clk.BlockUntil(2)
-	if _, err := jm.appendJobOutput(wake.JobID, wakeRun.output, []byte("wake\n")); err != nil {
-		t.Fatalf("append output-wait chunk: %v", err)
-	}
-	clk.Advance(20 * time.Millisecond)
-	<-waitReturned
-	code := 0
-	if err := jm.finalize(wake.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize output-wait job: %v", err)
 	}
 
 	// Stop drives the public Session wrapper, its bounded done wait, and the
@@ -828,155 +748,6 @@ func jrrpAssertSessionOutputAndStop(t *testing.T, p jrrpProgram) {
 	matches, err := jm.grepOutput(rec.JobID, regexp.MustCompile(regexp.QuoteMeta(p.marker)))
 	if err != nil || len(matches) != 1 || matches[0].Line != p.marker {
 		t.Fatalf("terminal session grep = %+v, %v", matches, err)
-	}
-	terminalValue, err := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("terminal job_read_output: %v", err)
-	}
-	terminal := jrrpReadState(t, terminalValue)
-	if terminal.Status != string(jobstore.StatusCancelled) || terminal.Content == "" {
-		t.Fatalf("terminal job_read_output = %+v", terminal)
-	}
-}
-
-// jrrpAssertGrepWaitProgress drives the retained-output wait path through both
-// virtual ticker progress and split/overlong line semantics. It uses real output
-// stores; the fake clock only controls when the waiter polls them.
-func jrrpAssertGrepWaitProgress(t *testing.T, p jrrpProgram) {
-	t.Helper()
-	jm := newTestJM(t)
-	clk := agenttest.NewFakeClock()
-	jm.clock = clk
-	jm.now = clk.Now
-	defer func() {
-		jm.abandonRunningJobs()
-		if err := jm.closeStoreOnly(); err != nil {
-			t.Fatalf("close grep-wait job manager: %v", err)
-		}
-	}()
-
-	re := regexp.MustCompile(regexp.QuoteMeta(p.marker))
-	waited, err := jm.createShell(createShellOpts{Command: "grep-wait"})
-	if err != nil {
-		t.Fatalf("create grep-wait job: %v", err)
-	}
-	jm.mu.Lock()
-	waitedRun := jm.running[waited.JobID]
-	jm.mu.Unlock()
-	if waitedRun == nil {
-		t.Fatalf("grep-wait job %q is not running", waited.JobID)
-	}
-	waitDone := make(chan struct{})
-	go func() {
-		waitForJobGrepMatch(context.Background(), jm, waited.JobID, re, time.Second)
-		close(waitDone)
-	}()
-	clk.BlockUntil(2)
-	if _, err := jm.appendJobOutput(waited.JobID, waitedRun.output, []byte("not-yet\n")); err != nil {
-		t.Fatalf("append non-match: %v", err)
-	}
-	clk.Advance(20 * time.Millisecond)
-	if _, err := jm.appendJobOutput(waited.JobID, waitedRun.output, []byte(p.marker+"\n")); err != nil {
-		t.Fatalf("append matching line: %v", err)
-	}
-	clk.Advance(20 * time.Millisecond)
-	<-waitDone
-
-	// A marker split across two appends is one logical line, so it must match
-	// after the second append. An overlong line must never match, even when it
-	// contains the token; the next short line remains visible to the scanner.
-	scanned, err := jm.createShell(createShellOpts{Command: "grep-scan"})
-	if err != nil {
-		t.Fatalf("create split-scan job: %v", err)
-	}
-	jm.mu.Lock()
-	scannedRun := jm.running[scanned.JobID]
-	jm.mu.Unlock()
-	if scannedRun == nil {
-		t.Fatalf("split-scan job %q is not running", scanned.JobID)
-	}
-	var split jobGrepScan
-	cut := len(p.marker) / 2
-	if _, err := jm.appendJobOutput(scanned.JobID, scannedRun.output, []byte(p.marker[:cut])); err != nil {
-		t.Fatalf("append split marker prefix: %v", err)
-	}
-	if split.step(jm, scanned.JobID, re, maxJobGrepLineBytes) {
-		t.Fatal("partial marker matched before its line completed")
-	}
-	if _, err := jm.appendJobOutput(scanned.JobID, scannedRun.output, []byte(p.marker[cut:]+"\n")); err != nil {
-		t.Fatalf("append split marker suffix: %v", err)
-	}
-	if !split.step(jm, scanned.JobID, re, maxJobGrepLineBytes) {
-		t.Fatal("completed split marker did not match")
-	}
-
-	long, err := jm.createShell(createShellOpts{Command: "grep-overlong"})
-	if err != nil {
-		t.Fatalf("create overlong-scan job: %v", err)
-	}
-	jm.mu.Lock()
-	longRun := jm.running[long.JobID]
-	jm.mu.Unlock()
-	if longRun == nil {
-		t.Fatalf("overlong-scan job %q is not running", long.JobID)
-	}
-	var overlong jobGrepScan
-	if _, err := jm.appendJobOutput(long.JobID, longRun.output, []byte(strings.Repeat("x", maxJobGrepLineBytes+2))); err != nil {
-		t.Fatalf("append overlong prefix: %v", err)
-	}
-	if overlong.step(jm, long.JobID, re, maxJobGrepLineBytes) {
-		t.Fatal("overlong partial line matched")
-	}
-	if _, err := jm.appendJobOutput(long.JobID, longRun.output, []byte(p.marker+"\n")); err != nil {
-		t.Fatalf("append overlong marker: %v", err)
-	}
-	if overlong.step(jm, long.JobID, re, maxJobGrepLineBytes) {
-		t.Fatal("overlong line matched after completion")
-	}
-	if _, err := jm.appendJobOutput(long.JobID, longRun.output, []byte(p.marker+"\n")); err != nil {
-		t.Fatalf("append short marker: %v", err)
-	}
-	if !overlong.step(jm, long.JobID, re, maxJobGrepLineBytes) {
-		t.Fatal("short line after overlong line did not match")
-	}
-}
-
-// jrrpAssertLargeOutputDigest forces job_read_output's two-window default
-// digest path. The output is larger than one read-side budget but below retained
-// output capacity, so any elision is navigational rather than data loss.
-func jrrpAssertLargeOutputDigest(t *testing.T, p jrrpProgram) {
-	t.Helper()
-	s := newTestSession(t)
-	jm := s.jobManager
-	rec, err := jm.createShell(createShellOpts{Command: "digest-large"})
-	if err != nil {
-		t.Fatalf("create large-digest job: %v", err)
-	}
-	jm.mu.Lock()
-	run := jm.running[rec.JobID]
-	jm.mu.Unlock()
-	if run == nil {
-		t.Fatalf("large-digest job %q is not running", rec.JobID)
-	}
-	line := "digest-" + p.marker + "-" + strings.Repeat("x", 96) + "\n"
-	payload := strings.Repeat(line, jobLineReadBudget/len(line)+64)
-	if len(payload) <= jobLineReadBudget || len(payload) >= maxJobOutputRetentionBytes {
-		t.Fatalf("large digest payload size = %d, outside expected range", len(payload))
-	}
-	if n, err := jm.appendJobOutput(rec.JobID, run.output, []byte(payload)); err != nil || n != len(payload) {
-		t.Fatalf("append large digest output = %d, %v", n, err)
-	}
-	value, err := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("large-digest job_read_output: %v", err)
-	}
-	out := jrrpReadState(t, value)
-	if out.TotalBytes != int64(len(payload)) || out.DroppedBytes != 0 || !out.Truncated || !strings.Contains(out.Content, "elided") {
-		t.Fatalf("large digest state = %+v", out)
-	}
-	code := 0
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize large-digest job: %v", err)
 	}
 }
 
@@ -1026,14 +797,6 @@ func jrrpAssertPrunedOutputLifecycle(t *testing.T, p jrrpProgram) {
 	dropped, err := jm.outputDropped(rec.JobID)
 	if err != nil || dropped <= 0 {
 		t.Fatalf("pruned output dropped bytes = %d, %v", dropped, err)
-	}
-	value, err := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("pruned job_read_output: %v", err)
-	}
-	read := jrrpReadState(t, value)
-	if read.TotalBytes != int64(len(payload)) || read.DroppedBytes != dropped || !read.Truncated || read.OutputStatus != "evicted" || !strings.Contains(read.Content, p.marker) {
-		t.Fatalf("pruned job_read_output state = %+v", read)
 	}
 }
 

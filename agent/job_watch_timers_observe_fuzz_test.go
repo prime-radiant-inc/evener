@@ -80,32 +80,6 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			if state.DeliveryID == "" {
 				t.Fatal("watch send state did not mint delivery id")
 			}
-		case 7:
-			if err := jm.store.Close(); err != nil {
-				t.Fatalf("close store: %v", err)
-			}
-			if _, _, err := jm.watchReadGrantObserver("dlg_closed"); err == nil {
-				t.Fatal("closed delegate store did not fail")
-			}
-		case 8:
-			if err := jm.appendWatchReadGrant("observer", "job_gone"); err != nil {
-				t.Fatalf("append grant: %v", err)
-			}
-			s := &Session{jobManager: jm}
-			if got, ok := s.lookupGrantedJobRead("observer", "job_gone"); ok || got != nil {
-				t.Fatalf("grant to missing job resolved: (%+v, %v)", got, ok)
-			}
-		case 9:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_target", Send: &watchSendArgs{To: "dlg_missing"}}, jm.now())
-			if err != nil {
-				t.Fatalf("new watch config: %v", err)
-			}
-			// An unresolvable delivery target mints nothing and marks nothing:
-			// delivery itself reports the route failure, so the grant is simply
-			// never claimed and the next fire is free to retry.
-			if got := jm.mintWatchSendReadGrant(cfg, "dlg_missing", events.JobFinishedData{JobID: "job_target"}); got != "" || cfg.grantsMinted != nil {
-				t.Fatalf("missing observer minted grant %q (dedup=%+v)", got, cfg.grantsMinted)
-			}
 		case 10:
 			notified := false
 			cfg := &watchConfig{

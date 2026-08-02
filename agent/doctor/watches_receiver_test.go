@@ -46,7 +46,7 @@ func receiverWatchFixture(t *testing.T) (base, sid string) {
 	return base, sid
 }
 
-// "Who receives this watch" is the one field an operator needs when a read grant
+// "Who receives this watch" is the one field an operator needs when a receiver link
 // or a delivery is missing, and owner/visible cannot answer it: both name the
 // owner on a receiver watch just as they do on the owner's own.
 func TestWatches_ReceiverIdentityReported(t *testing.T) {

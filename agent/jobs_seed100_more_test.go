@@ -30,7 +30,7 @@ func seed100JobsMore(t *testing.T) {
 			}
 			return nil
 		}
-		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, restore, restore)
+		_, _ = newJobManagerWithRestore(t.TempDir(), "restore", nil, jobstore.OpenNoSync, jobstore.OpenOutputNoSync, jobstore.CreateOutputNoSync, restore, restore)
 	}
 
 	jm := newTestJM(t)
@@ -133,8 +133,6 @@ func seed100JobsMore(t *testing.T) {
 	_, _, _, _ = missingJM.readOutputHead("x", 1)
 	_, _ = missingJM.outputDropped("x")
 	_, _ = missingJM.grepOutput("x", nil)
-	_, _, _, _, _ = missingJM.readJobWindow("x", 1, true)
-	_, _, _, _, _ = missingJM.readJobWindow("x", 1, false)
 	badMetaJM := newTestJM(t)
 	badMetaPath := filepath.Join(t.TempDir(), "bad-meta.log")
 	if err := os.WriteFile(badMetaPath, []byte("abc"), 0o600); err != nil {

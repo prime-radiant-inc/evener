@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,12 +25,10 @@ import (
 // steer a live turn without a host process, network call, or wall-clock race.
 //
 // The program verifies durable job identity across the tool results, stable list
-// rendering on unchanged state, bounded/readable output, the live-steer wait
+// rendering on unchanged state, the live-steer wait
 // contract, parent callback routing, and the watch create/list/inspect/clear
 // lifecycle. The existing FuzzJobtoolsExec owns adversarial handler maps; this
 // target specifically covers the public wrapper and cross-session lifecycle.
-// job_read_output intentionally is not model-registered, so its real handler is
-// called directly, matching the production boundary enforced by its unit test.
 func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0, 0, 0, 0, 0, 0})
@@ -168,23 +165,6 @@ func FuzzJobtoolsLifecycleProgram(f *testing.F) {
 		}
 		if secondList.Count != list.Count || !jtlpContainsJob(secondList.Jobs, shell.JobID) || !jtlpContainsJob(secondList.Jobs, created.JobID) {
 			t.Fatalf("second job_list state = %#v, want same stable job identities as %#v", secondList, list)
-		}
-
-		readValue, err := jobReadOutputTool(context.Background(), root, jtlpReadArgs(r, shell.JobID), jobToolResultDefaultMaxChar)
-		if err != nil {
-			t.Fatalf("job_read_output failed: %v", err)
-		}
-		readState, ok := readValue.(tooldefs.StateResult)
-		if !ok {
-			t.Fatalf("job_read_output type = %T", readValue)
-		}
-		var read jobReadOutputResult
-		jtlpDecodeValue(t, readState.State, &read)
-		if read.JobID != shell.JobID || !utf8.ValidString(read.Content) || read.TotalBytes == 0 {
-			t.Fatalf("job_read_output = %+v", read)
-		}
-		if read.Grep != nil && !strings.Contains(strings.Join(jtlpMatchLines(read.Matches), "\n"), "needle") {
-			t.Fatalf("grep read omitted the seeded needle: %+v", read)
 		}
 
 		watchCall := jtlpExecute(t, root, "job_watch", map[string]any{
@@ -396,25 +376,6 @@ func jtlpSeedTerminalShell(t *testing.T, s *Session, r *jtlpReader) *jobstore.Jo
 	return rec
 }
 
-func jtlpReadArgs(r *jtlpReader, jobID string) map[string]any {
-	args := map[string]any{"job_id": jobID}
-	switch r.intn(6) {
-	case 0:
-		args["grep"] = "needle"
-	case 1:
-		args["head_lines"] = float64(1)
-	case 2:
-		args["tail_lines"] = float64(1)
-	case 3:
-		args["head_lines"] = float64(1)
-		args["tail_lines"] = float64(1)
-	case 4:
-		args["from_line"] = float64(1)
-		args["line_count"] = float64(1)
-	}
-	return args
-}
-
 func jtlpContainsJob(jobs []jobListEntry, id string) bool {
 	for _, job := range jobs {
 		if job.JobID == id {
@@ -422,17 +383,6 @@ func jtlpContainsJob(jobs []jobListEntry, id string) bool {
 		}
 	}
 	return false
-}
-
-func jtlpMatchLines(matches *[]jobOutputMatch) []string {
-	if matches == nil {
-		return nil
-	}
-	lines := make([]string, 0, len(*matches))
-	for _, match := range *matches {
-		lines = append(lines, match.Line)
-	}
-	return lines
 }
 
 func jtlpContainsWatch(watches []jobWatchInspectToolResult, id string) bool {

@@ -11,8 +11,9 @@ import (
 // opening a Store for append. It is the read-only forensic path: a caller that
 // only inspects settled state (serf-doctor) uses this instead of Open, which
 // opens read-write and creates the file. A missing file yields no events (not an
-// error). An unparsable trailing line — an in-flight append racing the read — is
-// tolerated, but any earlier malformed line is reported as corruption.
+// error). An unterminated, syntactically incomplete trailing line — an
+// in-flight append racing the read — is tolerated, but durable or definitively
+// malformed input is reported as corruption.
 func ReadEvents(path string) ([]Event, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -21,6 +22,7 @@ func ReadEvents(path string) ([]Event, error) {
 		}
 		return nil, fmt.Errorf("jobstore: read %s: %w", path, err)
 	}
+	trailingLineTerminated := len(data) > 0 && data[len(data)-1] == '\n'
 	lines := bytes.Split(data, []byte{'\n'})
 	// A trailing newline produces a final empty element; drop it so the last
 	// real line is correctly identified for partial-line tolerance.
@@ -34,8 +36,10 @@ func ReadEvents(path string) ([]Event, error) {
 		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
-			if i == len(lines)-1 {
-				// Tolerate a partial trailing line from an in-flight append.
+			if i == len(lines)-1 && !trailingLineTerminated && isIncompleteTrailingJSON(line, err) {
+				// Tolerate only an unterminated, syntactically incomplete final
+				// line from an in-flight append. A newline-terminated or
+				// definitively malformed final record is durable corruption.
 				break
 			}
 			return nil, fmt.Errorf("jobstore: parse event line %d in %s: %w", i+1, path, err)

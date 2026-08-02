@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/spf13/afero"
 )
 
 func appendOutput(t *testing.T, o *OutputStore, s string) {
@@ -37,6 +39,191 @@ func appendFile(path string, s string) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+func TestCreateOutputRefusesEveryExistingArtifactWithoutChangingIt(t *testing.T) {
+	const contents = "keep me\n"
+	for _, artifact := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "log", path: func(path string) string { return path }},
+		{name: "final metadata", path: outputMetaPath},
+		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
+		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
+		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			occupied := artifact.path(path)
+			if err := os.WriteFile(occupied, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := CreateOutput(path, 1024)
+			if output != nil {
+				_ = output.Close()
+				t.Fatal("CreateOutput returned an output store for an occupied path")
+			}
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("CreateOutput error = %v, want fs.ErrExist", err)
+			}
+			got, readErr := os.ReadFile(occupied)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != contents {
+				t.Fatalf("occupied artifact changed: %q", got)
+			}
+		})
+	}
+}
+
+func TestCreateOutputRefusesDanglingSidecarSymlinksWithoutChangingThem(t *testing.T) {
+	for _, artifact := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "final metadata", path: outputMetaPath},
+		{name: "final metadata temporary", path: func(path string) string { return outputMetaPath(path) + ".tmp" }},
+		{name: "pending metadata", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) }},
+		{name: "pending metadata temporary", path: func(path string) string { return outputPendingMetaPath(outputMetaPath(path)) + ".tmp" }},
+	} {
+		t.Run(artifact.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "job.log")
+			occupied := artifact.path(path)
+			target := filepath.Join(dir, "missing-target")
+			if err := os.Symlink(target, occupied); err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := CreateOutput(path, 1024)
+			if output != nil {
+				_ = output.Close()
+				t.Fatal("CreateOutput returned an output store for an occupied path")
+			}
+			if !errors.Is(err, os.ErrExist) {
+				t.Fatalf("CreateOutput error = %v, want fs.ErrExist", err)
+			}
+			gotTarget, readErr := os.Readlink(occupied)
+			if readErr != nil {
+				t.Fatalf("read dangling sidecar link: %v", readErr)
+			}
+			if gotTarget != target {
+				t.Fatalf("dangling sidecar target = %q, want %q", gotTarget, target)
+			}
+			if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("dangling link target was materialized: %v", statErr)
+			}
+		})
+	}
+}
+
+type sameIDOutputCreateFS struct {
+	afero.Fs
+	outputPath string
+	ready      chan<- struct{}
+	release    <-chan struct{}
+}
+
+func (fs *sameIDOutputCreateFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if name == fs.outputPath {
+		fs.ready <- struct{}{}
+		<-fs.release
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs *sameIDOutputCreateFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
+}
+
+func TestCreateOutputSerializesSameIDAtExclusiveLogOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	fs := &sameIDOutputCreateFS{
+		Fs:         afero.NewOsFs(),
+		outputPath: path,
+		ready:      ready,
+		release:    release,
+	}
+	type result struct {
+		output *OutputStore
+		err    error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			output, err := createOutputFsWithSync(fs, path, 1024, true)
+			results <- result{output: output, err: err}
+		}()
+	}
+	<-ready
+	<-ready
+	close(release)
+
+	successes := 0
+	collisions := 0
+	for range 2 {
+		got := <-results
+		switch {
+		case got.err == nil:
+			successes++
+			if got.output == nil {
+				t.Fatal("successful creation returned nil output")
+			}
+			if err := got.output.Close(); err != nil {
+				t.Fatalf("close output: %v", err)
+			}
+		case errors.Is(got.err, os.ErrExist):
+			collisions++
+		default:
+			t.Fatalf("same-ID creation error = %v, want fs.ErrExist", got.err)
+		}
+	}
+	if successes != 1 || collisions != 1 {
+		t.Fatalf("same-ID creations = %d successes/%d collisions, want 1/1", successes, collisions)
+	}
+}
+
+type outputMetadataRenameErrorFS struct {
+	afero.Fs
+	metaPath string
+	err      error
+}
+
+func (fs *outputMetadataRenameErrorFS) Rename(oldname, newname string) error {
+	if newname == fs.metaPath {
+		return fs.err
+	}
+	return fs.Fs.Rename(oldname, newname)
+}
+
+func (fs *outputMetadataRenameErrorFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+	return fs.Fs.(afero.Lstater).LstatIfPossible(name)
+}
+
+func TestCreateOutputMetadataPersistenceFailureRemovesArtifacts(t *testing.T) {
+	want := errors.New("metadata rename failed")
+	disk := afero.NewOsFs()
+	path := filepath.Join(t.TempDir(), "job.log")
+	fs := &outputMetadataRenameErrorFS{Fs: disk, metaPath: outputMetaPath(path), err: want}
+
+	output, err := createOutputFsWithSync(fs, path, 1024, true)
+	if output != nil {
+		_ = output.Close()
+		t.Fatal("createOutputFsWithSync returned an output store after metadata failure")
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("createOutputFsWithSync error = %v, want %v", err, want)
+	}
+	for _, artifact := range outputArtifactPaths(path) {
+		if _, statErr := os.Lstat(artifact); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("output artifact %q remains: %v", artifact, statErr)
+		}
+	}
 }
 
 func TestOutputAppendAndTail(t *testing.T) {

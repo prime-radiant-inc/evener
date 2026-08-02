@@ -20,7 +20,6 @@ const (
 	EventWatchSendDelivered       EventKind = "watch_send_delivered"
 	EventWatchSendDropped         EventKind = "watch_send_dropped"
 	EventWatchSendEvicted         EventKind = "watch_send_evicted"
-	EventWatchReadGrant           EventKind = "watch_read_grant"
 	EventDelegateCreated          EventKind = "delegate_created"
 	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
 	EventDelegateDisposed         EventKind = "delegate_disposed"
@@ -84,9 +83,6 @@ type Event struct {
 
 	// watch_send_* payload
 	WatchSend *WatchSendState `json:"watch_send,omitempty"`
-
-	// watch_read_grant payload; the watched job id rides JobID.
-	ObserverSessionID string `json:"observer_session_id,omitempty"`
 
 	// delegate_* payload
 	Delegate *DelegateEvent `json:"delegate,omitempty"`

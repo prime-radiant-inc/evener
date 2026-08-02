@@ -4,8 +4,6 @@ package agent
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -17,15 +15,14 @@ import (
 	"primeradiant.com/serf/fuzz/oracle"
 )
 
-// This file fuzzes the watch/observer machinery in job_watch.go and
-// observer_grants.go that the existing job_watch_delegate lane leaves partly
-// dark: the restore-time watch-send target classifier
+// This file fuzzes the watch/observer machinery in job_watch.go that the
+// existing job_watch_delegate lane leaves partly dark: the restore-time
+// watch-send target classifier
 // (classifyRestoredWatchSendTarget), the model-facing frame renderer
 // (buildWatchFrame), the durable pending-watch-send reconstructor
 // (restoreWatchSendPending), the session-target/receiver remainder of
-// configureWatch, and the historical observer-grant inverter
-// (LoadSessionObserverGrants). Each target is driven from a real *Session /
-// *jobManager built with the package's own newSession / newTestJM helpers, so
+// configureWatch. Each target is driven from a real *Session / *jobManager
+// built with the package's own newSession / newTestJM helpers, so
 // every store, clock, and filesystem effect stays inside a t.TempDir sandbox —
 // no network, no process, no real disk outside the sandbox.
 //
@@ -42,9 +39,6 @@ import (
 //     nextUpdateSeq dominates every pending update seq).
 //   - configureWatch: the manager's watch state stays internally consistent
 //     after every session-target / receiver install and clear.
-//   - grants: LoadSessionObserverGrants is deterministic and every observer
-//     list it returns is sorted and duplicate-free.
-//
 // All new top-level identifiers carry the wobs_ lane prefix so parallel lanes
 // editing package agent never collide.
 
@@ -568,108 +562,4 @@ func wobs_checkConfigureInvariants(t *testing.T, jm *jobManager) {
 }
 
 // ==========================================================================
-// Target 5: LoadSessionObserverGrants
 // ==========================================================================
-
-// wobs_writeGrantLog writes a fuzzed jobs.jsonl containing watch-read-grant
-// events and delegate/non-delegate job records (with transcript refs in every
-// resolvable and unresolvable shape), then optionally appends a corrupt trailing
-// line so LoadSessionObserverGrants' open/load error tail is reachable.
-func wobs_writeGrantLog(t *testing.T, r *wobs_reader, path string) {
-	t.Helper()
-	store, err := jobstore.Open(path)
-	if err != nil {
-		t.Fatalf("wobs: open grant log: %v", err)
-	}
-	now := frozenTestTime
-	observers := []string{"obs_1", "obs_2", ""}
-	watchedJobs := []string{"job_del_local", "job_del_proj", "job_del_bad", "job_shell", "job_absent", ""}
-
-	// Seed a set of watched job records in assorted shapes.
-	jobShapes := []struct {
-		jobID string
-		typ   jobstore.JobType
-		ref   string
-	}{
-		{"job_del_local", jobstore.JobDelegate, encodeRef("", "worker_a")},
-		{"job_del_proj", jobstore.JobDelegate, encodeRef("bucket9", "worker_b")},
-		{"job_del_bad", jobstore.JobDelegate, "garbage-ref"},
-		{"job_shell", jobstore.JobShell, encodeRef("", "worker_c")},
-	}
-	for _, js := range jobShapes {
-		started := now
-		_ = store.Append(jobstore.Event{
-			Kind:          jobstore.EventJobStarted,
-			TS:            now,
-			JobID:         js.jobID,
-			Type:          js.typ,
-			TranscriptRef: js.ref,
-			StartedAt:     &started,
-		})
-	}
-
-	nGrants := r.intn(8) + 1
-	for i := 0; i < nGrants; i++ {
-		_ = store.Append(jobstore.Event{
-			Kind:              jobstore.EventWatchReadGrant,
-			TS:                now,
-			JobID:             watchedJobs[r.intn(len(watchedJobs))],
-			ObserverSessionID: observers[r.intn(len(observers))],
-		})
-	}
-	_ = store.Close()
-
-	if r.boolean() {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			t.Fatalf("wobs: reopen for corruption: %v", err)
-		}
-		_, _ = f.WriteString("{ this is not valid json\n")
-		_ = f.Close()
-	}
-}
-
-// wobs_grantsConsistent asserts every observer list is sorted and duplicate-free.
-func wobs_grantsConsistent(t *testing.T, out map[string][]string) {
-	t.Helper()
-	for worker, obs := range out {
-		if worker == "" {
-			t.Fatalf("wobs: empty worker key in grants")
-		}
-		for i := 1; i < len(obs); i++ {
-			if obs[i-1] >= obs[i] {
-				t.Fatalf("wobs: observer list not strictly sorted/deduped for %q: %v", worker, obs)
-			}
-		}
-	}
-}
-
-// FuzzWobsLoadObserverGrants writes a fuzzed on-disk grant log and asserts
-// LoadSessionObserverGrants inverts it deterministically into a well-formed
-// worker→observers map (or fails cleanly on a corrupt log) without panicking.
-func FuzzWobsLoadObserverGrants(f *testing.F) {
-	f.Add([]byte{})
-	f.Add([]byte{0, 1, 2, 3})
-	f.Add([]byte{1, 1, 1, 1})
-	f.Add([]byte{2, 4, 6, 8, 10})
-	f.Add([]byte{3, 5, 7, 9, 11, 13})
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		r := &wobs_reader{data: data}
-		stateDir := t.TempDir()
-		const sessionID = "S1"
-		dir := jobsDir(stateDir, sessionID)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("wobs: mkdir jobs dir: %v", err)
-		}
-		path := filepath.Join(dir, "jobs.jsonl")
-		wobs_writeGrantLog(t, r, path)
-
-		load := func(struct{}) map[string][]string {
-			out, _ := LoadSessionObserverGrants(stateDir, sessionID)
-			return out
-		}
-		oracle.Deterministic(t, load, struct{}{}, oracle.DeepEqual[map[string][]string])
-		wobs_grantsConsistent(t, load(struct{}{}))
-	})
-}

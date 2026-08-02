@@ -103,7 +103,7 @@ func FuzzJobDelegateExactFinalizeReportSeed100(f *testing.F) {
 		case 14:
 			parent := newTestSession(t)
 			sub := &subagent{id: "detached", status: SubagentCompleted, done: make(chan struct{})}
-			run, err := parent.attachDelegateJobWithID(parent.jobManager, sub.id, "structured", sub, jobstore.NewJobID(), map[string]any{"type": "object"}, false)
+			run, err := parent.attachDelegateJobWithID(parent.jobManager, sub.id, "structured", sub, jobstore.NewJobID(parent.ID()), map[string]any{"type": "object"}, false)
 			if err != nil {
 				t.Fatalf("attach structured delegate: %v", err)
 			}

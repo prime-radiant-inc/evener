@@ -382,7 +382,7 @@ func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptA
 
 func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error) {
 	_ = rangeArg
-	if deps == nil || deps.jobRead == nil {
+	if deps == nil {
 		return nil, errors.New("job transcript unavailable: job manager is not available")
 	}
 	if format == "" {
@@ -395,7 +395,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 	if jobID == "" {
 		return nil, errors.New("invalid_request: job transcript_ref must be job:<job_id>")
 	}
-	snap, err := deps.jobRead(jobID, maxJobOutputRetentionBytes)
+	snap, err := readLocalJobSnapshot(deps.stateDir, jobID, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -428,9 +428,8 @@ func renderJobTranscript(rec *jobstore.JobRecord, output string, total, dropped 
 // renderDelegateJobTranscript renders a delegate job's report. The
 // structured_result is appended as JSON with its validity flag, so one read
 // carries both the report text and the machine-readable result together with
-// whether it parsed. It deliberately omits the delegate's transcript_ref:
-// session refs are not access-controlled, so naming one here would hand a
-// granted reader the whole child conversation (spec non-goal 4).
+// whether it parsed. It deliberately omits the delegate's transcript_ref: this
+// view reports one job's evidence, not the child's separate conversation.
 func renderDelegateJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Delegate Job %s\n\n", rec.JobID)
@@ -469,15 +468,20 @@ func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dro
 	var b strings.Builder
 	jobID := ""
 	status := ""
+	reason := ""
 	command := ""
 	if rec != nil {
 		jobID = rec.JobID
 		status = string(rec.Status)
+		reason = rec.Reason
 		command = rec.Command
 	}
 	fmt.Fprintf(&b, "# Shell Job %s\n\n", jobID)
 	if status != "" {
 		fmt.Fprintf(&b, "- status: %s\n", status)
+	}
+	if reason != "" {
+		fmt.Fprintf(&b, "- reason: %s\n", reason)
 	}
 	if command != "" {
 		fmt.Fprintf(&b, "- command: `%s`\n", strings.ReplaceAll(command, "`", "\\`"))

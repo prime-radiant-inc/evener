@@ -49,32 +49,6 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 	}
 }
 
-func TestS3Cov_BoundedMatchLine(t *testing.T) {
-	t.Parallel()
-	short := "a short line"
-	if boundedMatchLine(short) != short {
-		t.Fatal("short line should pass through")
-	}
-	long := strings.Repeat("z", maxJobGrepLineBytes+50)
-	got := boundedMatchLine(long)
-	if len([]byte(got)) > maxJobGrepLineBytes {
-		t.Fatalf("bounded line %d exceeds cap %d", len(got), maxJobGrepLineBytes)
-	}
-	if got == long {
-		t.Fatal("long line should be truncated")
-	}
-}
-
-func TestS3Cov_MaxJobGrepPatternJSONChars(t *testing.T) {
-	t.Parallel()
-	if got := maxJobGrepPatternJSONChars(16); got != 64 {
-		t.Fatalf("floor: got %d want 64", got)
-	}
-	if got := maxJobGrepPatternJSONChars(4000); got != 1000 {
-		t.Fatalf("quarter: got %d want 1000", got)
-	}
-}
-
 func TestS3Cov_JobStatusArrayArg(t *testing.T) {
 	t.Parallel()
 	if got, err := jobStatusArrayArg(map[string]any{}, "status"); err != nil || got != nil {

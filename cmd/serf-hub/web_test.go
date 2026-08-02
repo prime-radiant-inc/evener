@@ -4231,128 +4231,31 @@ func TestWeb_WorkspaceData_IncludesEndedObserver(t *testing.T) {
 	}
 }
 
-// An ordinary worker with no ObservedBy carries no observer route ids.
+// An ordinary worker with no ObservedBy carries no observer route ids even
+// when unrelated durable job records exist beside its session metadata.
 func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
-	web := observerWorkspaceFixture(t, nil)
-	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
-	if len(wd.ObserverRouteIDs) != 0 {
-		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
-	}
-}
-
-// writeObserverGrantLog writes a watching session's jobs.jsonl encoding a
-// watch-read-grant: observer OBSERVER watching a delegate job whose transcript
-// ref resolves to worker WORKER. This is the durable on-disk historical source
-// for the observer link — no ObservedBy stamp involved (the 0/2211 case).
-func writeObserverGrantLog(t *testing.T, project, watchingSessID, watchedJobID, workerRef, observerSessID string) {
-	t.Helper()
-	jobsDir := filepath.Join(project, "sessions", watchingSessID)
-	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ts := time.Now().UTC().Format(time.RFC3339Nano)
-	body := `{"kind":"job_started","seq":1,"ts":"` + ts + `","job_id":"` + watchedJobID + `","type":"delegate","owner_session_id":"` + watchingSessID + `"}` + "\n" +
-		`{"kind":"job_session_assigned","seq":2,"ts":"` + ts + `","job_id":"` + watchedJobID + `","transcript_ref":"` + workerRef + `"}` + "\n" +
-		`{"kind":"watch_read_grant","seq":3,"ts":"` + ts + `","job_id":"` + watchedJobID + `","observer_session_id":"` + observerSessID + `"}` + "\n"
-	if err := os.WriteFile(filepath.Join(jobsDir, "jobs.jsonl"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write jobs.jsonl: %v", err)
-	}
-}
-
-// observerGrantWorkspaceFixture writes a WORKER meta with NO ObservedBy stamp,
-// plus a grant log under a watching PARENT session that resolves the observer to
-// WORKER, then builds a hub with the named live roster sessions. It is the
-// historical-source counterpart to observerWorkspaceFixture.
-func observerGrantWorkspaceFixture(t *testing.T, observerSessID, workerRef string, liveSessionIDs ...string) *WebServer {
-	t.Helper()
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-observer-0123456789")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(proj, "sessions", "02wMz5Txv2enqVTitaig6F"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), OriginalPrompt: "do work",
-		IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F", // no ObservedBy stamp
+		IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/project-observer-0123456789"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_watched", workerRef, observerSessID)
+	if err := os.WriteFile(filepath.Join(proj, "sessions", "02wMz5Txv2enqVTitaig6F", "jobs.jsonl"), []byte("unrelated durable job record\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	entries := make([]hubcore.LiveEntry, 0, len(liveSessionIDs))
-	for i, id := range liveSessionIDs {
-		entries = append(entries, hubcore.LiveEntry{
-			Entry: rendezvous.Entry{PID: i + 1}, SessionID: id, Status: appwire.ThreadStatusActive,
-		})
-	}
-	return NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRosterWithEntries(entries...),
-		Past:    idx,
-	})
-}
-
-// A worker whose observer link exists ONLY in the durable grant log (no
-// ObservedBy stamp) still surfaces the live observer — the grant-history source
-// feeds fillObserverLink, which is the whole point on existing data.
-func TestWeb_WorkspaceData_CarriesObserverFromGrantHistory(t *testing.T) {
-	web := observerGrantWorkspaceFixture(t, "02wMz5Txv47YP64RR3B9YJ", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
+	web := NewWebServer(hubcore.WebConfig{Past: idx})
 	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
-		t.Fatalf("ObserverRouteIDs = %v, want [02wMz5Txv47YP64RR3B9YJ]", wd.ObserverRouteIDs)
-	}
-}
-
-// A grant-history observer that is no longer live is filtered out, same as a
-// stamped one — auto-open stays live-only regardless of source.
-func TestWeb_WorkspaceData_IncludesEndedGrantHistoryObserver(t *testing.T) {
-	web := observerGrantWorkspaceFixture(t, "02wMz5Txv47YP64RR3B9YJ", "local:02wMz5Txv1C3Hut0M8GCeB") // observer not live (ended)
-	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
-	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "02wMz5Txv47YP64RR3B9YJ" {
-		t.Fatalf("ended grant-history observer must still be surfaced; got %v", wd.ObserverRouteIDs)
-	}
-}
-
-// The grant-history source and the ObservedBy stamp union and dedup: an observer
-// present in both sources surfaces exactly once.
-func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-observer-0123456789")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Worker carries STAMPED on its meta; GRANTED comes only from the grant log;
-	// STAMPED is ALSO in the grant log (must not duplicate).
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Now(), IsSubagent: true, ParentSessionID: "02wMz5Txv2enqVTitaig6F",
-		ObservedBy: []string{"02wMz5Txv47YP64RR3B9YJ"},
-		EnvInfo:    schema.EnvironmentInfo{WorkingDir: "/projects/project-observer-0123456789"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_w1", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv5aIxgf9yVdd0N")
-	writeObserverGrantLog(t, proj, "02wMz5Txv733WHFsVy66SR", "job_w2", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster: hubcore.NewRosterWithEntries(
-			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "02wMz5Txv47YP64RR3B9YJ", Status: appwire.ThreadStatusActive},
-			hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2}, SessionID: "02wMz5Txv5aIxgf9yVdd0N", Status: appwire.ThreadStatusActive},
-		),
-		Past: idx,
-	})
-	wd := web.workspaceData("02wMz5Txv1C3Hut0M8GCeB")
-	seen := map[string]int{}
-	for _, id := range wd.ObserverRouteIDs {
-		seen[id]++
-	}
-	if len(wd.ObserverRouteIDs) != 2 || seen["02wMz5Txv47YP64RR3B9YJ"] != 1 || seen["02wMz5Txv5aIxgf9yVdd0N"] != 1 {
-		t.Fatalf("ObserverRouteIDs = %v, want STAMPED+GRANTED once each", wd.ObserverRouteIDs)
+	if len(wd.ObserverRouteIDs) != 0 {
+		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
 	}
 }

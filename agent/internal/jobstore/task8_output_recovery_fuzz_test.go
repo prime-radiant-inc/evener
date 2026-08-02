@@ -25,8 +25,8 @@ import (
 // ReadEvents and output helper wrappers; no ambient path, process, provider, or
 // network is consulted. The semantic oracles assert retained-tail bytes and
 // lifetime offsets after each append/reopen, public wrapper parity, tolerance of
-// partial/corrupt trailing event lines, and preservation of a committed event
-// after injected append failures and recovery.
+// incomplete trailing event lines, rejection of corrupt trailing lines, and
+// preservation of a committed event after injected append failures and recovery.
 func FuzzTask8OutputRecovery(f *testing.F) {
 	// Forces several retained-tail prunes and the incomplete-trailing-event
 	// recovery mode.
@@ -274,6 +274,7 @@ func t8AssertReadEventsRecovery(t *testing.T, mode int) {
 
 	var tail []byte
 	wantForensic, wantStore := 1, 1
+	wantForensicErr := false
 	switch mode {
 	case 0:
 		// A complete JSON record without its final newline must be retained and
@@ -284,9 +285,10 @@ func t8AssertReadEventsRecovery(t *testing.T, mode int) {
 		// An incomplete final JSON append is discarded by Store recovery.
 		tail = []byte(`{"kind":"job_finished","job_id":"job_task8"`)
 	case 2:
-		// The forensic reader tolerates an arbitrary final fragment, while Store
-		// reports durable corruption rather than pretending it was committed.
+		// Both readers report a definitively malformed final fragment rather than
+		// pretending it was an in-flight append.
 		tail = []byte("not-json")
+		wantForensicErr = true
 	}
 	raw := append(append(append([]byte(nil), firstLine...), '\n'), tail...)
 
@@ -295,7 +297,11 @@ func t8AssertReadEventsRecovery(t *testing.T, mode int) {
 		t.Fatalf("write forensic fixture: %v", err)
 	}
 	forensic, err := ReadEvents(path)
-	if err != nil || len(forensic) != wantForensic {
+	if wantForensicErr {
+		if err == nil {
+			t.Fatalf("ReadEvents mode %d accepted corrupt trailing event", mode)
+		}
+	} else if err != nil || len(forensic) != wantForensic {
 		t.Fatalf("ReadEvents mode %d = %d/%v, want %d/nil", mode, len(forensic), err, wantForensic)
 	}
 

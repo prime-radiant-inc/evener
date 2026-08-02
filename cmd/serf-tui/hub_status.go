@@ -11,6 +11,7 @@ import (
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/identifier"
 )
 
 // compactThreshold must match agent/internal/contextmgr/context_manager.go's
@@ -240,11 +241,7 @@ func shortStatusJobID(id string) string {
 		return id
 	}
 	if strings.HasPrefix(id, "job_") {
-		body := id[len("job_"):]
-		if len(body) <= 8 {
-			return id
-		}
-		return "job " + body[:6] + "…"
+		return identifier.AbbreviateJobID(id, 26)
 	}
 	return id[:8]
 }

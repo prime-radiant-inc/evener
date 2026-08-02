@@ -191,27 +191,27 @@ func dgfz_seedDelegates(t *testing.T, s *Session) dgfz_delegateTargets {
 
 	// running, retained-runtime absent -> "not retained" arm.
 	runDlg := jobstore.NewDelegateID()
-	runJob := jobstore.NewJobID()
+	runJob := jobstore.NewJobID(s.ID())
 	dgfz_appendDelegate(t, s, runDlg, runJob, encodeRef("", "child_run"), self, jobstore.JobDelegate, true, false, "", "")
 
 	// running with a malformed transcript ref -> decodeRef error arm.
 	badRefDlg := jobstore.NewDelegateID()
-	badRefJob := jobstore.NewJobID()
+	badRefJob := jobstore.NewJobID(s.ID())
 	dgfz_appendDelegate(t, s, badRefDlg, badRefJob, "bogus-ref", self, jobstore.JobDelegate, true, false, "", "")
 
 	// terminal (stopped) with a malformed ref -> terminal-path decodeRef error arm.
 	termBadDlg := jobstore.NewDelegateID()
-	termBadJob := jobstore.NewJobID()
+	termBadJob := jobstore.NewJobID(s.ID())
 	dgfz_appendDelegate(t, s, termBadDlg, termBadJob, "bogus-ref", self, jobstore.JobDelegate, true, true, jobstore.StatusStopped, "gone")
 
 	// resolved job is shell-typed -> not-messageable arm.
 	shellDlg := jobstore.NewDelegateID()
-	shellJob := jobstore.NewJobID()
+	shellJob := jobstore.NewJobID(s.ID())
 	dgfz_appendDelegate(t, s, shellDlg, shellJob, encodeRef("", "child_shell"), self, jobstore.JobShell, true, false, "", "")
 
 	// resolved job owned by a descendant session -> not-controllable arm.
 	ownDlg := jobstore.NewDelegateID()
-	ownJob := jobstore.NewJobID()
+	ownJob := jobstore.NewJobID(s.ID())
 	dgfz_appendDelegate(t, s, ownDlg, ownJob, encodeRef("", "child_owned"), dgfz_otherSession, jobstore.JobDelegate, true, false, "", "")
 
 	// delegate with no job history -> target_not_resumable(no job history) arm.

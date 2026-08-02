@@ -4,8 +4,6 @@ package agent
 
 import (
 	"context"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -59,11 +57,6 @@ func seed100ToolsRangeD(t *testing.T) {
 	_ = isEmptyWatchSend(map[string]any{})
 	_ = isEmptyWatchSend(map[string]any{"to": "x"})
 
-	_ = validateJobGrepPattern("ok", 1024)
-	_ = validateJobGrepPattern(strings.Repeat("x", maxJobGrepPatternBytes+1), 1024)
-	_ = validateJobGrepPattern(strings.Repeat("\\", 40), 1)
-	_ = maxJobGrepPatternJSONChars(1)
-	_ = maxJobGrepPatternJSONChars(1024)
 	for _, args := range []map[string]any{
 		{}, {"types": "bad"}, {"types": []any{"shell", "delegate"}}, {"types": []any{"bogus"}},
 	} {
@@ -75,36 +68,7 @@ func seed100ToolsRangeD(t *testing.T) {
 	freezeClock(jm)
 	_, _ = findJobRecord(jm, "job_missing")
 	_ = waitForJobDone(context.Background(), jm, "job_missing", time.Second)
-	waitForJobDoneOrOutput(context.Background(), jm, "job_missing", time.Second)
-	waitForJobGrepMatch(context.Background(), jm, "job_missing", regexp.MustCompile("x"), time.Second)
-	_, _ = jobOutputBytes(jm, "job_missing")
 	_, _ = jobDone(jm, "job_missing")
-	_, _, _ = readJobOutputFrom(jm, "job_missing", 0, 1)
-
-	re := regexp.MustCompile("hit")
-	for _, tc := range []struct {
-		g   jobGrepScan
-		seg string
-		max int
-	}{
-		{seg: "miss\nhit\n", max: 20},
-		{seg: "hit\r\n", max: 20},
-		{seg: "tail-hit", max: 20},
-		{seg: "toolong", max: 2},
-		{g: jobGrepScan{inDeadLine: true}, seg: "rest\nmiss\n", max: 20},
-		{g: jobGrepScan{inDeadLine: true}, seg: "rest", max: 20},
-	} {
-		g := tc.g
-		_ = g.scanSegment([]byte(tc.seg), re, tc.max)
-	}
-
-	_ = boundedMatchLine("short")
-	_ = boundedMatchLine(strings.Repeat("界", maxJobGrepLineBytes))
-	matches := make([]jobstore.Match, maxJobGrepMatches+1)
-	for i := range matches {
-		matches[i] = jobstore.Match{ByteOffset: int64(i), Line: "line"}
-	}
-	_ = projectJobOutputMatches(matches)
 
 	now := frozenTestTime
 	ended := now.Add(3 * time.Second)

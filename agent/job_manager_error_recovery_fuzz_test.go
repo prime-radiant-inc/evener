@@ -128,6 +128,10 @@ func assertJobManagerConstructionFailures(t *testing.T) {
 		func(string, int64) (*jobstore.OutputStore, error) {
 			outputOpened = true
 			return nil, errors.New("unexpected output open")
+		},
+		func(string, int64) (*jobstore.OutputStore, error) {
+			outputOpened = true
+			return nil, errors.New("unexpected output create")
 		})
 	if jm != nil || !errors.Is(err, want) || outputOpened {
 		t.Fatalf("constructor store failure = (%p, %v, output=%v)", jm, err, outputOpened)

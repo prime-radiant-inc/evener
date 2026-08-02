@@ -739,7 +739,7 @@ func watchdel_driveClearByID(t *testing.T, r *watchdel_reader, jm *jobManager) {
 // watchdel_seedObserverDelegate installs a running, resumable delegate named
 // dlg_obs owned by the manager's session so a fuzzed watch send target of
 // "dlg_obs" passes validateWatchSendTarget (exercising the delegate-send install
-// path and read-grant minting) rather than always erroring out early.
+// path and observer-link stamping) rather than always erroring out early.
 func watchdel_seedObserverDelegate(t *testing.T, jm *jobManager) {
 	t.Helper()
 	now := jm.now()

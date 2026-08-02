@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 )
 
 func FuzzTranscriptReadToolsExactCoverage(f *testing.F) {
@@ -90,12 +91,14 @@ func (r *trteFailReader) Read(p []byte) (int, error) {
 
 func trteJobRequestFailures(t *testing.T) {
 	t.Helper()
-	jm, err := newJobManagerNoSync(t.TempDir(), "session", nil)
+	stateDir := t.TempDir()
+	ownerSessionID := identifier.MustNewSessionID()
+	jm, err := newJobManagerNoSync(stateDir, ownerSessionID, nil)
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
 	t.Cleanup(func() { _ = jm.close() })
-	deps := &toolDeps{jobRead: sessionJobRead(&Session{id: "session", jobManager: jm})}
+	deps := &toolDeps{stateDir: stateDir, sessionID: ownerSessionID}
 
 	for _, tc := range []struct {
 		deps              *toolDeps
@@ -104,7 +107,7 @@ func trteJobRequestFailures(t *testing.T) {
 		{ref: "job:x", format: "", want: "job manager is not available"},
 		{deps: deps, ref: "job:x", format: formatJSONL, want: "not supported"},
 		{deps: deps, ref: "job: ", format: formatMarkdown, want: "must be job:<job_id>"},
-		{deps: deps, ref: "job:missing", format: "", want: "not found"},
+		{deps: deps, ref: "job:missing", format: "", want: "invalid job identifier"},
 	} {
 		_, err := readJobTranscript(tc.deps, tc.ref, "", tc.format)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -113,14 +116,15 @@ func trteJobRequestFailures(t *testing.T) {
 	}
 
 	now := time.Unix(1, 0).UTC()
+	jobID := identifier.MustNewJobID(ownerSessionID)
 	if err := jm.appendEvent(jobstore.Event{
-		Kind: jobstore.EventJobStarted, TS: now, JobID: "no-output",
-		Type: jobstore.JobShell, OwnerSessionID: "session", VisibleToSession: "session",
+		Kind: jobstore.EventJobStarted, TS: now, JobID: jobID,
+		Type: jobstore.JobShell, OwnerSessionID: ownerSessionID, VisibleToSession: ownerSessionID,
 		StartedAt: &now,
 	}); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
-	if _, err := readJobTranscript(deps, "job:no-output", "", formatMarkdown); err == nil {
+	if _, err := readJobTranscript(deps, "job:"+jobID, "", formatMarkdown); err == nil {
 		t.Fatal("readJobTranscript accepted a job with no output file")
 	}
 }

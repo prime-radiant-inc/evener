@@ -2,11 +2,13 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/afero"
@@ -14,6 +16,8 @@ import (
 )
 
 var marshalSessionMeta = json.Marshal
+
+var sessionMetaWriteMu sync.Mutex
 
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
@@ -69,12 +73,8 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and serf resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
-	// ObservedBy is the set of session ids of observer subagents watching this
-	// session's work. It is stamped onto the watched worker's meta when a parent
-	// session's job_watch mints a read grant for an observer delegate (the only
-	// place that knows the observer↔worker pair). The hub reads it to auto-open
-	// a live observer's session beside this one. Append-only and deduped, like
-	// the watch read grants it mirrors; never revoked.
+	// ObservedBy records append-only observer UI relationships. It grants no
+	// access and lets the hub auto-open an observer beside this worker.
 	ObservedBy []string `json:"observed_by,omitempty"`
 	// WorktreePath is the absolute path of the managed or path-entered
 	// worktree the session's env is currently rooted in via manage_worktree,
@@ -173,7 +173,26 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 // SaveSessionMetaWithFS writes a SessionMeta through fs using the same atomic
 // temp-file and rename sequence as SaveSessionMeta.
 func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
-	return saveSessionMetaFS(fs, dir, meta)
+	sessionMetaWriteMu.Lock()
+	defer sessionMetaWriteMu.Unlock()
+	return saveSessionMetaLocked(fs, dir, meta)
+}
+
+// AppendSessionObservedBy records a deduplicated observer UI relationship
+// without changing other persisted session metadata.
+func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) error {
+	return appendSessionObservedByWithFS(afero.NewOsFs(), dir, workerSessionID, observerSessionID)
+}
+
+func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSessionID string) error {
+	sessionMetaWriteMu.Lock()
+	defer sessionMetaWriteMu.Unlock()
+	meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
+	if err != nil {
+		return err
+	}
+	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
+	return saveSessionMetaLocked(fs, dir, meta)
 }
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
@@ -199,6 +218,18 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 // byte-identical to using os calls; tests and fuzzers inject an in-memory or
 // sandboxed filesystem to exercise persistence without touching real disk.
 func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
+	sessionMetaWriteMu.Lock()
+	defer sessionMetaWriteMu.Unlock()
+	return saveSessionMetaLocked(fs, dir, meta)
+}
+
+func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
+	if err == nil {
+		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
@@ -220,6 +251,21 @@ func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
 	return nil
+}
+
+func stableUnion(existing, added []string) []string {
+	seen := make(map[string]bool, len(existing)+len(added))
+	out := make([]string, 0, len(existing)+len(added))
+	for _, values := range [][]string{existing, added} {
+		for _, value := range values {
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.

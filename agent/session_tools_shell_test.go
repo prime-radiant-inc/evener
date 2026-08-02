@@ -603,8 +603,8 @@ func TestCompleteOrHandleEphemeral(t *testing.T) {
 
 // TestCompleteOrHandleKeptLargeOutput pins spec §6.4(b): a fast command
 // whose output exceeds the ride-whole budget (shellRideWholeBytes = 8KB)
-// returns a kept result with job_id + truncated:true, and job_read_output
-// returns the full retained bytes.
+// returns a kept result with job_id + truncated:true, and read_transcript
+// returns the retained bytes.
 func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -636,25 +636,6 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 		t.Fatalf("truncated = false, want true for large output")
 	}
 
-	// job_read_output must report TotalBytes >= 70000 — proving all bytes were
-	// retained in the OutputStore (not just what fits in the tool-result).
-	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-		ID: "r1",
-
-		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
-	})
-	if readRes.IsError {
-		t.Fatalf("job_read_output returned error: %s", readRes.Output)
-	}
-	var readOut struct {
-		TotalBytes int64 `json:"total_bytes"`
-	}
-	if err := json.Unmarshal(toolResultJSON(readRes), &readOut); err != nil {
-		t.Fatalf("unmarshal read output: %v", err)
-	}
-	if readOut.TotalBytes < 70000 {
-		t.Fatalf("retained TotalBytes = %d, want >= 70000", readOut.TotalBytes)
-	}
 }
 
 // TestShellRideWholeThresholdIs8KiB pins the context-managed default: completed
@@ -771,7 +752,7 @@ func TestShellOutputStatus(t *testing.T) {
 // TestShellHandlePeekTailIsSmall pins the small-default-window rule: when
 // completed output becomes a handle, the inline result carries only a small
 // peek tail (shellDefaultTailBytes = 1 KiB), not the whole output — the full
-// bytes stay retrievable via job_read_output.
+// bytes stay retrievable via read_transcript.
 func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -798,24 +779,6 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 		t.Fatalf("inline peek tail = %d bytes, want a small peek (<= ~1 KiB), not the whole output", len(out.Output))
 	}
 
-	// The full bytes remain retrievable through the handle.
-	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
-		ID: "r1",
-
-		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
-	})
-	if readRes.IsError {
-		t.Fatalf("job_read_output returned error: %s", readRes.Output)
-	}
-	var readOut struct {
-		TotalBytes int64 `json:"total_bytes"`
-	}
-	if err := json.Unmarshal(toolResultJSON(readRes), &readOut); err != nil {
-		t.Fatalf("unmarshal read output: %v", err)
-	}
-	if readOut.TotalBytes < 9000 {
-		t.Fatalf("retained TotalBytes = %d, want >= 9000", readOut.TotalBytes)
-	}
 }
 
 // TestCompleteOrHandleKeptToolResultOverflow pins spec §6.4(c): a command

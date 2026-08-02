@@ -259,7 +259,7 @@ func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 	parent.subagents.track(sub)
 
 	delegateID := jobstore.NewDelegateID()
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(parent.ID())
 	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "already terminal", sub, jobID, nil, false, nil, nil, delegateJobLink{
 		delegateID: delegateID,
 		generation: jobstore.NewDelegateGeneration(),
@@ -472,7 +472,7 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 		"required": []string{"message"},
 	}
 
-	jobID := jobstore.NewJobID()
+	jobID := jobstore.NewJobID(sess.ID())
 	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
 	ctx = context.WithValue(ctx, ctxToolCallID, "call_original_delegate")
 	ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, resultSchema)
@@ -3886,7 +3886,7 @@ func TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance(t *testing.T) {
 	}
 	drivingWatch := provenance.WithWatch(nil, "watch_Y", "wg_y", "wd_y", parent.ID(), "caller")
 
-	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "observer", sub, jobstore.NewJobID(), nil, true, nil, previousRestore, delegateJobLink{
+	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "observer", sub, jobstore.NewJobID(parent.ID()), nil, true, nil, previousRestore, delegateJobLink{
 		delegateID: jobstore.NewDelegateID(),
 		generation: jobstore.NewDelegateGeneration(),
 		create:     true,

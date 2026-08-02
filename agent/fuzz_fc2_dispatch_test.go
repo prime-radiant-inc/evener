@@ -8,60 +8,6 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-// FuzzFc2ClassifyJobReadWindow drives classifyJobReadWindow — the pure read-window
-// dispatch core lifted out of jobReadOutputTool's switch — over the cross-product
-// of the grep / from_line / head / tail presence flags. Oracles (beyond
-// never-panic):
-//   - determinism;
-//   - totality: the result is always one of the six defined modes;
-//   - precedence matches the request contract (grep dominates, then from_line,
-//     then head+tail, then a one-sided head or tail, then the default digest);
-//   - the default digest is chosen iff no flag is set.
-func FuzzFc2ClassifyJobReadWindow(f *testing.F) {
-	f.Add(true, false, false, false)
-	f.Add(false, true, false, false)
-	f.Add(false, false, true, true)
-	f.Add(false, false, true, false)
-	f.Add(false, false, false, true)
-	f.Add(false, false, false, false)
-
-	f.Fuzz(func(t *testing.T, hasGrep, hasFromLine, hasHead, hasTail bool) {
-		mode := classifyJobReadWindow(hasGrep, hasFromLine, hasHead, hasTail)
-		if mode2 := classifyJobReadWindow(hasGrep, hasFromLine, hasHead, hasTail); mode != mode2 {
-			t.Fatalf("non-deterministic: %v vs %v", mode, mode2)
-		}
-		switch mode {
-		case jobReadModeGrep, jobReadModeFromLine, jobReadModeHeadTail, jobReadModeHead, jobReadModeTail, jobReadModeDigest:
-		default:
-			t.Fatalf("invalid mode %v", mode)
-		}
-
-		var want jobReadWindowMode
-		switch {
-		case hasGrep:
-			want = jobReadModeGrep
-		case hasFromLine:
-			want = jobReadModeFromLine
-		case hasHead && hasTail:
-			want = jobReadModeHeadTail
-		case hasHead:
-			want = jobReadModeHead
-		case hasTail:
-			want = jobReadModeTail
-		default:
-			want = jobReadModeDigest
-		}
-		if mode != want {
-			t.Fatalf("precedence: (grep=%v,from=%v,head=%v,tail=%v) got %v, want %v",
-				hasGrep, hasFromLine, hasHead, hasTail, mode, want)
-		}
-		if (mode == jobReadModeDigest) != (!hasGrep && !hasFromLine && !hasHead && !hasTail) {
-			t.Fatalf("digest chosen iff no flag set, mismatch: mode=%v flags(%v,%v,%v,%v)",
-				mode, hasGrep, hasFromLine, hasHead, hasTail)
-		}
-	})
-}
-
 // FuzzFc2ClassifyStopOutcome drives classifyStopOutcome — the pure decision that
 // distinguishes a stop that cancelled a live job from one that raced with or
 // arrived after its own completion. Oracles (beyond never-panic):
