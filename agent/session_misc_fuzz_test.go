@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -164,31 +163,8 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 			t.Fatal("nil live-model profile must remain nil")
 		}
 
-		// workerSessionForWatchedJob validates the ref's session id
-		// (identifier.ValidateSessionID), so the fixture must mint a real one —
-		// a human-readable stand-in is rejected by design.
-		workerID, err := identifier.NewSessionID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		records := map[string]*jobstore.JobRecord{
-			"local": {Type: jobstore.JobDelegate, TranscriptRef: encodeRef("", workerID)},
-			"cross": {Type: jobstore.JobDelegate, TranscriptRef: encodeRef("bucket", workerID)},
-			"shell": {Type: jobstore.JobShell, TranscriptRef: encodeRef("", workerID)},
-		}
-		if got, ok := workerSessionForWatchedJob(records, "local"); !ok || got != workerID {
-			t.Fatalf("local delegate ref did not resolve: (%q,%v)", got, ok)
-		}
-		for _, id := range []string{"missing", "cross", "shell"} {
-			if got, ok := workerSessionForWatchedJob(records, id); ok || got != "" {
-				t.Fatalf("ineligible watched job %q resolved to (%q,%v)", id, got, ok)
-			}
-		}
 		if got, err := LoadSessionHistoricalJobRecords(emptyStateDir, "absent"); err != nil || len(got) != 0 {
 			t.Fatalf("absent historical jobs=(%v,%v), want empty", got, err)
-		}
-		if got, err := LoadSessionObserverGrants(emptyStateDir, "absent"); err != nil || len(got) != 0 {
-			t.Fatalf("absent observer grants=(%v,%v), want empty", got, err)
 		}
 
 		recs := make([]*jobstore.JobRecord, 0, detailedStatusTerminalJobsLimit+4)

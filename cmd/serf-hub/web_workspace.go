@@ -298,24 +298,14 @@ func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMet
 // a worker with many past observers is bounded on the client by the side-pane
 // cap + closed-pane suppression (a dismissed observer pane stays shut).
 //
-// Two sources union (deduped): the forward SessionMeta.ObservedBy stamp (set on
-// fresh local watches) and the durable grant-history index built from every
-// local session's jobs.jsonl watch-read-grants during the past-index rebuild
-// (PastIndex.ObserversOf). The stamp is empty on existing data, so the grant
-// history is what makes auto-open work on the sessions already on disk. Local
-// sources only: both sources derive from local meta/jobstore state, so remote/
-// codex workspaces never reach here with an observer.
+// SessionMeta.ObservedBy is the sole source of this append-only UI relationship.
 func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) {
-	var historical []string
-	if s.cfg.Past != nil {
-		historical = s.cfg.Past.ObserversOf(m.ID)
-	}
-	if len(m.ObservedBy) == 0 && len(historical) == 0 {
+	if len(m.ObservedBy) == 0 {
 		return
 	}
 	var observers []string
-	seen := make(map[string]bool, len(m.ObservedBy)+len(historical))
-	for _, observerID := range append(append([]string(nil), m.ObservedBy...), historical...) {
+	seen := make(map[string]bool, len(m.ObservedBy))
+	for _, observerID := range m.ObservedBy {
 		if observerID == "" || seen[observerID] {
 			continue
 		}

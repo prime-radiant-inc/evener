@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/identifier"
 )
 
 var matchChromaLexer = lexers.Match
@@ -244,7 +245,7 @@ func delegateBody(args ToolArgs, output string, width int) string {
 	if task := strings.TrimSpace(args.Str("task")); task != "" {
 		summaryLabel = task
 	}
-	identity := shortID(jobID)
+	identity := identifier.AbbreviateJobID(jobID, 26)
 	if identity != "" {
 		summaryLabel += " · job " + identity
 	}
@@ -270,7 +271,7 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 	}
 	parts := []string{label, "(" + status + ")"}
 	if run.JobID != "" {
-		parts = append(parts, "job "+shortID(run.JobID))
+		parts = append(parts, "job "+identifier.AbbreviateJobID(run.JobID, 26))
 	}
 	if run.DelegateID != "" && width >= 60 {
 		parts = append(parts, "delegate "+shortID(run.DelegateID))

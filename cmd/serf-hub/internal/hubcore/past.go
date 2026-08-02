@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/afero"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/identifier"
@@ -47,14 +46,6 @@ type PastIndex struct {
 	all  []PastEntry // sorted by the Hub session ordering contract
 	byID map[string]PastEntry
 	fts  bool
-	// observers maps a worker session id to the session ids of observer
-	// subagents granted read on its work, folded from every local session's
-	// durable jobs.jsonl watch-read-grants during Rebuild. This is the historical
-	// on-disk source for observer auto-open — it does not depend on the forward
-	// SessionMeta.ObservedBy stamp (empty on existing data). Like the metas, it is
-	// rebuilt once per cycle, so it is at most one rebuild interval stale.
-	observers map[string][]string
-
 	// skipped maps every path the last Rebuild refused to index to the reason
 	// it was refused, so the next Rebuild can report only what is newly
 	// unindexable (see reportSkips).
@@ -149,7 +140,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	}
 	var all []PastEntry
 	byID := make(map[string]PastEntry)
-	observers := make(map[string][]string)
 	skipped := make(map[string]string)
 	for _, project := range matches {
 		if err := identifier.ValidateProjectID(filepath.Base(project)); err != nil {
@@ -173,17 +163,14 @@ func (i *PastIndex) Rebuild() (bool, error) {
 			byID[m.ID] = pe
 		}
 		reportUnlistedMetas(i.fs, project, indexed, skipped)
-		foldProjectObserverGrants(observers, i.fs, project, skipped)
 	}
 	i.reportSkips(skipped)
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
-	dedupObserverLists(observers)
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
-	i.observers = observers
 	i.fts = false
 	i.mu.Unlock()
 	if i.dbPath != "" {
@@ -703,72 +690,6 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 		}
 	}
 	return out
-}
-
-// ObserversOf returns the session ids of observer subagents granted read on the
-// given worker session, reconstructed from durable jobs.jsonl watch-read-grants
-// at the last Rebuild. The result is at most one rebuild interval stale. It is
-// the historical, on-disk observer source that does not rely on the forward
-// SessionMeta.ObservedBy stamp. Caller must not mutate the returned slice.
-func (i *PastIndex) ObserversOf(workerSessionID string) []string {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.observers[workerSessionID]
-}
-
-// foldProjectObserverGrants folds every local session's worker→observers grants
-// under a project into the accumulating index. It scans the project's sessions/
-// dir for per-session jobstore directories (each holding a jobs.jsonl) rather
-// than keying off the meta list: the WATCHING session that minted a grant need
-// not itself appear in the past index, but its log is the durable source of the
-// link. Best-effort — a session with no log or an unreadable log contributes
-// nothing rather than failing the rebuild — each such entry is recorded in
-// skipped for the caller to report. Lists may carry duplicates across sessions
-// until dedupObserverLists.
-func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project string, skipped map[string]string) {
-	sessionsDir := filepath.Join(project, "sessions")
-	entries, err := afero.ReadDir(fs, sessionsDir)
-	if err != nil {
-		return // no sessions dir (or unreadable): nothing to fold
-	}
-	for _, e := range entries {
-		// A session's jobstore is a directory <id>/ holding jobs.jsonl; the
-		// session .meta.json files in the same sessions/ dir are skipped here.
-		if !e.IsDir() {
-			continue
-		}
-		if err := identifier.ValidateSessionID(e.Name()); err != nil {
-			skipped[filepath.Join(sessionsDir, e.Name())] = badSessionID(err)
-			continue
-		}
-		perWorker, err := agent.LoadSessionObserverGrants(project, e.Name())
-		if err != nil {
-			skipped[filepath.Join(sessionsDir, e.Name())] = "load observer grants: " + err.Error()
-			continue
-		}
-		for worker, obs := range perWorker {
-			into[worker] = append(into[worker], obs...)
-		}
-	}
-}
-
-// dedupObserverLists collapses duplicate observer ids per worker (the same
-// (worker, observer) pair can be granted in more than one watching session's
-// log) and sorts each list for a stable order.
-func dedupObserverLists(observers map[string][]string) {
-	for worker, obs := range observers {
-		seen := make(map[string]bool, len(obs))
-		deduped := obs[:0]
-		for _, id := range obs {
-			if id == "" || seen[id] {
-				continue
-			}
-			seen[id] = true
-			deduped = append(deduped, id)
-		}
-		sort.Strings(deduped)
-		observers[worker] = deduped
-	}
 }
 
 // Find returns the entry for a given session_id.

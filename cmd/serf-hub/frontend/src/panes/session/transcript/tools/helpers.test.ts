@@ -2,6 +2,7 @@
 import { expect, test } from "vitest";
 import {
   clip,
+  clipJobID,
   formatByteCount,
   formatToolDuration,
   lineCount,
@@ -26,6 +27,16 @@ test("clip: text over the limit is head-truncated with an ellipsis", () => {
 
 test("clip: empty string stays empty", () => {
   expect(clip("", 5)).toBe("");
+});
+
+test("clipJobID: same-owner jobs retain their complete distinct suffixes", () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil";
+  const first = `job_${owner}_000000000001`;
+  const second = `job_${owner}_000000000002`;
+  expect(clipJobID("short")).toBe("short");
+  expect(clipJobID(first)).toContain("000000000001");
+  expect(clipJobID(second)).toContain("000000000002");
+  expect(clipJobID(first)).not.toBe(clipJobID(second));
 });
 
 // --- tailSlice ------------------------------------------------------------

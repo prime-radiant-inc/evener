@@ -14,6 +14,16 @@ export function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
+// clipJobID keeps the random suffix visible because jobs from one session
+// share their owner prefix.
+export function clipJobID(jobID: string): string {
+  const max = 26;
+  if (jobID.length <= max) return jobID;
+  const suffix = jobID.slice(-12);
+  const prefixLength = max - suffix.length - 1;
+  return `${jobID.slice(0, prefixLength)}…${suffix}`;
+}
+
 // tailSlice keeps the LAST `max` chars, advancing the cut point by one when
 // it would otherwise land inside a UTF-16 surrogate pair (dropping the
 // orphaned low surrogate rather than rendering U+FFFD) - mirrors

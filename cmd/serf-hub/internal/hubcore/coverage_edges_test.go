@@ -209,11 +209,6 @@ func fuzzScenarioCoveragePureEdges(t *testing.T) {
 	if got := i.RecentModels(0); got != nil {
 		t.Fatal(got)
 	}
-	d := map[string][]string{"w": {"", "b", "a", "b"}}
-	dedupObserverLists(d)
-	if strings.Join(d["w"], ",") != "a,b" {
-		t.Fatal(d)
-	}
 	if q := ftsQuery("!!!"); q != "" {
 		t.Fatal(q)
 	}

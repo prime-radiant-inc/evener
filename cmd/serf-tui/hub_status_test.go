@@ -143,6 +143,21 @@ func TestRenderHubSessionStatusShortensLongDelegateJobIDs(t *testing.T) {
 	}
 }
 
+func TestRenderHubSessionStatusKeepsJobSuffixesDistinct(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	detail := hubSessionDetail{Diagnostics: &appwire.SerfDiagnostics{Jobs: []appwire.SerfJobInfo{
+		{JobID: "job_" + owner + "_000000000001", JobType: "delegate", Status: "running"},
+		{JobID: "job_" + owner + "_000000000002", JobType: "delegate", Status: "running"},
+	}}}
+
+	got := renderHubSessionStatus(detail, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+	for _, suffix := range []string{"000000000001", "000000000002"} {
+		if !strings.Contains(got, suffix) {
+			t.Fatalf("status omitted job suffix %q: %s", suffix, got)
+		}
+	}
+}
+
 func TestFormatContextFragment(t *testing.T) {
 	cases := []struct {
 		name   string

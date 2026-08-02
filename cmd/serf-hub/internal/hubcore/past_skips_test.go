@@ -95,31 +95,6 @@ func fuzzScenarioPastIndex_RebuildNamesSkippedEntries(t *testing.T) {
 	}
 }
 
-// A session directory under a valid project whose name is not a session id is
-// skipped by the observer-grant fold. That skip is reported too — it is the
-// same silent-absence class as the meta and project skips.
-func fuzzScenarioPastIndex_RebuildNamesSkippedObserverGrantDir(t *testing.T) {
-	root := t.TempDir()
-	projects := filepath.Join(root, "projects")
-	proj := hubtest.ProjectDir(t, projects, "grants")
-	writeMeta(t, proj, schema.SessionMeta{ID: hubtest.SessionID(t), UpdatedAt: time.Now()})
-
-	strayJobstore := filepath.Join(proj, "sessions", "not-a-session-id")
-	if err := os.MkdirAll(strayJobstore, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	idx := NewPastIndex(filepath.Join(projects, "*"))
-	out := captureSkipReport(t, func() {
-		if _, err := idx.Rebuild(); err != nil {
-			t.Fatalf("Rebuild: %v", err)
-		}
-	})
-	if !strings.Contains(out, strayJobstore) || !strings.Contains(out, "invalid session id") {
-		t.Fatalf("skip report must name the stray jobstore dir and its validation:\n%s", out)
-	}
-}
-
 // A projects root full of pre-identifier directories must announce itself once,
 // not on every rebuild tick — and when a new unindexable entry appears, only
 // that one is reported, so it is not buried under the standing set.

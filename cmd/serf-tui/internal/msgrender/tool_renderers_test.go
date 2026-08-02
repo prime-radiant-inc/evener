@@ -76,6 +76,19 @@ func TestRendererRegistryMCPFallback(t *testing.T) {
 	_ = time.Second // satisfy unused import on dev iteration
 }
 
+func TestJobControlTargetsKeepSameOwnerJobSuffixesDistinct(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	r, ok := lookupToolRenderer("job_stop")
+	if !ok {
+		t.Fatal("job_stop renderer missing")
+	}
+	first := r.Target(toolArgsFromJSON(`{"job_id":"job_` + owner + `_000000000001"}`))
+	second := r.Target(toolArgsFromJSON(`{"job_id":"job_` + owner + `_000000000002"}`))
+	if first == second || !strings.Contains(first, "000000000001") || !strings.Contains(second, "000000000002") {
+		t.Fatalf("job targets = %q, %q; want distinct complete suffixes", first, second)
+	}
+}
+
 func TestShellRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("shell")
 	args := toolArgsFromJSON(`{"command":"ls -la","purpose":"List home dir"}`)

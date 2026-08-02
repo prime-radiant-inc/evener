@@ -103,6 +103,24 @@ func TestDelegateBodyHandlesNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestDelegateBodyKeepsSameOwnerJobSuffixesDistinct(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	first := delegateBody(ToolArgs{"job_id": "job_" + owner + "_000000000001"}, "", 80)
+	second := delegateBody(ToolArgs{"job_id": "job_" + owner + "_000000000002"}, "", 80)
+	if first == second || !strings.Contains(first, "000000000001") || !strings.Contains(second, "000000000002") {
+		t.Fatalf("delegate labels = %q, %q; want distinct complete suffixes", first, second)
+	}
+}
+
+func TestSubagentRunBodyKeepsSameOwnerJobSuffixesDistinct(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	first := SubagentRunBody(transcript.SubagentRunInfo{JobID: "job_" + owner + "_000000000001"}, 80)
+	second := SubagentRunBody(transcript.SubagentRunInfo{JobID: "job_" + owner + "_000000000002"}, 80)
+	if first == second || !strings.Contains(first, "000000000001") || !strings.Contains(second, "000000000002") {
+		t.Fatalf("subagent labels = %q, %q; want distinct complete suffixes", first, second)
+	}
+}
+
 func TestShellBodyHighlightsOutput(t *testing.T) {
 	withTestColorProfile(t)
 	got := ShellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)

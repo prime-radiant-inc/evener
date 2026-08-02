@@ -34,7 +34,7 @@ func s1cov_writeJobLog(t *testing.T, stateDir, sessID string, events ...jobstore
 }
 
 // s1cov_corruptJobLog appends a garbage line so the store's readAllLocked
-// returns a parse error, exercising the loaders' Load/LoadGrants error tails.
+// returns a parse error, exercising the historical record loader's error tail.
 func s1cov_corruptJobLog(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
@@ -115,20 +115,6 @@ func TestS1Cov_LoadSessionHistoricalJobRecords_CorruptLogErrors(t *testing.T) {
 	s1cov_corruptJobLog(t, path)
 
 	if _, err := LoadSessionHistoricalJobRecords(stateDir, "SESS"); err == nil {
-		t.Fatal("corrupt log must return an error")
-	}
-}
-
-// A corrupt jobs.jsonl surfaces LoadSessionObserverGrants' LoadGrants error tail.
-func TestS1Cov_LoadSessionObserverGrants_CorruptLogErrors(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	now := time.Now().UTC()
-	path := s1cov_writeJobLog(t, stateDir, "PARENT",
-		jobstore.Event{Kind: jobstore.EventWatchReadGrant, TS: now, JobID: "job_g", ObserverSessionID: "OBS"})
-	s1cov_corruptJobLog(t, path)
-
-	if _, err := LoadSessionObserverGrants(stateDir, "PARENT"); err == nil {
 		t.Fatal("corrupt log must return an error")
 	}
 }

@@ -41,3 +41,21 @@ func TestJobIDRejectsMalformedShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestAbbreviateJobIDPreservesCompleteRandomSuffix(t *testing.T) {
+	const owner = "02wMz5TxvEMoJEDTDGOTil"
+	first := "job_" + owner + "_000000000001"
+	second := "job_" + owner + "_000000000002"
+
+	if got := AbbreviateJobID("short", 26); got != "short" {
+		t.Fatalf("short abbreviation = %q, want unchanged", got)
+	}
+	for _, jobID := range []string{first, second} {
+		if got := AbbreviateJobID(jobID, 26); !bytes.Contains([]byte(got), []byte(jobID[len(jobID)-12:])) {
+			t.Fatalf("abbreviation %q omitted suffix from %q", got, jobID)
+		}
+	}
+	if AbbreviateJobID(first, 26) == AbbreviateJobID(second, 26) {
+		t.Fatal("same-owner job abbreviations must remain distinct")
+	}
+}
