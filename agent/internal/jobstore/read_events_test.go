@@ -72,6 +72,38 @@ func TestReadEvents_TolerateTrailingPartial(t *testing.T) {
 	}
 }
 
+func TestReadEvents_ErrorsOnDefinitiveTrailingCorruption(t *testing.T) {
+	for _, trailing := range []string{
+		"not-json",
+		`{"kind":}`,
+		`{"seq":1e2x`,
+	} {
+		t.Run(trailing, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "jobs.jsonl")
+			content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" + trailing
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadEvents(path); err == nil {
+				t.Fatalf("definitively malformed trailing record %q was tolerated", trailing)
+			}
+		})
+	}
+}
+
+func TestReadEvents_ErrorsOnNewlineTerminatedTrailingCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" + `{"kind":"job_finished"` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEvents(path); err == nil {
+		t.Fatal("newline-terminated trailing corruption was tolerated")
+	}
+}
+
 func TestReadEvents_ErrorsOnMidFileCorruption(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")

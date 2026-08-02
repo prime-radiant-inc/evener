@@ -3,6 +3,8 @@ package repair
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,7 +41,7 @@ func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
 }
 
 func TestExplainJSONError_MentionsToolAndObject(t *testing.T) {
-	msg := ExplainJSONError("read_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), nil)
+	msg := ExplainJSONError("read_file", editParamsForExplain(), realJSONError(t, []byte(`{"file_path":`)), nil)
 	if !strings.Contains(msg, "read_file") || !strings.Contains(msg, "JSON object") {
 		t.Fatalf("msg = %q", msg)
 	}
@@ -47,13 +49,40 @@ func TestExplainJSONError_MentionsToolAndObject(t *testing.T) {
 
 func TestExplainJSONError_ShowsTailWhenTruncated(t *testing.T) {
 	raw := []byte(`{"file_path": "/tmp/x", "content": "hello wor`)
-	msg := ExplainJSONError("write_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), raw)
+	msg := ExplainJSONError("write_file", editParamsForExplain(), io.ErrUnexpectedEOF, raw)
 	// The excerpt is %q-quoted, so the raw text appears escaped.
 	if !strings.Contains(msg, `{\"file_path\": \"/tmp/x\", \"content\": \"hello wor`) {
 		t.Fatalf("msg omitted the failing input: %q", msg)
 	}
 	if !strings.Contains(msg, "ended with") {
 		t.Fatalf("msg did not mark the truncation point: %q", msg)
+	}
+}
+
+func TestExplainJSONError_UsesOffsetAtRealTruncatedEOF(t *testing.T) {
+	raw := []byte(`{"file_path": "/tmp/x", "content": "hello wor`)
+	err := realJSONError(t, raw)
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("json.Unmarshal error = %T %v, want *json.SyntaxError", err, err)
+	}
+	want := fmt.Sprintf("Failing input near byte %d: %q.", syntaxErr.Offset, string(raw)+">>>")
+	if got := parseExcerpt(err, raw); got != want {
+		t.Fatalf("parseExcerpt = %q, want %q", got, want)
+	}
+}
+
+func TestExplainJSONError_UsesOneBasedSyntaxOffset(t *testing.T) {
+	raw := []byte(`{"file_path": "/tmp/x", }`)
+	err := realJSONError(t, raw)
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("json.Unmarshal error = %T %v, want *json.SyntaxError", err, err)
+	}
+	position := int(syntaxErr.Offset) - 1
+	want := fmt.Sprintf("Failing input near byte %d: %q.", syntaxErr.Offset, string(raw[:position])+">>>"+string(raw[position:]))
+	if got := parseExcerpt(err, raw); got != want {
+		t.Fatalf("parseExcerpt = %q, want %q", got, want)
 	}
 }
 
@@ -75,13 +104,23 @@ func TestExplainJSONError_ShowsWindowAroundOffset(t *testing.T) {
 
 func TestExplainJSONError_CapsExcerptLength(t *testing.T) {
 	raw := []byte(`{"content": "` + strings.Repeat("x", 5000))
-	msg := ExplainJSONError("write_file", editParamsForExplain(), errors.New("unexpected end of JSON input"), raw)
+	msg := ExplainJSONError("write_file", editParamsForExplain(), realJSONError(t, raw), raw)
 	if len(msg) > 1000 {
 		t.Fatalf("msg not capped (%d bytes): %.200q...", len(msg), msg)
 	}
 	if !strings.Contains(msg, "...") {
 		t.Fatalf("truncated excerpt missing ellipsis: %q", msg)
 	}
+}
+
+func realJSONError(t *testing.T, raw []byte) error {
+	t.Helper()
+	var value any
+	err := json.Unmarshal(raw, &value)
+	if err == nil {
+		t.Fatalf("json.Unmarshal(%q) succeeded, want a parse error", raw)
+	}
+	return err
 }
 
 func TestExplainSchemaError_DoesNotMutateStringRequired(t *testing.T) {
