@@ -67,7 +67,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
      if [ "$run_owned" -eq 1 ] && [ -n "$owned_tmux" ]; then
        tmux kill-session -t "$owned_tmux" 2>/dev/null || true
      fi
-     if [ "$run_owned" -eq 1 ] && [[ "$owned_hub_pid" =~ ^[0-9]+$ ]]; then
+     if [ "$run_owned" -eq 1 ] && [[ "$owned_hub_pid" =~ ^[1-9][0-9]*$ ]]; then
        kill "$owned_hub_pid" 2>/dev/null || true
        wait "$owned_hub_pid" 2>/dev/null || true
      fi
@@ -93,12 +93,11 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    fi
 
    RECORDED_HUBPID=$(cat "$RUN_ROOT/hub.pid")
-   case "$RECORDED_HUBPID" in
-     ''|*[!0-9]*)
-       printf 'hub.pid is not numeric; Setup owner retains run\n' >&2
-       exit 1
-       ;;
-   esac
+   if ! [[ "$RECORDED_HUBPID" =~ ^[1-9][0-9]*$ ]]; then
+     printf '%s\n' \
+       'hub.pid is not a canonical positive decimal PID; Setup owner retains run' >&2
+     exit 1
+   fi
    if [ -n "$SETUP_HUBPID" ] && [ "$SETUP_HUBPID" != "$RECORDED_HUBPID" ]; then
      printf '%s\n' \
        'HUBPID does not match run/hub.pid; Setup owner retains run and both PIDs' >&2
@@ -135,8 +134,11 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    There is no second `mktemp`: `$RUN_ROOT` is exactly the Setup checklist's
    `$run`. Path, basename, and HOME checks alone do not authorize cleanup.
    `OWNED_HUBPID` stays empty and `RUN_OWNED` stays zero until the exact
-   `$run/hub.pid` value is numeric, matches the Setup shell's ambient `HUBPID`
-   when one exists, and names a live process. A missing, invalid, dead, or
+   `$run/hub.pid` value is a canonical strictly positive decimal matching
+   `[1-9][0-9]*`, matches the Setup shell's ambient `HUBPID` when one exists,
+   and names a live process. The cleanup function repeats the same positive-PID
+   check before `kill` and `wait`; `0`, `00`, and other noncanonical values can
+   never acquire process-group semantics there. A missing, invalid, dead, or
    mismatched PID therefore exits nonzero without killing either candidate PID
    or removing the run root; the Setup-checklist owner retains the intact run
    and responsibility for resolving it. Only after all PID checks succeed does
