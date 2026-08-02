@@ -274,8 +274,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    capture_until "$RUN_ROOT/palette-live-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    tmux send-keys -t "$TMUX_SESSION" Enter
-   capture_until "$RUN_ROOT/prequeue-pane.txt" \
-     'state: active' 'queue: ready' 'enter: queue'
+   capture_until "$RUN_ROOT/prequeue-pane.txt" 'enter: queue'
    curl -fsS -H "Authorization: Bearer $TOKEN" \
      "$HUB/api/sessions/local:$SID" > "$RUN_ROOT/prequeue-session.json"
    jq -e '
@@ -285,14 +284,14 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ' "$RUN_ROOT/prequeue-session.json" >/dev/null
    ```
 
-   Confirm the pane says `state: active`, the second status row includes
-   `queue: ready` and `busy: turn_1`, and the composer label is `queue` (not
-   `message`) with footer `enter: queue  ctrl+s: send as steer ...`. The
-   dashboard, palette, and active queue composer are each observable readiness
-   conditions; no fixed delay or provider-dependent assistant row is used as a
-   proxy. If the REST assertion reports that the first turn has finished, the
-   run did not reach the mid-turn precondition and is invalid; do not treat the
-   later steps as a pass.
+   Confirm the pane shows the visible `queue` composer (not `message`) with
+   footer `enter: queue  ctrl+s: send as steer ...`. The dashboard, palette,
+   and queue composer are visible readiness conditions; the REST response is
+   authoritative for active state, the active turn, and queue capability. No
+   fixed delay or provider-dependent assistant row is used as a proxy. If the
+   REST assertion reports that the first turn has finished, the run did not
+   reach the mid-turn precondition and is invalid; do not treat the later steps
+   as a pass.
 
 4. **Queue the follow-up through the live TUI**:
 
