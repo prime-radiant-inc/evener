@@ -31,10 +31,44 @@ func TestFormatShellCommandFixtures(t *testing.T) {
 			},
 		},
 		{
-			name: "source continuation",
-			raw:  "printf \"left\\\nright\" && echo done",
+			name: "longest operators",
+			raw:  "a || b |& c || d",
 			want: []shellCommandLine{
-				{text: "printf \"left\\", indent: 0},
+				{text: "a || ", indent: 0},
+				{text: "b |& ", indent: 2},
+				{text: "c || ", indent: 2},
+				{text: "d", indent: 2},
+			},
+		},
+		{
+			name: "protected operators",
+			raw:  "printf '%s' \"a;b && c\" `echo x;y` foo\\;bar && done",
+			want: []shellCommandLine{
+				{text: "printf '%s' \"a;b && c\" `echo x;y` foo\\;bar && ", indent: 0},
+				{text: "done", indent: 2},
+			},
+		},
+		{
+			name: "comments stop operator scanning",
+			raw:  "echo hi # && hidden; text\nprintf done",
+			want: []shellCommandLine{
+				{text: "echo hi # && hidden; text", indent: 0},
+				{text: "printf done", indent: 0},
+			},
+		},
+		{
+			name: "nested substitutions stay opaque",
+			raw:  "echo $(printf 'a;b' && printf c) && echo done",
+			want: []shellCommandLine{
+				{text: "echo $(printf 'a;b' && printf c) && ", indent: 0},
+				{text: "echo done", indent: 2},
+			},
+		},
+		{
+			name: "source continuation",
+			raw:  "printf \"left\\\\\nright\" && echo done",
+			want: []shellCommandLine{
+				{text: "printf \"left\\\\", indent: 0},
 				{text: "right\" && ", indent: 0},
 				{text: "echo done", indent: 2},
 			},
@@ -46,6 +80,11 @@ func TestFormatShellCommandFixtures(t *testing.T) {
 				{text: "echo hi # && hidden; text", indent: 0},
 				{text: "printf \"unterminated &&", indent: 0},
 			},
+		},
+		{
+			name: "malformed and trailing input stays intact",
+			raw:  "echo \"unterminated &&",
+			want: []shellCommandLine{{text: "echo \"unterminated &&", indent: 0}},
 		},
 		{
 			name: "empty input",
@@ -63,6 +102,14 @@ func TestFormatShellCommandFixtures(t *testing.T) {
 			want: []shellCommandLine{
 				{text: "one &&", indent: 0},
 				{text: "two", indent: 0},
+			},
+		},
+		{
+			name: "single quote backslash does not protect quote",
+			raw:  "printf '%s' 'a\\' ; echo done",
+			want: []shellCommandLine{
+				{text: "printf '%s' 'a\\' ; ", indent: 0},
+				{text: "echo done", indent: 2},
 			},
 		},
 	}
