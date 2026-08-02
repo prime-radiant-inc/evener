@@ -30,14 +30,21 @@ trap 'rm -rf "$work"' EXIT
 
 # The stall scenarios (13 and 17) spawn a probe that blocks, then find it again
 # by its COMMAND LINE with `pgrep -f` / `pkill -f`. That command line therefore
-# has to name this run and no other: a fixed `sleep 987654` is one string every
-# concurrent selftest shares, so run A's poll sees run B's probe and calls it an
-# orphan, and run A's cleanup kills the probe run B is still polling for (kata
-# qw8e). $$ is unique among live processes, and zero-padding it to a fixed width
-# keeps one run's duration from being a SUBSTRING of another's — `pgrep -f`
-# matches anywhere in the command line, so `sleep 91234` would find `sleep
-# 9123456` too.
-probe_run_id="$(printf '%05d' "$(($$ % 100000))")"
+# has to name this run and no other. The work directory comes from `mktemp`, so
+# its suffix is already unique to this selftest; unlike a PID modulo, it cannot
+# collide merely because two processes are 100,000 apart (kata 4209).
+probe_run_id_for_work() { printf '%s' "${1##*.}"; }
+probe_run_id="$(probe_run_id_for_work "$work")"
+
+# --- scenario 0: probe IDs are unique to their synthetic work directories ---
+synthetic_probe_a=$(probe_run_id_for_work fixture/disk-reclaim-selftest.AAAAAA)
+synthetic_probe_b=$(probe_run_id_for_work fixture/disk-reclaim-selftest.BBBBBB)
+if [ "$synthetic_probe_a" != "$synthetic_probe_b" ] &&
+	[ "$probe_run_id" = "$(probe_run_id_for_work "$work")" ]; then
+	ok "probe IDs come from the run directory, not a PID modulo"
+else
+	bad "probe IDs are not tied to unique run directories"
+fi
 
 # Point every run at a throwaway build cache that does not exist. The report
 # path `du -sh`s GOCACHE whenever it is a real directory, and on a machine
@@ -355,7 +362,10 @@ bounded() { # seconds command...
 # SERF_GOCACHE_PROBE_CMD stands in for the `mkdir -p $GOCACHE` that would block.
 # Everything the scenario asserts on — the bound, the kill, the message, the
 # exit code — is the real thing.
-stall_probe="sleep 9${probe_run_id}1" # this run's probe, and nothing else on the machine
+# `exec -a` puts the token in the sleeping process's argv, so the probe seam
+# remains a plain command string and the existing process cleanup can match it.
+stall_probe_token="disk-reclaim-probe-${probe_run_id}-check"
+stall_probe="exec -a $stall_probe_token sleep 9" # this run's probe, and nothing else on the machine
 stall_start=$SECONDS
 (cd "$repo" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
 	GOCACHE="$work/wedged-gocache" SERF_DISK_MIN_FREE_GB=0 \
@@ -387,13 +397,13 @@ fi
 # The probe must not outlive the check that gave up on it: left running it holds
 # the blocked I/O open with nobody watching. SIGKILL is not instant, so poll.
 orphan_polls=20
-while [ "$orphan_polls" -gt 0 ] && pgrep -f "$stall_probe" >/dev/null 2>&1; do
+while [ "$orphan_polls" -gt 0 ] && pgrep -f "$stall_probe_token" >/dev/null 2>&1; do
 	sleep 0.1
 	orphan_polls=$((orphan_polls - 1))
 done
-if pgrep -f "$stall_probe" >/dev/null 2>&1; then
+if pgrep -f "$stall_probe_token" >/dev/null 2>&1; then
 	bad "the stalled probe outlived --check (orphan still holding the volume)"
-	pkill -f "$stall_probe" >/dev/null 2>&1
+	pkill -f "$stall_probe_token" >/dev/null 2>&1
 else
 	ok "the stalled probe is killed, not left behind"
 fi
@@ -570,7 +580,8 @@ fi
 # on demand, so SERF_GOCACHE_PROBE_CMD stands in for the touch that would
 # block. Everything asserted here — the bound, the kill, the line, and the rest
 # of the report arriving after it — is the real thing.
-report_stall_probe="sleep 9${probe_run_id}2" # this run's probe, and nothing else on the machine
+report_stall_probe_token="disk-reclaim-probe-${probe_run_id}-report"
+report_stall_probe="exec -a $report_stall_probe_token sleep 9" # this run's probe, and nothing else on the machine
 report_stall_start=$SECONDS
 (cd "$repo2" && bounded 30 env SERF_GOCACHE_PROBE_CMD="$report_stall_probe" SERF_GOCACHE_PROBE_TIMEOUT=1 \
 	GOCACHE="$samevol_cache" bash "$script" --into main) >"$work/report-stall.out" 2>&1
@@ -606,13 +617,13 @@ fi
 # holds the blocked I/O open with nobody watching. SIGKILL is not instant, so
 # poll.
 report_orphan_polls=20
-while [ "$report_orphan_polls" -gt 0 ] && pgrep -f "$report_stall_probe" >/dev/null 2>&1; do
+while [ "$report_orphan_polls" -gt 0 ] && pgrep -f "$report_stall_probe_token" >/dev/null 2>&1; do
 	sleep 0.1
 	report_orphan_polls=$((report_orphan_polls - 1))
 done
-if pgrep -f "$report_stall_probe" >/dev/null 2>&1; then
+if pgrep -f "$report_stall_probe_token" >/dev/null 2>&1; then
 	bad "the stalled probe outlived the report (orphan still holding the volume)"
-	pkill -f "$report_stall_probe" >/dev/null 2>&1
+	pkill -f "$report_stall_probe_token" >/dev/null 2>&1
 else
 	ok "the report kills the stalled probe rather than leaving it behind"
 fi

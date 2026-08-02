@@ -61,6 +61,140 @@ func shellCommandLines(block string) []string {
 	return commands
 }
 
+// shellCommandInvocations returns shell command words split at unquoted
+// operators, newlines, and comments. It deliberately models only the lexical
+// boundary needed by repository audits: quoted text stays one word, so a
+// command such as `echo "make lint"` cannot impersonate an invocation, while
+// `true && make lint` produces a second command beginning with `make`.
+func shellCommandInvocations(script string) [][]string {
+	var commands [][]string
+	var command []string
+	var word strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	wordStarted := false
+
+	flushWord := func() {
+		if !wordStarted {
+			return
+		}
+		command = append(command, word.String())
+		word.Reset()
+		wordStarted = false
+	}
+	flushCommand := func() {
+		flushWord()
+		if len(command) == 0 {
+			return
+		}
+		command = shellStripControlWords(command)
+		if len(command) > 0 {
+			commands = append(commands, command)
+		}
+		command = nil
+	}
+
+	for i := 0; i < len(script); i++ {
+		ch := script[i]
+		switch {
+		case inSingleQuote:
+			if ch == '\'' {
+				inSingleQuote = false
+			} else {
+				word.WriteByte(ch)
+			}
+			wordStarted = true
+		case inDoubleQuote:
+			switch ch {
+			case '"':
+				inDoubleQuote = false
+			case '\\':
+				if i+1 < len(script) {
+					i++
+					if script[i] != '\n' {
+						word.WriteByte(script[i])
+					}
+				}
+			default:
+				word.WriteByte(ch)
+			}
+			wordStarted = true
+		case ch == '\'':
+			inSingleQuote = true
+			wordStarted = true
+		case ch == '"':
+			inDoubleQuote = true
+			wordStarted = true
+		case ch == '\\':
+			if i+1 < len(script) {
+				i++
+				if script[i] != '\n' {
+					word.WriteByte(script[i])
+				}
+				wordStarted = true
+			}
+		case ch == '#':
+			if !wordStarted {
+				for i+1 < len(script) && script[i+1] != '\n' {
+					i++
+				}
+				continue
+			}
+			word.WriteByte(ch)
+		case ch == '\n':
+			flushCommand()
+		case ch == ';' || ch == '|' || ch == '&':
+			flushCommand()
+			for i+1 < len(script) && (script[i+1] == ';' || script[i+1] == '|' || script[i+1] == '&') {
+				i++
+			}
+		case ch == ' ' || ch == '\t' || ch == '\r':
+			flushWord()
+		default:
+			word.WriteByte(ch)
+			wordStarted = true
+		}
+	}
+	flushCommand()
+	return commands
+}
+
+// shellStripControlWords removes shell syntax that can precede the command
+// being audited. Assignments are environmental setup, and these keywords are
+// grammar rather than executables; neither should hide a following `make`.
+func shellStripControlWords(command []string) []string {
+	for len(command) > 0 {
+		if isShellControlWord(command[0]) || isShellAssignment(command[0]) {
+			command = command[1:]
+			continue
+		}
+		break
+	}
+	return command
+}
+
+func isShellControlWord(word string) bool {
+	switch word {
+	case "!", "if", "then", "elif", "else", "fi", "while", "until", "do", "done":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShellAssignment(word string) bool {
+	name, _, found := strings.Cut(word, "=")
+	if !found || name == "" {
+		return false
+	}
+	for i, ch := range name {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && ch != '_' && (i == 0 || ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
 // indexOfLineContaining reports the position of the first line containing
 // needle, or -1.
 func indexOfLineContaining(lines []string, needle string) int {

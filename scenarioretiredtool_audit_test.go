@@ -1,6 +1,10 @@
 package serf_test
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -217,10 +221,11 @@ func TestLiveDocsNeverTeachARetiredJobTool(t *testing.T) {
 	}
 }
 
-// modelFacingToolDefinitions declares every tool schema a provider can be
-// handed. A constructor here is model-facing contract text: its Description is
-// sent verbatim to the model as the tool's instructions.
-const modelFacingToolDefinitions = "agent/internal/tool/definitions.go"
+// modelFacingToolDefinitionRoot contains the Go source for every core tool
+// schema a provider can be handed. A constructor there is model-facing
+// contract text: its Description is sent verbatim to the model as the tool's
+// instructions.
+const modelFacingToolDefinitionRoot = "agent/internal/tool"
 
 // TestToolDefinitionsNeverDeclareARetiredJobTool is the source half of the rule
 // the doc and card sweeps enforce. A retired tool's constructor is invisible to
@@ -229,18 +234,9 @@ const modelFacingToolDefinitions = "agent/internal/tool/definitions.go"
 // pre-removal contract can sit in the schema file describing paging knobs and
 // wait semantics no model can reach.
 func TestToolDefinitionsNeverDeclareARetiredJobTool(t *testing.T) {
-	raw, err := os.ReadFile(modelFacingToolDefinitions)
+	findings, err := retiredToolDefinitionFindings(modelFacingToolDefinitionRoot, scenarioRetiredJobTools)
 	if err != nil {
-		t.Fatalf("reading %s: %v", modelFacingToolDefinitions, err)
-	}
-	var findings []string
-	for i, line := range strings.Split(string(raw), "\n") {
-		for name := range scenarioRetiredJobTools {
-			if !strings.Contains(line, name) {
-				continue
-			}
-			findings = append(findings, modelFacingToolDefinitions+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
-		}
+		t.Fatalf("scanning %s: %v", modelFacingToolDefinitionRoot, err)
 	}
 	if len(findings) > 0 {
 		sort.Strings(findings)
@@ -253,8 +249,94 @@ func TestToolDefinitionsNeverDeclareARetiredJobTool(t *testing.T) {
 			"constructor and its Description read as live contract to anyone "+
 			"editing the tool surface (kata 0fyd):\n%s\n\nRetired tools and what "+
 			"to describe instead:\n%s",
-			modelFacingToolDefinitions, strings.Join(findings, "\n"), strings.Join(guidance, "\n"))
+			modelFacingToolDefinitionRoot, strings.Join(findings, "\n"), strings.Join(guidance, "\n"))
 	}
+}
+
+func TestRetiredToolDefinitionFindingsUseASTAcrossFiles(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, source string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	write("comment.go", `package tool
+
+// job_read_output is mentioned only as historical prose.
+const unrelated = "job_read_output"
+`)
+	write("moved_definition.go", `package tool
+
+var moved = llm.ToolDefinition{
+	Name: "job_read_output",
+}
+`)
+
+	findings, err := retiredToolDefinitionFindings(root, scenarioRetiredJobTools)
+	if err != nil {
+		t.Fatalf("retiredToolDefinitionFindings: %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0], "moved_definition.go") {
+		t.Fatalf("AST scanner findings = %v, want only moved_definition.go", findings)
+	}
+}
+
+func retiredToolDefinitionFindings(root string, retired map[string]string) ([]string, error) {
+	var findings []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+
+		fileSet := token.NewFileSet()
+		parsed, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok || !isLLMToolDefinition(literal.Type) {
+				return true
+			}
+			ast.Inspect(literal, func(node ast.Node) bool {
+				basic, ok := node.(*ast.BasicLit)
+				if !ok || basic.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(basic.Value)
+				if err != nil {
+					return true
+				}
+				for name := range retired {
+					if strings.Contains(value, name) {
+						position := fileSet.Position(basic.Pos())
+						findings = append(findings, fmt.Sprintf("%s:%d: %s: %s", path, position.Line, name, value))
+					}
+				}
+				return true
+			})
+			return false
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(findings)
+	return findings, nil
+}
+
+func isLLMToolDefinition(expr ast.Expr) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "ToolDefinition" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && packageName.Name == "llm"
 }
 
 // retiredToolLiveDocFiles walks the evergreen files under retiredToolDocRoots.
