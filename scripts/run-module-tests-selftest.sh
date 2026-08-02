@@ -145,6 +145,11 @@ esac
 printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/calls"
 printf 'go-stdout:%s\n' "$module"
 printf 'go-stderr:%s\n' "$module" >&2
+if [ "$module" = "agent" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
+	printf '%s\n' "$$" >"$FAKE_STATE/agent.pid"
+	: >"$FAKE_STATE/agent.started"
+	exec sleep 1000
+fi
 if [ "$module" = "agent" ] && [ "${FAKE_AGENT_AWAITS_SELFTEST:-0}" -ne 0 ]; then
 	: >"$FAKE_STATE/agent.started"
 	attempt=0
@@ -179,6 +184,11 @@ set -u
 stream=web
 [ "${1:-}" = "selftest" ] && stream=selftest
 printf '%s\t%s\n' "$stream" "$*" >>"$FAKE_STATE/calls"
+if [ "$stream" = "web" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
+	printf '%s\n' "$$" >"$FAKE_STATE/web.pid"
+	: >"$FAKE_STATE/web.started"
+	exec sleep 1000
+fi
 if [ "$stream" = "selftest" ]; then
 	if [ "${FAKE_SELFTEST_REQUIRES_ROOT:-0}" -ne 0 ] && [ ! -f "$FAKE_STATE/root.finished" ]; then
 		printf 'selftest started before root finished\n' >&2
@@ -224,8 +234,20 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
-			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
+			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
+}
+
+run_tests_async() {
+	modules="$1"
+	output="$2"
+	shift 2
+	(
+		cd "$repo" || exit 1
+		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+	) >"$output" 2>&1 &
+	runner_pid="$!"
 }
 
 run_tests_default_modules() {
@@ -234,7 +256,7 @@ run_tests_default_modules() {
 	(
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
-			AGENT_SHARDS=0 SELFTEST=0 MAKE="$bin/make" "$@" "$runner" -short -count=1
+			AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
 
@@ -244,6 +266,16 @@ started_streams() {
 
 runner_logdirs() {
 	find "$case_dir" -maxdepth 1 -type d -name 'serf-module-tests.*' -print
+}
+
+wait_for_file() {
+	local path="$1" attempts=200
+	while [ "$attempts" -gt 0 ]; do
+		[ -f "$path" ] && return 0
+		sleep 0.01
+		attempts=$((attempts - 1))
+	done
+	return 1
 }
 
 full_logs_path() {
@@ -273,6 +305,13 @@ out="$case_dir/ambient-overrides.out"
 if MODULES="nosuch" WAVE1= WAVE2= run_tests ". agent" "$out"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "ambient module and wave overrides do not affect a fixture case"
 assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent web" "a fixture case retains its requested wave schedule"
+
+new_case
+out="$case_dir/ambient-web-overrides.out"
+if WEB=0 WEB_DIR="$work/not-the-fixture" run_tests "agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "ambient web controls do not affect a fixture case"
+assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" "agent web" "a fixture case retains its frontend stream"
+assert_eq "$(started_streams)" "agent web" "ambient web controls do not redirect the frontend stream"
 
 new_case
 out="$case_dir/default-modules.out"
@@ -404,6 +443,42 @@ assert_dump_nonempty "$out" "a failing selftest stream dumps output"
 assert_has "$out" "----- selftest -----" "the selftest log is dumped under its own name"
 assert_has "$out" "selftest-stderr: tooling contract failed" "the selftest diagnostic reaches the reader"
 assert_not_has "$out" "----- agent -----" "the passing module is not dumped with selftest"
+
+new_case
+out="$case_dir/interrupted-run.out"
+FAKE_HOLD_STREAMS=1 run_tests_async "agent" "$out"
+if wait_for_file "$state/agent.started" && wait_for_file "$state/web.started"; then
+	if kill -TERM "$runner_pid"; then
+		ok "an interrupted run can be signaled while streams are active"
+	else
+		bad "an interrupted run could not be signaled"
+	fi
+else
+	bad "the interruption fixture started both child streams"
+	kill -KILL "$runner_pid" 2>/dev/null || :
+fi
+if wait "$runner_pid"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "143" "an interrupted run exits with the signal status"
+assert_has "$out" "interrupted by SIGTERM" "an interrupted run explains its exit"
+logs="$(full_logs_path "$out")"
+if [ -n "$logs" ] && [ -d "$logs" ]; then
+	if [ -f "$logs/agent.log" ] && [ -f "$logs/web.log" ]; then
+		ok "an interrupted run preserves the diagnostic logs it names"
+	else
+		bad "an interrupted run preserves the log directory but loses a stream log"
+	fi
+else
+	bad "an interrupted run removes or fails to name its diagnostic logs"
+fi
+for stream in agent web; do
+	pid="$(cat "$state/$stream.pid" 2>/dev/null || :)"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		bad "an interrupted run leaves the $stream child alive"
+		kill -KILL "$pid" 2>/dev/null || :
+	else
+		ok "an interrupted run reaps the $stream child"
+	fi
+done
 
 echo "----"
 echo "run-module-tests-selftest: $checks checks, $fails failed"
