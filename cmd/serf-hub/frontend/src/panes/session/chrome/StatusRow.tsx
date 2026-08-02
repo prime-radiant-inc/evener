@@ -1,7 +1,7 @@
 // StatusRow: the session footer's ONE quiet line of glance-level facts -
-// model · effort · context meter · clock · cost, with queue depth riding the
-// far right when there is any. Everything on it is something that could make
-// you act in the next minute; everything exact lives one click away in
+// model · effort · context meter · clock · queue depth, with the queue riding
+// the far right when there is any. Everything on it is something that could
+// make you act in the next minute; everything exact lives one click away in
 // DetailsPanel (the same session's cwd, branch, project, token counts and
 // precise figures), which is why this row carries a 64px gauge where that
 // panel carries "42% used · 42k / 100k · 58k left".
@@ -12,32 +12,13 @@
 //     restated it.
 //   - cwd / branch / project. None of them can change mid-session, so they are
 //     reference material, not a status: they live in the details sheet.
-//   - raw ↑/↓ token counts. Cost is the glanceable form of the same fact, and
-//     the details sheet carries the exact figures.
-//
-// A finished session replaces the whole strip with one summary line
-// (model · N worked · cost) in --ink-mid: its work and cost are settled, so it
-// reads as an epitaph rather than a cockpit with dead instruments. The model is
-// the one thing on it that is still LIVE - a finished session can be sent to
-// again, so the model its next turn will run on is still a choice; see
-// EndedSummary.
-//
-// Session dollar cost rides the wire as SerfThread.Cost (appwire/types.go) -
-// the "~$X.XX" string appwire.EstimateCost derives SERVER-SIDE from the
-// thread's authoritative full-session cumulative Usage at the model's catalog
-// price. The pricing table never crosses the wire, so the string is computed
-// once server-side and shown verbatim (no client-side re-formatting). This is
-// the honest full-session total, NOT a client sum of the turns currently
-// loaded (thread/read's turnLimit windows those, so summing them would
-// silently under-count). Absent (no chip) when the daemon omits it: no token
-// data, or an uncataloged model - an honest "unknown", never a bogus "~$0.00".
+//   - raw ↑/↓ token counts. The details sheet carries the exact figures.
 
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { Chevron, FailureGlyph, Meter, useToasts } from "../../../widgets";
+import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
@@ -51,11 +32,15 @@ export interface StatusRowProps {
 
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
+  identity: requireClass(styles.item, "statusrow.module.css", "item"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
   mono: requireClass(styles.mono, "statusrow.module.css", "mono"),
-  meter: requireClass(styles.meter, "statusrow.module.css", "meter"),
+  context: requireClass(styles.item, "statusrow.module.css", "item"),
+  contextMeter: requireClass(styles.meter, "statusrow.module.css", "meter"),
+  contextPercent: requireClass(styles.mono, "statusrow.module.css", "mono"),
   queue: requireClass(styles.queue, "statusrow.module.css", "queue"),
-  summary: requireClass(styles.summary, "statusrow.module.css", "summary"),
+  queueFull: requireClass(styles.item, "statusrow.module.css", "item"),
+  queueCompact: requireClass(styles.item, "statusrow.module.css", "item"),
   separator: requireClass(styles.separator, "statusrow.module.css", "separator"),
   effortTrigger: requireClass(styles.effortTrigger, "statusrow.module.css", "effortTrigger"),
   effortValue: requireClass(styles.effortValue, "statusrow.module.css", "effortValue"),
@@ -63,15 +48,6 @@ const CLASS = {
   effortSelect: requireClass(styles.effortSelect, "statusrow.module.css", "effortSelect"),
   srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
-
-// The wire statuses that mean this session's story is over - the same set
-// Composer.tsx's own ENDED_STATUSES names, for the same reason ("notLoaded" is
-// how a cold exited serf session actually arrives; see that constant's comment
-// for the wire receipts). Kept as its own local set rather than shared: these
-// two modules answer different questions about the same statuses (what to
-// render vs. whether a card is usable) and a shared constant would invite one
-// to drift into gating the other.
-const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 // Fallback effort ladder for a reasoning model whose own ladder the hub does
 // not enumerate. Ported verbatim from the legacy live picker (cmd/serf-hub/
@@ -130,6 +106,9 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
 
   return (
     <span className={CLASS.effortTrigger} data-testid="status-row-effort">
+      <span className={CLASS.separator} aria-hidden="true">
+        ·
+      </span>
       {/* The visible readout, and the only thing that takes up space here: the
           <select> over it is transparent, so this text is what a reader sees
           and the native control is what they operate. aria-hidden because the
@@ -164,120 +143,6 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
-// FailureCount is the session's answer to "did anything in here go wrong",
-// stated where it can be read without scrolling.
-//
-// It exists because the transcript could not answer it. A long session measures
-// about fourteen screens; only ~47% of that document hydrates at load, and eight
-// of those screens carry no failure marker at all - so a reader who stopped
-// partway concluded the run was clean because they had not yet reached a
-// failure, twice reported as a real harm (kata hw2n). Row-level marking is not
-// the gap and is untouched: this is the SESSION-scale statement that was
-// missing entirely (the cadence dot goes --danger only when the session itself
-// crashed, and neither the strip nor the details sheet carried a failure fact).
-//
-// It sits on this strip rather than in Session details because a fact behind a
-// click cannot tell anyone there is something left to find, and the misreading
-// forms right here - the measured session's last screen reads "Verified: 25
-// tests pass" directly above "12m worked · ~$0.97", with six failures above it
-// and nothing contradicting them.
-//
-// ZERO AND UNKNOWN BOTH RENDER NOTHING, for different reasons. Zero is a real
-// server-side measurement over the whole transcript and is simply not news; the
-// strip should only speak when there is something to act on, the same rule that
-// keeps "0 queued" off it. Undefined means nobody counted (an unreadable
-// transcript, or a producer that does not derive the figure), and a strip that
-// said "0 failed" there would vouch for a session it never read. The count is
-// NEVER derived from the loaded turns: thread/read windows them, so a client
-// sum would print exactly the false all-clear this exists to prevent.
-//
-// The glyph is aria-hidden and the sentence is visually hidden, so the item
-// announces once, in full ("6 failed tool calls"), rather than as the glyph's
-// own "Failed" followed by the terse readout beside it.
-//
-// `separator` is the ended strip's own "·" punctuation, which the live strip
-// does not use - passed in rather than inferred, so this component never has to
-// know which row it is on.
-//
-// `acute` gates the --danger glyph (UX round, k9-transcript persona panel):
-// this count is a LIFETIME tally (see the doc comment above) and stays
-// findable regardless, but the glyph - the app's one "look now" hue - is
-// reserved for a session whose own current status really is the failed one
-// (cadenceStateForStatus's "systemError"). A settled session with an
-// already-resolved failure, or a session still working normally after an
-// earlier hiccup, is a fact worth knowing, not an active alarm; four
-// independent readers in the panel each misread the always-red glyph as
-// "broken right now" even when a summary two lines away said otherwise. Text
-// never changes - only whether the glyph spends the hue.
-function FailureCount({ count, separator, acute }: { count: number | undefined; separator?: boolean; acute: boolean }) {
-  if (count === undefined || count <= 0) return null;
-  const spoken = `${count} failed tool ${count === 1 ? "call" : "calls"}`;
-  return (
-    <span className={CLASS.item} data-testid="status-row-failures" title={spoken}>
-      {separator && (
-        <span className={CLASS.separator} aria-hidden="true">
-          ·
-        </span>
-      )}
-      {acute && (
-        <span aria-hidden="true">
-          <FailureGlyph />
-        </span>
-      )}
-      <span className={CLASS.mono} aria-hidden="true">
-        {`${count} failed`}
-      </span>
-      <span className={CLASS.srOnly}>{spoken}</span>
-    </span>
-  );
-}
-
-// EndedSummary is a finished session's whole strip: what it was, what it spent,
-// and the model its NEXT turn will run on. Work and cost are settled figures in
-// --ink-mid; each is omitted when the wire never measured it - the same honesty
-// rule DetailsPanel's own header states, and the reason an unmeasured work time
-// shows nothing rather than a fabricated "1s" (formatWorkDuration clamps a real
-// sub-second duration up to 1s, which is correct for a measurement and a lie for
-// the absence of one).
-//
-// The model is the exception, and it stays a live ModelSwitch: this session can
-// still be sent to (the hub advertises Send and ChangeModel for a cold exited
-// thread and resumes it behind either call - cmd/serf-hub/app_threadread.go's
-// pastEntryThread, app_model.go's setThreadModelWithResume), and Composer
-// already renders a follow-up card here for that reason. A user picking the
-// model for that follow-up should not have to first resume the session, or know
-// that "running" is a state a session has.
-function EndedSummary({ sessionRef, model, workMs }: { sessionRef: string; model: ThreadModel; workMs: number }) {
-  const settled: Array<{ key: string; testId: string; text: string }> = [];
-  if (workMs > 0) {
-    settled.push({ key: "work", testId: "status-row-work-time", text: `${formatWorkDuration(workMs)} worked` });
-  }
-  if (model.cost) settled.push({ key: "cost", testId: "status-row-cost", text: model.cost });
-
-  return (
-    <div className={`${CLASS.row} ${CLASS.summary}`} data-testid="status-row">
-      <ModelSwitch sessionRef={sessionRef} model={model} />
-      {/* Ahead of the settled figures: work time and cost are an epitaph, and
-          what went wrong is the one thing on this strip that could still change
-          what the reader does next. Never acute here - an ended session's own
-          status is never the "systemError" one cadenceStateForStatus calls
-          failed, so its tally is always settled history (see FailureCount's
-          own comment). */}
-      <FailureCount count={model.failedToolCalls} separator acute={false} />
-      {settled.map((fact) => (
-        <span key={fact.key} className={CLASS.item}>
-          <span className={CLASS.separator} aria-hidden="true">
-            ·
-          </span>
-          <span className={CLASS.mono} data-testid={fact.testId}>
-            {fact.text}
-          </span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const hasContext = model.contextWindow > 0;
@@ -287,42 +152,36 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   // Session details.
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
-
-  if (ENDED_STATUSES.has(model.status.type)) {
-    return <EndedSummary sessionRef={sessionRef} model={model} workMs={workMs} />;
-  }
+  const contextPercent = Math.round(model.contextPressure * 100);
+  const contextLabel = `Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${contextPercent} percent`;
 
   return (
     <div className={CLASS.row} data-testid="status-row">
-      <ModelSwitch sessionRef={sessionRef} model={model} />
-      {/* Driven purely by the wire figure, not by which strip is rendering -
-          which is why a running session lights this up with no second render
-          path. The daemon counts its own failures as it writes them to the
-          transcript, so the figure a live session carries is whole-session,
-          not the stale floor a re-read of a file still being appended to
-          would give. Acute only when the session's OWN status is the failed
-          one - a session still working normally after an earlier tool
-          failure is not a current alarm. */}
-      <FailureCount count={model.failedToolCalls} acute={cadenceStateForStatus(model.status.type) === "failed"} />
-      <ReasoningEffortControl sessionRef={sessionRef} model={model} />
-      {/* The gauge is the whole readout: a used/window number pair beside it
-          repeated what the fill already shows, in a row that has to stay one
-          line. The exact counts are still available - spoken from the meter's
-          own label, and on hover from this title, which follows the row's
-          "key value" tooltip convention (status-row-cost). */}
+      <span className={CLASS.identity} data-testid="status-row-identity">
+        <ModelSwitch sessionRef={sessionRef} model={model} />
+        <ReasoningEffortControl sessionRef={sessionRef} model={model} />
+      </span>
       {hasContext && (
         <span
-          className={CLASS.item}
+          className={CLASS.context}
           data-testid="status-row-context"
+          role="meter"
+          aria-label={contextLabel}
+          aria-valuemin={0}
+          aria-valuenow={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
+          aria-valuemax={model.contextWindow}
           title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
         >
-          <span className={CLASS.meter}>
+          <span className={CLASS.contextMeter} data-testid="status-row-context-meter" aria-hidden="true">
             <Meter
-              label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${Math.round(model.contextPressure * 100)} percent`}
+              label={contextLabel}
               value={model.contextUsed}
               max={model.contextWindow}
               tone={contextTone(model.contextPressure)}
             />
+          </span>
+          <span className={`${CLASS.contextPercent} ${CLASS.mono}`} data-testid="status-row-context-percent" aria-hidden="true">
+            {`${contextPercent}%`}
           </span>
         </span>
       )}
@@ -335,26 +194,23 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           {formatWorkDuration(workMs)}
         </span>
       )}
-      {/* Session cost: the server-formatted SerfThread.Cost string shown
-          verbatim (no client-side formatter — the pricing table is Go-side).
-          A falsy cost (null/undefined/"" — the daemon's honest "unknown")
-          renders nothing rather than a misleading "~$0.00". */}
-      {model.cost && (
-        <span
-          className={`${CLASS.item} ${CLASS.mono}`}
-          data-testid="status-row-cost"
-          title={`session cost ${model.cost}`}
-        >
-          {model.cost}
-        </span>
-      )}
       {/* Queue depth rides the FAR RIGHT, so Send's effect on a running session
           is visible without a second row of chrome. Absent at zero: an empty
           queue is the normal case and "0 queued" would be noise on every
           session. */}
       {queueDepth > 0 && (
-        <span className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`} data-testid="status-row-queue">
-          {`${queueDepth} queued`}
+        <span
+          className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`}
+          data-testid="status-row-queue"
+          aria-label={`${queueDepth} queued`}
+          title={`${queueDepth} queued`}
+        >
+          <span className={CLASS.queueFull} data-testid="status-row-queue-full" aria-hidden="true">
+            {`${queueDepth} queued`}
+          </span>
+          <span className={CLASS.queueCompact} data-testid="status-row-queue-compact" aria-hidden="true">
+            {`Q${queueDepth}`}
+          </span>
         </span>
       )}
     </div>

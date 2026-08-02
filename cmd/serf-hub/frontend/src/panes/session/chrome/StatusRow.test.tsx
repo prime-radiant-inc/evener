@@ -110,20 +110,34 @@ test("no location cluster: cwd, branch and project belong to the details sheet",
   expect(screen.getByTestId("status-row").textContent).not.toContain("feature/x");
 });
 
-// Cost is the glanceable form of the same fact, and the details sheet carries
-// the exact figures - two representations of token spend on one 12px line was
-// the same fact at two altitudes.
-test("no raw token counts: cost subsumes them for glancing", () => {
+// Raw token counts and cost are not part of the footer anymore.
+test.each([
+  { status: { type: "active" as const }, activeTurnId: "turn_1", failedToolCalls: 4, cost: "~$1.23" },
+  { status: { type: "notLoaded" as const }, failedToolCalls: 4, cost: "~$1.23", workMillis: 90_000 },
+])("omits failure count and cost from the footer in every lifecycle state", (overrides) => {
+  render(<StatusRow sessionRef="ref_a" model={testModel(overrides)} now={1_000_000} />);
+  expect(screen.queryByTestId("status-row-failures")).toBeNull();
+  expect(screen.queryByTestId("status-row-cost")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
+  expect(screen.getByTestId("status-row").textContent).not.toContain("~$1.23");
+});
+
+test("groups model and effort visually while retaining two independent controls", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={runningModel({ usage: { inputTokens: 1500, outputTokens: 320 }, cost: "~$1.23" })}
+      model={testModel({
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "medium", "high"],
+        reasoningEffort: "medium",
+      })}
       now={1_000_000}
     />,
   );
-  expect(screen.queryByTestId("status-row-usage")).toBeNull();
-  expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
-  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$1.23");
+  const identity = screen.getByTestId("status-row-identity");
+  expect(identity.contains(screen.getByRole("button", { name: /change model/i }))).toBe(true);
+  expect(identity.contains(screen.getByRole("combobox", { name: /reasoning effort/i }))).toBe(true);
+  expect(identity.children).toHaveLength(2);
 });
 
 // --- model switcher ---------------------------------------------------------
@@ -540,37 +554,21 @@ test.each([
 // the same thing twice in a row that has to stay one line. The exact numbers
 // are still reachable - spoken from the meter's label, and on hover from the
 // title, following the row's "key value" tooltip convention.
-test("shows no duplicate numeric readout beside the gauge, and puts the numbers in a hover tooltip", () => {
+test("context has one meter semantic with wide and compact visual variants", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={runningModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
+      model={runningModel({ contextUsed: 64_000, contextWindow: 128_000, contextPressure: 0.5 })}
       now={1_000_000}
     />,
   );
-  expect(screen.queryByText("12k / 128k")).toBeNull();
-  expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe("context 12k / 128k");
-});
-
-// --- cost --------------------------------------------------------------------
-
-test("shows the session cost verbatim from the wire string when present", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ cost: "~$1.23" })} now={1000} />);
-  const cost = screen.getByTestId("status-row-cost");
-  // The wire string is already formatted server-side (EstimateCost) — the row
-  // displays it verbatim, never re-formatting a number client-side.
-  expect(cost.textContent).toBe("~$1.23");
-  expect(cost.getAttribute("title")).toContain("~$1.23");
-});
-
-test("shows no cost when the wire omits cost as null (honest unknown)", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ cost: null })} now={1000} />);
-  expect(screen.queryByTestId("status-row-cost")).toBeNull();
-});
-
-test("shows no cost when cost is absent (undefined) from the model", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({})} now={1000} />);
-  expect(screen.queryByTestId("status-row-cost")).toBeNull();
+  const meter = screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i });
+  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
+  expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
+  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getAllByRole("meter")).toHaveLength(1);
 });
 
 // --- queue depth -------------------------------------------------------------
@@ -578,9 +576,15 @@ test("shows no cost when cost is absent (undefined) from the model", () => {
 // Send's effect on a running session has to be visible somewhere, and the far
 // right of the strip is cheaper than a second row of chrome.
 
-test("shows the queue depth at the far right when messages are waiting", () => {
-  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { revision: 0, depth: 2 } })} now={1_000_000} />);
-  expect(screen.getByTestId("status-row-queue").textContent).toBe("2 queued");
+test("a queued count supplies full and compact visuals through one accessible item", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { revision: 0, depth: 3 } })} now={1_000_000} />);
+  const queue = screen.getByTestId("status-row-queue");
+  expect(queue.getAttribute("aria-label")).toBe("3 queued");
+  expect(queue.getAttribute("title")).toBe("3 queued");
+  expect(screen.getByTestId("status-row-queue-full").textContent).toBe("3 queued");
+  expect(screen.getByTestId("status-row-queue-compact").textContent).toBe("Q3");
+  expect(screen.getByTestId("status-row-queue-full").getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getByTestId("status-row-queue-compact").getAttribute("aria-hidden")).toBe("true");
 });
 
 test("shows no queue readout when the queue is empty - the normal case is not news", () => {
@@ -593,220 +597,3 @@ test("shows no queue readout when the wire carries no queue at all", () => {
   expect(screen.queryByTestId("status-row-queue")).toBeNull();
 });
 
-// --- the ended state: an epitaph, not a cockpit ------------------------------
-//
-// A finished session's work and cost are settled, so the live row of instruments
-// is replaced by one summary line. "notLoaded" is the shape a cold exited serf
-// session actually arrives in (cmd/serf-hub/app_threadread.go's
-// pastEntryThread), which is why it counts as ended here.
-
-const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
-
-test.each(ENDED_STATUSES)("a %s session's strip is one summary line of model, work and cost", (type) => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({
-        status: { type },
-        modelProvider: "anthropic",
-        model: "claude-opus-5",
-        workMillis: 840_000,
-        cost: "~$1.83",
-      })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
-  expect(screen.getByTestId("status-row-work-time").textContent).toBe("14m worked");
-  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$1.83");
-});
-
-// The model is the ONE live thing left on a finished session's strip: it can be
-// sent to again (the hub advertises Send and ChangeModel for a cold exited
-// thread and resumes it behind either), so the model its next turn runs on is
-// still a choice a user must be able to make - without first knowing that
-// "running" is a state a session has. The gauge and the effort control are not:
-// context occupancy was never measured for an exited session (the hub builds its
-// thread from persisted SessionMeta, which carries no context figures).
-test("an ended session keeps a WORKING model switch - its next turn's model is still a choice", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, modelProvider: "anthropic", model: "claude-opus-5" })}
-      now={1_000_000}
-    />,
-  );
-  const trigger = screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
-  expect(trigger.disabled).toBe(false);
-});
-
-test("an ended session's strip still drops the dead instruments - no gauge, no effort control", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({
-        status: { type: "notLoaded" },
-        supportsReasoning: true,
-        reasoningEffortLevels: ["low", "high"],
-        contextUsed: 12_000,
-        contextWindow: 128_000,
-      })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.queryByRole("meter")).toBeNull();
-  expect(screen.queryByRole("combobox", { name: /reasoning effort/i })).toBeNull();
-});
-
-// Same honesty rule as the live row's clock: an unmeasured work time is Go's
-// unset zero, not a measurement, so it gets no row rather than a "1s".
-test("an ended session with no measured work time shows model and cost only, no fabricated '1s'", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, workMillis: 0, cost: "~$0.40" })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.queryByTestId("status-row-work-time")).toBeNull();
-  expect(screen.getByTestId("status-row").textContent).not.toContain("1s");
-  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$0.40");
-});
-
-test("an ended session with no cost shows the facts it has and nothing it doesn't", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "closed" }, workMillis: 90_000, cost: null })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.queryByTestId("status-row-cost")).toBeNull();
-  expect(screen.getByTestId("status-row-work-time").textContent).toBe("1m worked");
-});
-
-// THE KATA (hw2n). A reader could not tell whether a session held a failure
-// without scrolling all of it - two panel participants independently reported
-// stopping early and concluding a run was clean. The strip is the one surface
-// always on screen, and it now says so.
-//
-// UX ROUND (k9-transcript persona panel, 2026-07-25): the count itself must
-// never disappear (hw2n stays fixed), but a SETTLED session's lifetime tally
-// is a historical fact, not a current alarm - four independent readers
-// (correctness auditor, long-run monitor, failure debugger, mobile
-// check-in) each separately misread the danger-red glyph as "this is broken
-// right now", even reading a summary two lines above that said the tests
-// pass. An ended session is never itself the acute "systemError" state
-// (cadenceStateForStatus), so its failure count renders WITHOUT the glyph -
-// still findable (first item on the strip, the word "failed" is not hidden),
-// just not spending the one hue reserved for "look now".
-test("an ended session with failures says how many, on the strip that is always on screen", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97", failedToolCalls: 6 })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.getByTestId("status-row-failures").textContent).toContain("6 failed");
-  // An ended session's tally is settled history, not a live alarm - it does
-  // not spend --danger (see the comment above this test).
-  expect(screen.queryByTestId("failure-glyph")).toBeNull();
-});
-
-// The glyph - and --danger - are reserved for a session that is ITSELF
-// currently in the failed state (cadenceStateForStatus's "systemError" ->
-// "failed" mapping, the same signal the pane's own Cadence dot uses). That is
-// the one case where "look now" is actually true.
-test("a session whose own status is currently failed shows the failure glyph", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "systemError" }, failedToolCalls: 2 })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.getByTestId("status-row-failures").textContent).toContain("2 failed");
-  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
-});
-
-// A session that is currently WORKING (not crashed) but logged a failure
-// earlier in its run is the long-run-monitor's case: still findable, still
-// never suppressed, but not styled as an acute, current problem either - the
-// run is progressing normally.
-test("a working session with a past failure shows the count without the acute glyph", () => {
-  render(<StatusRow sessionRef="ref_a" model={runningModel({ failedToolCalls: 1 })} now={1_060_000} />);
-  expect(screen.getByTestId("status-row-failures").textContent).toContain("1 failed");
-  expect(screen.queryByTestId("failure-glyph")).toBeNull();
-});
-
-// A clean session is not news. Zero renders NOTHING - no "0 failed", no empty
-// slot - so the strip only ever speaks when there is something to say.
-test("a session the server measured as clean renders no failure item at all", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97", failedToolCalls: 0 })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.queryByTestId("status-row-failures")).toBeNull();
-  expect(screen.queryByTestId("failure-glyph")).toBeNull();
-  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
-});
-
-// An unknown count is not a clean session. A transcript nobody can read must
-// leave the strip silent rather than vouch for it.
-test("an unknown failure count renders nothing rather than claiming the session was clean", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97" })}
-      now={1_000_000}
-    />,
-  );
-  expect(screen.queryByTestId("status-row-failures")).toBeNull();
-  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
-});
-
-// The strip is 12px and terse, so the visible text is the test-runner idiom
-// ("6 failed"); the name a screen reader gets is the full sentence, and it is
-// spoken ONCE - the glyph's own "Failed" label is suppressed here so the item
-// does not announce as "Failed 6 failed".
-test("the failure count's accessible name is one full sentence, not the glyph label plus a fragment", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, failedToolCalls: 6 })}
-      now={1_000_000}
-    />,
-  );
-  const item = screen.getByTestId("status-row-failures");
-  expect(item.textContent).toContain("6 failed tool calls");
-  expect(item.getAttribute("title")).toBe("6 failed tool calls");
-  // The glyph is out of the accessibility tree here, so the sentence is the
-  // only thing announced - not "Failed" followed by "6 failed".
-  expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
-});
-
-test("a single failure reads in the singular", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ status: { type: "notLoaded" }, failedToolCalls: 1 })}
-      now={1_000_000}
-    />,
-  );
-  const item = screen.getByTestId("status-row-failures");
-  expect(item.textContent).toContain("1 failed");
-  expect(item.textContent).toContain("1 failed tool call");
-  expect(item.textContent).not.toContain("tool calls");
-});
-
-// Presence of the wire figure is the whole gate, not which variant of the strip
-// is rendering — which is what let the daemon's live count (kata 12rq) reach the
-// running strip with no second render path.
-test("a running session shows the count too when the wire carries one", () => {
-  render(<StatusRow sessionRef="ref_a" model={runningModel({ failedToolCalls: 3 })} now={1_060_000} />);
-  expect(screen.getByTestId("status-row-failures").textContent).toContain("3 failed");
-});
