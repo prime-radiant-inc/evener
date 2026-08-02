@@ -13,21 +13,28 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
   `$HOME=$run/home` (with `XDG_STATE_HOME` unset), and a hub bound by the kernel
   to `127.0.0.1:0`. Keep its exact PID in `$run/hub.pid`; never use an ambient
   hub, assigned port, real home, or shared state.
-- Before the first browser call, claim a browser profile owned only by this run,
-  e.g. `set_profile font-size-<basename-of-$run>`. Do not use the ambient/shared
-  default or any pre-existing persistent profile. Authenticate that browser to
-  this run's `$HUB`, then open a session containing transcript content so the
-  effect is visible beyond the sidebar.
+- Coordinate browser ownership before the first browser call, following
+  `docs/conventions/agent-fleets.md`. Use one of two honest modes: either this
+  run is the designated browser verifier and holds an exclusive serialized
+  browser-verification slot, or it has a genuinely distinct browser server and
+  process whose PID and data directory are recorded below `$run`. A different
+  profile name on the shared browser server is not isolation; do not call
+  `set_profile`. In serialized mode, act only in a new tab on this run's unique
+  `$PORT` origin. Never close the shared browser/server, change its
+  server-global configuration, clear its profile, or touch any pre-existing
+  tab. Authenticate the run-owned tab to this run's `$HUB`, then open a session
+  containing transcript content so the effect is visible beyond the sidebar.
 - Create `RESULTS=$run/results/font-size-presets-visible` with
   `mkdir -p "$RESULTS"`. Every measurement export and S/M/L/XL screenshot from
   this card must be written there, beneath the run root that this card owns.
 
 ## Steps
 
-1. Confirm `HOME` is `$run/home`, the page's `location.port` equals this run's
-   kernel-assigned `$PORT`, and the claimed browser profile is the unique
-   profile named above. Open Settings → Theme and confirm the fresh profile's
-   current preset (default `m`) is indicated.
+1. Confirm `HOME` is `$run/home` and record which browser-ownership mode is in
+   force: the designated serialized verifier slot, or the exact PID and data
+   directory for a distinct run-owned browser process. In every browser eval,
+   assert that the page's `location.port` equals this run's kernel-assigned
+   `$PORT`. Open Settings → Theme and record the currently indicated preset.
 2. Cycle through S, M, L, XL. After each selection, read
    `document.body.dataset.fontSize`,
    `getComputedStyle(document.body).getPropertyValue('--font-scale')`, and,
@@ -52,18 +59,27 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
 
 ## Cleanup
 
-- Close only the tabs/browser instance claimed for this run, shut down the
-  session this card spawned, and kill only the hub PID recorded in
-  `$run/hub.pid`. Then remove this card's exact `$run` directory.
-- Do **not** reset `fontSize`, clear storage, or otherwise overwrite an ambient
-  or pre-existing persistent browser profile. Such a profile is outside this
-  card's ownership and must never be used by the steps above.
+- In serialized mode, release the designated verifier slot after the last
+  measurement. Do not close the shared browser/server, call `set_profile`,
+  clear its profile, or mutate any pre-existing tab. Only the new run tab and
+  this run's unique-port origin were in scope during verification.
+- In distinct-process mode, stop only the exact run-owned browser PID. Then, in
+  either mode, shut down only the session this card spawned, kill only the hub
+  PID recorded in `$run/hub.pid`, and remove this card's exact `$run`
+  directory. The distinct browser data directory and all results disappear as
+  children of that one run root.
 
 ## Sharp edges
 
-- Storage is per-browser (`localStorage`), not synced server-side. That is why
-  this card requires a new run-owned profile: its default `m` state and every
-  mutation belong to this run, and cleanup never edits someone else's profile.
+- Storage is per-origin browser state (`localStorage`), not synced server-side.
+  In serialized mode this card changes only the unique `$PORT` origin in its
+  run tab; in distinct-process mode the state also lives in the browser data
+  directory below `$run`. Neither mode permits clearing or rewriting the
+  shared profile.
+- **`set_profile` is prohibited.** It changes one sticky value on the shared
+  MCP server process and does not create per-agent isolation. The measured
+  authority and current coordination rule are in
+  `docs/conventions/agent-fleets.md` under “Chrome is one shared instance.”
 - **This run's actual coverage**: the `claude-in-chrome` browser tool was not
   connected in this session, so the visual/screenshot verification in step 3
   was **not driven live**. Backing evidence used instead:
@@ -76,6 +92,6 @@ the `--font-size-*` ramp, set via Settings → Theme and persisted to
     exercises the Font size control: choosing XL updates both the preference
     and `document.body.dataset.fontSize`.
   - If re-running with a working browser: first establish the run-owned hub,
-    home, profile, and results directory above; then perform steps 1-3, retain
-    all four captures below `$RESULTS`, and replace this note with the observed
-    visual evidence.
+    home, results directory, and one of the two browser-ownership modes above;
+    then perform steps 1-3, retain all four captures below `$RESULTS`, and
+    replace this note with the observed visual evidence.
