@@ -60,7 +60,10 @@ for arg in "$@"; do
 done
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-work="$(mktemp -d -t serf-cite-migrate.XXXXXX)"
+if ! work="$(mktemp -d -t serf-cite-migrate.XXXXXX)"; then
+	echo "scenario-cite-migrate.sh: unable to create temporary directory" >&2
+	exit 1
+fi
 trap 'rm -f "$work"/*.go; rmdir "$work"' EXIT
 
 prog="$work/migrate.go"
@@ -74,8 +77,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -206,9 +209,6 @@ func corroboratedAnchors(lines []string, i int, names declarationTable) []string
 		if strings.HasSuffix(candidate, ".go") {
 			continue
 		}
-		if dot := strings.LastIndexByte(candidate, '.'); dot >= 0 {
-			candidate = candidate[dot+1:]
-		}
 		if len(names[candidate]) == 0 || seen[candidate] {
 			continue
 		}
@@ -250,12 +250,15 @@ func declarationsIn(cache map[string]declarationTable, path string) (declaration
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
 			record(decl.Name.Name, decl)
+			if receiver := receiverName(decl.Recv); receiver != "" {
+				record(receiver+"."+decl.Name.Name, decl)
+			}
 		case *ast.GenDecl:
 			for _, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
 					record(spec.Name.Name, spec)
-					recordMembers(record, spec.Type)
+					recordMembers(record, spec.Name.Name, spec.Type)
 				case *ast.ValueSpec:
 					for _, name := range spec.Names {
 						record(name.Name, spec)
@@ -270,7 +273,7 @@ func declarationsIn(cache map[string]declarationTable, path string) (declaration
 
 // recordMembers records the field names of a struct type and the method names
 // of an interface type; cards anchor to both.
-func recordMembers(record func(string, ast.Node), typ ast.Expr) {
+func recordMembers(record func(string, ast.Node), typeName string, typ ast.Expr) {
 	var fields *ast.FieldList
 	switch typ := typ.(type) {
 	case *ast.StructType:
@@ -283,8 +286,35 @@ func recordMembers(record func(string, ast.Node), typ ast.Expr) {
 	for _, field := range fields.List {
 		for _, name := range field.Names {
 			record(name.Name, field)
+			record(typeName+"."+name.Name, field)
 		}
 	}
+}
+
+// receiverName returns the declared receiver type name, including the base
+// type inside pointer and generic receiver expressions.
+func receiverName(fields *ast.FieldList) string {
+	if fields == nil || len(fields.List) == 0 {
+		return ""
+	}
+	var name func(ast.Expr) string
+	name = func(expr ast.Expr) string {
+		switch expr := expr.(type) {
+		case *ast.Ident:
+			return expr.Name
+		case *ast.StarExpr:
+			return name(expr.X)
+		case *ast.IndexExpr:
+			return name(expr.X)
+		case *ast.IndexListExpr:
+			return name(expr.X)
+		case *ast.ParenExpr:
+			return name(expr.X)
+		default:
+			return ""
+		}
+	}
+	return name(fields.List[0].Type)
 }
 
 // lineRangeIn reports whether a cited line or line range overlaps any place the
@@ -310,32 +340,30 @@ func lineRangeIn(spans []span, cited string) bool {
 	return false
 }
 
-// indexGoFiles maps every Go file in the tree by base name, so a cited path
-// suffix resolves without rewalking.
+// indexGoFiles maps every tracked Go file by base name, so a cited path suffix
+// resolves without rewalking and generated or ignored files cannot become
+// migration targets accidentally.
 func indexGoFiles(root string) (map[string][]string, error) {
+	cmd := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go")
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
 	byBase := map[string][]string{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for _, path := range strings.Split(string(raw), "\x00") {
+		if path == "" {
+			continue
 		}
-		if d.IsDir() {
-			if name := d.Name(); name == ".git" || name == "node_modules" {
-				return fs.SkipDir
+		path = filepath.ToSlash(path)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+			if os.IsNotExist(err) {
+				continue
 			}
-			return nil
+			return nil, fmt.Errorf("stat tracked Go file %s: %w", path, err)
 		}
-		if filepath.Ext(path) != ".go" {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		byBase[d.Name()] = append(byBase[d.Name()], rel)
-		return nil
-	})
-	return byBase, err
+		byBase[filepath.Base(path)] = append(byBase[filepath.Base(path)], path)
+	}
+	return byBase, nil
 }
 
 // resolve returns every Go file whose path is, or ends with, the cited path;
