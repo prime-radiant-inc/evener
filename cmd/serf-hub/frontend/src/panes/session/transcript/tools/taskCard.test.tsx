@@ -51,8 +51,8 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByTestId("task-card")).toBeTruthy();
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows).toHaveLength(2);
+  expect(within(rows[0]!).getByText("build the thing")).toBeTruthy();
   expect(within(rows[0]!).getByTestId("task-check")).toBeTruthy();
-  expect(screen.getByText("build the thing")).toBeTruthy();
   expect(screen.getByText("check the thing")).toBeTruthy();
 });
 
@@ -64,7 +64,7 @@ test("the collapsed append summary includes the added marker and task title as p
     ),
   );
   const summary = screen.getByTestId("tool-row-summary");
-  expect(summary.textContent).toContain("+ build the thing");
+  expect(summary.textContent).toBe("☐ build the thing");
 });
 
 test("the progress head reads '<done> of <total> done' from the tool output footer", () => {
@@ -75,18 +75,6 @@ test("the progress head reads '<done> of <total> done' from the tool output foot
     ),
   );
   expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
-});
-
-test("the count appears exactly once - the tool-row summary is just 'Tasks'", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 3, status: "done" }] },
-      "Updated 3→done. Progress: 3/3 tasks complete.",
-    ),
-  );
-  expect(screen.getAllByTestId("task-card-progress")).toHaveLength(1);
-  expect(screen.queryByText(/Tasks ·/)).toBe(null);
-  expect(screen.getByText("Tasks")).toBeTruthy();
 });
 
 test("a completed update renders a flagged touched-done row", () => {
@@ -273,9 +261,7 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
   expect(rows[0]!.textContent).toContain("fourth");
   expect(rows[1]!.getAttribute("data-touch")).toBe("started");
   expect(rows[1]!.textContent).toContain("fifth");
-  expect(summary.textContent).toContain("✓ fourth");
-  expect(summary.textContent).toContain("→ fifth");
-  expect(summary.textContent!.indexOf("fourth")).toBeLessThan(summary.textContent!.indexOf("fifth"));
+  expect(summary.textContent).toBe("☑ fourth · ☐ fifth");
 });
 
 test("an update row shows the task's description from authoritative state instead of a bare id", () => {

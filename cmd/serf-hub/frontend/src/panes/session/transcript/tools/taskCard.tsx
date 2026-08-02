@@ -183,10 +183,10 @@ const TOUCH_WORD: Record<TaskTouch, string> = {
 };
 
 const TOUCH_SUMMARY_MARK: Record<TaskTouch, string> = {
-  added: "+",
-  done: "✓",
-  cancelled: "×",
-  started: "→",
+  added: "☐",
+  done: "☑",
+  cancelled: "☒",
+  started: "☐",
 };
 
 function taskMutationSummary(item: ItemModel): string {
