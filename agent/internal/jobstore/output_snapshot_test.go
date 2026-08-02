@@ -121,9 +121,13 @@ func TestReadOutputSnapshotDistinguishesMalformedMetadataAndMissingArtifact(t *t
 			t.Fatalf("write metadata: %v", err)
 		}
 
-		_, err := ReadOutputSnapshot(path, 3, false)
-		if err == nil || !strings.Contains(err.Error(), "parse output metadata") || errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("ReadOutputSnapshot error = %v, want malformed-metadata error", err)
+		attempts := 0
+		_, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+			attempts++
+			return readOutputSnapshotOnce(afero.NewOsFs(), path, 3, false)
+		})
+		if err == nil || !strings.Contains(err.Error(), "parse output metadata") || errors.Is(err, os.ErrNotExist) || attempts != 1 {
+			t.Fatalf("snapshot error = %v attempts=%d, want one malformed-metadata attempt", err, attempts)
 		}
 	})
 
@@ -216,6 +220,45 @@ func TestReadOutputSnapshotReturnsChangedErrorAfterTwoRaces(t *testing.T) {
 	}
 }
 
+func TestReadOutputSnapshotRetriesChangeBeforeInitialMetadataValidation(t *testing.T) {
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	mustWriteSnapshotFixture(t, base, path, []byte("first\n"), 6, 0)
+	fs := &snapshotInitialValidationChangeFS{
+		Fs:       base,
+		path:     path,
+		appended: []byte("second\n"),
+	}
+
+	attempts := 0
+	got, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+		attempts++
+		return readOutputSnapshotOnce(fs, path, 1024, false)
+	})
+	if err != nil {
+		t.Fatalf("snapshot after initial-validation change: %v", err)
+	}
+	if attempts != 2 || string(got.Content) != "first\nsecond\n" || got.TotalBytes != 13 {
+		t.Fatalf("snapshot=%+v attempts=%d, want stable second attempt", got, attempts)
+	}
+}
+
+func TestReadOutputSnapshotPreservesStablePostReadMetadataError(t *testing.T) {
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	mustWriteSnapshotFixture(t, base, path, []byte("stable\n"), 7, 0)
+	fs := &snapshotPostReadMetadataFaultFS{Fs: base, path: path}
+
+	attempts := 0
+	_, err := readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
+		attempts++
+		return readOutputSnapshotOnce(fs, path, 1024, false)
+	})
+	if !errors.Is(err, errSnapshotPostReadMetadata) || errors.Is(err, ErrOutputChangedDuringRead) || attempts != 1 {
+		t.Fatalf("snapshot error=%v attempts=%d, want original post-read metadata error without retry", err, attempts)
+	}
+}
+
 func mustWriteSnapshotFixture(t *testing.T, fs afero.Fs, path string, content []byte, total, retainedStart int64) {
 	t.Helper()
 	if err := writeSnapshotFixture(fs, path, content, total, retainedStart); err != nil {
@@ -227,6 +270,10 @@ func writeSnapshotFixture(fs afero.Fs, path string, content []byte, total, retai
 	if err := afero.WriteFile(fs, path, content, 0o644); err != nil {
 		return err
 	}
+	return writeSnapshotMetadata(fs, path, content, total, retainedStart)
+}
+
+func writeSnapshotMetadata(fs afero.Fs, path string, content []byte, total, retainedStart int64) error {
 	sum := sha256.Sum256(content)
 	meta, err := json.Marshal(outputMeta{
 		TotalBytes:     total,
@@ -293,9 +340,10 @@ func (fs *snapshotReadOnlyAuditFS) Chtimes(string, time.Time, time.Time) error {
 
 type snapshotChangingFS struct {
 	afero.Fs
-	path         string
-	outputStats  int
-	replacements []snapshotReplacement
+	path          string
+	outputOpens   int
+	mutatedWindow int
+	replacements  []snapshotReplacement
 }
 
 type snapshotReplacement struct {
@@ -304,16 +352,91 @@ type snapshotReplacement struct {
 	retainedStart int64
 }
 
+func (fs *snapshotChangingFS) Open(name string) (afero.File, error) {
+	if name == fs.path {
+		fs.outputOpens++
+	}
+	return fs.Fs.Open(name)
+}
+
 func (fs *snapshotChangingFS) Stat(name string) (os.FileInfo, error) {
 	if name == fs.path {
-		fs.outputStats++
-		if fs.outputStats%2 == 0 && len(fs.replacements) > 0 {
+		windowRead := fs.outputOpens > 0 && fs.outputOpens%2 == 0
+		if windowRead && fs.mutatedWindow != fs.outputOpens && len(fs.replacements) > 0 {
 			replacement := fs.replacements[0]
 			fs.replacements = fs.replacements[1:]
 			if err := writeSnapshotFixture(fs.Fs, fs.path, replacement.content, replacement.total, replacement.retainedStart); err != nil {
 				return nil, err
 			}
+			fs.mutatedWindow = fs.outputOpens
 		}
 	}
 	return fs.Fs.Stat(name)
+}
+
+type snapshotInitialValidationChangeFS struct {
+	afero.Fs
+	path        string
+	appended    []byte
+	didAppend   bool
+	didFinalize bool
+	outputStats int
+}
+
+func (fs *snapshotInitialValidationChangeFS) Open(name string) (afero.File, error) {
+	if name == outputPendingMetaPath(outputMetaPath(fs.path)) && !fs.didAppend {
+		f, err := fs.Fs.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := f.Write(fs.appended); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if err := f.Close(); err != nil {
+			return nil, err
+		}
+		fs.didAppend = true
+	}
+	return fs.Fs.Open(name)
+}
+
+func (fs *snapshotInitialValidationChangeFS) Stat(name string) (os.FileInfo, error) {
+	if name == fs.path {
+		fs.outputStats++
+		if fs.outputStats >= 2 && fs.didAppend && !fs.didFinalize {
+			content, err := afero.ReadFile(fs.Fs, fs.path)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeSnapshotMetadata(fs.Fs, fs.path, content, int64(len(content)), 0); err != nil {
+				return nil, err
+			}
+			fs.didFinalize = true
+		}
+	}
+	return fs.Fs.Stat(name)
+}
+
+var errSnapshotPostReadMetadata = errors.New("snapshot test: post-read metadata fault")
+
+type snapshotPostReadMetadataFaultFS struct {
+	afero.Fs
+	path             string
+	outputOpens      int
+	faultedForWindow bool
+}
+
+func (fs *snapshotPostReadMetadataFaultFS) Open(name string) (afero.File, error) {
+	if name == fs.path {
+		fs.outputOpens++
+		if fs.outputOpens%2 == 0 {
+			fs.faultedForWindow = false
+		}
+	}
+	if name == outputMetaPath(fs.path) && fs.outputOpens > 0 && fs.outputOpens%2 == 0 && !fs.faultedForWindow {
+		fs.faultedForWindow = true
+		return nil, errSnapshotPostReadMetadata
+	}
+	return fs.Fs.Open(name)
 }

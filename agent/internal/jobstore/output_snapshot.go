@@ -25,6 +25,20 @@ type OutputSnapshot struct {
 	Truncated     bool
 }
 
+// outputSnapshotObservation is the comparable state changed by OutputStore's
+// writer protocol. An append changes retainedBytes; a capped prune changes the
+// pending or final metadata even when the retained length returns to the cap.
+// Keeping raw metadata bytes also distinguishes stable malformed metadata from
+// a concurrent change without classifying errors by their text or position.
+type outputSnapshotObservation struct {
+	outputExists  bool
+	retainedBytes int64
+	metaExists    bool
+	meta          string
+	pendingExists bool
+	pending       string
+}
+
 // ReadOutputSnapshot reads a stable head or tail window without opening the
 // output or its metadata for writing. A concurrent change is retried once
 // immediately; the read never waits for more output or job completion.
@@ -54,34 +68,46 @@ func readOutputSnapshotWithRetry(read func() (OutputSnapshot, error)) (OutputSna
 }
 
 func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead bool) (OutputSnapshot, error) {
-	beforeInfo, err := fs.Stat(path)
+	before, err := observeOutputSnapshot(fs, path)
 	if err != nil {
-		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
+		return OutputSnapshot{}, err
 	}
-	retainedBytes := beforeInfo.Size()
+	if !before.outputExists {
+		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot %s: %w", path, os.ErrNotExist)
+	}
+
+	snapshot, readErr := readOutputSnapshotAttempt(fs, path, before.retainedBytes, maxBytes, fromHead)
+	after, observeErr := observeOutputSnapshot(fs, path)
+	if observeErr != nil {
+		return OutputSnapshot{}, observeErr
+	}
+	if before != after {
+		return OutputSnapshot{}, errOutputChanged
+	}
+	if readErr != nil {
+		return OutputSnapshot{}, readErr
+	}
+	return snapshot, nil
+}
+
+func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	totalBytes, retainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
 
 	content, err := readOutputSnapshotWindow(fs, path, retainedBytes, maxBytes, fromHead)
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return OutputSnapshot{}, errOutputChanged
-	}
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
 
 	afterInfo, err := fs.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return OutputSnapshot{}, errOutputChanged
-	}
 	if err != nil {
 		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
 	}
 	afterTotal, afterRetainedStart, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
-		return OutputSnapshot{}, errOutputChanged
+		return OutputSnapshot{}, err
 	}
 	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart {
 		return OutputSnapshot{}, errOutputChanged
@@ -93,6 +119,40 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 		RetainedStart: retainedStart,
 		Truncated:     retainedStart > 0 || int64(maxBytes) < retainedBytes,
 	}, nil
+}
+
+func observeOutputSnapshot(fs afero.Fs, path string) (outputSnapshotObservation, error) {
+	var observation outputSnapshotObservation
+	info, err := fs.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return observation, nil
+	}
+	if err != nil {
+		return outputSnapshotObservation{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
+	}
+	observation.outputExists = true
+	observation.retainedBytes = info.Size()
+
+	observation.meta, observation.metaExists, err = readOutputSnapshotMetadata(fs, outputMetaPath(path))
+	if err != nil {
+		return outputSnapshotObservation{}, err
+	}
+	observation.pending, observation.pendingExists, err = readOutputSnapshotMetadata(fs, outputPendingMetaPath(outputMetaPath(path)))
+	if err != nil {
+		return outputSnapshotObservation{}, err
+	}
+	return observation, nil
+}
+
+func readOutputSnapshotMetadata(fs afero.Fs, path string) (string, bool, error) {
+	b, err := afero.ReadFile(fs, path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("jobstore: observe output metadata: %w", err)
+	}
+	return string(b), true, nil
 }
 
 func readOutputSnapshotWindow(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (content []byte, err error) {
