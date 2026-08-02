@@ -62,6 +62,61 @@ skip=${AGENT_SHARD_SKIP:-}
 noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
 logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
 
+# The reclaimer cannot use the shard directory mtime as a liveness signal:
+# shard output is appended below it, and appending an existing log does not
+# update the directory. Keep an explicit heartbeat in the directory while
+# this run owns it so a long-running shard remains protected.
+heartbeat="$logdir/.heartbeat"
+heartbeat_pid=""
+retain_heartbeat=0
+pids=()
+names=()
+: >"$heartbeat"
+heartbeat_loop() {
+	local parent_pid="$1" sleep_pid=""
+	stop_heartbeat() {
+		[ -n "$sleep_pid" ] && kill -TERM "$sleep_pid" 2>/dev/null || :
+		exit 143
+	}
+	trap stop_heartbeat HUP INT TERM
+	while kill -0 "$parent_pid" 2>/dev/null && touch "$heartbeat" 2>/dev/null; do
+		sleep 5 &
+		sleep_pid="$!"
+		wait "$sleep_pid" 2>/dev/null || :
+		sleep_pid=""
+	done
+	rm -f "$heartbeat" 2>/dev/null || :
+}
+heartbeat_loop "$$" &
+heartbeat_pid="$!"
+
+stop_heartbeat_process() {
+	[ -n "$heartbeat_pid" ] || return 0
+	kill -TERM "$heartbeat_pid" 2>/dev/null || :
+	wait "$heartbeat_pid" 2>/dev/null || :
+	heartbeat_pid=""
+}
+
+cleanup() {
+	local status="$?"
+	trap - EXIT
+	stop_heartbeat_process
+	[ "$retain_heartbeat" -eq 1 ] || rm -f "$heartbeat" 2>/dev/null || :
+	exit "$status"
+}
+
+interrupted() {
+	local status="$1" signal="$2"
+	retain_heartbeat=1
+	printf 'agent-test-shards.sh: interrupted by %s\n' "$signal" >&2
+	exit "$status"
+}
+
+trap cleanup EXIT
+trap 'interrupted 129 SIGHUP' HUP
+trap 'interrupted 130 SIGINT' INT
+trap 'interrupted 143 SIGTERM' TERM
+
 build="$logdir/agent.test"
 if ! go test -c -o "$build" . >"$logdir/build.log" 2>&1; then
 	echo "agent-test-shards: build failed"; cat "$logdir/build.log"; exit 1
@@ -160,7 +215,6 @@ print('^(' + '|'.join(re.escape(n) for n in open(sys.argv[1]).read().split()) + 
 PY
 }
 
-pids=(); names=()
 for i in $(seq 0 $((shardCount - 1))); do
 	args=(-test.count=1 -test.parallel "$par" -test.run "$(nameRegex "$logdir/shard$i.names")")
 	# Translate the caller's `go test` flags into the binary's -test.* spelling.
