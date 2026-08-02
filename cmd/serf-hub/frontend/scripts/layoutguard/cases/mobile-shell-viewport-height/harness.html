@@ -175,12 +175,34 @@ async function showFixture(name) {
   await new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-function measureFixture(name) {
+async function measureFixture(name) {
   const root = fixtureRoot(name);
   const shell = root.querySelector("[data-shell]");
   const pane = root.querySelector("[data-pane]");
   const paneBody = root.querySelector("[data-pane-body]");
   const footer = root.querySelector("[data-footer]");
+  const topBar = root.querySelector(".topBar");
+  const chromeBefore = {
+    topBar: rectOf(topBar),
+    footer: rectOf(footer),
+  };
+
+  window.scrollTo(0, 100);
+  if (document.scrollingElement) document.scrollingElement.scrollTop = 100;
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+  const chromeAfterDocumentScroll = {
+    topBar: rectOf(topBar),
+    footer: rectOf(footer),
+  };
+
+  if (paneBody) paneBody.scrollTop = 100;
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+  const chromeAfterPaneScroll = {
+    topBar: rectOf(topBar),
+    footer: rectOf(footer),
+  };
 
   return {
     fixture: name,
@@ -191,7 +213,10 @@ function measureFixture(name) {
       width: window.innerWidth,
       height: window.innerHeight,
     },
-    topBar: rectOf(root.querySelector(".topBar")),
+    topBar: rectOf(topBar),
+    chromeBefore,
+    chromeAfterDocumentScroll,
+    chromeAfterPaneScroll,
     visualViewport: window.visualViewport
       ? {
           width: window.visualViewport.width,
@@ -202,14 +227,23 @@ function measureFixture(name) {
     document: {
       scrollHeight: document.documentElement.scrollHeight,
       clientHeight: document.documentElement.clientHeight,
+      scrollTopAfter: document.scrollingElement?.scrollTop ?? null,
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      rootOverflow: getComputedStyle(document.documentElement).overflow,
     },
-    shell: rectOf(shell),
+    shell: shell
+      ? {
+          ...rectOf(shell),
+          position: getComputedStyle(shell).position,
+        }
+      : null,
     pane: rectOf(pane),
     paneBody: paneBody
       ? {
           rect: rectOf(paneBody),
           scrollHeight: paneBody.scrollHeight,
           clientHeight: paneBody.clientHeight,
+          scrollTopAfter: paneBody.scrollTop,
         }
       : null,
     footer: rectOf(footer),
@@ -220,7 +254,7 @@ window.measure = async function () {
   const measurements = [];
   for (const fixture of FIXTURES) {
     await showFixture(fixture);
-    measurements.push(measureFixture(fixture));
+    measurements.push(await measureFixture(fixture));
   }
   await showFixture(FIXTURES[0]);
   return measurements;

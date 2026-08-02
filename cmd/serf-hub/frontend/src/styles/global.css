@@ -87,3 +87,13 @@ body {
   font-weight: var(--font-weight-regular);
   line-height: var(--line-height-body);
 }
+
+/* The mobile app shell owns the viewport; panes provide their own scroll
+ * containers. Lock the document so browser/PWA overscroll cannot move the
+ * StackHost top bar or a pane footer with the page. */
+@media (max-width: 899px) {
+  html,
+  body {
+    overflow: hidden;
+  }
+}

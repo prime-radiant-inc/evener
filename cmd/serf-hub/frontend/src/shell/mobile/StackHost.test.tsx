@@ -611,6 +611,13 @@ test("the stack container reserves the device's bottom safe-area inset", () => {
   expect(css).toContain("env(safe-area-inset-bottom)");
 });
 
+test("the top bar reserves the device's top safe-area inset", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
+  const topBarRule = css.match(/\.topBar \{([^}]*)\}/)?.[1] ?? "";
+  expect(topBarRule).toContain("env(safe-area-inset-top)");
+});
+
 // The top-bar title channel (2026-07-30-mobile-session-layout-design.md,
 // decision 2): StackHost renders whatever PaneScaffold published to the
 // chrome store between the back button and the drawer trigger.

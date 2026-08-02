@@ -52,6 +52,42 @@ export default function assert(measurements) {
       );
     }
 
+    if (measurement.document.bodyOverflow !== "hidden" || measurement.document.rootOverflow !== "hidden") {
+      failures.push(
+        `${fixtureName}: page scrolling is not locked (html overflow ${measurement.document.rootOverflow}, body overflow ${measurement.document.bodyOverflow})`,
+      );
+    }
+
+    if (measurement.shell?.position !== "fixed") {
+      failures.push(`${fixtureName}: shell position is ${measurement.shell?.position ?? "missing"}, expected fixed`);
+    }
+
+    if (measurement.document.scrollTopAfter !== 0) {
+      failures.push(`${fixtureName}: document scrolled to ${measurement.document.scrollTopAfter}px`);
+    }
+
+    if ((measurement.paneBody?.scrollHeight ?? 0) > (measurement.paneBody?.clientHeight ?? 0)) {
+      if ((measurement.paneBody?.scrollTopAfter ?? 0) === 0) {
+        failures.push(`${fixtureName}: pane body did not accept internal scrolling`);
+      }
+    }
+
+    for (const [phase, afterChrome] of [
+      ["document scroll", measurement.chromeAfterDocumentScroll],
+      ["pane scroll", measurement.chromeAfterPaneScroll],
+    ]) {
+      for (const chromeName of ["topBar", "footer"]) {
+        const before = measurement.chromeBefore?.[chromeName];
+        const after = afterChrome?.[chromeName];
+        if (!before || !after) continue;
+        if (Math.abs(before.top - after.top) > tolerance || Math.abs(before.bottom - after.bottom) > tolerance) {
+          failures.push(
+            `${fixtureName}: ${chromeName} moved during ${phase} (${before.top.toFixed(1)}-${before.bottom.toFixed(1)} to ${after.top.toFixed(1)}-${after.bottom.toFixed(1)})`,
+          );
+        }
+      }
+    }
+
     for (const [name, box] of [
       ["shell", measurement.shell],
       ["top bar", measurement.topBar],

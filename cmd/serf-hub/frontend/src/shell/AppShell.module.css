@@ -39,6 +39,12 @@
  * floating card on a 390px screen. On the phone the host (StackHost) sits
  * flush against the screen edges; the surface steps carry the structure. */
 @media (max-width: 899px) {
+  .shell {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+
   .content {
     padding: 0;
     gap: 0;
