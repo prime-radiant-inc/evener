@@ -121,8 +121,8 @@ unset XDG_STATE_HOME
 - **Missing `device_code_url=https://auth.openai.com/codex/device`**:
   either a constant changed (`deviceVerificationPath`,
   `auth/openai/device.go#deviceVerificationPath`, joined onto `IssuerBaseURL`,
-  `auth/openai/config.go#IssuerBaseURL`, at `device.go:159`) or the device
-  endpoint moved.
+  `auth/openai/config.go#Config.IssuerBaseURL`, at `device.go:159`) or the
+  device endpoint moved.
 - **`device_code=` line missing or malformed**: the
   `RequestDeviceCode` call failed silently, or `oaitest`-style framing
   leaked. The code format is `[A-Z0-9]{4}-[A-Z0-9]{5}` today.

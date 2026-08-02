@@ -86,9 +86,9 @@ func TestScenarioSourceCitationsResolve(t *testing.T) {
 //
 // A symbol is anything a card legitimately anchors to: a func or method, a
 // type, a package-level or grouped const or var, a struct field, an interface
-// method. Receiver-qualified names such as `Type.Method` are preserved; the
-// unqualified name remains available for citations that intentionally point
-// at a method without naming its receiver.
+// method. Receiver-qualified names such as `Type.Method` are preserved; an
+// unqualified alias remains available only when that name is unique in the
+// file, so a collision cannot make a citation appear to resolve by accident.
 func TestScenarioSourceSymbolsAreDeclared(t *testing.T) {
 	byBase := scenarioGoFilesByBase(t)
 	declared := map[string]map[string]bool{}
@@ -150,7 +150,9 @@ func TestScenarioDeclarationsPreserveReceiverQualification(t *testing.T) {
 type Alpha struct {
 	Field int
 }
-type Beta struct{}
+type Beta struct {
+	Field int
+}
 type Contract interface {
 	Do()
 }
@@ -170,6 +172,14 @@ func (*Beta) Run() {}
 		if !names[want] {
 			t.Fatalf("declarations missing qualified method %q: %v", want, names)
 		}
+	}
+	for _, ambiguous := range []string{"Run", "Field"} {
+		if names[ambiguous] {
+			t.Fatalf("ambiguous unqualified declaration %q was accepted: %v", ambiguous, names)
+		}
+	}
+	if !names["Do"] {
+		t.Fatalf("unique unqualified interface method was rejected: %v", names)
 	}
 }
 
@@ -217,10 +227,11 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 		return nil, err
 	}
 	names := map[string]bool{}
+	unqualifiedCounts := map[string]int{}
 	for _, decl := range parsed.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			names[decl.Name.Name] = true
+			unqualifiedCounts[decl.Name.Name]++
 			if receiver := scenarioReceiverName(decl.Recv); receiver != "" {
 				names[receiver+"."+decl.Name.Name] = true
 			}
@@ -228,14 +239,19 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 			for _, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
-					names[spec.Name.Name] = true
-					scenarioAddMemberNames(names, spec.Name.Name, spec.Type)
+					unqualifiedCounts[spec.Name.Name]++
+					scenarioAddMemberNames(names, unqualifiedCounts, spec.Name.Name, spec.Type)
 				case *ast.ValueSpec:
 					for _, name := range spec.Names {
-						names[name.Name] = true
+						unqualifiedCounts[name.Name]++
 					}
 				}
 			}
+		}
+	}
+	for name, count := range unqualifiedCounts {
+		if count == 1 {
+			names[name] = true
 		}
 	}
 	cache[path] = names
@@ -243,10 +259,10 @@ func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[
 }
 
 // scenarioAddMemberNames records a struct type's field names and an interface
-// type's method names; cards anchor to both. It keeps the unqualified alias for
-// citations that do not name a containing type and the qualified name for
-// citations that need to distinguish same-named members.
-func scenarioAddMemberNames(names map[string]bool, typeName string, typ ast.Expr) {
+// type's method names; cards anchor to both. It records the qualified name
+// immediately and defers the unqualified alias until its file-wide count is
+// known, so same-named members cannot mask one another.
+func scenarioAddMemberNames(names map[string]bool, unqualifiedCounts map[string]int, typeName string, typ ast.Expr) {
 	var fields *ast.FieldList
 	switch typ := typ.(type) {
 	case *ast.StructType:
@@ -258,7 +274,7 @@ func scenarioAddMemberNames(names map[string]bool, typeName string, typ ast.Expr
 	}
 	for _, field := range fields.List {
 		for _, name := range field.Names {
-			names[name.Name] = true
+			unqualifiedCounts[name.Name]++
 			names[typeName+"."+name.Name] = true
 		}
 	}
