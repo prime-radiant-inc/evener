@@ -4,7 +4,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  width: 100%;
+  /* No width: the trigger hugs its label (the status row's identity run
+   * sizes the wrapper to content), and max-width caps it inside the wrapper
+   * when the row runs narrow so the label ellipsizes instead of overflowing. */
   min-width: 0;
   max-width: 100%;
   padding: var(--space-1);

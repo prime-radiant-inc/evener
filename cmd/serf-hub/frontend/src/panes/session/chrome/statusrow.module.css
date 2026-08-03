@@ -21,8 +21,12 @@
   overflow: hidden;
 }
 
+/* The model switch hugs its label: shrink-to-fit (basis auto, no grow) so
+ * the effort control sits right beside it instead of being pushed to the far
+ * end of the identity run. It still shrinks below its content width when the
+ * row runs out of room - min-width: 0 lets the label ellipsize. */
 .identity > span:first-child {
-  flex: 1 1 72px;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
 }
@@ -70,8 +74,8 @@
   }
 }
 
-/* At the full-row threshold, reserve the fixed facts plus the model's approved
- * 72px preference before the lower-priority goal may consume the remainder.
+/* At the full-row threshold, reserve the fixed facts plus room for a typical
+ * model label before the lower-priority goal may consume the remainder.
  * Below this threshold the goal and work time are absent, so the row returns to
  * its fully shrinkable narrow-pane behavior. */
 @container (min-width: 560px) {
