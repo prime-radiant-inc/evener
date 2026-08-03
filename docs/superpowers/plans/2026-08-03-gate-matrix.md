@@ -121,11 +121,11 @@ Run:
 
 ```sh
 git diff --check
-make -n ROOT_FULL=1 WEB=0 test
 make -n test-web-browser
+make -qp | rg -n -A 8 '^test:|^test-web-browser:'
 ```
 
-Expected: no whitespace errors; the deterministic test dry run retains `ROOT_FULL=1`, disables only the frontend stream, and the browser dry run contains all three guards.
+Expected: no whitespace errors; the Make database shows the deterministic test target's runner and the browser dry run contains all three guards. Use `make -qp` for recursive Make targets because GNU Make executes recipes containing `$(MAKE)` even under `-n`.
 
 ### Task 3: Publish one authoritative gate matrix
 
@@ -161,10 +161,10 @@ Run:
 ```sh
 git diff --check
 rg -n 'test-web-browser|layoutguard|overflowguard|spawnguard|merge-approval-gate|ROOT_FULL=1 WEB=0 make test' docs/testing.md Makefile .github/workflows/ci.yml
-make -n merge-approval-gate
+make -qp | rg -n -A 8 '^merge-approval-gate:|^test-web-browser:'
 ```
 
-Expected: every documented command exists with the documented ownership, the three browser scripts appear in both the Makefile target and CI workflow, and the merge gate still expands to lint, build, and full test in serial order.
+Expected: every documented command exists with the documented ownership, the three browser scripts appear in both the Makefile target and CI workflow, and the Make database still shows the merge gate's serial lint/build/test recipe without executing it.
 
 ### Task 4: Run affected verification and commit the implementation
 
@@ -173,7 +173,7 @@ Expected: every documented command exists with the documented ownership, the thr
 
 - [ ] **Step 1: Run the cheap checks first.**
 
-Run `git diff --check`, the relevant `make -n` commands, and the documentation/command-reference searches from Task 3.
+Run `git diff --check`, `make -n test-web-browser`, `make -qp` for recursive Make targets, and the documentation/command-reference searches from Task 3.
 
 - [ ] **Step 2: Run the affected frontend gates.**
 
