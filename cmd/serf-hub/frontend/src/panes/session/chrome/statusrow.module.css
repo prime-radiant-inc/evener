@@ -74,10 +74,10 @@
   }
 }
 
-/* At the full-row threshold, reserve the fixed facts plus room for a typical
- * model label before the lower-priority goal may consume the remainder.
- * Below this threshold the goal and work time are absent, so the row returns to
- * its fully shrinkable narrow-pane behavior. */
+/* At the full-row threshold, reserve the fixed facts plus room for the model
+ * label's minimal presence before the lower-priority goal may consume the
+ * remainder. Below this threshold the goal and work time are absent, so the
+ * row returns to its fully shrinkable narrow-pane behavior. */
 @container (min-width: 560px) {
   .row {
     flex-basis: 276px;

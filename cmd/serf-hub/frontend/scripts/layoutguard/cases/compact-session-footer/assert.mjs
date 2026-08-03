@@ -66,7 +66,18 @@ export default function assert(measurements) {
       expectContained(m.work, m.status, "work time");
       expectContained(m.goal, m.body, "goal chip");
       expectContained(m.goalButton, m.body, "goal button");
-      if (m.model.triggerWidth < 72 - tolerance) fail("model did not receive its 72px preferred width");
+    }
+    // Shrink-to-fit contract (modelswitch shrink-to-fit change): the trigger
+    // hugs its label at EVERY width - its width never exceeds the value
+    // span's rendered width by more than its own chrome (2x4px padding +
+    // 4px gap + 14px chevron = 26px; 40 leaves slack for sub-pixel drift
+    // while staying far below the hundreds of px a grow-to-fill trigger
+    // adds at wide fixtures). This replaces the old 72px-preference
+    // assertion, which the long harness label made unfalsifiable: it passed
+    // under both the grow and the hug contract.
+    const modelChromeSlack = 40;
+    if (m.model.triggerWidth > m.model.clientWidth + modelChromeSlack) {
+      fail("model trigger reserves space beyond its label (not shrink-to-fit)");
     }
   }
 
