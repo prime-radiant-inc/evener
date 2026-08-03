@@ -254,4 +254,3 @@ If Step 1 required a test-only adjustment, commit it separately:
 git add cmd/serf-hub/frontend/src/panes/session/chrome/ActivityTree.test.tsx cmd/serf-hub/frontend/src/panes/session/transcript/openTranscript.test.tsx
 git commit -m "test: cover activity transcript pane reuse"
 ```
-
