@@ -1,9 +1,14 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { openTranscript } from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
 import type { ActivityTree as ActivityTreeData } from "./activityData";
+
+vi.mock("../transcript/openTranscript", () => ({
+  openTranscript: vi.fn(),
+}));
 
 const TREE: ActivityTreeData = {
   revision: 1,
@@ -71,6 +76,7 @@ const TREE: ActivityTreeData = {
                   background: false,
                   hasOutput: false,
                   description: "child shell",
+                  transcriptRef: "job:job_child_shell",
                   startedAt: "2026-08-03T00:03:00Z",
                   outputBytes: 0,
                 },
@@ -93,6 +99,7 @@ const TREE: ActivityTreeData = {
           background: false,
           hasOutput: false,
           description: "root shell",
+          transcriptRef: "job:job_root_done",
           startedAt: "2026-08-03T00:04:00Z",
           endedAt: "2026-08-03T00:05:00Z",
           outputBytes: 0,
@@ -119,6 +126,7 @@ function Host({ expanded = ["delegate:dlg_1"] }: { expanded?: string[] }) {
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 describe("ActivityTree", () => {
@@ -172,5 +180,54 @@ describe("ActivityTree", () => {
     screen.getByRole("treeitem", { name: /inspect the repo/i }).focus();
     await user.keyboard("{ArrowRight}");
     expect(screen.getByRole("treeitem", { name: /child session/i }).getAttribute("tabindex")).toBe("0");
+  });
+
+  test("renders transcript actions for session, delegate, and shell rows with correct refs", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(
+      <ActivityTree
+        tree={TREE}
+        expandedIDs={["session:sess_root", "delegate:dlg_1", "session:sess_child"]}
+        selectedID={undefined}
+        onExpandedChange={vi.fn()}
+        onSelect={onSelect}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Open transcript beside" })).toHaveLength(5);
+
+    await user.click(
+      within(screen.getByRole("treeitem", { name: /root session/i })).getByRole("button", {
+        name: "Open transcript beside",
+      }),
+    );
+    await user.click(
+      within(screen.getByRole("treeitem", { name: /inspect the repo/i })).getByRole("button", {
+        name: "Open transcript beside",
+      }),
+    );
+    await user.click(
+      within(screen.getByRole("treeitem", { name: /child session/i })).getByRole("button", {
+        name: "Open transcript beside",
+      }),
+    );
+    await user.click(
+      within(screen.getByRole("treeitem", { name: /child shell/i })).getByRole("button", {
+        name: "Open transcript beside",
+      }),
+    );
+    await user.click(
+      within(screen.getByRole("treeitem", { name: /root shell/i })).getByRole("button", {
+        name: "Open transcript beside",
+      }),
+    );
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(openTranscript).toHaveBeenNthCalledWith(1, "ref_root", undefined);
+    expect(openTranscript).toHaveBeenNthCalledWith(2, "ref_child", "ref_root");
+    expect(openTranscript).toHaveBeenNthCalledWith(3, "ref_child", "ref_root");
+    expect(openTranscript).toHaveBeenNthCalledWith(4, "job:job_child_shell", "ref_child");
+    expect(openTranscript).toHaveBeenNthCalledWith(5, "job:job_root_done", "ref_root");
   });
 });

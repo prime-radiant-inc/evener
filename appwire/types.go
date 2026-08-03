@@ -1209,6 +1209,7 @@ type JobActivityJob struct {
 	JobID          string `json:"jobId"`
 	OwnerSessionID string `json:"ownerSessionId"`
 	OwnerRef       string `json:"ownerRef"`
+	TranscriptRef  string `json:"transcriptRef,omitempty"`
 	Type           string `json:"type"`
 	Status         string `json:"status"`
 	Outcome        string `json:"outcome,omitempty"`

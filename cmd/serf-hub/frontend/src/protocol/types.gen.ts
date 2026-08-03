@@ -321,6 +321,7 @@ export interface JobActivityJob {
   type: string;
   status: string;
   outcome?: string;
+  transcriptRef?: string;
   terminal: boolean;
   background: boolean;
   hasOutput: boolean;

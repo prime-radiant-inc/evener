@@ -22,6 +22,7 @@ export interface ActivityJob {
   type: string;
   status: string;
   outcome?: string;
+  transcriptRef?: string;
   terminal: boolean;
   background: boolean;
   hasOutput: boolean;
@@ -199,18 +200,21 @@ function parseJob(raw: unknown): ActivityJob | null {
     outputBytes,
   };
   const outcome = readOptionalString(raw, "outcome");
+  const transcriptRef = readOptionalString(raw, "transcriptRef");
   const command = readOptionalString(raw, "command");
   const task = readOptionalString(raw, "task");
   const reason = readOptionalString(raw, "reason");
   const endedAt = readOptionalString(raw, "endedAt");
   const exitCode = raw.exitCode;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
+  if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
   if (typeof raw.command !== "undefined" && typeof raw.command !== "string") return null;
   if (typeof raw.task !== "undefined" && typeof raw.task !== "string") return null;
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
   if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
+  if (transcriptRef) job.transcriptRef = transcriptRef;
   if (command) job.command = command;
   if (task) job.task = task;
   if (reason) job.reason = reason;

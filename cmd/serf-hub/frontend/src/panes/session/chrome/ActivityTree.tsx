@@ -12,6 +12,7 @@ import {
 } from "react";
 import { Button, Chevron, StatusDot } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { ActivityTranscriptAction } from "./ActivityTranscriptAction";
 import {
   type ActivityDelegate,
   type ActivityJob,
@@ -45,6 +46,8 @@ interface RenderNode {
   statusText: string;
   branchError?: string;
   continuation?: { token: string; targetID: string };
+  transcriptRef?: string;
+  parentRef?: string;
   children: RenderNode[];
 }
 
@@ -140,6 +143,7 @@ function buildJobNode(
   job: ActivityJob,
   level: number,
   parentID: string,
+  parentRef: string,
   source: "session" | "delegate-turn",
 ): RenderNode {
   const id = activityNodeID({ kind: "shell", jobId: job.jobId });
@@ -153,6 +157,8 @@ function buildJobNode(
     label: job.description,
     detail: source === "delegate-turn" ? "delegate turn" : (job.command ?? job.task),
     statusText: job.status,
+    transcriptRef: job.transcriptRef,
+    parentRef,
     children: [],
   };
 }
@@ -162,12 +168,13 @@ function buildSessionNode(
   expanded: ReadonlySet<string>,
   level: number,
   parentID?: string,
+  parentRef?: string,
 ): RenderNode {
   const id = activityNodeID(session);
   const children: RenderNode[] = session.entries.map((entry) =>
     entry.kind === "shell"
-      ? buildJobNode(entry.job, level + 1, id, "session")
-      : buildDelegateNode(entry.delegate, expanded, level + 1, id),
+      ? buildJobNode(entry.job, level + 1, id, session.ref, "session")
+      : buildDelegateNode(entry.delegate, expanded, level + 1, id, session.ref),
   );
   return {
     id,
@@ -181,6 +188,8 @@ function buildSessionNode(
     statusText: session.aggregate,
     branchError: session.branch.error,
     continuation: session.branch.continuation ? { token: session.branch.continuation, targetID: id } : undefined,
+    transcriptRef: session.ref,
+    parentRef,
     children,
   };
 }
@@ -190,9 +199,10 @@ function buildDelegateNode(
   expanded: ReadonlySet<string>,
   level: number,
   parentID: string,
+  parentRef: string,
 ): RenderNode {
   const id = activityNodeID({ kind: "delegate", delegateId: delegate.delegateId });
-  const children: RenderNode[] = delegate.child ? [buildSessionNode(delegate.child, expanded, level + 1, id)] : [];
+  const children = delegate.child ? [buildSessionNode(delegate.child, expanded, level + 1, id, parentRef)] : [];
   const childLabel = delegate.child?.label ?? delegate.childSessionId;
   const mandate = delegate.mandate;
   const useMandateLabel = mandate !== undefined && delegateHasActiveChild(delegate);
@@ -208,6 +218,8 @@ function buildDelegateNode(
     statusText: delegateStatus(delegate),
     branchError: delegateError(delegate),
     continuation: delegateContinuation(delegate),
+    transcriptRef: delegate.childRef,
+    parentRef,
     children,
   };
 }
@@ -374,6 +386,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
               <button
                 type="button"
                 tabIndex={-1}
+                aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.label}`}
                 className={CLASS.rowToggle}
                 onClick={(event: MouseEvent<HTMLButtonElement>) => {
                   event.stopPropagation();
@@ -398,6 +411,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
             </div>
             <div className={CLASS.rowMeta}>
               <span className={CLASS.rowStatusText}>{node.statusText}</span>
+              <ActivityTranscriptAction transcriptRef={node.transcriptRef} parentRef={node.parentRef} />
             </div>
           </div>
           {(node.continuation || continuationFailure) &&

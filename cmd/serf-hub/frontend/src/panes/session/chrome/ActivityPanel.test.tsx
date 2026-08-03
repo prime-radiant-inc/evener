@@ -444,7 +444,8 @@ describe("ActivityPanel", () => {
 
     await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
     const activeDelegate = screen.getByRole("treeitem", { name: /inspect the repo/i });
-    await user.click(within(activeDelegate).getByRole("button"));
+    expect(within(activeDelegate).getByRole("button", { name: "Open transcript beside" })).toBeTruthy();
+    await user.click(within(activeDelegate).getByRole("button", { name: /collapse inspect the repo/i }));
     rerender(panel(2));
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
 

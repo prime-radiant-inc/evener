@@ -988,6 +988,7 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		JobID:          rec.JobID,
 		OwnerSessionID: rec.OwnerSessionID,
 		OwnerRef:       ownerRef,
+		TranscriptRef:  rec.TranscriptRef,
 		Type:           string(rec.Type),
 		Status:         string(rec.Status),
 		Outcome:        outcome,
