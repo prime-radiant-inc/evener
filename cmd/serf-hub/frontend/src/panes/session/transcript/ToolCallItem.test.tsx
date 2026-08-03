@@ -670,6 +670,38 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
   spy.mockRestore();
 });
 
+// read_file's openBesideInline: the summary quotes the path verbatim between
+// the verb and the line range, so the control rides INLINE between the file
+// name and the range it opens - not off at the end of the line.
+test("a read_file card's Open beside control rides inline between the file name and the line range", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "read_file",
+        description: "Reviewing Sheet tests before adding size coverage",
+        argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/widgets/sheet/sheet.test.tsx" }),
+        output: "a\nb\nc\n",
+      })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  const button = screen.getByRole("button", { name: /open beside/i });
+  const meta = screen.getByTestId("tool-row-summary-meta");
+  expect(meta.textContent).toBe(" · lines 1-3");
+  // The control precedes the line-range meta and follows the path text.
+  expect(button.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const head = screen.getByTestId("tool-row-summary-head");
+  const tail = screen.getByTestId("tool-row-summary-tail");
+  // The truncation cut may land inside the path, so the path's visible text
+  // is head+tail together - and the control sits right after it.
+  expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
+  expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 // --- summarySuffix (kata h70z): a descriptor may append text to the
 // collapsed row's summary computed from the FULL thread model (ask_user's
 // "— answered: ..." recap is the one real consumer, covered in

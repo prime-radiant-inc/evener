@@ -65,6 +65,11 @@ registerToolRenderer({
     const args = parseArgs(item.argumentsJSON);
     return str(args, "file_path") ?? str(args, "path");
   },
+  // The summary quotes the path verbatim between the verb and the line range
+  // ("Read <path> · lines N-M"), so the "open beside" control rides INLINE
+  // between the file name and the range it opens (toolRenderers.ts's
+  // openBesideInline contract), not off at the end of the line.
+  openBesideInline: true,
 });
 
 function grepTarget(args: Record<string, unknown>): string {

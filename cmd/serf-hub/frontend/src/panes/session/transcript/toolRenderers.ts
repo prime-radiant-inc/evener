@@ -66,6 +66,14 @@ export interface ToolRendererDescriptor {
   // ToolCallItem turns a non-undefined path into an "open beside" affordance
   // (relativized against the session cwd, out-of-cwd gated - fileOpenBeside.tsx).
   openBesidePath?(item: ItemModel): string | undefined;
+  // openBesideInline moves the "open beside" control from the END of the
+  // summary to INLINE, right after the openBesidePath text inside it - the
+  // one case today is read_file, whose summary quotes the path verbatim
+  // ("Read <path> · lines N-M"), so the control lands between the file name
+  // and the line range it opens. The path must literally appear inside
+  // summary()'s own text (same "never a dead anchor" contract as
+  // summaryLink); when it does not, ToolRow falls back to the end placement.
+  openBesideInline?: boolean;
   // summarySuffix appends extra text to the collapsed row's summary, computed
   // from the FULL thread model rather than just this item - the one case
   // today is ask_user's "— answered: ..." recap (kata h70z), which lives in
