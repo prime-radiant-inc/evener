@@ -27,6 +27,7 @@ function outbox(
 }
 
 function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const { jobsTreeRevision = null, ...rest } = overrides;
   return {
     ref: "ref_a",
     threadId: "thread_a",
@@ -53,7 +54,8 @@ function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
     cwd: "",
     createdAt: "",
     updatedAt: "",
-    ...overrides,
+    ...rest,
+    jobsTreeRevision,
   };
 }
 

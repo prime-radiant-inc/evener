@@ -35,6 +35,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 };
 
 function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const { jobsTreeRevision = null, ...rest } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -59,7 +60,8 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
+    jobsTreeRevision,
   };
 }
 

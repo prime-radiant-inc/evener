@@ -29,6 +29,7 @@ function model(turns: ThreadModel["turns"]): ThreadModel {
     queue: null,
     tasks: null,
     jobsUpdatedAt: null,
+    jobsTreeRevision: null,
     lastFrameAt: 0,
     capabilities: {
       send: true,
