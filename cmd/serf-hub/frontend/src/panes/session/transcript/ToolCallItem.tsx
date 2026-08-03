@@ -110,6 +110,11 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     openBesidePath !== undefined && sessionRef !== undefined ? (
       <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
     ) : null;
+  // read_file (openBesideInline) quotes its path verbatim inside the summary,
+  // so the control rides INLINE between the file name and the line range
+  // rather than at the end of the line; ToolRow falls back to the end
+  // placement when the anchor is not literally present.
+  const trailingAfter = descriptor.openBesideInline ? openBesidePath : undefined;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
   // owned by any one descriptor - rendered here, once, so every current and
@@ -226,6 +231,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           expandable={false}
           expanded={false}
           trailing={openBesideButton}
+          trailingAfter={trailingAfter}
           title={detail}
         />
       </div>
@@ -264,6 +270,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
         trailing={openBesideButton}
+        trailingAfter={trailingAfter}
         title={detail}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and

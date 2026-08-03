@@ -47,7 +47,10 @@
 //     TOOL-CALL line: inline at the end of the summary when there is one,
 //     which - with a purpose present - is the demoted second line, not the
 //     rationale line. A purpose-only row (no summary) trails them on the
-//     purpose line instead, the one line it has.
+//     purpose line instead, the one line it has. The one exception: a
+//     descriptor whose summary quotes its target verbatim (read_file's
+//     openBesideInline) anchors the control mid-summary via trailingAfter -
+//     between the file name and the line range it opens.
 //
 // A row with no purpose is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
@@ -68,6 +71,7 @@ const CLASS = {
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
   clampedTail: requireClass(styles.clampedTail, "toolcallitem.module.css", "clampedTail"),
   summaryTrailing: requireClass(styles.summaryTrailing, "toolcallitem.module.css", "summaryTrailing"),
+  summaryMeta: requireClass(styles.summaryMeta, "toolcallitem.module.css", "summaryMeta"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
 
@@ -101,6 +105,13 @@ export interface ToolRowProps {
   onToggle?: () => void;
   /** Trailing controls (e.g. the "Open beside" button). */
   trailing?: ReactNode;
+  /** A substring of `summary` after whose end `trailing` rides INLINE (the
+   * one case today: read_file's "open beside" control lands between the file
+   * name and the "· lines N-M" meta - descriptor openBesideInline). The
+   * substring must literally appear inside `summary` (same "never a dead
+   * anchor" contract as summaryLink); absent or not found, `trailing` keeps
+   * its default end-of-line placement. */
+  trailingAfter?: string;
   /** Optional status rail content for tools that need a one-glance
    * progression/health signal before human-facing purpose text. */
   status?: ReactNode;
@@ -179,12 +190,25 @@ export function ToolRow({
   expanded,
   onToggle,
   trailing,
+  trailingAfter,
   title,
   status,
 }: ToolRowProps) {
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
+  // The inline-affordance anchor (trailingAfter): split the summary into the
+  // text up to the anchor's end and the rest, so the trailing control can
+  // ride BETWEEN them. Undefined when there is no trailing control, no
+  // anchor, or the anchor is not literally present (the fallback keeps the
+  // default end-of-line placement).
+  const anchorSplit = ((): [before: string, after: string] | undefined => {
+    if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
+    const at = summary.indexOf(trailingAfter);
+    if (at === -1) return undefined;
+    const end = at + trailingAfter.length;
+    return [summary.slice(0, end), summary.slice(end)];
+  })();
   // The chevron rides INLINE at the end of the headline text (see the grammar
   // above): inside the purpose when there is one, otherwise inside the
   // summary - never a flex item of the row, so nothing can justify it away
@@ -212,6 +236,61 @@ export function ToolRow({
         <ToolIcon kind={icon} />
       </span>
     ) : null;
+  // The collapsed second line's middle-truncation, WITH the inline-affordance
+  // variant: when anchorSplit places the trailing control mid-summary, the
+  // control becomes a flex item of the clamped line between the anchor's end
+  // and the remaining meta (read_file: ".../sheet.test.tsx [open] · lines
+  // 1-260"). An anchor ending inside the clamped head puts the control right
+  // after the head; one ending inside the tail (a long path spans the
+  // truncation cut) keeps the path's visible tail whole and puts the control
+  // between it and the meta. Either way every character renders exactly once.
+  const clampedSummary = ((): ReactNode => {
+    const [head, tail] = middleSplit(summary);
+    if (anchorSplit === undefined) {
+      return (
+        <>
+          <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
+            {head}
+          </span>
+          <span className={CLASS.clampedTail} data-testid="tool-row-summary-tail">
+            {tail}
+          </span>
+        </>
+      );
+    }
+    const [before, after] = anchorSplit;
+    if (before.length <= head.length) {
+      return (
+        <>
+          <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
+            {before}
+          </span>
+          <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+            {trailing}
+          </span>
+          <span className={`${CLASS.clampedTail} ${CLASS.summaryMeta}`} data-testid="tool-row-summary-tail">
+            {after}
+          </span>
+        </>
+      );
+    }
+    return (
+      <>
+        <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
+          {head}
+        </span>
+        <span className={CLASS.clampedTail} data-testid="tool-row-summary-tail">
+          {before.slice(head.length)}
+        </span>
+        <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+          {trailing}
+        </span>
+        <span className={CLASS.summaryMeta} data-testid="tool-row-summary-meta">
+          {after}
+        </span>
+      </>
+    );
+  })();
   const content = (
     <>
       {iconNode}
@@ -242,13 +321,14 @@ export function ToolRow({
           title={hasPurpose ? summary : undefined}
         >
           {hasPurpose && !expanded ? (
+            clampedSummary
+          ) : anchorSplit !== undefined ? (
             <>
-              <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
-                {middleSplit(summary)[0]}
+              {linkifySummary(anchorSplit[0], summaryLink)}
+              <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                {trailing}
               </span>
-              <span className={CLASS.clampedTail} data-testid="tool-row-summary-tail">
-                {middleSplit(summary)[1]}
-              </span>
+              {linkifySummary(anchorSplit[1], summaryLink)}
             </>
           ) : (
             linkifySummary(summary, summaryLink)
@@ -256,12 +336,15 @@ export function ToolRow({
           {!hasPurpose && chevron}
           {/* Affordances ride the TOOL-CALL line (see the grammar above):
               inline at the end of the summary text, so with a purpose present
-              they sit on the demoted second line - not the rationale line. */}
-          {hasPurpose && trailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+              they sit on the demoted second line - not the rationale line.
+              Skipped when anchorSplit already placed the control mid-summary. */}
+          {hasPurpose && trailing && anchorSplit === undefined ? (
+            <span className={CLASS.summaryTrailing}>{trailing}</span>
+          ) : null}
         </span>
       )}
       {!hasPurpose && !hasSummary && chevron}
-      {(!hasPurpose || !hasSummary) && trailing}
+      {(!hasPurpose || !hasSummary) && anchorSplit === undefined ? trailing : null}
     </>
   );
 

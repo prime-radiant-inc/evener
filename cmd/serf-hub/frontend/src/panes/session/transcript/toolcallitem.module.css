@@ -23,7 +23,11 @@
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: var(--space-2);
-  row-gap: var(--space-1);
+  /* No row gap at all: the rationale-to-call coupling comes from the two
+   * lines' own tightened line-height (see .purpose/.demoted) alone, so the
+   * gap between a description and its call reads clearly tighter than the
+   * 2x8px .call padding between separate calls. */
+  row-gap: 0;
   list-style: none; /* the <summary> variant: no native disclosure triangle */
   cursor: default;
 }
@@ -66,6 +70,10 @@ summary.row:focus-visible {
   min-width: 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+  /* The title line-height (1.3, not the body's 1.5): the rationale-to-call
+   * gap is mostly half-leading, so tightening the line box is what actually
+   * pulls the call up against its description. */
+  line-height: var(--line-height-title);
   font-style: italic;
   color: var(--ink-hi);
   overflow-wrap: anywhere;
@@ -154,6 +162,8 @@ summary.row:focus-visible {
 .demoted {
   flex: 0 0 100%;
   color: var(--ink-mid);
+  /* Same tightened line box as the rationale above it - see .purpose. */
+  line-height: var(--line-height-title);
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
@@ -211,6 +221,17 @@ summary.row:focus-visible {
   align-self: center;
   vertical-align: middle;
   margin-left: var(--space-2);
+}
+
+/* The meta segment trailing an INLINE affordance (ToolRow's trailingAfter -
+ * read_file's " · lines N-M" after the open-beside control). Inside the
+ * collapsed line's .clamped flex row, white-space processing drops the
+ * segment's own leading space at the flex-item edge, so the margin restores
+ * the gap the control's margin-left does not cover. flex-none: the line
+ * range stays whole; the path's clamped head absorbs the pressure. */
+.summaryMeta {
+  flex: none;
+  margin-left: var(--space-1);
 }
 
 /* The disclosure affordance, riding INLINE at the end of the headline text

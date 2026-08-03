@@ -538,14 +538,126 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
   expect(screen.getByTestId("tool-row-purpose").contains(button)).toBe(false);
 });
 
+// --- trailingAfter: the affordance rides INLINE mid-summary (read_file's
+// "open beside" lands between the file name and the line range). The anchor
+// must literally appear in the summary (same "never a dead anchor" contract
+// as summaryLink); otherwise the end-of-line placement is unchanged. ------
+
+test("trailingAfter places the control between the anchor text and the meta on a collapsed purpose-bearing row", () => {
+  const summary = "Read cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx · lines 1-260";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Reviewing Sheet tests before adding size coverage"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="cmd/serf-hub/frontend/src/widgets/sheet/sheet.test.tsx"
+    />,
+  );
+  // A long path spans the truncation cut: head clamps, the path's visible
+  // tail stays whole, the control follows it, and the line range trails last.
+  const head = screen.getByTestId("tool-row-summary-head").textContent ?? "";
+  const tail = screen.getByTestId("tool-row-summary-tail").textContent ?? "";
+  const meta = screen.getByTestId("tool-row-summary-meta").textContent ?? "";
+  expect(head + tail + meta).toBe(summary);
+  expect(tail.endsWith("sheet.test.tsx")).toBe(true);
+  expect(meta).toBe(" · lines 1-260");
+  // Document order: path tail, control, meta.
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const children = Array.from(summaryEl.children);
+  const tailEl = screen.getByTestId("tool-row-summary-tail");
+  const trailingEl = screen.getByTestId("tool-row-trailing");
+  const metaEl = screen.getByTestId("tool-row-summary-meta");
+  expect(children.indexOf(tailEl)).toBeLessThan(children.indexOf(trailingEl));
+  expect(children.indexOf(trailingEl)).toBeLessThan(children.indexOf(metaEl));
+  expect(trailingEl.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
+test("trailingAfter with a short path (anchor inside the clamped head) keeps the control right after the anchor", () => {
+  const summary = "Read a.ts · lines 1-3";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="a.ts"
+    />,
+  );
+  const head = screen.getByTestId("tool-row-summary-head").textContent ?? "";
+  const tail = screen.getByTestId("tool-row-summary-tail").textContent ?? "";
+  expect(head).toBe("Read a.ts");
+  expect(head + tail).toBe(summary);
+  const children = Array.from(screen.getByTestId("tool-row-summary").children);
+  expect(children.indexOf(screen.getByTestId("tool-row-summary-head"))).toBeLessThan(
+    children.indexOf(screen.getByTestId("tool-row-trailing")),
+  );
+  expect(children.indexOf(screen.getByTestId("tool-row-trailing"))).toBeLessThan(
+    children.indexOf(screen.getByTestId("tool-row-summary-tail")),
+  );
+});
+
+test("trailingAfter on an expanded row splits the full summary around the control - no text lost, no clamp", () => {
+  const summary = "Read src/a.ts · lines 1-3";
+  render(
+    <ToolRow
+      summary={summary}
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="src/a.ts"
+    />,
+  );
+  // The control splits the text exactly at the anchor: the words are all
+  // still there, once each, in order around it.
+  expect(screen.queryByTestId("tool-row-summary-head")).toBe(null);
+  const trailingEl = screen.getByTestId("tool-row-trailing");
+  expect(trailingEl.previousSibling?.textContent).toBe("Read src/a.ts");
+  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-3");
+  expect((trailingEl.previousSibling?.textContent ?? "") + (trailingEl.nextSibling?.textContent ?? "")).toBe(summary);
+});
+
+test("a trailingAfter anchor NOT literally present in the summary falls back to the end placement", () => {
+  render(
+    <ToolRow
+      summary="Read a.ts · lines 1-3"
+      purpose="Check the source"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter="somewhere/else.ts"
+    />,
+  );
+  expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
+  expect(screen.queryByTestId("tool-row-summary-meta")).toBe(null);
+  // The control still renders, after the whole summary text.
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+  expect(summaryEl.lastElementChild?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+});
+
 // Associativity rhythm (Jesse's review call): the gap between a rationale
 // and the call it executes must read TIGHTER than the gap between separate
-// calls - 4px inside (row-gap), 16px outside (.call padding). Before this
-// split both gaps measured the same 8px and a run of calls read as one
-// undifferentiated list.
-test("the rationale-to-call gap is tighter than the gap between separate calls", () => {
+// calls - 16px outside (.call padding), and inside now NO row gap at all plus
+// the title line-height on both lines, so the inter-line gap is only the two
+// tightened half-leadings. Before this the inside gap was a 4px row-gap over
+// the body's 1.5 line-height, which read nearly as loose as a separate call.
+test("the rationale-to-call gap is tightened to line-leading only, still tighter than the gap between calls", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.row\s*\{[^}]*row-gap:\s*var\(--space-1\)/);
+  expect(css).toMatch(/\.row\s*\{[^}]*row-gap:\s*0/);
+  expect(css).toMatch(/\.purpose\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
+  expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
   expect(call![1]).toContain("padding: var(--space-2) 0");
