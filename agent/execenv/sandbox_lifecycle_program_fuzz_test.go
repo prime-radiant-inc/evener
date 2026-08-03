@@ -109,8 +109,11 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		trace.Worktrees = append(trace.Worktrees, sandboxLifecycleRelative(base, env.Sandbox.Git.WorktreeRoot))
 		ownedScratch := env.ownedSessionTmp.Dir
 		env.Cleanup()
-		if _, err := os.Stat(ownedScratch); !os.IsNotExist(err) {
-			t.Fatalf("Cleanup(%s) did not remove the owned scratch: %v", mode, err)
+		if _, err := os.Stat(ownedScratch); err != nil {
+			t.Fatalf("Cleanup(%s) did not retain the owned scratch for manual cleanup: %v", mode, err)
+		}
+		if err := env.ownedSessionTmp.Cleanup(); err != nil {
+			t.Fatalf("manual Cleanup(%s): %v", mode, err)
 		}
 	}
 
@@ -148,7 +151,7 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		t.Fatalf("relative backend binary state err=%v sandbox=%v wrapper=%v tmp=%v", err, relativeEnv.Sandbox, relativeEnv.Wrapper, relativeEnv.ownedSessionTmp)
 	}
 
-	// Re-provisioning tears down an owned scratch before creating its replacement;
+	// Re-provisioning retains an owned scratch before creating its replacement;
 	// failure to create the replacement must likewise leave no half-sandbox state.
 	reprovision := NewLocalExecutionEnvironment(worktree)
 	reprovision.sandboxTmpBase = tmpBase
@@ -162,8 +165,11 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 	if reprovision.ownedSessionTmp == nil || reprovision.ownedSessionTmp.Dir == firstScratch {
 		t.Fatalf("reprovision did not replace scratch: first=%q current=%v", firstScratch, reprovision.ownedSessionTmp)
 	}
-	if _, err := os.Stat(firstScratch); !os.IsNotExist(err) {
-		t.Fatalf("reprovision retained old scratch %q: %v", firstScratch, err)
+	if _, err := os.Stat(firstScratch); err != nil {
+		t.Fatalf("reprovision did not retain old scratch %q for manual cleanup: %v", firstScratch, err)
+	}
+	if err := os.RemoveAll(firstScratch); err != nil {
+		t.Fatalf("manual cleanup of retained scratch %q: %v", firstScratch, err)
 	}
 	reprovision.Cleanup()
 
@@ -253,8 +259,12 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 	}
 	trace.EscapedArgs = escaped
 	wrapped.Cleanup()
+	if _, err := os.Stat(scratch); err != nil {
+		t.Fatalf("wrapped Cleanup did not retain scratch %q: %v", scratch, err)
+	}
+	wrapped.DisposeSandboxScratch()
 	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
-		t.Fatalf("wrapped Cleanup did not remove scratch %q: %v", scratch, err)
+		t.Fatalf("manual wrapped scratch cleanup did not remove %q: %v", scratch, err)
 	}
 
 	trace.Escaped = sandboxLifecycleAnyEscaped(base, trace.Worktrees)

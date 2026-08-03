@@ -34,7 +34,7 @@ func TestEnableSandboxProvisionsSeatbeltBackend(t *testing.T) {
 		t.Fatalf("expected a seatbelt backend, got %v", rp.Backend)
 	}
 	env := NewLocalExecutionEnvironment(worktree)
-	t.Cleanup(env.Cleanup)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
 	if err := env.EnableSandbox(&rp); err != nil {
 		t.Fatalf("EnableSandbox on a seatbelt backend must provision, not refuse: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestEnableSandboxFileToolsReachOwnScratch(t *testing.T) {
 				t.Fatalf("Resolve(%v): %v", mode, err)
 			}
 			env := NewLocalExecutionEnvironment(worktree)
-			t.Cleanup(env.Cleanup)
+			t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
 			if err := env.EnableSandbox(&rp); err != nil {
 				t.Fatalf("EnableSandbox(%v): %v", mode, err)
 			}
@@ -115,8 +115,8 @@ func TestWithWorkingDirectoryReRootDivergentFailureNilsBoth(t *testing.T) {
 
 // TestEnableSandboxErrorLeavesUnsandboxed: when wrapper construction fails,
 // EnableSandbox must leave the env unsandboxed (nil Sandbox/Wrapper) rather than
-// keeping a prior policy, and must dispose the tmp a prior call owned so a second
-// call never leaks the first's dir.
+// keeping a prior policy, while retaining the tmp a prior call owned for manual
+// cleanup.
 func TestEnableSandboxErrorLeavesUnsandboxed(t *testing.T) {
 	laneA, _, home := twoLanes(t)
 	env := NewLocalExecutionEnvironment(laneA)
@@ -127,6 +127,7 @@ func TestEnableSandboxErrorLeavesUnsandboxed(t *testing.T) {
 		t.Fatalf("prior EnableSandbox: %v", err)
 	}
 	priorTmp := env.Wrapper.SessionTmp()
+	t.Cleanup(func() { _ = os.RemoveAll(priorTmp) })
 	if _, err := os.Stat(priorTmp); err != nil {
 		t.Fatalf("prior session tmp must exist: %v", err)
 	}
@@ -146,8 +147,8 @@ func TestEnableSandboxErrorLeavesUnsandboxed(t *testing.T) {
 	if env.Sandbox != nil || env.Wrapper != nil {
 		t.Errorf("a failed EnableSandbox must leave the env unsandboxed, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
 	}
-	if _, err := os.Stat(priorTmp); !os.IsNotExist(err) {
-		t.Errorf("a failed EnableSandbox must dispose the prior owned tmp, stat err = %v", err)
+	if _, err := os.Stat(priorTmp); err != nil {
+		t.Errorf("a failed EnableSandbox must retain the prior owned tmp, stat err = %v", err)
 	}
 }
 
@@ -168,7 +169,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if err := env.EnableSandbox(rp2); err != nil {
 			t.Fatalf("EnableSandbox: %v", err)
 		}
-		t.Cleanup(env.Cleanup)
+		t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
 		second := env.sandbox()
 		if second == nil || second == first {
 			t.Errorf("EnableSandbox must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
@@ -210,13 +211,12 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 	})
 }
 
-// TestCleanupDisposesOwnedTmpAfterChildGrace: a tracked child's TMPDIR/caches point
-// into the owned session tmp (via ApplyEnvFloor), so Cleanup must dispose that tmp
-// only AFTER the SIGTERM + grace + SIGKILL sequence — not before, which would delete
-// the dir out from under a gracefully shutting-down child. The child records, on
-// SIGTERM, whether the watched dir still exists; the sentinel (written outside the
-// tmp, so it survives disposal) proves the tmp was alive when the child was signaled.
-func TestCleanupDisposesOwnedTmpAfterChildGrace(t *testing.T) {
+// TestCleanupRetainsOwnedTmpAfterChildGrace: a tracked child's TMPDIR/caches point
+// into the owned session tmp (via ApplyEnvFloor), so Cleanup must retain that tmp
+// until AFTER the SIGTERM + grace + SIGKILL sequence — not remove it while the
+// child is shutting down. The child records, on SIGTERM, whether the watched dir
+// still exists; the sentinel proves the tmp was alive when the child was signaled.
+func TestCleanupRetainsOwnedTmpAfterChildGrace(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash required")
 	}
@@ -260,7 +260,13 @@ sleep 300 & wait`
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("Cleanup disposed the owned tmp before signaling the child (TMPDIR pulled out from under graceful shutdown): sentinel missing, stat err = %v", err)
 	}
+	if _, err := os.Stat(tmp.Dir); err != nil {
+		t.Errorf("Cleanup must retain the owned tmp after the grace, stat err = %v", err)
+	}
+	if err := env.ownedSessionTmp.Cleanup(); err != nil {
+		t.Fatalf("manual scratch cleanup: %v", err)
+	}
 	if _, err := os.Stat(tmp.Dir); !os.IsNotExist(err) {
-		t.Errorf("Cleanup must still dispose the owned tmp after the grace, stat err = %v", err)
+		t.Errorf("manual scratch cleanup must remove the owned tmp, stat err = %v", err)
 	}
 }

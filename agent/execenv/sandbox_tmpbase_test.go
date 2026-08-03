@@ -33,7 +33,7 @@ func TestEnableSandboxUsesConfiguredTmpBase(t *testing.T) {
 	if err := env.EnableSandbox(&policy); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
-	t.Cleanup(env.Cleanup)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
 	if env.ownedSessionTmp == nil {
 		t.Fatal("EnableSandbox did not retain its owned scratch directory")
 	}

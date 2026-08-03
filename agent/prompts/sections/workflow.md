@@ -8,6 +8,8 @@ Produce deliverables as early as is reasonable.
 
 Verify your work against the actual acceptance criteria you were given. Being too careful is just as bad as not being careful enough.
 
+When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.
+
 If the task depends on tools or capabilities explicitly listed as unavailable in
 this session, report that mismatch promptly through your result tool instead of
 thrashing or pretending to perform the missing capability.

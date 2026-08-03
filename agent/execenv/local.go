@@ -108,10 +108,12 @@ type LocalExecutionEnvironment struct {
 	sandboxReRootErr error
 
 	// ownedSessionTmp, when non-nil, is a per-session/per-lane scratch dir this env
-	// OWNS: Cleanup() disposes it at session/lane end. It is provisioned at sandbox
-	// construction (EnableSandbox) and deliberately NOT copied by WithWorkingDirectory
-	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
-	// owner's dir out from under it. nil for off and for re-rooted clones.
+	// owns. Normal teardown releases its live lease but retains the directory for
+	// the human handoff; DisposeSandboxScratch is the explicit removal operation.
+	// It is provisioned at sandbox construction (EnableSandbox) and deliberately
+	// NOT copied by WithWorkingDirectory — a re-rooted clone shares the wrapper's
+	// tmp path but must never dispose the owner's dir out from under it. nil for off
+	// and for re-rooted clones.
 	ownedSessionTmp *sandbox.SessionScratch
 
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
@@ -269,9 +271,9 @@ func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) 
 
 // EnableSandbox provisions this env for a sandboxed session from an already-
 // resolved policy: it creates a fresh per-session scratch directory that the env
-// OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
+// owns and retains at Cleanup, attaches the policy, and — on the bwrap backend —
 // builds the kernel wrapper from the policy, the probed bwrap binary, and that
-// tmp. It is the single "provision at env construction, clean at session end"
+// tmp. It is the single "provision at env construction, retain at session end"
 // wiring point the live flag path (M5) and M4's own tests call; the --sandbox flag
 // stays feature-gated, so production does not reach it yet.
 //
@@ -289,12 +291,12 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	// stale re-root error and, on the off path, any policy/wrapper a prior
 	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
 	// function of ITS OWN policy, never a parent's leaked one. The policy is being
-	// replaced, so drop the cached fd layer, and dispose any tmp a prior call owned
-	// so a second EnableSandbox never leaks the first's dir.
+	// replaced, so drop the cached fd layer, and release (but retain) any tmp a prior
+	// call owned so a second EnableSandbox never silently deletes handed-off work.
 	e.sandboxReRootErr = nil
 	e.invalidateSandboxFS()
 	if e.ownedSessionTmp != nil {
-		_ = e.ownedSessionTmp.Cleanup()
+		_ = e.ownedSessionTmp.Retain()
 		e.ownedSessionTmp = nil
 	}
 	if policy == nil || !policy.Enforced() {
@@ -340,6 +342,23 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.Sandbox = policy
 	e.ownedSessionTmp = tmp
 	return nil
+}
+
+// RetainSandboxScratch releases the per-session/per-lane scratch lease and cached
+// file-tool fds this env provisioned via EnableSandbox without removing the path.
+// Normal session and delegate teardown use this so a parent can inspect or retain
+// artifacts after the child exits. DisposeSandboxScratch is the explicit removal
+// operation for an allocation that should not survive.
+func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		_ = tmp.Retain()
+	}
 }
 
 // DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
@@ -513,17 +532,13 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	}
 	e.sbMu.Unlock()
 
-	// Dispose the per-session/per-lane scratch dir this env owns (provisioned by
-	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: the tracked
-	// children's TMPDIR/GOCACHE/npm/cargo caches (via ApplyEnvFloor) point into this
-	// dir, so removing it before a graceful shutdown would pull it out from under
-	// them. defer runs last on every return path, including the no-children early
-	// return, so the dir is never leaked. Re-rooted clones never own one, so a
-	// clone's Cleanup never removes the owner's tmp.
-	if tmp := e.ownedSessionTmp; tmp != nil {
-		e.ownedSessionTmp = nil
-		defer func() { _ = tmp.Cleanup() }()
-	}
+	// Retain the per-session/per-lane scratch dir this env owns (provisioned by
+	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: tracked
+	// children may still be writing artifacts into it. RetainSandboxScratch releases
+	// the live lease and closes any cached file-tool fds, but deliberately leaves the
+	// absolute path available for the human handoff. Re-rooted clones never own one,
+	// so a clone's Cleanup never retains or removes the owner's tmp.
+	defer e.RetainSandboxScratch()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a
 	// commandRuntime so scripted runtimes own their teardown too; a legacy marker

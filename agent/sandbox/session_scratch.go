@@ -29,7 +29,7 @@ type scratchLease interface {
 	Release() error
 }
 
-// SessionScratch is one live session's private, disposable scratch directory.
+// SessionScratch is one live session's private scratch directory.
 type SessionScratch struct {
 	Dir   string
 	base  string
@@ -37,7 +37,8 @@ type SessionScratch struct {
 }
 
 // NewSessionScratch creates a private directory outside workspaceRoot and holds
-// a process-released lease until Cleanup. Candidate bases must already exist.
+// a process-released lease until Retain or Cleanup. Candidate bases must already
+// exist.
 func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
 	canonicalWorkspace, err := canonicalScratchRoot(workspaceRoot)
 	if err != nil {
@@ -47,7 +48,6 @@ func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
 	if err != nil {
 		return nil, err
 	}
-	sweepCrashedSessionScratch(cleanBase)
 	dir, err := os.MkdirTemp(cleanBase, sessionScratchPrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: create session scratch: %w", err)
@@ -66,6 +66,18 @@ func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
 		return nil, errors.New("sandbox: new session scratch lease is already held")
 	}
 	return &SessionScratch{Dir: dir, base: cleanBase, lease: lease}, nil
+}
+
+// Retain releases the live-session lease without removing the directory. This
+// is the normal session-teardown operation: the absolute path is handed to the
+// parent and cleanup remains a manual decision.
+func (s *SessionScratch) Retain() error {
+	if s == nil || s.lease == nil {
+		return nil
+	}
+	err := s.lease.Release()
+	s.lease = nil
+	return err
 }
 
 func canonicalScratchRoot(root string) (string, error) {
@@ -136,10 +148,7 @@ func (s *SessionScratch) Cleanup() error {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
 	var releaseErr error
-	if s.lease != nil {
-		releaseErr = s.lease.Release()
-	}
-	s.lease = nil
+	releaseErr = s.Retain()
 	return errors.Join(releaseErr, os.RemoveAll(dir))
 }
 

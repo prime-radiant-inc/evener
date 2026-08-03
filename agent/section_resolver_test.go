@@ -639,6 +639,10 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 		}
 	}
 
+	if !strings.Contains(result, "When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.") {
+		t.Errorf("subagent prompt missing fresh-worktree dependency guidance; got:\n%s", result)
+	}
+
 	// Subagent should NOT have root-only sections such as delegation, git-safety,
 	// task-tracking, skills, or available-agents.
 	for _, absent := range []string{"## Delegation", "## Git safety", "## Task tracking", "<skill-catalog>", "<available_agents>"} {

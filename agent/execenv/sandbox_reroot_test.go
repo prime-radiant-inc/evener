@@ -167,10 +167,11 @@ func TestWithWorkingDirectoryOffIsInert(t *testing.T) {
 	}
 }
 
-// TestEnableSandboxProvisionsAndCleansSessionTmp: EnableSandbox provisions an
-// owned session tmp and wires the wrapper's TMPDIR to it; Cleanup disposes it; a
-// re-rooted clone never owns (nor disposes) the tmp.
-func TestEnableSandboxProvisionsAndCleansSessionTmp(t *testing.T) {
+// TestEnableSandboxProvisionsAndRetainsSessionTmp: EnableSandbox provisions an
+// owned session tmp and wires the wrapper's TMPDIR to it; normal Cleanup retains
+// it for the human handoff, while explicit disposal removes it. A re-rooted clone
+// never owns (nor disposes) the tmp.
+func TestEnableSandboxProvisionsAndRetainsSessionTmp(t *testing.T) {
 	laneA, laneB, home := twoLanes(t)
 	env := NewLocalExecutionEnvironment(laneA)
 	rp := resolvedAt(t, home, laneA, sandbox.ModeWorkspaceWrite)
@@ -195,10 +196,16 @@ func TestEnableSandboxProvisionsAndCleansSessionTmp(t *testing.T) {
 		t.Fatalf("a re-rooted clone's Cleanup must NOT remove the owner's session tmp: %v", err)
 	}
 
-	// The owner disposes it.
+	// Normal owner teardown retains the path for the human handoff.
 	env.Cleanup()
+	if _, err := os.Stat(tmp); err != nil {
+		t.Fatalf("owner Cleanup must retain the session tmp for manual cleanup: %v", err)
+	}
+
+	// Explicit disposal is the manual cleanup operation.
+	env.DisposeSandboxScratch()
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
-		t.Fatalf("owner Cleanup must remove the session tmp, stat err = %v", err)
+		t.Fatalf("explicit scratch disposal must remove the session tmp, stat err = %v", err)
 	}
 }
 
@@ -235,6 +242,7 @@ func TestDisposeSandboxScratch(t *testing.T) {
 	}
 
 	owner.Cleanup()
+	owner.DisposeSandboxScratch()
 }
 
 // TestEnableSandboxOffIsNoOp: an off/nil policy provisions no tmp and no wrapper.

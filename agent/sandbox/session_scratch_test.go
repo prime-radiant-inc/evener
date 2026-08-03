@@ -33,6 +33,31 @@ func TestSessionScratchLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionScratchRetainReleasesLeaseWithoutRemovingDirectory(t *testing.T) {
+	base := t.TempDir()
+	scratch, err := NewSessionScratch(base, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatalf("Retain: %v", err)
+	}
+	if _, err := os.Stat(scratch.Dir); err != nil {
+		t.Fatalf("Retain removed the scratch directory: %v", err)
+	}
+
+	lease, contended, err := acquireScratchLease(filepath.Join(scratch.Dir, sessionScratchLeaseName))
+	if err != nil || contended {
+		t.Fatalf("Retain did not release the lease: contended=%v err=%v", contended, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release retained-directory probe lease: %v", err)
+	}
+	if err := scratch.Cleanup(); err != nil {
+		t.Fatalf("manual Cleanup: %v", err)
+	}
+}
+
 func TestSessionScratchCleanupRefusesUnownedPath(t *testing.T) {
 	base := t.TempDir()
 	unrelated := filepath.Join(base, "ordinary-temp")
@@ -65,6 +90,7 @@ func TestSessionScratchAgeSweepsOnlyStaleSerfDirs(t *testing.T) {
 		}
 	}
 
+	sweepCrashedSessionScratch(base)
 	scratch, err := NewSessionScratch(base, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionScratch: %v", err)
@@ -94,6 +120,7 @@ func TestSessionScratchSweepSkipsOldLiveLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	sweepCrashedSessionScratch(base)
 	next, err := NewSessionScratch(base, workspace)
 	if err != nil {
 		t.Fatalf("create next scratch: %v", err)
@@ -122,6 +149,7 @@ func TestSessionScratchSweepRemovesOldReleasedLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	sweepCrashedSessionScratch(base)
 	scratch, err := NewSessionScratch(base, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionScratch: %v", err)
@@ -129,6 +157,34 @@ func TestSessionScratchSweepRemovesOldReleasedLease(t *testing.T) {
 	t.Cleanup(func() { _ = scratch.Cleanup() })
 	if _, err := os.Stat(crashed); !os.IsNotExist(err) {
 		t.Fatalf("old scratch with released lease remains: %v", err)
+	}
+}
+
+func TestNewSessionScratchDoesNotSweepReleasedDirectories(t *testing.T) {
+	base := t.TempDir()
+	released := filepath.Join(base, sessionScratchPrefix+"released")
+	if err := os.Mkdir(released, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lease, contended, err := acquireScratchLease(filepath.Join(released, sessionScratchLeaseName))
+	if err != nil || contended {
+		t.Fatalf("acquire fixture lease: contended=%v err=%v", contended, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release fixture lease: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(released, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	scratch, err := NewSessionScratch(base, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup(); _ = os.RemoveAll(released) })
+	if _, err := os.Stat(released); err != nil {
+		t.Fatalf("NewSessionScratch must not auto-clean a released directory: %v", err)
 	}
 }
 
