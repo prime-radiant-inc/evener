@@ -594,9 +594,10 @@ describe("sections", () => {
     await user.type(input, "Still editable");
     const submit = screen.getByRole("button", { name: "Rename section" });
 
+    submit.focus();
+    await user.keyboard("{Enter}");
     fireEvent.click(submit);
-    fireEvent.click(submit);
-    fireEvent.keyDown(submit, { key: "Enter" });
+    await user.keyboard("{Enter}");
 
     await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
     expect(submit.hasAttribute("disabled")).toBe(true);
@@ -616,6 +617,76 @@ describe("sections", () => {
     expect(within(screen.getByRole("region", { name: "Notifications" })).getAllByText(/rename conflict/i)).toHaveLength(
       1,
     );
+  });
+
+  test("rename stays locked through its one authoritative refresh and closes only after refresh settles", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let releasePatch!: (response: Response) => void;
+    const heldPatch = new Promise<Response>((resolve) => {
+      releasePatch = resolve;
+    });
+    let releaseRefresh!: (response: Response) => void;
+    const heldRefresh = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH" && url === "/api/pin-sections/client") {
+        const body = JSON.parse(init?.body as string) as unknown;
+        mutationCalls.push({ method: "PATCH", path: url, body });
+        return heldPatch;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const dialog = screen.getByRole("dialog", { name: "Rename pin section" });
+    const input = within(dialog).getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.type(input, "Canonical client");
+    const submit = within(dialog).getByRole("button", { name: "Rename section" });
+
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+    expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
+
+    pendingTreeRefresh = heldRefresh;
+    releasePatch(
+      jsonResponse({
+        ok: true,
+        changed: true,
+        section: { id: "client", name: "Canonical client", member_count: 3 },
+      }),
+    );
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(input.hasAttribute("disabled")).toBe(true);
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);
+
+    releaseRefresh(jsonResponse(NAMED_PIN_TREE));
+
+    await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Rename pin section" })).toBeNull());
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(2);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const reopenedInput = screen.getByRole("textbox", { name: "Section name" });
+    expect(reopenedInput.hasAttribute("disabled")).toBe(false);
+    expect(reopenedInput.getAttribute("aria-describedby")).toBeNull();
   });
 
   test("delete refreshes summaries before confirmation and uses durable member_count", async () => {
