@@ -75,6 +75,14 @@ export interface ToolRendererDescriptor {
   // updates the moment the answer arrives without item itself needing a new
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
+  // summaryHiddenWhenExpanded drops the row's summary line while the row is
+  // open. The one case today is shell: its summary IS the raw one-line
+  // command, and the expanded body already renders that same command
+  // pretty-printed (ShellCommandBlock), so an open row would show the call
+  // twice - the collapsed row keeps the summary, where it is the only glance
+  // at the command. Undefined (every other tool) renders the summary in both
+  // states, as before.
+  summaryHiddenWhenExpanded?: boolean;
   // summaryLink, if present, is a URL that appears verbatim inside this
   // row's own summary() text and should render as a real, clickable link
   // rather than plain text - kata xw3t, the collapsed-row counterpart to

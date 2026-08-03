@@ -339,7 +339,11 @@ test("the exit code stops being the headline: it is reachable via the row's titl
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
+  // A failed shell row auto-expands, and an expanded shell row drops its
+  // summary (the body's pretty-printed block is the single copy of the
+  // command) - so assert the intent directly: the exit code is nowhere in
+  // the row's TEXT, only on its hover title.
+  expect(screen.getByTestId("tool-row").textContent).not.toContain("exit 1");
   expect(screen.getByTestId("tool-row").getAttribute("title")).toContain("exit 1");
 });
 

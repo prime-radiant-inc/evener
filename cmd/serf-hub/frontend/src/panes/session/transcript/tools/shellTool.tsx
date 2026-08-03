@@ -121,15 +121,18 @@ registerToolRenderer({
   body: ShellBody,
   failed: nonzeroExit,
   // The exit code, and ONLY the exit code. It deliberately does not carry the
-  // command as well: detail() renders as real text in the expanded body (that
-  // is what makes it keyboard-reachable, not just a hover title), so folding
-  // the command in would put a second copy of the call under the row -
-  // precisely the repetition A4 exists to remove. The row shows the command
-  // in full when expanded (its own text wrapping - the A4 mechanism), so
-  // nothing is lost.
+  // command as well: detail() renders as the row's hover title, and folding
+  // the command in would put a second copy of the call under the row. The
+  // expanded body already shows the command pretty-printed
+  // (ShellCommandBlock), so nothing is lost.
   detail(item: ItemModel) {
     const exitCode = shellExitCode(item);
     return exitCode === undefined ? undefined : `exit ${exitCode}`;
   },
+  // The row summary IS the raw one-line command; the expanded body renders
+  // that same command pretty-printed. Showing both on an open row duplicated
+  // the call, so the summary drops out while expanded (the collapsed row
+  // keeps it - there it is the only glance at the command).
+  summaryHiddenWhenExpanded: true,
   autoExpand: nonzeroExit,
 });

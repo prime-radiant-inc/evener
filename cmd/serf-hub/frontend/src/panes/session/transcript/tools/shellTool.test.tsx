@@ -88,10 +88,10 @@ test("detail: also recognizes the buffered-execenv fallback's differently-shaped
 });
 
 // Truncation is the ROW's presentation job, not the descriptor's: the row
-// middle-truncates when collapsed and wraps in full when expanded, so the
-// summary hands over the whole command (Jesse's review call - an expanded
-// row must show the full call, which an 80-char descriptor clip made
-// impossible).
+// middle-truncates when collapsed, and expanded shell rows drop the summary
+// entirely (the body renders the command pretty-printed), so the summary
+// hands over the whole command (Jesse's review call - an 80-char descriptor
+// clip made the full command unreachable).
 test("summary: a long command passes through UNCLIPPED - truncation is the row's job", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
@@ -384,12 +384,22 @@ test("body renders nothing with no command and no output", () => {
   expect(container.textContent).toBe("");
 });
 
-// detail() carries the exit code ONLY - deliberately not the untruncated
-// command as well. detail() renders as real text in the expanded body (which is
-// what makes it keyboard-reachable rather than a mouse-only title), so folding
-// the command in would put a second copy of the call under the row: exactly the
-// repetition A4 removes.
-test("detail does NOT repeat the command - that is what A4 took out of the body", () => {
+// The pretty-printed command is the PRIMARY content of an expanded shell
+// row, so the command block never tail-folds: every formatted line renders,
+// with no "Show N earlier lines" control (CodeBlock's fold={false}).
+test("body renders a LONG command in full - the command block never folds", () => {
+  const Body = toolRendererFor("shell").body!;
+  const segments = Array.from({ length: 20 }, (_, i) => `echo step-${i + 1}`);
+  const { container } = render(<Body item={withCommand(segments.join(" && "), { output: "" })} live={false} />);
+  expect(container.querySelector("code")?.textContent).toContain("echo step-1");
+  expect(container.querySelector("code")?.textContent).toContain("echo step-20");
+  expect(screen.queryByRole("button", { name: /earlier lines/ })).toBeNull();
+});
+
+// detail() carries the exit code ONLY - never the command as well: the
+// expanded body already shows the command pretty-printed, so a second copy
+// in detail() would duplicate the call on an open row.
+test("detail does NOT repeat the command", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
   expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);

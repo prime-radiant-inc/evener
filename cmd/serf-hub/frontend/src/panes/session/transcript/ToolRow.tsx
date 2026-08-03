@@ -12,7 +12,11 @@
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
 //   being merged - and the full text on the hover title); EXPANDED it wraps
-//   in full, so an open row always shows the whole call.
+//   in full, so an open row always shows the whole call. The one exception:
+//   a descriptor whose expanded body already shows the summary's content
+//   (shell - the body renders the command pretty-printed) drops line 2
+//   entirely while open (summaryHiddenWhenExpanded), so the call never
+//   appears twice.
 //
 //   - the kind icon sits in the RAIL beside the rationale line (Jesse's
 //     review call): pulled --speaker-gutter left into the padding the

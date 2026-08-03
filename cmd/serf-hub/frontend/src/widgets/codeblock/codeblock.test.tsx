@@ -262,6 +262,14 @@ test("a single hidden line is worded in the singular", () => {
   expect(screen.getByRole("button", { name: "Show 1 earlier line" })).toBeTruthy();
 });
 
+test("fold={false} renders every line with no fold control at all", () => {
+  render(<CodeBlock text={LONG_TEXT} fold={false} />);
+  expect(screen.getByText(LINE_1_ONLY)).toBeTruthy();
+  expect(screen.getByText("line 20", { exact: false })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /earlier lines/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Show fewer lines" })).toBeNull();
+});
+
 test("the gutter shows real line numbers for the folded tail, not renumbered from 1", () => {
   render(<CodeBlock text={LONG_TEXT} showLineNumbers />);
   // Tail starts at line 15 of 20 (20 - 14 + 1) - its gutter must say "15", not "1".

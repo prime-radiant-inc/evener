@@ -246,7 +246,11 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       open={expanded}
     >
       <ToolRow
-        summary={isDelegate ? "" : summary}
+        // A descriptor whose summary duplicates what its expanded body shows
+        // (shell: the raw one-line command vs the body's pretty-printed
+        // block) drops the summary line while open - the body is the single
+        // representation. Collapsed, the summary stays: it is the only glance.
+        summary={isDelegate || (expanded && descriptor.summaryHiddenWhenExpanded) ? "" : summary}
         summaryLink={summaryLink}
         purpose={purpose}
         icon={descriptor.icon}
