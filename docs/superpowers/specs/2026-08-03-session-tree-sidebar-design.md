@@ -34,7 +34,8 @@ The panel is an operational inspector, not a second global navigation tree. Open
 
 Replace the flat `serf/jobs/list` response with a rooted activity-tree response for the requested session. Do not add a parallel endpoint.
 
-The recursive response contains three concepts.
+The recursive response contains three concepts. It represents one subagent
+conversation once, even when that conversation has several delegate turns.
 
 ### Session node
 
@@ -42,8 +43,8 @@ A session node carries:
 
 - stable session identity and transcript reference;
 - display name or concise fallback label;
-- aggregate state;
-- active and failed descendant counts;
+- aggregate state and complete/incomplete-count metadata;
+- recursive active, failed, and completed work-unit counts;
 - an ordered list of activity entries;
 - an optional branch-level read error when descendant history is unavailable.
 
@@ -62,20 +63,33 @@ A shell-job entry carries:
 
 ### Delegate entry
 
-A delegate entry carries the delegate job's normal job metadata plus:
+A delegate entry represents one subagent conversation and carries:
 
 - stable delegate identity;
 - explicit child-session identity;
 - child transcript reference;
 - mandate or task text;
+- every retained delegate-turn job for this delegate, in start order;
 - the child session node when readable;
 - an explicit child-unavailable state when the child cannot be read.
+
+The UI renders the delegate entry and its child session as **one subagent row**,
+keyed as `delegate:<delegateID>`. The child session node supplies the disclosed
+branch but does not render a second header row. Selecting the row inspects the
+subagent conversation and its delegate-turn history. Its displayed status comes
+from the current delegate turn when one exists, otherwise the latest turn. The
+child session's aggregate state appears separately in the inspector, so a failed
+turn and still-readable child history do not collapse into one ambiguous label.
 
 This structure makes parentage authoritative. The server derives it from session and job records; the React client never guesses ownership from descriptions, task text, timestamps, or job ordering.
 
 ### Ordering and history
 
-Within each owning session, activity entries retain durable append order, which represents start order for this surface. A delegate entry occupies its true position in that sequence. Expanding it reveals the child session's own ordered activity.
+Within each owning session, activity entries retain durable append order, which
+represents start order for this surface. A delegate conversation is anchored at
+its first delegate turn and appears once at that position. Later turns remain in
+the row's turn history rather than duplicating the subagent branch. Expanding the
+row reveals the child session's ordered activity.
 
 The server overlays live job records on durable history before projecting the response. One response therefore covers running work, completed work, and exited descendants. An unavailable child does not erase its delegate job; the delegate remains as a leaf with an inline availability error.
 
@@ -87,6 +101,58 @@ The tree builder is a bounded server-side unit responsible for:
 4. aggregate state and count calculation;
 5. cycle and malformed-link protection;
 6. partial descendant errors.
+
+### Count and aggregate semantics
+
+Counts measure **work units**, not visible rows. A shell job is one work unit,
+and each delegate turn is one work unit. Session nodes and subagent-conversation
+rows are not additional units, so the tree never double-counts a delegate turn
+and its child session.
+
+The server supplies each work unit's exact status plus an authoritative
+`terminal` flag and outcome category. Categories are `success`, `failure`, and
+`neutral`; an unfamiliar status keeps its exact label and uses no invented
+outcome. Counts recurse through all loaded descendants:
+
+- **active** counts every non-terminal work unit, including an unfamiliar
+  non-terminal status;
+- **failed** counts terminal `failed` and `exhausted` work units;
+- **completed** counts every other terminal work unit, including `cancelled`
+  and `stopped`.
+
+Aggregate state uses this precedence: active work → `working`; otherwise any
+failure → `failed`; otherwise an incomplete or unreadable branch →
+`unavailable`; otherwise any retained work → `ended`; otherwise `idle`.
+Unavailable or truncated branches never contribute guessed counts. The response
+marks aggregate counts incomplete, and the UI labels them as partial instead of
+presenting them as totals. Human-attention state is not inferred from job
+status; amber remains reserved for a separate authoritative needs-input signal.
+
+### Traversal bounds and continuation
+
+The logical tree has no product-level depth limit, but one response must have
+resource limits. The server stops a response at 2,000 work units, 32 newly
+expanded delegation levels, or 4 MiB of encoded tree data, whichever comes
+first. A cut branch returns an explicit `truncated` marker and opaque
+continuation token. **Load more activity** calls the same `serf/jobs/list`
+method with that token and grafts the returned branch by stable ID. Tokens are
+scoped to the root session and rejected if used elsewhere.
+
+This is pagination of the replacement endpoint, not a second tree endpoint.
+It keeps all retained history reachable without allowing one old session to
+produce an unbounded response. Cycle detection produces a branch error rather
+than a continuation token.
+
+### Supported sources
+
+The recursive contract is a Serf-local capability. A live local root resolves
+live descendants through their delegate transcript references. An exited local
+root resolves durable descendants only within the same configured Serf state
+directory; a missing past-index or child record becomes an unavailable branch.
+Non-Serf sources, foreign state directories, and sources that do not implement
+the replacement contract use the capability-gap state. The server never crosses
+source or state-directory boundaries while following a retained transcript
+reference.
 
 Stable IDs, rather than labels or array positions, anchor selection, disclosure state, reconciliation, and output requests.
 
@@ -142,7 +208,7 @@ A subagent inspector shows:
 - mandate;
 - delegate and child status;
 - timing;
-- latest or final report when retained;
+- delegate-turn history and the latest retained report when available;
 - child-activity availability errors;
 - a secondary **Open transcript** action.
 
@@ -176,7 +242,9 @@ Renders the recursive accessible tree and manages default expansion rules throug
 
 ### `ActivityRow`
 
-Renders one root, delegate, or shell-job row. It owns no network state.
+Renders one root, subagent-conversation, or shell-job row. It owns no network
+state. A subagent row owns the disclosure for its child-session branch; the
+child session does not render a duplicate row.
 
 ### `ActivityInspector`
 
@@ -192,7 +260,15 @@ Validates the new wire response before rendering. A malformed sibling must not c
 
 ## Data Flow and Reconciliation
 
-Opening **Activity** fetches the full tree. Each job lifecycle push updates `model.jobsUpdatedAt`. While the sheet is open, a new bump refetches the tree. Once the trigger has a count, lifecycle bumps also refresh it while the sheet is closed.
+Opening **Activity** fetches the first bounded page of the rooted tree. Each job lifecycle push updates `model.jobsUpdatedAt`. While the sheet is open, a new bump refetches the loaded portion of the tree. Once the trigger has a count, lifecycle bumps also refresh it while the sheet is closed.
+
+Direct root-job notifications keep their existing behavior. Descendant job and
+delegate lifecycle changes also emit a root-scoped `serf/jobs/treeUpdated`
+notification containing the root ref and an opaque monotonic tree revision. The
+hub routes that notification to every open client watching the root. The reducer
+stores the revision and bumps `jobsUpdatedAt` on the root model. This ancestor
+invalidation, rather than child-model notifications, keeps the open tree and
+closed trigger count current when a nested shell job starts or finishes.
 
 The client reconciles refreshed data by stable session and job IDs. It preserves:
 
@@ -203,9 +279,23 @@ The client reconciles refreshed data by stable session and job IDs. It preserves
 
 If the selected item disappears because retained state was pruned, selection returns to the nearest surviving owner and explains that the item is no longer retained.
 
-Output remains lazy. Selecting a shell job requests its output tail from the owning session, not automatically from the root session. The replaced tree contract therefore supplies enough owner identity for descendant output lookup. The output view stays stable while the user reads it; reselecting the row or using **Refresh output** fetches a new tail.
+Output remains lazy. Selecting a shell job requests its output tail from the
+owning session, not automatically from the root session. Selecting a subagent
+loads the latest delegate turn's retained output through the same output method;
+that bounded text is the latest/final report shown by the inspector. The tree
+response carries report availability and the relevant owner/job IDs, but not
+report bodies. The output view stays stable while the user reads it; reselecting
+the row or using **Refresh output** fetches a new tail.
 
-Subagent report and transcript fields come from the tree response. The client does not issue per-node discovery calls.
+Transcript links and report-availability metadata come from the tree response.
+The client does not issue per-node lineage or transcript-discovery calls.
+
+The live/durable merge is a union keyed by job ID. Durable append sequence wins
+when present. A live-only job is inserted by start timestamp with job ID as a
+stable tie-breaker, then reconciles in place when its durable start event becomes
+visible. Duplicate IDs never create duplicate work units. The normal write path
+persists a start event before notification, but the union rule makes recovery
+and partial-write behavior explicit.
 
 ## Empty, Error, and Compatibility States
 
@@ -219,6 +309,8 @@ The panel distinguishes absence from failure.
 - **Exited root session:** serve durable tree and output where retained. Label unavailable live-only fields rather than calling the session empty.
 - **Unavailable child session:** preserve the delegate as a leaf with an explicit message.
 - **Incompatible daemon or response:** use the existing capability-gap state. Do not render a misleading partial flat list.
+- **Bounded response:** show the loaded branch with partial counts and an inline
+  **Load more activity** control at each truncated edge.
 
 Errors should state what failed and what remains available. A branch error must not become a global toast-only failure that leaves the tree unexplained.
 
@@ -254,6 +346,8 @@ Cover:
 - corrupt branch data without loss of healthy siblings;
 - malformed links and cycle protection;
 - deterministic aggregate states and counts;
+- live-only record insertion and durable reconciliation without duplicates;
+- response node, depth, and byte bounds plus continuation-token scoping;
 - descendant output ownership and lookup.
 
 ### Wire and hub tests
@@ -264,6 +358,7 @@ Cover:
 - live-daemon routing;
 - exited-session fallback;
 - descendant-owned output requests;
+- root-scoped descendant invalidation and monotonic tree revisions;
 - incompatible responses and capability gaps;
 - round-trip fidelity for every recursive response field.
 
@@ -278,6 +373,7 @@ Cover:
 - missing optional metadata;
 - malformed nodes and siblings;
 - unavailable-child leaves;
+- truncated branches and partial-count metadata;
 - deep but valid nesting;
 - stable identity extraction.
 
@@ -294,6 +390,9 @@ Cover:
 - subagent transcript navigation remains secondary;
 - refresh preserves selection and disclosure state;
 - newly active paths become visible without reopening the panel;
+- repeated turns of one delegate render one subagent row with ordered turn
+  history;
+- truncated branches load through the same endpoint without losing selection;
 - stale, partial, empty, terminal, incompatible, and output-error states;
 - narrow-screen tree-to-inspector and Back behavior;
 - accessible labels, tree semantics, focus restoration, and keyboard navigation;
@@ -329,4 +428,7 @@ The redesign is complete when:
 5. Refreshes preserve stable user context and surface partial failures without destroying healthy data.
 6. The visual treatment follows the existing color, motion, spacing, and accessibility rules.
 7. The old flat jobs-list response no longer exists; the replacement recursive contract serves live and exited sessions.
-8. Deterministic server, wire, parser, React, and browser tests prove the behavior.
+8. Nested lifecycle changes invalidate the root tree and closed trigger count.
+9. Large trees remain fully reachable through explicit continuation on the same
+   endpoint, and partial counts are never presented as totals.
+10. Deterministic server, wire, parser, React, and browser tests prove the behavior.
