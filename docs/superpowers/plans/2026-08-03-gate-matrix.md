@@ -31,7 +31,7 @@
 - Consumes: the existing `web-preflight` target and the three committed npm scripts `layoutguard`, `overflowguard`, and `spawnguard`.
 - Produces: `make test-web-browser`, which runs all three guards from `cmd/serf-hub/frontend`, reports each guard's exit status, runs every guard even if an earlier guard fails, and returns the first nonzero guard status.
 
-- [ ] **Step 1: Establish the RED wiring case.**
+- [x] **Step 1: Establish the RED wiring case.**
 
 Run from the worktree root:
 
@@ -41,7 +41,7 @@ make -n test-web-browser
 
 Expected: nonzero exit with Make reporting that no rule exists for `test-web-browser`.
 
-- [ ] **Step 2: Add the minimal target.**
+- [x] **Step 2: Add the minimal target.**
 
 Add this target after `test-web` and before the binary build targets:
 
@@ -65,7 +65,7 @@ test-web-browser: web-preflight
 	exit "$$status"
 ```
 
-- [ ] **Step 3: Verify the target composition.**
+- [x] **Step 3: Verify the target composition.**
 
 Run:
 
@@ -75,7 +75,7 @@ make -n test-web-browser
 
 Expected: the dry run shows `web-preflight` followed by `npm run layoutguard`, `npm run overflowguard`, and `npm run spawnguard` in that order.
 
-- [ ] **Step 4: Run the real browser gate.**
+- [x] **Step 4: Run the real browser gate.**
 
 Run:
 
@@ -96,7 +96,7 @@ Expected: all three guards execute against the current frontend; Chrome absence,
 - Consumes: `make test-web-browser`, the existing web job's Node setup, and the existing `make test` runner.
 - Produces: CI coverage for all three browser guards plus the full non-browser deterministic test stream without duplicating frontend tests in the Go job.
 
-- [ ] **Step 1: Align the CI build step with the repository targets.**
+- [x] **Step 1: Align the CI build step with the repository targets.**
 
 Replace the separate `make build-web` and `go build ./...` steps with one named step that runs both the artifact-producing runtime build and the all-package compilation check:
 
@@ -107,7 +107,7 @@ Replace the separate `make build-web` and `go build ./...` steps with one named 
 
 `make build` owns `build-runtime`, which owns `build-web` and the `serf`/`serf-hub` pair script; `go build ./...` retains the existing all-package compile check.
 
-- [ ] **Step 2: Add the browser gate to the web job.**
+- [x] **Step 2: Add the browser gate to the web job.**
 
 Change the web job's command to run the existing web checks and build, then run the new browser gate:
 
@@ -116,7 +116,7 @@ Change the web job's command to run the existing web checks and build, then run 
         run: make test-web && make build-web && make test-web-browser
 ```
 
-- [ ] **Step 3: Add the missing deterministic test step.**
+- [x] **Step 3: Add the missing deterministic test step.**
 
 After the existing race step, add:
 
@@ -127,7 +127,7 @@ After the existing race step, add:
 
 This preserves the current CI decomposition while giving the Go job the full root suite, all non-root module tests, and script self-tests. `WEB=0` avoids duplicating the web job's `test-web` stream.
 
-- [ ] **Step 4: Verify the CI command strings without executing GitHub Actions.**
+- [x] **Step 4: Verify the CI command strings without executing GitHub Actions.**
 
 Run:
 
@@ -145,28 +145,29 @@ Expected: no whitespace errors; the Make database shows the deterministic test t
 - Modify: `docs/testing.md:36-65` to add the canonical matrix and update the post-merge gate explanation.
 - Modify: `docs/testing.md:99-114` to describe all three browser guards and their CI/manual status.
 - Modify: the live-test sections of `docs/testing.md` to include every repository-owned provider/live/e2e entry point that is part of the matrix.
+- Modify: the status comments in the layoutguard and overflowguard runners to match their CI ownership.
 
 **Interfaces:**
 - Consumes: the current Makefile, CI workflows, frontend package scripts, browser runner failure behavior, and the existing live-test opt-in variables.
 - Produces: one table with these columns: gate and exact command; scope; proof; trigger; determinism/external requirements; failure/unavailable-tool behavior; owner and follow-up Kata where applicable.
 
-- [ ] **Step 1: Add rows for deterministic and required CI gates.**
+- [x] **Step 1: Add rows for deterministic and required CI gates.**
 
 Document exact ownership for `make lint`, `make build`, `make build-web`, `make build-runtime`, `make test`, `ROOT_FULL=1 make test`, `make test-web`, `make test-race`, `make fuzz`, `make fuzz-gap-check`, `make fuzz-corpus-scan`, `make vet`, and `make merge-approval-gate`. State that fuzz search targets such as `make fuzz-nightly` remain manual/nightly and that `make merge-approval-gate` does not run fuzzing.
 
-- [ ] **Step 2: Add the browser row and correct the browser section.**
+- [x] **Step 2: Add the browser row and correct the browser section.**
 
 Document `make test-web-browser` as a required CI browser gate using headless Chrome. State that `test-web` owns typecheck/Vitest/Biome only; the three browser guards own real-browser geometry and production-tree checks. A missing Chrome/Chromium binary, Vite startup failure, or guard error is a nonzero failure. WebKit/Safari has no repository-owned runner and is an explicit unresolved/manual gap, not a pass.
 
-- [ ] **Step 3: Add live, release, and operational rows.**
+- [x] **Step 3: Add live, release, and operational rows.**
 
 Classify provider/live/e2e commands as explicit opt-in only, including `SERF_LIVE_TESTS=1`, `SERF_MCP_E2E=1`, `SERF_OPENAI_CODEX_E2E=1`, `SERF_ANTHROPIC_E2E=1`, `SERF_E2E_LIVE=1`, and `SERF_SEATBELT_LIVE=1` where their existing commands are repository-owned. Classify `make dist` as release/distribution-only, `web-preflight` and `disk-reclaim.sh --check` as setup/operational prerequisites, and launcher/managed-service/SDD/Kata responsibilities as outside Serf.
 
-- [ ] **Step 4: Record mismatches and intentional gaps.**
+- [x] **Step 4: Record mismatches and intentional gaps.**
 
 List the current CI decomposition, browser dependency limitation, WebKit/Safari gap, and any command that remains manual or release-only. Use functional owners (`Serf CI`, `frontend`, `release`, `tooling`, or `launcher/worktree manager`) and reference existing Kata IDs only; do not create unrelated Katas during this task.
 
-- [ ] **Step 5: Verify documentation/command agreement.**
+- [x] **Step 5: Verify documentation/command agreement.**
 
 Run:
 
@@ -181,13 +182,13 @@ Expected: every documented command exists with the documented ownership, the thr
 ### Task 4: Run affected verification and commit the implementation
 
 **Files:**
-- Verify: `docs/testing.md`, `Makefile`, `.github/workflows/ci.yml`.
+- Verify: `docs/testing.md`, `Makefile`, `.github/workflows/ci.yml`, and the two browser-runner status comments.
 
-- [ ] **Step 1: Run the cheap checks first.**
+- [x] **Step 1: Run the cheap checks first.**
 
 Run `git diff --check`, `make -n test-web-browser`, `make -qp` for recursive Make targets, and the documentation/command-reference searches from Task 3.
 
-- [ ] **Step 2: Run the affected frontend gates.**
+- [x] **Step 2: Run the affected frontend gates.**
 
 Run:
 
@@ -199,7 +200,7 @@ make test-web-browser
 
 Record each command's bare exit code and report missing Node/npm/Chrome as a limitation rather than a pass.
 
-- [ ] **Step 3: Run the complete deterministic gate because CI ownership changed.**
+- [x] **Step 3: Run the complete deterministic gate because CI ownership changed.**
 
 Run:
 
@@ -209,7 +210,7 @@ make merge-approval-gate
 
 Record the separate lint, build, and `ROOT_FULL=1 make test` exit codes, plus any environmental limitation.
 
-- [ ] **Step 4: Inspect the final diff and status.**
+- [x] **Step 4: Inspect the final diff and status.**
 
 Run:
 
@@ -220,7 +221,7 @@ git diff --stat
 git diff -- Makefile .github/workflows/ci.yml docs/testing.md
 ```
 
-Confirm that only the three scoped files and this plan are changed in the worktree, and that the parent checkout's intentional deletion was not imported or modified.
+Confirm that only the five scoped implementation files and this plan are changed in the worktree, and that the parent checkout's intentional deletion was not imported or modified.
 
 - [ ] **Step 5: Commit the implementation.**
 
