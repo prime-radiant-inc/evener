@@ -19,6 +19,10 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
 	appwire.NotifyThreadNameChanged,
+	// The TUI has no Activity-tree surface. Its existing job rows consume the
+	// concrete job-started/job-finished pushes, so the Web UI's root-tree cache
+	// invalidation notification has no TUI state to update.
+	appwire.NotifySerfJobsTreeUpdated,
 	// Tasks render from fetchHubTasks, not from the push.
 	appwire.NotifySerfTaskUpdated,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the

@@ -229,7 +229,7 @@ type Server struct {
 	reasoningEffortFunc           func(string)
 	listModelsFunc                func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn                       func() any
-	jobsFn                        func() (any, error)
+	jobsFn                        func(appwire.JobsListParams) (any, error)
 	jobOutputFn                   func(jobID string, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc                  func()
 	// sandboxEscalationResolveFunc delivers a human's approve/deny decision for a
@@ -553,10 +553,11 @@ func (s *Server) SetTasksFunc(fn func() any) {
 }
 
 // SetJobsFunc sets the function backing serf/jobs/list. The function should
-// return a JSON-serializable slice (typically []agent.JobSummary), or an
-// error if it cannot read one: an unreadable job store must reach the caller
-// as a failure, never as the empty list a job-less session answers with.
-func (s *Server) SetJobsFunc(fn func() (any, error)) {
+// return a JSON-serializable payload (typically appwire.JobActivityTree), or
+// an error if it cannot read one: an unreadable durable root must reach the
+// caller as a failure, never as the empty success a job-less session answers
+// with.
+func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 	s.mu.Lock()
 	s.jobsFn = fn
 	s.mu.Unlock()

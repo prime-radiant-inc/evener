@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -47,6 +48,44 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		seen[n.Name] = true
 		if n.Summary == "" {
 			t.Errorf("notification %q has empty Summary", n.Name)
+		}
+	}
+	for name, want := range map[string]any{
+		NotifySerfJobsTreeUpdated: JobsTreeUpdatedParams{},
+	} {
+		for _, n := range Notifications {
+			if n.Name != name {
+				continue
+			}
+			if reflect.TypeOf(n.Payload) != reflect.TypeOf(want) {
+				t.Fatalf("notification %q payload type = %T, want %T", name, n.Payload, want)
+			}
+			goto found
+		}
+		t.Fatalf("notification %q missing from catalog", name)
+	found:
+	}
+}
+
+func TestJobsListReplacementTreeWireShape(t *testing.T) {
+	payload := JobActivityTree{
+		Revision: 7,
+		Root: JobActivitySession{
+			SessionID: "root", Ref: "local:root", Label: "Root",
+			Counts: JobActivityCounts{Active: 2, Failed: 0, Completed: 1, Complete: true},
+			Entries: []JobActivityEntry{
+				{Kind: "shell", Job: &JobActivityJob{JobID: "job_shell", OwnerSessionID: "root", OwnerRef: "local:root", Type: "shell", Status: "running", Terminal: false}},
+				{Kind: "delegate", Delegate: &JobActivityDelegate{DelegateID: "dlg_1", ChildSessionID: "child", ChildRef: "local:child"}},
+			},
+		},
+	}
+	got, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"revision":7`, `"kind":"shell"`, `"delegateId":"dlg_1"`, `"ownerRef":"local:root"`} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Fatalf("wire %s missing %s", got, want)
 		}
 	}
 }

@@ -235,25 +235,57 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"JobsList", MethodSerfJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: []JobSummary{{
-			JobID: "job_a", Type: "shell", Status: "running", Description: "go test ./...", OutputBytes: 128, HasOutput: true,
-		}}}, func(ctx context.Context, c *Client) error {
+			{"JobsList", MethodSerfJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: JobActivityTree{
+				Revision: 7,
+				Root: JobActivitySession{
+					SessionID: "th",
+					Ref:       "local:th",
+					Label:     "Thread",
+					Aggregate: "working",
+					Counts:    JobActivityCounts{Active: 1, Failed: 0, Completed: 0, Complete: true},
+					Entries: []JobActivityEntry{{Kind: "shell", Job: &JobActivityJob{
+						JobID:          "job_a",
+						OwnerSessionID: "th",
+						OwnerRef:       "local:th",
+						Type:           "shell",
+						Status:         "running",
+						Terminal:       false,
+						Background:     false,
+						HasOutput:      true,
+						Description:    "go test ./...",
+						StartedAt:      "2026-08-03T00:00:00Z",
+						OutputBytes:    128,
+					}}},
+				},
+			}}, func(ctx context.Context, c *Client) error {
 			out, err := c.JobsList(ctx, JobsListParams{Ref: "local:th"})
 			if err != nil {
 				return err
 			}
-			// Data is `any` in the catalog, so a decoded row is a map keyed by
-			// JobSummary's own json tags — the exact names the web client's
-			// parser reads. Asserting them here is what makes this a contract
-			// check rather than a "something arrived" check.
-			rows, ok := out.Data.([]any)
-			if !ok || len(rows) != 1 {
-				return fmt.Errorf("JobsList data = %#v, want one row", out.Data)
+				// Data is `any` in the catalog, so the replacement jobs-list payload
+				// decodes as nested maps/slices keyed by the current activity-tree
+				// contract's camelCase json tags. Asserting the tree envelope and
+				// shell discriminator keeps this a real wire-shape check.
+				tree, ok := out.Data.(map[string]any)
+				if !ok || tree["revision"] != float64(7) {
+					return fmt.Errorf("JobsList data = %#v, want activity tree revision 7", out.Data)
 			}
-			row, ok := rows[0].(map[string]any)
-			if !ok || row["jobId"] != "job_a" || row["type"] != "shell" || row["status"] != "running" ||
-				row["description"] != "go test ./..." || row["outputBytes"] != float64(128) || row["hasOutput"] != true {
-				return fmt.Errorf("JobsList row = %#v", rows[0])
+				root, ok := tree["root"].(map[string]any)
+				if !ok || root["ref"] != "local:th" {
+					return fmt.Errorf("JobsList root = %#v", tree["root"])
+				}
+				entries, ok := root["entries"].([]any)
+				if !ok || len(entries) != 1 {
+					return fmt.Errorf("JobsList entries = %#v, want one shell entry", root["entries"])
+				}
+				entry, ok := entries[0].(map[string]any)
+				if !ok || entry["kind"] != "shell" {
+					return fmt.Errorf("JobsList entry = %#v, want kind shell", entries[0])
+				}
+				job, ok := entry["job"].(map[string]any)
+				if !ok || job["jobId"] != "job_a" || job["ownerRef"] != "local:th" || job["type"] != "shell" || job["status"] != "running" ||
+					job["description"] != "go test ./..." || job["outputBytes"] != float64(128) || job["hasOutput"] != true {
+					return fmt.Errorf("JobsList job = %#v", entry["job"])
 			}
 			return nil
 		}},

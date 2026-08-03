@@ -1490,6 +1490,61 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 
+  test("routes serf/jobs/treeUpdated by root ref while a child thread is open, ignoring stale revisions", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const ref = params.ref ?? "";
+      if (ref === "local:root") {
+        return readResponse(ref, { id: "thr_root", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+      }
+      if (ref === "local:child") {
+        return readResponse(ref, {
+          id: "thr_child",
+          serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
+      }
+      throw new Error(`unexpected ref ${ref}`);
+    });
+
+    await threadsStore.getState().ensureThread("local:root");
+    await threadsStore.getState().ensureThread("local:child");
+
+    const rootBefore = threadsStore.getState().threads.get("local:root");
+    const childBefore = threadsStore.getState().threads.get("local:child");
+    expect(rootBefore).toBeDefined();
+    expect(childBefore).toBeDefined();
+
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 7 },
+    });
+
+    let root = threadsStore.getState().threads.get("local:root");
+    let child = threadsStore.getState().threads.get("local:child");
+    expect(root?.jobsTreeRevision).toBe(7);
+    expect(root?.jobsUpdatedAt).not.toBeNull();
+    expect(root?.lastFrameAt).toBe(rootBefore?.lastFrameAt);
+    expect(child).toEqual(childBefore);
+    expect(threadsStore.getState().frameTimes.get("local:root")).toHaveLength(1);
+
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 7 },
+    });
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 6 },
+    });
+
+    root = threadsStore.getState().threads.get("local:root");
+    child = threadsStore.getState().threads.get("local:child");
+    expect(root?.jobsTreeRevision).toBe(7);
+    expect(root?.lastFrameAt).toBe(rootBefore?.lastFrameAt);
+    expect(child).toEqual(childBefore);
+    expect(threadsStore.getState().frameTimes.get("local:root")).toHaveLength(1);
+    expect(threadsStore.getState().frameTimes.get("local:child")).toBeUndefined();
+  });
+
   test("a second ensureThread(ref) does not re-read", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
@@ -3653,35 +3708,66 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are
-  // both `any` in appwire/types.go; the real JSON is agent/jobs_panel.go's
-  // JobSummary / JobOutputTail structs. These fixtures mirror their real
-  // JSON field names verbatim.
-  const JOBS_DATA = [
-    {
-      jobId: "job_1",
-      type: "shell",
-      status: "completed",
-      description: "run tests",
-      command: "go test ./...",
-      background: true,
-      startedAt: "2026-07-31T12:00:00Z",
-      endedAt: "2026-07-31T12:01:00Z",
-      exitCode: 0,
-      outputBytes: 123,
-      hasOutput: true,
+  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
+  // `any` in appwire/types.go. The replacement jobs-list payload is the
+  // recursive activity tree, while job output stays JobOutputTail. These
+  // fixtures mirror the current wire JSON field names verbatim.
+  const JOBS_DATA = {
+    revision: 5,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_a",
+      label: "Root",
+      aggregate: "working",
+      counts: { active: 2, failed: 0, completed: 1, complete: true },
+      entries: [
+        {
+          kind: "shell",
+          job: {
+            jobId: "job_1",
+            ownerSessionId: "sess_root",
+            ownerRef: "ref_a",
+            type: "shell",
+            status: "completed",
+            description: "run tests",
+            command: "go test ./...",
+            terminal: true,
+            background: true,
+            hasOutput: true,
+            startedAt: "2026-07-31T12:00:00Z",
+            endedAt: "2026-07-31T12:01:00Z",
+            exitCode: 0,
+            outputBytes: 123,
+          },
+        },
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_1",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            turns: [
+              {
+                jobId: "job_2",
+                ownerSessionId: "sess_root",
+                ownerRef: "ref_a",
+                type: "delegate",
+                status: "running",
+                terminal: false,
+                background: true,
+                hasOutput: false,
+                description: "scout",
+                startedAt: "2026-07-31T12:05:00Z",
+                outputBytes: 0,
+              },
+            ],
+            branch: {},
+          },
+        },
+      ],
+      branch: {},
     },
-    {
-      jobId: "job_2",
-      type: "delegate",
-      status: "running",
-      description: "scout",
-      background: true,
-      startedAt: "2026-07-31T12:05:00Z",
-      outputBytes: 0,
-      hasOutput: false,
-    },
-  ];
+  };
   const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
 
   test("listJobs sends serf/jobs/list with {ref} and returns the raw data field", async () => {
@@ -3693,6 +3779,19 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     const call = fake.calls.find((c) => c.method === "serf/jobs/list");
     expect(call?.params).toEqual({ ref: "ref_a" });
     expect(result).toEqual(JOBS_DATA);
+  });
+
+  test("listJobs includes continuation only when non-empty and keeps the AppWire method name", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+
+    await threadsStore.getState().listJobs("ref_a", "page-2");
+    await threadsStore.getState().listJobs("ref_a", "");
+
+    const calls = fake.calls.filter((c) => c.method === "serf/jobs/list");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.params).toEqual({ ref: "ref_a", continuation: "page-2" });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a" });
   });
 
   test("jobOutput sends serf/jobs/output with {ref, jobId} and returns the raw data field", async () => {

@@ -72,6 +72,7 @@ function model(turns: TurnModel[]): ThreadModel {
     queue: null,
     tasks: null,
     jobsUpdatedAt: null,
+    jobsTreeRevision: null,
     pendingEscalations: [],
     lastFrameAt: 0,
     capabilities: NO_CAPABILITIES,

@@ -629,6 +629,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 };
 
 function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const { jobsTreeRevision = null, ...rest } = overrides;
   return {
     ref,
     threadId: `thr_${ref}`,
@@ -653,7 +654,8 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
+    jobsTreeRevision,
   };
 }
 

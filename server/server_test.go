@@ -1435,8 +1435,11 @@ func TestHandleAppJobsListNilFunc(t *testing.T) {
 func TestHandleAppJobsList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobsFunc(func() (any, error) {
-		return []agent.JobSummary{{JobID: "job_1", Type: "shell", Status: "running", Description: "make build", StartedAt: "2026-07-31T12:00:00Z"}}, nil
+	srv.SetJobsFunc(func(got appwire.JobsListParams) (any, error) {
+		if got.Ref != "local:root" || got.Continuation != "next" {
+			t.Fatalf("params=%+v", got)
+		}
+		return appwire.JobActivityTree{Root: appwire.JobActivitySession{SessionID: "root", Ref: "local:root"}}, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1444,7 +1447,7 @@ func TestHandleAppJobsList(t *testing.T) {
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfJobsList, appwire.JobsListParams{Ref: "local:root", Continuation: "next"}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v (%+v)", resp.Kind(), resp.Error)
 	}
@@ -1452,15 +1455,12 @@ func TestHandleAppJobsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("serf/jobs/list result=%T (%+v)", resp.Response.Result, resp)
 	}
-	jobs, ok := out.Data.([]agent.JobSummary)
+	tree, ok := out.Data.(appwire.JobActivityTree)
 	if !ok {
-		t.Fatalf("jobs data type=%T, want []agent.JobSummary", out.Data)
+		t.Fatalf("jobs data type=%T, want appwire.JobActivityTree", out.Data)
 	}
-	if len(jobs) != 1 {
-		t.Fatalf("jobs data: got %d jobs, want 1", len(jobs))
-	}
-	if jobs[0].JobID != "job_1" {
-		t.Errorf("job id: got %q, want job_1", jobs[0].JobID)
+	if tree.Root.SessionID != "root" || tree.Root.Ref != "local:root" {
+		t.Fatalf("tree=%+v", tree)
 	}
 }
 
@@ -1470,7 +1470,7 @@ func TestHandleAppJobsList(t *testing.T) {
 func TestHandleAppJobsListSourceError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetJobsFunc(func() (any, error) {
+	srv.SetJobsFunc(func(appwire.JobsListParams) (any, error) {
 		return nil, errors.New("jobstore: parse event line 3: unexpected end of JSON input")
 	})
 

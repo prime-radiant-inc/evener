@@ -1,0 +1,269 @@
+/* Activity panel: master-detail tree + in-place inspector, with a mobile
+ * inspector-only mode below the shared 899px breakpoint. Uses token colors and
+ * spacing only. */
+
+.triggerCount {
+  color: var(--ink-mid);
+}
+
+.state {
+  padding: var(--space-3);
+}
+
+.stale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-2);
+}
+
+.staleMessage {
+  margin: 0;
+  color: var(--ink-hi);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.masterDetail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.mobilePane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.panelColumn {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+}
+
+.mobileBack {
+  display: inline-flex;
+  align-self: flex-start;
+}
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: hidden;
+  padding: var(--space-2);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: hidden;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+}
+
+.rowSelected {
+  background: var(--surface-2);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.rowContent {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.rowLabel {
+  font-weight: 600;
+  color: var(--ink-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowDetail {
+  color: var(--ink-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowStatus {
+  display: inline-flex;
+}
+
+.rowStatusText {
+  color: var(--ink-hi);
+}
+
+.rowToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  min-width: 1.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-mid);
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-left: calc(1.5rem + var(--space-2));
+}
+
+.rowContinuation {
+  color: var(--ink-mid);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: hidden;
+  padding-left: var(--space-3);
+}
+
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.inspectorHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.inspectorTitle {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.inspectorMeta {
+  margin: 0;
+  color: var(--ink-mid);
+}
+
+.inspectorSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.detailList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.detailRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detailLabel {
+  margin: 0;
+  color: var(--ink-mid);
+  text-transform: lowercase;
+}
+
+.detailValue {
+  margin: 0;
+  color: var(--ink-hi);
+}
+
+.prompt {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.turnsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+  margin: 0;
+}
+
+.turnRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.muted {
+  margin: 0;
+  color: var(--ink-mid);
+}
+
+.branchError {
+  margin: 0;
+  color: var(--ink-hi);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+@media (max-width: 899px) {
+  .masterDetail {
+    display: flex;
+    flex-direction: column;
+  }
+}

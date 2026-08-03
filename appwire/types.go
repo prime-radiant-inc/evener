@@ -116,6 +116,7 @@ const (
 	NotifySerfSteeringInjected         = "serf/steering/injected"
 	NotifySerfJobStarted               = "serf/job/started"
 	NotifySerfJobFinished              = "serf/job/finished"
+	NotifySerfJobsTreeUpdated          = "serf/jobs/treeUpdated"
 	NotifySerfAuthUpdated              = "serf/auth/updated"
 	NotifySerfLaunchUpdated            = "serf/launch/updated"
 	NotifySerfAttentionChanged         = "serf/attention/changed"
@@ -1177,33 +1178,96 @@ type TaskListResponse struct {
 }
 
 type JobsListParams struct {
-	Ref string `json:"ref,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	Continuation string `json:"continuation,omitempty"`
 }
 
 type JobsListResponse struct {
 	Data any `json:"data"`
 }
 
-// JobSummary is the UI wire projection of one job record — the shape
-// serf/jobs/list returns and the webui jobs panel renders. Internal fields
-// (provenance, restore descriptors, transcript refs, working dir, notify
-// state) deliberately stay out. The agent package produces it
-// (agent.JobSummary is an alias); it lives here because it is a wire
-// payload, and wire payloads carry this package's camelCase tag convention.
-type JobSummary struct {
-	JobID       string `json:"jobId"`
-	Type        string `json:"type"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
-	Description string `json:"description"`
-	Command     string `json:"command,omitempty"`
-	Task        string `json:"task,omitempty"`
-	Background  bool   `json:"background"`
-	StartedAt   string `json:"startedAt"`
-	EndedAt     string `json:"endedAt,omitempty"`
-	ExitCode    *int   `json:"exitCode,omitempty"`
-	OutputBytes int64  `json:"outputBytes"`
-	HasOutput   bool   `json:"hasOutput"`
+type JobsTreeUpdatedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	Revision uint64 `json:"revision"`
+}
+
+type JobActivityCounts struct {
+	Active    int  `json:"active"`
+	Failed    int  `json:"failed"`
+	Completed int  `json:"completed"`
+	Complete  bool `json:"complete"`
+}
+
+type JobActivityBranchState struct {
+	Error        string `json:"error,omitempty"`
+	Truncated    bool   `json:"truncated,omitempty"`
+	Continuation string `json:"continuation,omitempty"`
+}
+
+type JobActivityJob struct {
+	JobID          string `json:"jobId"`
+	OwnerSessionID string `json:"ownerSessionId"`
+	OwnerRef       string `json:"ownerRef"`
+	Type           string `json:"type"`
+	Status         string `json:"status"`
+	Outcome        string `json:"outcome,omitempty"`
+	Terminal       bool   `json:"terminal"`
+	Background     bool   `json:"background"`
+	HasOutput      bool   `json:"hasOutput"`
+	Description    string `json:"description"`
+	Command        string `json:"command,omitempty"`
+	Task           string `json:"task,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	StartedAt      string `json:"startedAt"`
+	EndedAt        string `json:"endedAt,omitempty"`
+	ExitCode       *int   `json:"exitCode,omitempty"`
+	OutputBytes    int64  `json:"outputBytes"`
+}
+
+type JobActivityDelegate struct {
+	DelegateID     string                 `json:"delegateId"`
+	ChildSessionID string                 `json:"childSessionId"`
+	ChildRef       string                 `json:"childRef"`
+	Mandate        string                 `json:"mandate,omitempty"`
+	Turns          []JobActivityJob       `json:"turns"`
+	Child          *JobActivitySession    `json:"child,omitempty"`
+	Branch         JobActivityBranchState `json:"branch"`
+}
+
+type JobActivityEntry struct {
+	Kind     string               `json:"kind"` // shell | delegate
+	Job      *JobActivityJob      `json:"job,omitempty"`
+	Delegate *JobActivityDelegate `json:"delegate,omitempty"`
+}
+
+type JobActivitySession struct {
+	SessionID string                 `json:"sessionId"`
+	Ref       string                 `json:"ref"`
+	Label     string                 `json:"label"`
+	Aggregate string                 `json:"aggregate"`
+	Counts    JobActivityCounts      `json:"counts"`
+	Entries   []JobActivityEntry     `json:"entries"`
+	Branch    JobActivityBranchState `json:"branch"`
+}
+
+type JobActivityTree struct {
+	Revision uint64             `json:"revision"`
+	Root     JobActivitySession `json:"root"`
+}
+
+// AllJobActivityTypes is the explicit reachability root for the replacement
+// jobs activity-tree contract. The AppWire generators walk this list in
+// addition to Methods and Notifications so the JobActivity* wire types stay
+// emitted even though serf/jobs/list itself keeps JobsListResponse.Data as any.
+var AllJobActivityTypes = []any{
+	JobActivityTree{},
+	JobActivitySession{},
+	JobActivityEntry{},
+	JobActivityJob{},
+	JobActivityDelegate{},
+	JobActivityCounts{},
+	JobActivityBranchState{},
 }
 
 // JobOutputTail is the serf/jobs/output payload: the last bytes of a job's

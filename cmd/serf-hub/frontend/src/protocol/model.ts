@@ -188,6 +188,10 @@ export interface ThreadModel {
   // serf/job/finished for this thread; the jobs panel re-fetches its list when
   // this changes. null until the first push arrives.
   jobsUpdatedAt: number | null;
+  // The root activity tree's monotonic lifecycle revision. Null until a
+  // serf/jobs/treeUpdated notification names this thread as the root whose tree
+  // changed.
+  jobsTreeRevision: number | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input
   // The in-flight model-call retry, when one is pending (serf/thread/modelRetry).

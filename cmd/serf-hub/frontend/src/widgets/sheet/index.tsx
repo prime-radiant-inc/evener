@@ -5,9 +5,11 @@ import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
 export type SheetSide = "right" | "bottom" | "left";
+export type SheetSize = "standard" | "wide";
 
 export interface SheetProps {
   side?: SheetSide;
+  size?: SheetSize;
   open: boolean;
   onClose: () => void;
   title: string;
@@ -23,6 +25,11 @@ const SIDE_CLASS: Record<SheetSide, string> = {
   left: `${BASE_PANEL_CLASS} ${requireClass(styles.left, "sheet.module.css", "left")}`,
 };
 
+const SIZE_CLASS: Record<SheetSize, string> = {
+  standard: requireClass(styles.standard, "sheet.module.css", "standard"),
+  wide: requireClass(styles.wide, "sheet.module.css", "wide"),
+};
+
 /**
  * Slide-over panel anchored to the right edge, the left edge, or the
  * bottom edge - otherwise the exact Dialog contract (see ../dialog),
@@ -30,9 +37,15 @@ const SIDE_CLASS: Record<SheetSide, string> = {
  * and restored focus, close button. Only the panel's own geometry and
  * slide-in animation differ (sheet.module.css).
  */
-export function Sheet({ side = "right", open, onClose, title, children, footer }: SheetProps) {
+export function Sheet({ side = "right", size = "standard", open, onClose, title, children, footer }: SheetProps) {
   return (
-    <OverlayPanel open={open} onClose={onClose} title={title} footer={footer} panelClassName={SIDE_CLASS[side]}>
+    <OverlayPanel
+      open={open}
+      onClose={onClose}
+      title={title}
+      footer={footer}
+      panelClassName={`${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`}
+    >
       {children}
     </OverlayPanel>
   );

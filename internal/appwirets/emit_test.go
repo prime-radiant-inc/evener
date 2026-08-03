@@ -635,6 +635,18 @@ func TestGeneratedFileCurrent(t *testing.T) {
 	}
 }
 
+// TestGeneratedFileCurrentIncludesJobActivityTypes pins the explicit
+// reachability root that keeps the replacement activity-tree contract in the
+// generated frontend protocol file.
+func TestGeneratedFileCurrentIncludesJobActivityTypes(t *testing.T) {
+	out := EmitCatalog()
+	for _, name := range []string{"JobActivityTree", "JobActivitySession", "JobActivityEntry", "JobActivityJob", "JobActivityDelegate", "JobActivityCounts", "JobActivityBranchState"} {
+		if !strings.Contains(out, "export interface "+name+" {") {
+			t.Fatalf("generated output missing %s", name)
+		}
+	}
+}
+
 // TestEmitsThreadItemEventKindCatalog is the drift guard for the systemMessage
 // item discriminator introduced with g60y. It enforces a runtime catalog and
 // derived union on the generated wire shape so additions, removals, and renames

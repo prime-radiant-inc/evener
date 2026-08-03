@@ -294,6 +294,9 @@ type notificationEntry struct {
 // order, matching internal/appwiredoc's convention for its own doc tables).
 func EmitCatalog() string {
 	reg := newRegistry()
+	for _, v := range appwire.AllJobActivityTypes {
+		registerTopLevel(reg, v, deriveName("serf/jobs/tree", "Payload"))
+	}
 
 	methods := make([]methodEntry, 0, len(appwire.Methods))
 	for _, m := range appwire.Methods {

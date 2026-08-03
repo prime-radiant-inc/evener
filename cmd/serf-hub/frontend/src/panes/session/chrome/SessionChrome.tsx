@@ -1,6 +1,6 @@
 // SessionChrome: the session pane's chrome surface - ONE quiet status-bar
 // row (cadence where needed, model · effort, context, live work, queue depth,
-// and the goal chip when a goal is set) with Details, Tasks, Jobs and the session "⋯"
+// and the goal chip when a goal is set) with Details, Tasks, Activity and the session "⋯"
 // menu pinned to the trailing edge - mounted by Session.tsx at PaneScaffold's
 // footer
 // slot. The locked contract stays exactly `{ ref: string }` - every real
@@ -19,9 +19,9 @@ import { useThreadsStore } from "../../../stores/threads";
 import { Cadence, type MenuItem } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
+import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
-import { JobsPanel, type JobsPanelHandle } from "./JobsPanel";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
@@ -43,7 +43,7 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-// Below this measured width, Details, Tasks, and Jobs move INTO the "..."
+// Below this measured width, Details, Tasks, and Activity move INTO the "..."
 // menu so .body has room to compress its status facts while the footer stays
 // one line tall. Picked from live measurement in a real browser (jsdom reports
 // zero for every layout dimension, so this number could never come from a
@@ -106,17 +106,17 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const [chromeRef, collapsed] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
-  const jobsRef = useRef<JobsPanelHandle>(null);
+  const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
-  // Details/Tasks/Jobs lead the "..." menu's own list when collapsed - see
+  // Details/Tasks/Activity lead the "..." menu's own list when collapsed - see
   // SessionActionsMenu's extraItems doc comment for why that order, not
   // this one, is what actually matters (this array is just the three items).
   const overflowItems: MenuItem[] = collapsed
     ? [
         { id: "details", label: "Details", onSelect: () => detailsRef.current?.open() },
         { id: "tasks", label: "Tasks", onSelect: () => tasksRef.current?.open() },
-        { id: "jobs", label: "Jobs", onSelect: () => jobsRef.current?.open() },
+        { id: "activity", label: "Activity", onSelect: () => activityRef.current?.open() },
       ]
     : [];
 
@@ -140,7 +140,7 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
       <div className={CLASS.right}>
         <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
         <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />
-        <JobsPanel ref={jobsRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={collapsed} />
+        <ActivityPanel ref={activityRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={collapsed} />
         <SessionActionsMenu
           sessionRef={sessionRef}
           model={model}

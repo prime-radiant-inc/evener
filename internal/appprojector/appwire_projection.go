@@ -931,7 +931,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+		out := []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -949,10 +949,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginItemID:     data.OriginItemID,
 			},
 		})}
+		if data.RootSessionID != "" && data.TreeRevision > 0 {
+			out = append(out, p.notification(appwire.NotifySerfJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
+				ThreadID: data.RootSessionID,
+				Ref:      "local:" + data.RootSessionID,
+				Revision: data.TreeRevision,
+			}))
+		}
+		return out
 	case events.EventJobFinished:
 		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
+		out := []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Job: appwire.SerfJobInfo{
@@ -976,6 +984,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				OriginItemID:     data.OriginItemID,
 			},
 		})}
+		if data.RootSessionID != "" && data.TreeRevision > 0 {
+			out = append(out, p.notification(appwire.NotifySerfJobsTreeUpdated, appwire.JobsTreeUpdatedParams{
+				ThreadID: data.RootSessionID,
+				Ref:      "local:" + data.RootSessionID,
+				Revision: data.TreeRevision,
+			}))
+		}
+		return out
 	case events.EventTurnEnded:
 		if p.activeTurnID == "" {
 			return nil // turn already completed (e.g. failed via EventError)

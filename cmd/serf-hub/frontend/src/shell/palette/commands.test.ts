@@ -89,6 +89,7 @@ const NO_CAPS: ThreadCapabilities = {
 };
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const { jobsTreeRevision = null, ...rest } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -113,7 +114,8 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
+    jobsTreeRevision,
   };
 }
 

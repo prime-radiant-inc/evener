@@ -428,8 +428,10 @@ func fuzzScenarioLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 
 func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(_ context.Context, _ appwire.JobsListParams) (appwire.JobsListResponse, error) {
-		return appwire.JobsListResponse{Data: []map[string]any{{"id": "job_1", "state": "running"}}}, nil
+	var listParams appwire.JobsListParams
+	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsList, func(_ context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+		listParams = params
+		return appwire.JobsListResponse{Data: appwire.JobActivityTree{Root: appwire.JobActivitySession{SessionID: "sess_1", Ref: "local:sess_1"}}}, nil
 	})
 	var outputParams appwire.JobsOutputParams
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfJobsOutput, func(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
@@ -450,20 +452,19 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	}, httpServer.Client())
 
 	ctx := context.Background()
-	list, err := source.ListJobs(ctx, appwire.JobsListParams{Ref: "local:th_1"})
+	list, err := source.ListJobs(ctx, appwire.JobsListParams{Ref: "local:th_1", Continuation: "next-page"})
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}
-	// The daemon's payload must arrive whole: a non-nil check alone passes an
-	// empty list, which is exactly what a silent decode-to-empty regression
-	// produces.
-	jobs, ok := list.Data.([]any)
-	if !ok || len(jobs) != 1 {
-		t.Fatalf("ListJobs data = %#v, want the daemon's one-job list", list.Data)
+	tree, ok := list.Data.(appwire.JobActivityTree)
+	if !ok {
+		t.Fatalf("ListJobs data = %#v, want activity tree payload", list.Data)
 	}
-	job, ok := jobs[0].(map[string]any)
-	if !ok || job["id"] != "job_1" || job["state"] != "running" {
-		t.Fatalf("job = %#v, want id=job_1 state=running", jobs[0])
+	if tree.Root.SessionID != "sess_1" || tree.Root.Ref != "local:sess_1" {
+		t.Fatalf("tree = %+v", tree)
+	}
+	if listParams.Ref != "local:th_1" || listParams.Continuation != "next-page" {
+		t.Fatalf("list params forwarded = %+v", listParams)
 	}
 
 	out, err := source.JobOutput(ctx, appwire.JobsOutputParams{Ref: "local:th_1", JobID: "job_1", MaxBytes: 1024})

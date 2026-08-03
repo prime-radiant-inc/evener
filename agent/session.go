@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
@@ -30,6 +31,88 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
+
+type jobTreeClock struct {
+	rootSessionID string
+	revision      atomic.Uint64
+}
+
+func newJobTreeClock(rootSessionID string) *jobTreeClock {
+	if strings.TrimSpace(rootSessionID) == "" {
+		return nil
+	}
+	return &jobTreeClock{rootSessionID: rootSessionID}
+}
+
+func (c *jobTreeClock) nextRevision() (string, uint64, bool) {
+	if c == nil || strings.TrimSpace(c.rootSessionID) == "" {
+		return "", 0, false
+	}
+	return c.rootSessionID, c.revision.Add(1), true
+}
+
+func (c *jobTreeClock) ensureAtLeast(revision uint64) uint64 {
+	if c == nil {
+		return 0
+	}
+	for {
+		current := c.revision.Load()
+		if current >= revision {
+			return current
+		}
+		if c.revision.CompareAndSwap(current, revision) {
+			return revision
+		}
+	}
+}
+
+var (
+	jobTreeClockByTreeCounter sync.Map // map[*treeCounter]*jobTreeClock
+)
+
+func registerJobTreeClock(counter *treeCounter, clock *jobTreeClock) {
+	if counter == nil || clock == nil {
+		return
+	}
+	jobTreeClockByTreeCounter.Store(counter, clock)
+}
+
+func resolveJobTreeClock(counter *treeCounter) *jobTreeClock {
+	if counter != nil {
+		if clock, ok := jobTreeClockByTreeCounter.Load(counter); ok {
+			if resolved, ok := clock.(*jobTreeClock); ok {
+				return resolved
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.EventData, p *provenance.Causal) {
+	if s != nil {
+		if rootID, revision, ok := s.nextJobTreeRevision(kind); ok {
+			switch payload := data.(type) {
+			case events.JobStartedData:
+				payload.RootSessionID = rootID
+				payload.TreeRevision = revision
+				data = payload
+			case events.JobFinishedData:
+				payload.RootSessionID = rootID
+				payload.TreeRevision = revision
+				data = payload
+			}
+			s.maybeAutoSave()
+		}
+	}
+	s.emitWithProvenance(kind, data, p)
+}
+
+func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bool) {
+	if s == nil || (kind != events.EventJobStarted && kind != events.EventJobFinished) {
+		return "", 0, false
+	}
+	return s.jobTreeClock.nextRevision()
+}
 
 // Session holds the state for a single agent conversation, including its
 // configuration, LLM client and provider profile, event channel, conversation
@@ -309,6 +392,7 @@ type Session struct {
 	// subagents
 	depth                            int
 	delegationAllowance              int          // mu-guarded; allowance to grant further sub-agent delegation levels
+	jobTreeClock                     *jobTreeClock // root-shared job lifecycle revision clock
 	treeCounter                      *treeCounter // tree-wide running delegate-turn counter (spec §4)
 	driveCounter                     *treeCounter // tree-wide drive-down turn counter, budgeted separately from spawns
 	subagents                        *subagentManager

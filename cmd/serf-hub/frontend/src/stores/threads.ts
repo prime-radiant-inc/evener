@@ -198,13 +198,12 @@ export interface ThreadsStoreState {
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
   listTasks(ref: string): Promise<unknown>;
-  // Lists the session's jobs (serf/jobs/list) and fetches one job's output
-  // tail (serf/jobs/output). Both Data fields are `any` on the wire catalog
-  // (appwire/types.go) - these return the raw field verbatim, never wrapped,
-  // so the store stays shape-agnostic; the caller owns interpreting it (the
-  // chrome stream's parseJobListData / parseJobOutputData). Wire truth:
-  // agent/jobs_panel.go's JobSummary / JobOutputTail.
-  listJobs(ref: string): Promise<unknown>;
+  // Lists the session's activity tree (serf/jobs/list) and fetches one job's
+  // output tail (serf/jobs/output). Both Data fields are `any` on the wire
+  // catalog (appwire/types.go) - these return the raw field verbatim, never
+  // wrapped, so the store stays shape-agnostic; the caller owns interpreting
+  // them (the chrome stream's parseActivityTree / parseJobOutputData).
+  listJobs(ref: string, continuation?: string): Promise<unknown>;
   jobOutput(ref: string, jobId: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
@@ -854,6 +853,7 @@ function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydra
   const threadId = notificationThreadId(n);
   if (ref !== undefined) {
     if (ref !== routing.ref) return false;
+    if (n.method === "serf/jobs/treeUpdated") return true;
     // A ref-targeted frame is authoritative for the requested subscription,
     // but once that subscription has also taught us its thread id, a
     // contradictory id is a different thread and must not enter this buffer.
@@ -2023,10 +2023,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async listJobs(ref) {
+  async listJobs(ref, continuation) {
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels/listTasks above.
-    const resp = await client.request("serf/jobs/list", { ref });
+    const resp = await client.request("serf/jobs/list", { ref, ...(continuation ? { continuation } : {}) });
     return resp.data;
   },
 

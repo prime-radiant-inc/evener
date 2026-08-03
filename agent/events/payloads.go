@@ -492,6 +492,8 @@ type JobStartedData struct {
 	JobID            string `json:"job_id"`
 	JobType          string `json:"job_type"`
 	Status           string `json:"status"`
+	RootSessionID    string `json:"root_session_id,omitempty"`
+	TreeRevision     uint64 `json:"tree_revision,omitempty"`
 	FromWatch        bool   `json:"from_watch,omitempty"`
 	Background       bool   `json:"background,omitempty"`
 	Command          string `json:"command,omitempty"`
@@ -509,6 +511,8 @@ type JobFinishedData struct {
 	JobType          string `json:"job_type"`
 	Status           string `json:"status"`
 	Reason           string `json:"reason"`
+	RootSessionID    string `json:"root_session_id,omitempty"`
+	TreeRevision     uint64 `json:"tree_revision,omitempty"`
 	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`
 	Resumable        *bool  `json:"resumable,omitempty"`

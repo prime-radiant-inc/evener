@@ -136,6 +136,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("generate session ID: %w", err)
 	}
+	jobClock := resolveJobTreeClock(tc)
+	if cfg.spawn.parentSessionID == "" && jobClock == nil {
+		jobClock = newJobTreeClock(sessionID)
+	}
+	registerJobTreeClock(tc, jobClock)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -161,6 +166,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		stateDir:                      cfg.StateDir,
 		installID:                     installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:                         SessionIdle,
+		jobTreeClock:                  jobClock,
 		events:                        make(chan events.SessionEvent, 256),
 		history:                       []schema.Turn{},
 		responsesContinuationDisabled: map[responsesContinuationDisabledKey]bool{},
@@ -194,7 +200,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
-	jm.emit = s.emitWithProvenance
+	jm.emit = s.emitWithJobTreeRevision
 	jm.currentProvenance = s.activeCausalProvenance
 	jm.clock = s.clock
 	jm.now = s.clock.Now
@@ -513,6 +519,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// down the tree.
 	cfg.spawn.treeCounter = tc
 	cfg.spawn.driveCounter = dc
+	jobClock := resolveJobTreeClock(tc)
+	if cfg.spawn.parentSessionID == "" && jobClock == nil {
+		// A restore without the parent's live tree carrier is a new root runtime.
+		// Persisted ancestor identity remains useful to durable history traversal,
+		// but must not route new lifecycle notifications to that old tree.
+		jobClock = newJobTreeClock(meta.ID)
+	}
+	if jobClock != nil {
+		jobClock.ensureAtLeast(meta.JobTreeRevision)
+	}
+	registerJobTreeClock(tc, jobClock)
 	s := &Session{
 		id:                       meta.ID,
 		cfg:                      cfg,
@@ -521,6 +538,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		resolveProfile:           cfg.ResolveProfile,
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
+		jobTreeClock:             jobClock,
 		treeCounter:              tc,
 		driveCounter:             dc,
 		env:                      env,
@@ -573,7 +591,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.enqueue = s.enqueueJobNotificationAndNotify
 	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
-	jm.emit = s.emitWithProvenance
+	jm.emit = s.emitWithJobTreeRevision
 	jm.currentProvenance = s.activeCausalProvenance
 	jm.clock = s.clock
 	jm.now = s.clock.Now

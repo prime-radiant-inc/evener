@@ -45,7 +45,7 @@ type residualServeServer struct {
 	name           func(string)
 	effort         func(string)
 	tasks          func() any
-	jobs           func() (any, error)
+	jobs           func(appwire.JobsListParams) (any, error)
 	jobOutput      func(string, int64) (any, bool, error)
 	clear          func(context.Context) error
 	shutdown       func()
@@ -87,7 +87,9 @@ func (s *residualServeServer) SetModelFunc(f func(string) error)     { s.model =
 func (s *residualServeServer) SetNameFunc(f func(string))            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string)) { s.effort = f }
 func (s *residualServeServer) SetTasksFunc(f func() any)             { s.tasks = f }
-func (s *residualServeServer) SetJobsFunc(f func() (any, error))     { s.jobs = f }
+func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
+	s.jobs = f
+}
 func (s *residualServeServer) SetJobOutputFunc(f func(string, int64) (any, bool, error)) {
 	s.jobOutput = f
 }
@@ -125,7 +127,7 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	s.name("renamed")
 	s.effort("low")
 	_ = s.tasks()
-	_, _ = s.jobs()
+	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:test", Continuation: "next"})
 	_, _, _ = s.jobOutput("job_1", 1024)
 }
 
@@ -256,6 +258,23 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		}
 		if err := runServeWithDeps(append(args, "--verbose"), d); err != nil {
 			t.Fatal(err)
+		}
+		if captured == nil || captured.jobs == nil {
+			t.Fatal("jobs callback not captured")
+		}
+		if _, err := captured.jobs(appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
+			t.Fatal("jobs callback accepted a ref for another local session")
+		}
+		data, err := captured.jobs(appwire.JobsListParams{Ref: "local:test", Continuation: "next"})
+		if err != nil {
+			t.Fatalf("jobs callback: %v", err)
+		}
+		tree, ok := data.(appwire.JobActivityTree)
+		if !ok {
+			t.Fatalf("jobs data = %#v (%T), want appwire.JobActivityTree", data, data)
+		}
+		if tree.Root.SessionID == "" {
+			t.Fatalf("jobs tree = %+v", tree)
 		}
 	})
 

@@ -109,9 +109,16 @@ func TestEmitWithProvenanceReacquiresJobManagerMu(t *testing.T) {
 // on. jm.emit is a func field; wiring it to anything that reaches sendEvent
 // without passing through onSessionEvent — sendEvent itself, or a future
 // leaner emitter — removes the guard from every job emit while leaving both
-// halves of TestEmitWithProvenanceReacquiresJobManagerMu green.
+// halves of TestEmitWithProvenanceReacquiresJobManagerMu green. A synchronous
+// wrapper is allowed only when it still calls emitWithProvenance on the same
+// goroutine.
 func TestJobManagerEmitIsWiredToTheGuardedPath(t *testing.T) {
 	files := agentSourceFiles(t)
+	jobTreeEmitter := methodDecl(t, files, "Session", "emitWithJobTreeRevision")
+	if !callsOnTheSameGoroutine(jobTreeEmitter, "emitWithProvenance") {
+		t.Fatal("Session.emitWithJobTreeRevision no longer calls emitWithProvenance on the emitting goroutine: " +
+			"the job tree wrapper has bypassed the jobManager.mu self-deadlock guard")
+	}
 
 	wirings := 0
 	for _, file := range files {
@@ -129,8 +136,8 @@ func TestJobManagerEmitIsWiredToTheGuardedPath(t *testing.T) {
 					continue
 				}
 				wirings++
-				if got := exprText(assign.Rhs[i]); got != "s.emitWithProvenance" {
-					t.Errorf("jm.emit is wired to %s, want s.emitWithProvenance: "+
+				if got := exprText(assign.Rhs[i]); got != "s.emitWithProvenance" && got != "s.emitWithJobTreeRevision" {
+					t.Errorf("jm.emit is wired to %s, want s.emitWithProvenance or its guarded s.emitWithJobTreeRevision wrapper: "+
 						"a job emit that skips onSessionEvent skips the jobManager.mu self-deadlock guard", got)
 				}
 			}

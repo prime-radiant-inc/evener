@@ -109,7 +109,7 @@ no router (reserved).
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
-| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Lists the session's jobs (shell and delegate). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `serf/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
@@ -182,6 +182,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `serf/job/started` | `SerfJobParams` | A background job started. |
 | `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
+| `serf/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
 | `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `serf/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
@@ -484,11 +485,97 @@ _(no fields)_
 | `failedToolCalls` | `*int` | yes |  |
 
 
+### `JobActivityBranchState`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `error` | `string` | yes |  |
+| `truncated` | `bool` | yes |  |
+| `continuation` | `string` | yes |  |
+
+
+### `JobActivityCounts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `active` | `int` |  |  |
+| `failed` | `int` |  |  |
+| `completed` | `int` |  |  |
+| `complete` | `bool` |  |  |
+
+
+### `JobActivityDelegate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `delegateId` | `string` |  |  |
+| `childSessionId` | `string` |  |  |
+| `childRef` | `string` |  |  |
+| `mandate` | `string` | yes |  |
+| `turns` | `[]appwire.JobActivityJob` |  |  |
+| `child` | `*appwire.JobActivitySession` | yes |  |
+| `branch` | `appwire.JobActivityBranchState` |  |  |
+
+
+### `JobActivityEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `string` |  |  |
+| `job` | `*appwire.JobActivityJob` | yes |  |
+| `delegate` | `*appwire.JobActivityDelegate` | yes |  |
+
+
+### `JobActivityJob`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `jobId` | `string` |  |  |
+| `ownerSessionId` | `string` |  |  |
+| `ownerRef` | `string` |  |  |
+| `type` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `terminal` | `bool` |  |  |
+| `background` | `bool` |  |  |
+| `hasOutput` | `bool` |  |  |
+| `description` | `string` |  |  |
+| `command` | `string` | yes |  |
+| `task` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `startedAt` | `string` |  |  |
+| `endedAt` | `string` | yes |  |
+| `exitCode` | `*int` | yes |  |
+| `outputBytes` | `int64` |  |  |
+
+
+### `JobActivitySession`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessionId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `label` | `string` |  |  |
+| `aggregate` | `string` |  |  |
+| `counts` | `appwire.JobActivityCounts` |  |  |
+| `entries` | `[]appwire.JobActivityEntry` |  |  |
+| `branch` | `appwire.JobActivityBranchState` |  |  |
+
+
+### `JobActivityTree`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `revision` | `uint64` |  |  |
+| `root` | `appwire.JobActivitySession` |  |  |
+
+
 ### `JobsListParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` | yes |  |
+| `continuation` | `string` | yes |  |
 
 
 ### `JobsListResponse`
@@ -512,6 +599,15 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `interface {}` |  |  |
+
+
+### `JobsTreeUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `revision` | `uint64` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`

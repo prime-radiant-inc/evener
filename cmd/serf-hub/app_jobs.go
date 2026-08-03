@@ -9,11 +9,11 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
-// hubJobsList answers serf/jobs/list. A running daemon's jobstore is
-// authoritative, so it is always tried first; only the specific dead-session
-// condition (isDeadSessionError, app_tasks.go) falls back to the persisted
-// jobs.jsonl through agent.LoadSessionJobList, behind the same past-index
-// gate pastTasksListResponse uses.
+// hubJobsList answers serf/jobs/list. A running daemon's recursive activity
+// tree is authoritative, so it is always tried first; only the specific
+// dead-session condition (isDeadSessionError, app_tasks.go) falls back to the
+// persisted jobs.jsonl through agent.LoadSessionJobActivityTree, behind the
+// same past-index gate pastTasksListResponse uses.
 func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
 	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 	var resp appwire.JobsListResponse
@@ -38,20 +38,20 @@ func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.
 
 // pastJobsListResponse gates on pastEntryForRead (app_threadread.go), the
 // same gate hubJobsOutput's fallback uses: the ref must resolve to a LOCAL
-// past thread id the index already knows, so a job list is never returned
-// for a session the hub cannot otherwise account for — and never from local
-// state for another source's ref. Only then does it read the session's
-// persisted jobs.jsonl.
+// past thread id the index already knows, so a job tree is never returned for
+// a session the hub cannot otherwise account for — and never from local state
+// for another source's ref. Only then does it read the session's persisted
+// jobs.jsonl.
 func pastJobsListResponse(cfg hubcore.WebConfig, params appwire.JobsListParams) (appwire.JobsListResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {
 		return appwire.JobsListResponse{}, false, nil
 	}
-	jobs, err := agent.LoadSessionJobList(entry.StateDir, entry.Meta.ID)
+	tree, err := agent.LoadSessionJobActivityTree(entry.StateDir, entry.Meta.ID, params)
 	if err != nil {
 		return appwire.JobsListResponse{}, true, err
 	}
-	return appwire.JobsListResponse{Data: jobs}, true, nil
+	return appwire.JobsListResponse{Data: tree}, true, nil
 }
 
 // hubJobsOutput answers serf/jobs/output with the same live-first /

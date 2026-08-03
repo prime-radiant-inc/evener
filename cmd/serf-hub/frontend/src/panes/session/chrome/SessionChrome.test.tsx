@@ -49,6 +49,21 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
+function emptyActivityTree() {
+  return {
+    revision: 1,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -169,13 +184,13 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   await waitFor(() => expect(calledRef).toBe("ref_c"));
 });
 
-// The tasks half of this pair (above) and the jobs half join the same two
-// facts from opposite ends: JobsPanel.test.tsx proves the panel fetches for
+// The tasks half of this pair (above) and the activity half join the same two
+// facts from opposite ends: ActivityPanel.test.tsx proves the panel fetches for
 // whatever sessionRef prop it is HANDED, and this proves SessionChrome hands
 // it its own. Neither alone catches a chrome that wires the panel to a wrong
 // or stale ref - both files stay green while the sheet quietly reports
-// another session's jobs.
-test("the jobs panel fetches for the SAME ref passed to SessionChrome", async () => {
+// another session's activity.
+test("the activity panel fetches for the SAME ref passed to SessionChrome", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_e"));
@@ -187,7 +202,7 @@ test("the jobs panel fetches for the SAME ref passed to SessionChrome", async ()
   });
 
   render(<SessionChrome ref="ref_e" />);
-  await user.click(screen.getByRole("button", { name: "Jobs" }));
+  await user.click(screen.getByRole("button", { name: "Activity" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_e"));
 });
@@ -296,80 +311,80 @@ test("re-expands Details and Tasks back onto the row when the chrome widens past
   }
 });
 
-// --- jobs panel mounting (2026-07-31-webui-jobs-panel, task 10) --------------
+// --- activity panel mounting (2026-07-31-webui-activity-panel, task 7) -------
 //
-// Jobs mirrors the Details/Tasks mounting exactly: an inline trigger on the
+// Activity mirrors the Details/Tasks mounting exactly: an inline trigger on the
 // wide row, an overflow menu item (after Details and Tasks) leading the "..."
 // menu's own list once the chrome collapses, opened through the panel's
 // imperative handle either way.
 // Details and Tasks being inline at this width is the neighbouring
 // "keeps Details and Tasks inline (and out of the ... menu)" test's job; this
-// one adds only what is new — that Jobs joins them on the row.
-test("wide chrome renders an inline Jobs trigger", async () => {
+// one adds only what is new — that Activity joins them on the row.
+test("wide chrome renders an inline Activity trigger", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_jobs_wide"));
-  await threadsStore.getState().ensureThread("ref_jobs_wide");
+  fake.on("thread/read", () => readResponse("ref_activity_wide"));
+  await threadsStore.getState().ensureThread("ref_activity_wide");
   const ro = stubResizeObserver();
 
   try {
-    render(<SessionChrome ref="ref_jobs_wide" />);
+    render(<SessionChrome ref="ref_activity_wide" />);
     ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
 
-    expect(screen.getByRole("button", { name: "Jobs" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
   } finally {
     ro.restore();
   }
 });
 
-test("narrow chrome hides the inline Jobs trigger and puts a Jobs item in the ... menu after Details and Tasks", async () => {
+test("narrow chrome hides the inline Activity trigger and puts an Activity item in the ... menu after Details and Tasks", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_jobs_narrow"));
-  await threadsStore.getState().ensureThread("ref_jobs_narrow");
+  fake.on("thread/read", () => readResponse("ref_activity_narrow"));
+  await threadsStore.getState().ensureThread("ref_activity_narrow");
   const ro = stubResizeObserver();
 
   try {
-    render(<SessionChrome ref="ref_jobs_narrow" />);
+    render(<SessionChrome ref="ref_activity_narrow" />);
     ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
 
     // No inline trigger on the row any more...
-    expect(screen.queryByRole("button", { name: "Jobs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
 
     // ...it's in the "..." menu instead, after Details and Tasks, leading
     // the menu's own list.
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(menuItems.slice(0, 3)).toEqual(["Details", "Tasks", "Jobs"]);
+    expect(menuItems.slice(0, 3)).toEqual(["Details", "Tasks", "Activity"]);
   } finally {
     ro.restore();
   }
 });
 
-test("selecting the Jobs menu item opens the Jobs sheet", async () => {
+test("selecting the Activity menu item opens the Activity sheet", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_jobs_open"));
-  fake.on("serf/jobs/list", () => ({ data: [] }));
-  await threadsStore.getState().ensureThread("ref_jobs_open");
+  fake.on("thread/read", () => readResponse("ref_activity_open"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_activity_open");
   const ro = stubResizeObserver();
 
   try {
-    render(<SessionChrome ref="ref_jobs_open" />);
+    render(<SessionChrome ref="ref_activity_open" />);
     ro.fire(300); // collapsed: the menu item is the only way in
 
     await user.click(screen.getByRole("button", { name: /session actions/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Jobs" }));
+    await user.click(screen.getByRole("menuitem", { name: "Activity" }));
 
     // The sheet's title is an <h2> (OverlayPanel), so the heading role
     // disambiguates it from the menu item that opened it.
-    expect(await screen.findByRole("heading", { name: "Jobs" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeTruthy();
     // ...and its on-open fetch ran and resolved. WHICH ref it asked for is not
     // checked here (the fake answers serf/jobs/list for any ref) - that the
-    // panel asks for the ref it is handed is JobsPanel.test.tsx's own
-    // "opening fetches and renders one row per job" case, and that this chrome
-    // hands it its OWN ref is "the jobs panel fetches for the SAME ref passed
+    // panel asks for the ref it is handed is ActivityPanel.test.tsx's own
+    // "opening fetches and renders one row per activity" case, and that this chrome
+    // hands it its OWN ref is "the activity panel fetches for the SAME ref passed
     // to SessionChrome" above.
-    expect(await screen.findByText("No jobs yet")).toBeTruthy();
+    expect(await screen.findByText("No retained activity yet")).toBeTruthy();
   } finally {
     ro.restore();
   }
