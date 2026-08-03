@@ -30,11 +30,10 @@ import type {
 export type PendingOp =
   | { kind: "hideSession"; ref: string }
   | { kind: "hideProject"; key: string }
-  | { kind: "sessionPin"; ref: string; section: PinSectionSummary }
+  | { kind: "sessionPin"; ref: string; source: ApiTreeNode; section: PinSectionSummary }
   | { kind: "sessionUnpin"; ref: string }
   | { kind: "pinSectionRename"; id: string; name: string }
   | { kind: "pinSectionDelete"; id: string }
-  | { kind: "sessionFavorite"; ref: string; value: boolean }
   | { kind: "projectFavorite"; key: string; value: boolean }
   | { kind: "sessionTitle"; ref: string; title: string };
 
@@ -66,23 +65,28 @@ function mapEverySession(tree: TreeResponse, fn: (n: ApiTreeNode) => ApiTreeNode
   };
 }
 
-function findSessionNode(tree: TreeResponse, ref: string): ApiTreeNode | undefined {
-  const findIn = (nodes: ApiTreeNode[]): ApiTreeNode | undefined => {
-    for (const node of nodes) {
-      if (node.ref === ref) return node;
-      const child = findIn(node.children);
-      if (child) return child;
-    }
-    return undefined;
-  };
+const NON_TOP_LEVEL_KINDS: ReadonlySet<string> = new Set(["fork", "subagent", "cluster"]);
+
+function eligiblePinSource(
+  tree: TreeResponse,
+  requested: ApiTreeNode,
+  ref: string,
+  supplementalTopLevelRows: readonly ApiTreeNode[],
+): ApiTreeNode | undefined {
+  if (requested.ref !== ref || NON_TOP_LEVEL_KINDS.has(requested.kind)) return undefined;
   const projectRows = (projects: ApiTreeProject[]) => projects.flatMap((project) => project.sessions);
-  return (
-    findIn(tree.live) ??
-    findIn(tree.needs_you) ??
-    findIn(projectRows(tree.projects)) ??
-    findIn(projectRows(tree.archived_projects)) ??
-    findIn(projectRows(tree.test_runs)) ??
-    findIn(tree.pin_sections.flatMap((section) => section.sessions))
+  const topLevelRows = [
+    ...tree.live,
+    ...tree.needs_you,
+    ...projectRows(tree.projects),
+    ...projectRows(tree.archived_projects),
+    ...projectRows(tree.test_runs),
+    ...tree.pin_sections.flatMap((section) => section.sessions),
+    ...supplementalTopLevelRows,
+  ];
+  return topLevelRows.find(
+    (candidate) =>
+      candidate.row_id === requested.row_id && candidate.ref === ref && !NON_TOP_LEVEL_KINDS.has(candidate.kind),
   );
 }
 
@@ -97,13 +101,28 @@ function annotateSessionPin(tree: TreeResponse, ref: string, sectionID: string |
   });
 }
 
-function withoutSession(section: PinSectionTree, ref: string): PinSectionTree {
-  return { ...section, sessions: mapNodes(section.sessions, (node) => (node.ref === ref ? null : node)) };
+function annotateSourcePin(source: ApiTreeNode, ref: string, sectionID: string): ApiTreeNode {
+  return {
+    ...source,
+    pin_section_id: sectionID,
+    children: mapNodes(source.children, (node) => (node.ref === ref ? { ...node, pin_section_id: sectionID } : node)),
+  };
 }
 
-function applySessionPin(tree: TreeResponse, ref: string, summary: PinSectionSummary): TreeResponse {
-  const source = findSessionNode(tree, ref);
+function withoutSession(section: PinSectionTree, ref: string): PinSectionTree {
+  return { ...section, sessions: section.sessions.filter((node) => node.ref !== ref) };
+}
+
+function applySessionPin(
+  tree: TreeResponse,
+  ref: string,
+  requestedSource: ApiTreeNode,
+  summary: PinSectionSummary,
+  supplementalTopLevelRows: readonly ApiTreeNode[],
+): TreeResponse {
+  const source = eligiblePinSource(tree, requestedSource, ref, supplementalTopLevelRows);
   if (!source) return tree;
+  const pinnedSource = annotateSourcePin(source, ref, summary.id);
 
   const annotated = annotateSessionPin(tree, ref, summary.id);
   let foundTarget = false;
@@ -114,8 +133,7 @@ function applySessionPin(tree: TreeResponse, ref: string, summary: PinSectionSum
     foundTarget = true;
     const sessions = [...cleaned.sessions];
     sessions.splice(currentIndex < 0 ? sessions.length : Math.min(currentIndex, sessions.length), 0, {
-      ...source,
-      pin_section_id: summary.id,
+      ...pinnedSource,
     });
     return [
       {
@@ -126,7 +144,7 @@ function applySessionPin(tree: TreeResponse, ref: string, summary: PinSectionSum
     ];
   });
   if (!foundTarget) {
-    pinSections.push({ id: summary.id, name: summary.name, sessions: [{ ...source, pin_section_id: summary.id }] });
+    pinSections.push({ id: summary.id, name: summary.name, sessions: [pinnedSource] });
   }
   return { ...annotated, pin_sections: pinSections };
 }
@@ -167,7 +185,7 @@ function mapEveryProject(tree: TreeResponse, fn: (p: ApiTreeProject) => ApiTreeP
   };
 }
 
-function applyOne(tree: TreeResponse, op: PendingOp): TreeResponse {
+function applyOne(tree: TreeResponse, op: PendingOp, supplementalTopLevelRows: readonly ApiTreeNode[]): TreeResponse {
   switch (op.kind) {
     case "hideSession":
       // Every tier, not just the one you clicked in: a session can be listed
@@ -177,7 +195,7 @@ function applyOne(tree: TreeResponse, op: PendingOp): TreeResponse {
     case "hideProject":
       return mapEveryProject(tree, (p) => (p.key === op.key ? null : p));
     case "sessionPin":
-      return applySessionPin(tree, op.ref, op.section);
+      return applySessionPin(tree, op.ref, op.source, op.section, supplementalTopLevelRows);
     case "sessionUnpin":
       return applySessionUnpin(tree, op.ref);
     case "pinSectionRename":
@@ -189,8 +207,6 @@ function applyOne(tree: TreeResponse, op: PendingOp): TreeResponse {
       };
     case "pinSectionDelete":
       return applyPinSectionDelete(tree, op.id);
-    case "sessionFavorite":
-      return mapEverySession(tree, (n) => (n.ref === op.ref ? { ...n, favorite: op.value } : n));
     case "sessionTitle":
       return mapEverySession(tree, (n) => (n.ref === op.ref ? { ...n, title: op.title } : n));
     case "projectFavorite":
@@ -201,7 +217,11 @@ function applyOne(tree: TreeResponse, op: PendingOp): TreeResponse {
 /** Projects every in-flight op onto `tree`, in order. Returns the SAME tree
  * object when there is nothing pending, so the common case costs no copy and
  * no re-render. */
-export function applyPending(tree: TreeResponse, ops: readonly PendingOp[]): TreeResponse {
+export function applyPending(
+  tree: TreeResponse,
+  ops: readonly PendingOp[],
+  supplementalTopLevelRows: readonly ApiTreeNode[] = [],
+): TreeResponse {
   if (ops.length === 0) return tree;
-  return ops.reduce(applyOne, tree);
+  return ops.reduce((projected, op) => applyOne(projected, op, supplementalTopLevelRows), tree);
 }

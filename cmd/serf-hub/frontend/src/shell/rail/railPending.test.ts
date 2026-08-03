@@ -82,9 +82,15 @@ describe("applyPending", () => {
       ],
     });
     const snapshot = JSON.stringify(original);
+    const selected = original.projects[0]!.sessions[1]!;
     applyPending(original, [
       { kind: "hideSession", ref: "local:gone" },
-      { kind: "sessionPin", ref: "local:other", section: { id: "other", name: "Other", member_count: 1 } },
+      {
+        kind: "sessionPin",
+        ref: "local:other",
+        source: selected,
+        section: { id: "other", name: "Other", member_count: 1 },
+      },
       { kind: "sessionTitle", ref: "local:keep", title: "changed" },
     ]);
     expect(JSON.stringify(original)).toBe(snapshot);
@@ -144,11 +150,11 @@ describe("applyPending", () => {
 
   describe("named session pins", () => {
     function duplicateFixture(): TreeResponse {
-      const liveCopy = node({ row_id: "live:a", ref: "local:a", title: "Authoritative A", pin_section_id: "old" });
+      const liveCopy = node({ row_id: "live:a", ref: "local:a", title: "Live duplicate", pin_section_id: "old" });
       const projectCopy = node({
         row_id: "project:a",
         ref: "local:a",
-        title: "Authoritative A",
+        title: "Selected authoritative A",
         pin_section_id: "old",
         children: [node({ row_id: "recursive:a", ref: "local:a", pin_section_id: "old" })],
       });
@@ -181,9 +187,28 @@ describe("applyPending", () => {
     const section = (t: TreeResponse, id: string): PinSectionTree | undefined =>
       t.pin_sections.find((candidate) => candidate.id === id);
 
-    test("sessionPin moves all duplicate and recursive copies, removes the old row, and appends one authoritative real row", () => {
-      const got = applyPending(duplicateFixture(), [
-        { kind: "sessionPin", ref: "local:a", section: { id: "target", name: "Target", member_count: 2 } },
+    function sectionCopyIDs(t: TreeResponse, id: string, ref: string): string[] {
+      const ids: string[] = [];
+      const walk = (nodes: ApiTreeNode[]) => {
+        for (const candidate of nodes) {
+          if (candidate.ref === ref) ids.push(candidate.row_id);
+          walk(candidate.children);
+        }
+      };
+      walk(section(t, id)?.sessions ?? []);
+      return ids;
+    }
+
+    test("sessionPin uses the explicitly selected authoritative row rather than the first duplicate in search order", () => {
+      const source = duplicateFixture();
+      const selected = source.projects[0]!.sessions[0]!;
+      const got = applyPending(source, [
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: selected,
+          section: { id: "target", name: "Target", member_count: 2 },
+        },
       ]);
 
       expect(allCopies(got, "local:a")).not.toHaveLength(0);
@@ -191,18 +216,56 @@ describe("applyPending", () => {
       expect(section(got, "old")?.sessions.map((session) => session.ref)).toEqual(["local:first"]);
       expect(section(got, "target")?.sessions.map((session) => session.ref)).toEqual(["local:keep", "local:a"]);
       expect(section(got, "target")?.sessions[1]).toMatchObject({
-        row_id: "live:a",
-        title: "Authoritative A",
+        row_id: "project:a",
+        title: "Selected authoritative A",
         pin_section_id: "target",
       });
+    });
+
+    test("sessionPin removes only top-level section members while preserving and annotating nested duplicates under other members", () => {
+      const source = duplicateFixture();
+      const selected = source.projects[0]!.sessions[0]!;
+      source.pin_sections[0]!.sessions.unshift(
+        node({
+          row_id: "old:holder",
+          ref: "local:old-holder",
+          children: [node({ row_id: "old:nested:a", ref: "local:a", pin_section_id: "old" })],
+        }),
+      );
+      source.pin_sections[1]!.sessions[0]!.children = [
+        node({ row_id: "target:nested:a", ref: "local:a", pin_section_id: "old" }),
+      ];
+      expect(sectionCopyIDs(source, "old", "local:a")).toEqual(["old:nested:a", "pin:old:a"]);
+      expect(sectionCopyIDs(source, "target", "local:a")).toEqual(["target:nested:a"]);
+
+      const got = applyPending(source, [
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: selected,
+          section: { id: "target", name: "Target", member_count: 2 },
+        },
+      ]);
+
+      expect(sectionCopyIDs(got, "old", "local:a")).toEqual(["old:nested:a"]);
+      expect(sectionCopyIDs(got, "target", "local:a")).toEqual(["target:nested:a", "project:a", "recursive:a"]);
+      expect(sectionCopyIDs(got, "old", "local:a")).toHaveLength(1);
+      expect(sectionCopyIDs(got, "target", "local:a")).toHaveLength(3);
+      expect(allCopies(got, "local:a").every((copy) => copy.pin_section_id === "target")).toBe(true);
     });
 
     test("sessionPin materializes a hidden empty target and keeps request-time ordering stable", () => {
       const source = duplicateFixture();
       source.pin_sections = source.pin_sections.filter((candidate) => candidate.id !== "target");
+      const selected = source.projects[0]!.sessions[0]!;
 
       const got = applyPending(source, [
-        { kind: "sessionPin", ref: "local:a", section: { id: "hidden", name: "Hidden", member_count: 1 } },
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: selected,
+          section: { id: "hidden", name: "Hidden", member_count: 1 },
+        },
       ]);
 
       expect(got.pin_sections.map((candidate) => candidate.id)).toEqual(["old", "hidden"]);
@@ -220,8 +283,14 @@ describe("applyPending", () => {
           node({ row_id: "old:last", ref: "local:last" }),
         ],
       };
+      const selected = source.projects[0]!.sessions[0]!;
       const got = applyPending(source, [
-        { kind: "sessionPin", ref: "local:a", section: { id: "old", name: "Old", member_count: 3 } },
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: selected,
+          section: { id: "old", name: "Old", member_count: 3 },
+        },
       ]);
       expect(section(got, "old")?.sessions.map((session) => session.ref)).toEqual([
         "local:first",
@@ -235,6 +304,111 @@ describe("applyPending", () => {
 
       expect(allCopies(got, "local:a").every((copy) => copy.pin_section_id === undefined)).toBe(true);
       expect(section(got, "old")?.sessions.map((session) => session.ref)).toEqual(["local:first"]);
+    });
+
+    test("sessionUnpin preserves matching nested copies under other top-level section members and clears their annotations", () => {
+      const source = duplicateFixture();
+      source.pin_sections[0]!.sessions.unshift(
+        node({
+          row_id: "old:holder",
+          ref: "local:old-holder",
+          children: [node({ row_id: "old:nested:a", ref: "local:a", pin_section_id: "old" })],
+        }),
+      );
+      expect(sectionCopyIDs(source, "old", "local:a")).toEqual(["old:nested:a", "pin:old:a"]);
+
+      const got = applyPending(source, [{ kind: "sessionUnpin", ref: "local:a" }]);
+
+      expect(sectionCopyIDs(got, "old", "local:a")).toEqual(["old:nested:a"]);
+      expect(sectionCopyIDs(got, "old", "local:a")).toHaveLength(1);
+      expect(section(got, "old")?.sessions[0]?.children[0]).toMatchObject({
+        row_id: "old:nested:a",
+      });
+      expect(section(got, "old")?.sessions[0]?.children[0]?.pin_section_id).toBeUndefined();
+    });
+
+    test("sessionPin accepts an explicitly selected hydrated archived top-level row outside TreeResponse", () => {
+      const hydrated = node({
+        row_id: "hydrated:archived:a",
+        ref: "local:a",
+        title: "Hydrated archived",
+        tier: "archived",
+      });
+      const source = tree({ archived_projects: [project({ key: "archived", is_archived: true, sessions: [] })] });
+
+      const got = applyPending(
+        source,
+        [
+          {
+            kind: "sessionPin",
+            ref: "local:a",
+            source: hydrated,
+            section: { id: "target", name: "Target", member_count: 1 },
+          },
+        ],
+        [hydrated],
+      );
+
+      expect(section(got, "target")?.sessions).toHaveLength(1);
+      expect(section(got, "target")?.sessions[0]).toMatchObject({
+        row_id: "hydrated:archived:a",
+        title: "Hydrated archived",
+        tier: "archived",
+      });
+    });
+
+    test("sessionPin accepts an explicitly selected paged top-level row outside the capped TreeResponse", () => {
+      const paged = node({ row_id: "page:51:a", ref: "local:a", title: "Paged row", tier: "recent" });
+      const source = tree({ projects: [project({ key: "paged", sessions: [], more_recent: 1 })] });
+
+      const got = applyPending(
+        source,
+        [
+          {
+            kind: "sessionPin",
+            ref: "local:a",
+            source: paged,
+            section: { id: "target", name: "Target", member_count: 1 },
+          },
+        ],
+        [paged],
+      );
+
+      expect(section(got, "target")?.sessions.map((candidate) => candidate.row_id)).toEqual(["page:51:a"]);
+    });
+
+    test("sessionPin does not promote a nested-only ordinary session row", () => {
+      const nested = node({ row_id: "nested-only:a", ref: "local:a", kind: "session" });
+      const source = tree({
+        projects: [project({ sessions: [node({ row_id: "parent", ref: "local:parent", children: [nested] })] })],
+      });
+
+      const got = applyPending(source, [
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: nested,
+          section: { id: "target", name: "Target", member_count: 1 },
+        },
+      ]);
+
+      expect(got.pin_sections).toEqual([]);
+    });
+
+    test.each(["fork", "subagent", "cluster"])("sessionPin does not promote a top-level %s row", (kind) => {
+      const invalid = node({ row_id: `${kind}:a`, ref: "local:a", kind });
+      const source = tree({ projects: [project({ sessions: [invalid] })] });
+
+      const got = applyPending(source, [
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: invalid,
+          section: { id: "target", name: "Target", member_count: 1 },
+        },
+      ]);
+
+      expect(got.pin_sections).toEqual([]);
     });
 
     test("sessionUnpin hides a section only when its last visible row is removed", () => {
@@ -277,8 +451,14 @@ describe("applyPending", () => {
 
     test("named pin overlays leave project favorite state unchanged", () => {
       const source = duplicateFixture();
+      const selected = source.projects[0]!.sessions[0]!;
       const ops: PendingOp[] = [
-        { kind: "sessionPin", ref: "local:a", section: { id: "target", name: "Target", member_count: 2 } },
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: selected,
+          section: { id: "target", name: "Target", member_count: 2 },
+        },
         { kind: "sessionUnpin", ref: "local:a" },
         { kind: "pinSectionRename", id: "target", name: "Renamed" },
       ];
@@ -303,6 +483,12 @@ describe("applyPending", () => {
       const t = tree({ projects: [project({ key: "p1", favorite: false })] });
       expect(applyPending(t, [{ kind: "projectFavorite", key: "p1", value: true }]).projects[0]?.favorite).toBe(true);
     });
+  });
+
+  test("PendingOp excludes the removed sessionFavorite overlay", () => {
+    // @ts-expect-error session favorites were replaced by named sessionPin/sessionUnpin operations.
+    const stale: PendingOp = { kind: "sessionFavorite", ref: "local:a", value: true };
+    expect(stale.kind).toBe("sessionFavorite");
   });
 
   test("applies several ops in order", () => {

@@ -224,7 +224,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
 
   // applyPending returns the same object when nothing is pending, so the
   // common case allocates nothing and every downstream memo stays stable.
-  const tree = fetchedTree === null ? null : applyPending(fetchedTree, pending);
+  const tree =
+    fetchedTree === null
+      ? null
+      : applyPending(
+          fetchedTree,
+          pending,
+          Array.from(projectDetails.values()).flatMap((detail) => detail.sessions),
+        );
 
   // ensureLoaded, not refresh: the duty here is "the rail has data", and the
   // tree it renders is kept current by serf/tree/changed pushes, so a mount
@@ -386,11 +393,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const rowActions: RailRowActions = {
     onToggleFavorite: (session) => {
       const value = !session.favorite;
-      void runAction(() => setFavorite("session", session.ref, value), "Couldn't update favorite", {
-        kind: "sessionFavorite",
-        ref: session.ref,
-        value,
-      });
+      void runAction(() => setFavorite("session", session.ref, value), "Couldn't update favorite");
     },
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
