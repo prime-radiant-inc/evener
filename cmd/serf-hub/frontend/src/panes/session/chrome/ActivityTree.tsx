@@ -52,6 +52,7 @@ export interface ActivityTreeProps {
   tree: ActivityTreeData;
   expandedIDs: string[];
   selectedID?: string;
+  continuationFailures?: Record<string, string | undefined>;
   onExpandedChange: (ids: string[]) => void;
   onSelect: (id: string) => void;
   onContinue?: (targetID: string, continuation: string) => void;
@@ -242,7 +243,16 @@ export function findActivitySelection(
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedIDs, selectedID, onExpandedChange, onSelect, onContinue, loadingContinuationID },
+  {
+    tree,
+    expandedIDs,
+    selectedID,
+    continuationFailures = {},
+    onExpandedChange,
+    onSelect,
+    onContinue,
+    loadingContinuationID,
+  },
   ref,
 ) {
   const [localExpandedIDs, setLocalExpandedIDs] = useState<string[]>(expandedIDs);
@@ -340,6 +350,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   function renderNodes(nodes: RenderNode[]): ReactNode[] {
     return nodes.flatMap((node) => {
       const selected = node.id === selectedID;
+      const continuationFailure = continuationFailures[node.id];
       const row = (
         <div
           key={node.id}
@@ -389,27 +400,29 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
               <span className={CLASS.rowStatusText}>{node.statusText}</span>
             </div>
           </div>
-          {node.continuation &&
+          {(node.continuation || continuationFailure) &&
             onContinue &&
             (() => {
               const continuation = node.continuation;
               return (
                 <div className={CLASS.rowActions}>
                   <span className={CLASS.rowContinuation}>
-                    {node.branchError ?? "This branch is partially retained."}
+                    {continuationFailure ?? node.branchError ?? "This branch is partially retained."}
                   </span>
-                  <Button
-                    variant="quiet"
-                    size="xs"
-                    tabIndex={-1}
-                    disabled={loadingContinuationID === continuation.targetID}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onContinue(continuation.targetID, continuation.token);
-                    }}
-                  >
-                    {loadingContinuationID === continuation.targetID ? "Loading…" : "Load more"}
-                  </Button>
+                  {continuation && (
+                    <Button
+                      variant="quiet"
+                      size="xs"
+                      tabIndex={-1}
+                      disabled={loadingContinuationID === continuation.targetID}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onContinue(continuation.targetID, continuation.token);
+                      }}
+                    >
+                      {loadingContinuationID === continuation.targetID ? "Loading…" : "Load more"}
+                    </Button>
+                  )}
                 </div>
               );
             })()}

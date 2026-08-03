@@ -9,6 +9,7 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -359,9 +360,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function cloneFixture<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetToastStoreForTests();
   installMatchMediaStub(false);
 });
 
@@ -529,6 +535,57 @@ describe("ActivityPanel", () => {
     });
   });
 
+  test("a malformed continuation response stays local to the targeted branch and preserves retry affordance", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", ({ continuation }) => ({ data: continuation ? null : activityTree() }));
+
+    render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    expect(await screen.findByText("Couldn't load more retained activity for this branch.")).toBeTruthy();
+    expect(screen.getByRole("tree")).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
+    expect(screen.queryByText(/activity isn't available/i)).toBeNull();
+    expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
+    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
+  });
+
+  test("a rejected continuation request stays local to the targeted branch without root stale or toast UI", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", ({ continuation }) => {
+      if (continuation) throw new Error("branch boom");
+      return { data: activityTree() };
+    });
+
+    render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    expect(await screen.findByText("Couldn't load more retained activity for this branch: branch boom")).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: /compile root shell/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
+    expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
+    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
+  });
+
   test("falls a removed selection back to the nearest surviving owner and reports exact retained-copy message", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -611,9 +668,54 @@ describe("ActivityPanel", () => {
     expect(within(inspector).getByText(/latest output available/i)).toBeTruthy();
     expect(within(inspector).getByText(/child aggregate: running/i)).toBeTruthy();
     expect(within(inspector).getByRole("button", { name: "Open transcript" })).toBeTruthy();
+    expect(fake.calls.find((call) => call.method === "serf/jobs/output")?.params).toEqual({
+      ref: "ref_root",
+      jobId: "job_delegate_turn_2",
+    });
 
     await user.click(screen.getByRole("treeitem", { name: /partial session/i }));
     expect(within(screen.getByTestId("activity-inspector")).getByText(/child unavailable/i)).toBeTruthy();
+  });
+
+  test("delegate inspector ignores older output when the latest turn has none", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const tree = cloneFixture(activityTree());
+    const delegate = tree.root.entries[1];
+    if (delegate?.kind !== "delegate") throw new Error("expected delegate fixture");
+    const delegateEntry = delegate.delegate;
+    if (!delegateEntry) throw new Error("expected delegate payload fixture");
+    const firstTurn = delegateEntry.turns[0];
+    const secondTurn = delegateEntry.turns[1];
+    if (!firstTurn || !secondTurn) throw new Error("expected delegate turns fixture");
+    delegateEntry.turns = [
+      {
+        ...firstTurn,
+        hasOutput: true,
+        ownerRef: "ref_old_output",
+        jobId: "job_old_output",
+      },
+      {
+        ...secondTurn,
+        hasOutput: false,
+        ownerRef: "ref_latest_no_output",
+        jobId: "job_latest_no_output",
+      },
+    ];
+    fake.on("serf/jobs/list", () => ({ data: tree }));
+    fake.on("serf/jobs/output", () => ({
+      data: { tail: "older output\n", totalBytes: 13, retainedStart: 0, truncated: false },
+    }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: /inspect the repo/i }));
+
+    const inspector = screen.getByTestId("activity-inspector");
+    expect(within(inspector).getByText(/no retained output/i)).toBeTruthy();
+    expect(screen.queryByText(/older output/i)).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/output")).toHaveLength(0);
   });
 
   test("mobile selection switches to inspector-only and Back to activity restores focus to the selected row", async () => {
@@ -655,5 +757,53 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("button", { name: "Activity" }));
     expect(await screen.findByText("No retained activity yet")).toBeTruthy();
     expect(screen.queryByText("compile root shell")).toBeNull();
+  });
+
+  test("ignores a deferred root listJobs rejection after unmount without emitting a toast", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const gate = deferred<{ data: unknown }>();
+    fake.on("serf/jobs/list", () => gate.promise);
+
+    const { rerender } = render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    rerender(<Toast />);
+
+    await act(async () => {
+      gate.reject(new Error("late root rejection"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/late root rejection/i)).toBeNull();
+    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
+  });
+
+  test("ignores a deferred root listJobs resolution after unmount", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const gate = deferred<{ data: unknown }>();
+    fake.on("serf/jobs/list", () => gate.promise);
+
+    const { rerender } = render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    rerender(<Toast />);
+
+    await act(async () => {
+      gate.resolve({ data: activityTree() });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/compile root shell/i)).toBeNull();
+    expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
   });
 });

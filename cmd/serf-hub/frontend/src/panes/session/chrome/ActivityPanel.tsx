@@ -61,6 +61,7 @@ interface PanelState {
   disclosure: ActivityDisclosureState;
   established: boolean;
   continuationLoadingID?: string;
+  continuationFailures: Record<string, string | undefined>;
 }
 
 type PanelAction =
@@ -72,7 +73,7 @@ type PanelAction =
   | { type: "fetch/ended" }
   | { type: "continuation/start"; nodeID: string }
   | { type: "continuation/ready"; tree: ActivityTreeData; disclosure: ActivityDisclosureState }
-  | { type: "continuation/failed"; error: LoadFailure }
+  | { type: "continuation/failed"; nodeID: string; message: string }
   | { type: "disclosure/expanded"; expandedIDs: string[] }
   | { type: "disclosure/selected"; selectedID?: string };
 
@@ -93,7 +94,15 @@ const INITIAL_STATE: PanelState = {
   load: { kind: "idle" },
   disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false },
   established: false,
+  continuationFailures: {},
 };
+
+function continuationFailureMessage(err?: unknown): string {
+  const detail = err ? errorText(err).trim() : "";
+  return detail
+    ? `Couldn't load more retained activity for this branch: ${detail}`
+    : "Couldn't load more retained activity for this branch.";
+}
 
 function loadFailure(err: unknown): LoadFailure {
   const headline = sessionActionHeadline(LOAD_FAILURE, err);
@@ -219,12 +228,14 @@ function reducer(state: PanelState, action: PanelAction): PanelState {
           ...state,
           load: { kind: "ready", tree },
           continuationLoadingID: undefined,
+          continuationFailures: state.continuationFailures,
         };
       }
       return {
         ...state,
         load: { kind: "loading" },
         continuationLoadingID: undefined,
+        continuationFailures: state.continuationFailures,
       };
     }
     case "fetch/ready":
@@ -233,9 +244,10 @@ function reducer(state: PanelState, action: PanelAction): PanelState {
         disclosure: { ...action.disclosure, tree: action.tree },
         established: true,
         continuationLoadingID: undefined,
+        continuationFailures: state.continuationFailures,
       };
     case "fetch/unsupported":
-      return { ...state, load: { kind: "unsupported" }, continuationLoadingID: undefined };
+      return { ...state, load: { kind: "unsupported" }, continuationLoadingID: undefined, continuationFailures: {} };
     case "fetch/failed": {
       const tree = retainedTree(state.load);
       if (tree) {
@@ -243,33 +255,44 @@ function reducer(state: PanelState, action: PanelAction): PanelState {
           ...state,
           load: { kind: "ready", tree, staleError: action.error },
           continuationLoadingID: undefined,
+          continuationFailures: state.continuationFailures,
         };
       }
-      return { ...state, load: { kind: "failed", error: action.error }, continuationLoadingID: undefined };
+      return {
+        ...state,
+        load: { kind: "failed", error: action.error },
+        continuationLoadingID: undefined,
+        continuationFailures: {},
+      };
     }
     case "fetch/ended": {
       const tree = retainedTree(state.load);
-      return { ...state, load: { kind: "ended", tree }, continuationLoadingID: undefined };
+      return {
+        ...state,
+        load: { kind: "ended", tree },
+        continuationLoadingID: undefined,
+        continuationFailures: state.continuationFailures,
+      };
     }
-    case "continuation/start":
-      return { ...state, continuationLoadingID: action.nodeID };
-    case "continuation/ready":
+    case "continuation/start": {
+      const continuationFailures = { ...state.continuationFailures };
+      delete continuationFailures[action.nodeID];
+      return { ...state, continuationLoadingID: action.nodeID, continuationFailures };
+    }
+    case "continuation/ready": {
+      const continuationFailures = { ...state.continuationFailures };
+      delete continuationFailures[state.continuationLoadingID ?? ""];
       return {
         ...state,
         load: { kind: "ready", tree: action.tree },
         disclosure: { ...action.disclosure, tree: action.tree },
         continuationLoadingID: undefined,
+        continuationFailures,
       };
+    }
     case "continuation/failed": {
-      const tree = retainedTree(state.load);
-      if (tree) {
-        return {
-          ...state,
-          load: { kind: "ready", tree, staleError: action.error },
-          continuationLoadingID: undefined,
-        };
-      }
-      return { ...state, load: { kind: "failed", error: action.error }, continuationLoadingID: undefined };
+      const continuationFailures = { ...state.continuationFailures, [action.nodeID]: action.message };
+      return { ...state, continuationLoadingID: undefined, continuationFailures };
     }
     case "disclosure/expanded":
       return {
@@ -296,6 +319,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   const stateRef = useRef<PanelState>(INITIAL_STATE);
   const requestIDRef = useRef(0);
   const fetchedBumpRef = useRef<number | null | undefined>(undefined);
+  const mountedRef = useRef(true);
   const openRef = useRef(false);
   const focusRestoreIDRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -311,6 +335,14 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   useEffect(() => {
     openRef.current = open;
   }, [open]);
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      requestIDRef.current += 1;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (sessionRef === "") return;
@@ -351,9 +383,17 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         .getState()
         .listJobs(sessionRef, continuation?.token)
         .then((data) => {
-          if (requestID !== requestIDRef.current) return;
+          if (!mountedRef.current || requestID !== requestIDRef.current) return;
           const parsed = parseActivityTree(data);
           if (parsed === null) {
+            if (continuation) {
+              dispatch({
+                type: "continuation/failed",
+                nodeID: continuation.nodeID,
+                message: continuationFailureMessage(),
+              });
+              return;
+            }
             dispatch({ type: "fetch/unsupported" });
             return;
           }
@@ -369,7 +409,15 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
           dispatch({ type: "fetch/ready", tree: parsed, disclosure });
         })
         .catch((err) => {
-          if (requestID !== requestIDRef.current) return;
+          if (!mountedRef.current || requestID !== requestIDRef.current) return;
+          if (continuation) {
+            dispatch({
+              type: "continuation/failed",
+              nodeID: continuation.nodeID,
+              message: continuationFailureMessage(err),
+            });
+            return;
+          }
           if (isActionUnavailable(err)) {
             dispatch({ type: "fetch/unsupported" });
             return;
@@ -379,7 +427,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
             return;
           }
           const failure = loadFailure(err);
-          dispatch({ type: continuation ? "continuation/failed" : "fetch/failed", error: failure });
+          dispatch({ type: "fetch/failed", error: failure });
           if (openRef.current) toasts.push("error", failure.sentence);
         });
     },
@@ -501,6 +549,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
                   tree={currentTree}
                   expandedIDs={state.disclosure.expandedIDs}
                   selectedID={state.disclosure.selectedID}
+                  continuationFailures={state.continuationFailures}
                   onExpandedChange={(expandedIDs) => dispatch({ type: "disclosure/expanded", expandedIDs })}
                   onSelect={(selectedID) => dispatch({ type: "disclosure/selected", selectedID })}
                   onContinue={handleContinue}

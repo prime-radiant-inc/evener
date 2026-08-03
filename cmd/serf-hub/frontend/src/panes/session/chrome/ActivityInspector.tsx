@@ -36,11 +36,8 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 function outputOwnerForDelegate(delegate: ActivityDelegate): ActivityJob | undefined {
-  for (let index = delegate.turns.length - 1; index >= 0; index -= 1) {
-    const turn = delegate.turns[index];
-    if (turn?.hasOutput) return turn;
-  }
-  return undefined;
+  const latest = delegate.turns.at(-1);
+  return latest?.hasOutput ? latest : undefined;
 }
 
 function outputCaption(totalBytes: number, retainedStart: number, truncated: boolean): string | null {
