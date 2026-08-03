@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -331,14 +332,24 @@ func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID 
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
 		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, nil
 	}
+	return true, nil, s.scrubSessionDecisions(threadID)
+}
+
+func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []string) {
+	authority := s.sessionDecisionAuthority()
+	aliases := hubcore.LocalSessionDecisionAliases(threadID, authority)
 	if s.cfg.Archive != nil {
-		if err := s.cfg.Archive.Delete("session", threadID); err != nil {
-			decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
+		for _, id := range aliases {
+			if err := s.cfg.Archive.Delete("session", id); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
+			}
 		}
 	}
 	if s.cfg.Favorite != nil {
-		if err := s.cfg.Favorite.Delete("session", threadID); err != nil {
-			decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
+		for _, id := range aliases {
+			if err := s.cfg.Favorite.Delete("session", id); err != nil {
+				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
+			}
 		}
 	}
 	if s.cfg.PinSections != nil {
@@ -346,7 +357,15 @@ func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID 
 			decisionErrors = append(decisionErrors, fmt.Sprintf("pin section store error: %v", err))
 		}
 	}
-	return true, nil, decisionErrors
+	return decisionErrors
+}
+
+func (s *WebServer) sessionDecisionAuthority() hubcore.FavoriteAuthority {
+	if s.cfg.Past == nil {
+		return hubcore.FavoriteAuthority{}
+	}
+	_, _, _, authority := s.memoTreeWithAuthority(context.Background())
+	return authority
 }
 
 func (s *WebServer) cleanupProjectDeletion(

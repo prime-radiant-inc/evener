@@ -432,3 +432,129 @@ func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) 
 		t.Fatalf("sections = %+v, %v", sections, err)
 	}
 }
+
+func TestAPISessionDeleteBeforeLegacyMigrationScrubsLocalAliasFavorite(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	favorites := hubcore.NewFavoriteStore(dbPath)
+	if err := favorites.Set("session", "local:"+targetID, true, time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	pins := hubcore.NewPinSectionStore(dbPath)
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, Past: past, Favorite: favorites, PinSections: pins, Roster: hubcore.NewRosterWithEntries(),
+	})
+	rec, _ := postSessionDelete(t, web, targetID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	}
+	if decisions, err := favorites.Favorites(); err != nil {
+		t.Fatal(err)
+	} else if decisions[hubcore.ArchiveKey{Kind: "session", ID: "local:" + targetID}] {
+		t.Fatalf("legacy local alias favorite survived: %+v", decisions)
+	}
+	changed, err := pins.MigrateLegacy([]hubcore.LegacyPinDecision{{
+		StoredID: "local:" + targetID,
+		Classification: hubcore.FavoriteDecisionClassification{
+			State:        hubcore.FavoriteDecisionValid,
+			CanonicalKey: hubcore.ArchiveKey{Kind: "session", ID: targetID},
+		},
+	}}, time.Unix(2, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := pins.Assignments()
+	if err != nil || len(assignments) != 0 {
+		t.Fatalf("deleted favorite migrated into ghost pin: changed=%v assignments=%+v err=%v", changed, assignments, err)
+	}
+}
+
+func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	pinStore := hubcore.NewPinSectionStore(dbPath)
+	if _, _, err := pinStore.CreateOrReuseAndAssign("Research", targetID, time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	dbSnapshot, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, Past: past, PinSections: pinStore, Roster: hubcore.NewRosterWithEntries(),
+	})
+
+	oldRemove := removeProjectSessionFile
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+	corrupted := false
+	removeProjectSessionFile = func(path string) error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		if !corrupted && filepath.Base(path) == targetID+".meta.json" {
+			corrupted = true
+			return os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600)
+		}
+		return nil
+	}
+
+	firstRec, _ := postSessionDelete(t, web, targetID)
+	if firstRec.Code != http.StatusInternalServerError {
+		t.Fatalf("first delete status=%d body=%s, want pin-store failure", firstRec.Code, firstRec.Body.String())
+	}
+	if !corrupted {
+		t.Fatal("test did not inject the pin-store failure after artifact removal")
+	}
+	if _, ok := past.Find(targetID); ok {
+		t.Fatal("first delete should have rebuilt Past after removing the artifacts")
+	}
+	if err := os.WriteFile(dbPath, dbSnapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removeProjectSessionFile = oldRemove
+
+	secondRec, secondResp := postSessionDelete(t, web, targetID)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("retry status=%d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	if len(secondResp.Deleted) != 0 || len(secondResp.Skipped) != 0 {
+		t.Fatalf("retry should preserve the idempotent no-op response: %+v", secondResp)
+	}
+	pins, err := pinStore.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins[targetID]; ok {
+		t.Fatalf("retry left the durable pin behind: %+v", pins)
+	}
+}

@@ -195,9 +195,8 @@ PY
 2. Cross-check that the durable count increased even though the new member will stay hidden from `/api/tree`:
 
 ```bash
-CLIENT_SECTION_ID="$CLIENT_SECTION_ID" \
 api "$HUB/api/pin-sections" |
-  python3 -c 'import json, os, sys
+  CLIENT_SECTION_ID="$CLIENT_SECTION_ID" python3 -c 'import json, os, sys
 target = os.environ["CLIENT_SECTION_ID"]
 for section in json.load(sys.stdin):
     if section["id"] == target:
@@ -249,7 +248,7 @@ For every browser `eval` above, assert `location.port === "$EXPECTED_PORT"`. A p
 ## Cleanup
 
 - Delete any seeded dormant assignment fixture if the section delete step did not already remove it.
-- Kill the hub by `$(cat "$run/hub.pid")`.
+- Kill the hub with `kill "$(cat "$run/hub.pid")"`.
 - Remove the whole run dir, including the dedicated Chrome profile.
 
 ## Sharp edges

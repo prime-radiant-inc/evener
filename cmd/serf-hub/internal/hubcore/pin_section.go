@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/afero"
 	"golang.org/x/text/cases"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+	"primeradiant.com/serf/hubapi"
 )
 
 const PinSectionNameMaxRunes = 80
@@ -28,6 +30,8 @@ var (
 	pinSectionRandRead                   = rand.Read
 	pinSectionBeforeSectionInsertHook    func()
 	pinSectionBeforeAssignmentCommitHook func()
+	pinSectionMigrationRetryWait         = time.Sleep
+	pinSectionMigrationLocks             sync.Map
 )
 
 // PinSection groups pinned sessions under a durable user-defined name.
@@ -575,15 +579,24 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	for range 8 {
+	lockValue, _ := pinSectionMigrationLocks.LoadOrStore(s.dbPath, new(sync.Mutex))
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	for attempt := range 64 {
 		db, err := s.open()
 		if err != nil {
+			if isSQLiteRetryable(err) {
+				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
+				continue
+			}
 			return false, err
 		}
 		tx, err := db.BeginTx(context.Background(), nil)
 		if err != nil {
 			_ = db.Close()
 			if isSQLiteRetryable(err) {
+				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
 				continue
 			}
 			return false, err
@@ -598,6 +611,7 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 			case isSQLiteUniqueMigrationConflict(err):
 				return false, nil
 			case isSQLiteUniqueNameConflict(err) || isSQLiteRetryable(err):
+				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
 				continue
 			default:
 				return false, err
@@ -607,6 +621,7 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 			_ = tx.Rollback()
 			_ = db.Close()
 			if isSQLiteRetryable(err) {
+				pinSectionMigrationRetryWait(pinSectionMigrationRetryDelay(attempt))
 				continue
 			}
 			return false, err
@@ -615,6 +630,11 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 		return changed, nil
 	}
 	return false, errors.New("migrate legacy pin sections: retry limit reached")
+}
+
+func pinSectionMigrationRetryDelay(attempt int) time.Duration {
+	delay := time.Millisecond << min(attempt, 4)
+	return delay
 }
 
 func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (bool, error) {
@@ -659,10 +679,17 @@ func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (
 				}{sessionID: decision.Classification.CanonicalKey.ID, sectionID: "Pinned"})
 			}
 		case FavoriteDecisionDormant:
-			assignments = append(assignments, struct {
-				sessionID string
-				sectionID string
-			}{sessionID: decision.StoredID, sectionID: "Pinned"})
+			if decision.Classification.CanonicalKey.ID != "" {
+				assignments = append(assignments, struct {
+					sessionID string
+					sectionID string
+				}{sessionID: decision.Classification.CanonicalKey.ID, sectionID: "Pinned"})
+			} else if ref, err := hubapi.ParseRef(decision.StoredID); err != nil || ref.HostID != "local" {
+				assignments = append(assignments, struct {
+					sessionID string
+					sectionID string
+				}{sessionID: decision.StoredID, sectionID: "Pinned"})
+			}
 		case FavoriteDecisionConfirmedInvalid:
 			// discarded
 		}

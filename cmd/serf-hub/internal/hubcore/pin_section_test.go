@@ -390,7 +390,98 @@ func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	}
 }
 
+func TestPinSectionStoreMigrateLegacyNeverPersistsHostQualifiedSessionAlias(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'local:canonical-valid', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.MigrateLegacy([]LegacyPinDecision{{
+		StoredID: "local:canonical-valid",
+		Classification: FavoriteDecisionClassification{
+			State:        FavoriteDecisionDormant,
+			CanonicalKey: ArchiveKey{Kind: "session", ID: "canonical-valid"},
+		},
+	}}, time.Unix(10, 0))
+	if err != nil || !changed {
+		t.Fatalf("migrate = %v, %v", changed, err)
+	}
+	pins, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins["local:canonical-valid"]; ok {
+		t.Fatalf("host-qualified alias persisted as session ID: %+v", pins)
+	}
+	if _, ok := pins["canonical-valid"]; !ok {
+		t.Fatalf("canonical session ID missing: %+v", pins)
+	}
+}
+
+func TestPinSectionStoreMigrateLegacyPreservesDormantRemoteSessionIdentity(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'codex:remote-thread', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.MigrateLegacy([]LegacyPinDecision{{
+		StoredID:       "codex:remote-thread",
+		Classification: FavoriteDecisionClassification{State: FavoriteDecisionDormant},
+	}}, time.Unix(10, 0))
+	if err != nil || !changed {
+		t.Fatalf("migrate = %v, %v", changed, err)
+	}
+	pins, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins["codex:remote-thread"]; !ok {
+		t.Fatalf("remote session identity was discarded: %+v", pins)
+	}
+}
+
+func TestPinSectionStoreMigrateLegacyDoesNotExhaustDuringConcurrentFirstUse(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	seed := NewPinSectionStore(dbPath)
+	seedLegacyFavoriteRows(t, seed)
+	store := NewPinSectionStore(dbPath)
+	realOpen := store.openDB
+	var attempts int32
+	store.openDB = func(driverName, dataSourceName string) (*sql.DB, error) {
+		if atomic.AddInt32(&attempts, 1) <= 8 {
+			return nil, errors.New("SQLITE_BUSY: concurrent first-use migration is committing")
+		}
+		return realOpen(driverName, dataSourceName)
+	}
+	oldWait := pinSectionMigrationRetryWait
+	defer func() { pinSectionMigrationRetryWait = oldWait }()
+	pinSectionMigrationRetryWait = func(time.Duration) {}
+
+	changed, err := store.MigrateLegacy([]LegacyPinDecision{
+		{StoredID: "valid", Classification: FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: ArchiveKey{Kind: "session", ID: "canonical-valid"}}},
+	}, time.Unix(10, 0))
+	if err != nil || !changed {
+		t.Fatalf("migrate after %d opens = %v, %v", attempts, changed, err)
+	}
+	if attempts != 9 {
+		t.Fatalf("open attempts = %d, want 9", attempts)
+	}
+}
+
 func TestPinSectionStoreMigrateLegacyConcurrentFirstUseConvergesAcrossConnections(t *testing.T) {
+	const contenders = 16
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seed := NewPinSectionStore(dbPath)
 	now := time.Unix(10, 0)
@@ -400,49 +491,33 @@ func TestPinSectionStoreMigrateLegacyConcurrentFirstUseConvergesAcrossConnection
 		{StoredID: "remote-missing", Classification: FavoriteDecisionClassification{State: FavoriteDecisionDormant}},
 		{StoredID: "subagent", Classification: FavoriteDecisionClassification{State: FavoriteDecisionConfirmedInvalid}},
 	}
-	storeA := NewPinSectionStore(dbPath)
-	storeB := NewPinSectionStore(dbPath)
-	oldHook := pinSectionBeforeSectionInsertHook
-	defer func() { pinSectionBeforeSectionInsertHook = oldHook }()
-	entered := make(chan struct{}, 2)
-	release := make(chan struct{})
-	var hookCount int32
-	pinSectionBeforeSectionInsertHook = func() {
-		if atomic.AddInt32(&hookCount, 1) <= 2 {
-			entered <- struct{}{}
-			<-release
-		}
-	}
 	type result struct {
 		changed bool
 		err     error
 	}
-	results := make(chan result, 2)
-	go func() {
-		changed, err := storeA.MigrateLegacy(decisions, now)
-		results <- result{changed: changed, err: err}
-	}()
-	go func() {
-		changed, err := storeB.MigrateLegacy(decisions, now)
-		results <- result{changed: changed, err: err}
-	}()
-	<-entered
-	<-entered
-	close(release)
-	first := <-results
-	second := <-results
-	if first.err != nil || second.err != nil {
-		t.Fatalf("concurrent migrate errors = %v / %v", first.err, second.err)
+	results := make(chan result, contenders)
+	start := make(chan struct{})
+	for range contenders {
+		store := NewPinSectionStore(dbPath)
+		go func() {
+			<-start
+			changed, err := store.MigrateLegacy(decisions, now)
+			results <- result{changed: changed, err: err}
+		}()
 	}
+	close(start)
 	changedCount := 0
-	if first.changed {
-		changedCount++
-	}
-	if second.changed {
-		changedCount++
+	for range contenders {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent migrate error = %v", got.err)
+		}
+		if got.changed {
+			changedCount++
+		}
 	}
 	if changedCount != 1 {
-		t.Fatalf("concurrent migrate changed count = %d, results = %+v %+v", changedCount, first, second)
+		t.Fatalf("concurrent migrate changed count = %d", changedCount)
 	}
 	if count, err := migrationMarkerCountForTest(seed); err != nil || count != 1 {
 		t.Fatalf("migration marker count = %d, %v", count, err)
