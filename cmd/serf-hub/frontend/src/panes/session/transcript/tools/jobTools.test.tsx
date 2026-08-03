@@ -389,6 +389,8 @@ test("delegate_send checking on a delegate (by delegate_id) updates its existing
   );
 
   expect(screen.getByTestId("subagent-row").dataset.kind).toBe("done");
+  expect(screen.getByTestId("delegate-send-message").textContent).toBe("status?");
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("on it");
 });
 
 test("a follow-up call for a job_id that was never spawned this turn creates no row at all", () => {
