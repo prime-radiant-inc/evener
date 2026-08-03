@@ -33,13 +33,12 @@
 //   npm run overflowguard              # the default width sweep
 //   node scripts/overflowguard/run.mjs 390 1400
 //
-// STATUS: a manual pre-merge check, like layoutguard - not wired into `make
-// lint` or CI, because it costs a Vite boot and a Chrome launch (~10s).
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+// STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
+// not wired into `make lint`, because it costs a Vite boot and a Chrome
+// launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -48,28 +47,6 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
-
-const CHROME_CANDIDATES = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-];
-
-function findChrome() {
-  for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
-  throw new Error(`no Chrome/Chromium found (looked at: ${CHROME_CANDIDATES.join(", ")})`);
-}
-
-// Never 9180: that is the shared serf-hub dev server, which this must never
-// touch (its own profile and port keep it clear of the shared MCP Chrome too).
-function pickPort() {
-  let p;
-  do {
-    p = 20000 + Math.floor(Math.random() * 20000);
-  } while (p === 9180);
-  return p;
-}
 
 async function waitForHttp(url, label) {
   for (let i = 0; i < 300; i++) {
@@ -188,56 +165,19 @@ async function main() {
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
-  const vitePort = pickPort();
-  const cdpPort = pickPort();
-  const profileDir = mkdtempSync(path.join(tmpdir(), "overflowguard-chrome-"));
-
-  const vite = spawn(
-    "./node_modules/.bin/vite",
-    ["--port", String(vitePort), "--strictPort", "--host", "127.0.0.1", "--clearScreen", "false"],
-    { cwd: FRONTEND, stdio: ["ignore", "ignore", "pipe"] },
-  );
-  let viteErr = "";
-  vite.stderr.on("data", (b) => {
-    viteErr += b;
+  const guard = await startBrowserGuard({
+    frontend: FRONTEND,
+    profilePrefix: "overflowguard-chrome-",
+    chromeArgs: ["--window-size=1800,1000"],
   });
-
-  const chrome = spawn(
-    findChrome(),
-    [
-      "--headless=new",
-      "--disable-gpu",
-      `--remote-debugging-port=${cdpPort}`,
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--disable-extensions",
-      "--window-size=1800,1000",
-      "about:blank",
-    ],
-    { stdio: "ignore" },
-  );
-
-  const cleanup = () => {
-    for (const p of [chrome, vite]) {
-      try {
-        p.kill();
-      } catch {
-        // already dead
-      }
-    }
-    try {
-      rmSync(profileDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-  };
+  const { vitePort, cdpPort, cleanup } = guard;
 
   let failed = 0;
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/overflowharness.html`, "vite dev server");
     } catch (err) {
-      throw new Error(`${err.message}\nvite stderr:\n${viteErr}`);
+      throw new Error(`${err.message}\nvite stderr:\n${guard.getViteError()}`);
     }
     await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
 

@@ -33,8 +33,9 @@
 //                  JSON-serializable measurement.
 //   - assert.mjs   default export (measurement) => { pass, reason }
 //
-// STATUS: this is a manual pre-merge check, NOT wired into `make lint` or
-// CI. It only covers the one case it has been proven against (p6g8) - it is
+// STATUS: this is a local pre-merge check and part of
+// `make test-web-browser` in CI; it is not wired into `make lint`. It only
+// covers the one case it has been proven against (p6g8) - it is
 // not a general guarantee about the other 17 files that share the same
 // min-width:0 dependency. Wiring more of those in is the same recipe as
 // p6g8-formrow-overlap; deliberately not done here (scope is "prove the

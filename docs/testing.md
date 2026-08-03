@@ -33,36 +33,67 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Canonical Gate Matrix
+
+This table is the authoritative answer to which checks run when, what they
+prove, what they require, and what counts as a failure. Test assertions remain
+deterministic when live opt-ins are unset; dependency installation, disk
+capacity, browser availability, and CI tool setup are explicit prerequisites.
+
+| Gate and exact command | Scope | What it proves | Trigger | Determinism and external requirements | Failure or unavailable-tool behavior | Owner and follow-up |
+| --- | --- | --- | --- | --- | --- | --- |
+| <code>make lint</code> | Go lint, tagged compile floors, generated outputs, secrets | Naming, gofmt, serffuzz/eval compile floors, internal/docs checks, golangci-lint for every non-fuzz module, generated AppWire outputs, and the repo secret scan | Local pre-merge; required CI | No provider calls or model behavior; needs Go and golangci-lint. Local gitleaks absence warns and returns zero; CI sets SERF_GITLEAKS_REQUIRED=1 | Any lint family or generated-output diff is nonzero. Missing golangci-lint is not-checked and nonzero; required gitleaks absence is nonzero | Serf CI/tooling; no new follow-up currently |
+| <code>make build</code> (same runtime target as <code>make build-runtime</code>) | Runtime Go binaries plus embedded frontend | build-web completes before the serf/serf-hub pair is built, so the runtime pair contains the fresh SPA | Local pre-merge; required CI together with <code>make build-go</code> | Needs Go, Node/npm, the frontend install, and enough disk. Build metadata includes the current SHA, dirty state, time, and channel | Frontend preflight, build, or pair-script failure is nonzero; stale/failed embedding is not a pass | Serf CI/build; release wiring follows make dist |
+| <code>make build-go</code> | Every non-fuzz Go workspace module | Compiles all packages in the seven modules listed by <code>GO_MODULES</code>, including packages that root-level <code>go build ./...</code> does not visit under <code>go.work</code> | Required CI build job; local compile diagnostic | Deterministic Go compilation; no provider calls or frontend/browser requirements | Any module or package compilation failure is nonzero; the loop stops at the first failing module | Serf CI/build; no new follow-up currently |
+| <code>make build-web</code> | Frontend build | TypeScript typecheck and Vite production build complete and refresh frontend/dist for Go embedding | Frontend CI; prerequisite of runtime/release builds | Needs Node/npm and may run npm ci when the install is absent or stale; no provider credentials | npm, typecheck, or Vite failure is nonzero | Frontend CI; no new follow-up currently |
+| <code>make test</code> | Non-fuzz Go modules, frontend, and script self-tests | Root short-mode tests, other module tests, frontend typecheck/Vitest/Biome, and repository tooling self-tests | Local quick check; included by the merge gate | Uses scripted/fake external boundaries for default tests. web-preflight may install dependencies; disk-reclaim --check can reject a low-capacity host | Any module, frontend stream, self-test, disk check, or setup failure is nonzero. A live opt-in in the environment intentionally changes the scope | Serf CI/tooling and frontend; no new follow-up currently |
+| <code>ROOT_FULL=1 make test</code> | Full intended non-fuzz root suite plus all non-root modules, frontend, and self-tests | Removes root -short and name filtering while retaining explicit fuzz-owned exclusions; preserves the complete non-fuzz post-merge surface | Local pre-merge/post-merge; required CI equivalent is <code>ROOT_FULL=1 WEB=0 make test</code> because the web job owns test-web | Same requirements as make test; ROOT_FULL=1 does not enable providers or fuzz search | Any root/module/tooling failure is nonzero; skipped live tests remain explicitly skipped unless opted in | Serf CI/tooling; no new follow-up currently |
+| <code>make test-web</code> | Frontend typecheck, Vitest, and Biome lint | jsdom/unit-level frontend behavior, type safety, and source lint | Local pre-merge; required CI web job | Deterministic after Node dependencies are installed; no real browser, provider, or network service | Any of the three streams is nonzero; missing/unhealthy frontend install fails preflight | Frontend CI; no new follow-up currently |
+| <code>make test-web-browser</code> | Frontend layout, overflow, and Spawn browser guards | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path | Required CI web job; local pre-merge on a Chrome-capable host | Uses the three existing npm scripts and private Vite/Chrome profiles with OS-selected local ports; Chrome/Chromium is required; no WebKit/Safari runner exists | Every guard runs. Any guard error, Vite failure, or missing Chrome/Chromium is nonzero; WebKit/Safari is an explicit unsupported/manual gap, never a pass | Frontend/Serf CI; WebKit/Safari runner remains a follow-up gap |
+| <code>make test-race</code> | Go non-fuzz modules under the race detector | Data races in the same non-fuzz module surface; frontend is intentionally not duplicated | Required CI; local diagnostic | Needs a race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 | Any race report, test failure, or setup failure is nonzero; a slow or unavailable toolchain is a limitation/failure | Serf CI/tooling; no new follow-up currently |
+| <code>make vet</code> | Go vet across all non-fuzz workspace modules | Go vet diagnostics for every module, independent of the tagged lint floors | Required CI; local diagnostic | Deterministic Go analysis; no provider calls | Any module vet failure is nonzero | Serf CI/tooling; no new follow-up currently |
+| <code>make fuzz</code> | Tagged fuzz contracts, committed seed/crasher replay, Rapid replay, golden replay, and fuzz-tool packages | Fuzz invariants compile and execute, committed fuzz inputs remain safe, Rapid properties replay under fixed seeds, and decode goldens remain stable | Required CI deterministic corpus gate; local pre-merge when warranted | No fuzz search or provider calls; uses committed inputs and serffuzz tags; memory caps are best-effort by platform | Any compile, replay, invariant, Rapid, or golden failure is nonzero. Search campaigns belong to make fuzz-nightly, not this gate | Serf fuzz/tooling; no new follow-up currently |
+| <code>make fuzz-gap-check</code> | Static decode/parse fuzz-target coverage | Every discovered decode/parse package has a registered fuzz target or an explicit ignore | Required CI; local quick check | Seconds, deterministic, no network or corpus replay | An uncovered package or registry/tool failure is nonzero | Serf fuzz/tooling; no new follow-up currently |
+| <code>make fuzz-corpus-scan</code> | Gitleaks over committed fuzz corpora | Fuzz seeds do not contain secrets | Required CI; local harvester feedback | Needs gitleaks for a meaningful scan; local absence warns and returns zero unless SERF_GITLEAKS_REQUIRED=1 | A finding or required-tool absence is nonzero; a local warning is an explicit limitation, not evidence of a scan | Serf security/tooling; no new follow-up currently |
+| <code>make merge-approval-gate</code> | Serial local composition of lint, runtime build, and full deterministic test | The canonical local/post-merge contract: make lint, make build, then ROOT_FULL=1 make test | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs | Serf CI/tooling; no new follow-up currently |
+| <code>make dist DIST_GOOS=... DIST_GOARCH=...</code> | Release/distribution binaries | The archive contains serf, serf-hub, serf-tui, and serf-doctor built for the requested target with a fresh SPA | Release/snapshot CI; manual distribution verification | Cross-compilation and frontend dependencies; release CI has networked setup for tool/dependency installation | Any build, archive, inspection, checksum, or upload failure is nonzero; unavailable release tooling blocks release | Release engineering; no Serf launcher work is implied |
+| <code>scripts/web-preflight.sh</code> | Frontend dependency/setup health | The worktree has a lockfile-compatible install and a real local TypeScript compiler | Setup prerequisite for web/build/browser gates | May access npm when a real install is missing/stale; refuses unsafe npm ci through a mismatched shared symlink | Missing, mismatched, or unhealthy install is nonzero; npm/network unavailability is a setup failure | Worktree/frontend tooling; shared install management stays outside Serf |
+| <code>scripts/disk-reclaim.sh --check</code> | Disk and Go-cache operational preflight | The test runner is unlikely to fail later from a full checkout/cache volume | Implicit prerequisite of make test and make test-race | Host-state dependent by design; read-only df plus bounded cache probe | Below-floor, missing, or stalled storage is nonzero with a diagnosis; do not lower the floor to manufacture a pass | Serf tooling/worktree manager; reclamation remains an operator action |
+| <code>SERF_LIVE_TESTS=1</code> (umbrella opt-in)<br><code>SERF_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v</code><br><code>SERF_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v</code><br><code>SERF_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v</code> | Provider/live/e2e | Real MCP and provider wire/API behavior, credentials, and model/provider contracts | Explicit manual/nightly opt-in; never default CI; <code>SERF_LIVE_TESTS=1</code> also enables applicable live suites | Requires the named opt-in plus the corresponding tool, credentials, model access, and network; provider keys alone do not enable it | Tests without opt-in skip explicitly. With opt-in, configuration/API failures are nonzero; unavailable optional tools or credentials must be reported as skips/limitations, not passes | Provider owners; no default-gate follow-up |
+| <code>SERF_E2E_LIVE=1 scripts/e2e-cover.sh --merge-unit</code><br><code>SERF_SEATBELT_LIVE=1 go test ./agent/sandbox/ -run TestSeatbeltLive -count=1 -v</code> | Live service coverage and host sandbox parity | Exercises real binaries/services or the host Seatbelt backend beyond deterministic unit coverage | Manual/platform-specific; not required CI | Needs provider/network services for live scenario scripts or macOS Seatbelt; SERF_E2E_LIVE is not a correctness gate because the coverage script intentionally continues past scenario failures | Missing platform/service is a limitation; live scenario failures must be read from script output rather than treated as coverage success | E2E/sandbox owners; hardening the coverage script is a separate follow-up |
+| Launcher health checks, managed-service restart, SDD/Kata semantics | Operational/external workflow | None are Serf-owned gate proofs in the current Makefile or workflows | Outside this repository's gates | Owned by the launcher, worktree manager, or SDD/Kata tooling | Do not add or silently imply these checks in Serf CI | Launcher/worktree manager/SDD owners; outside this change |
+
 ## Post-Merge Gate
 
-Run the canonical post-merge gate from the repository root:
+Run the canonical local gate from the repository root:
 
-```sh
+~~~sh
 make merge-approval-gate
-```
+~~~
 
 For diagnosis and evidence, that target expands serially to:
 
-```sh
+~~~sh
 make lint
 make build
 ROOT_FULL=1 make test
-```
+~~~
 
-`ROOT_FULL=1` makes the protected first wave run the full intended non-fuzz
-root Go suite instead of its ordinary `-short` and Test/Example-name-filtered
-form. The runner still excludes the explicitly fuzz-owned sanity functions;
-their deterministic replay is part of `make fuzz`. `make test` owns the
-remaining non-fuzz Go module, script self-test, and frontend streams; the
-self-test stream starts only after the protected root wave and runs alongside
-wave two. This stack preserves the intended non-fuzz post-merge coverage. The
-retired standalone `go test ./...` also ran the ordinary unit tests in
-`cmd/serf-fuzzcov` and `cmd/serf-fuzz-harvest`; all fuzz coverage, including
-those tests and the excluded root fuzz-tool packages, is explicitly owned and
-run by `make fuzz`. Ordinary `make test` remains the default local command and
-keeps the root wave in short mode unless `ROOT_FULL=1` is explicitly set.
-The canonical target does not run fuzzing; use `make fuzz` separately for that
-coverage.
+ROOT_FULL=1 makes the protected first wave run the full intended non-fuzz root
+Go suite instead of its ordinary -short and Test/Example-name-filtered form.
+The runner still excludes the explicitly fuzz-owned sanity functions; their
+deterministic replay is part of make fuzz. The retired standalone go test ./...
+also ran ordinary tests in cmd/serf-fuzzcov and cmd/serf-fuzz-harvest; all fuzz
+coverage, including those tests and the excluded root fuzz-tool packages, is
+explicitly owned and run by make fuzz. Ordinary make test remains the default
+local command and keeps the root wave in short mode unless ROOT_FULL=1 is
+explicitly set. The CI web job runs make test-web, make build-web, and
+make test-web-browser; the Go job runs ROOT_FULL=1 WEB=0 make test so frontend
+tests are not duplicated.
+
+The matrix intentionally does not make browser guards part of make lint or
+make test: those default gates remain usable without Chrome, while CI still
+requires the browser-specific gate in its web job.
 
 ## Proving a Type Survives a Round Trip
 
@@ -96,10 +127,10 @@ Two corollaries:
   `json.Unmarshal` and it cannot fail. Keeping it leaves a comment
   claiming coverage that no longer exists.
 
-## The Two Browser Guards, and Why There Are Two
+## The Three Browser Guards, and Why There Are Three
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Two checks in
+of frontend defect is structurally invisible to `vitest`. Three checks in
 `cmd/serf-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
@@ -107,11 +138,17 @@ of frontend defect is structurally invisible to `vitest`. Two checks in
   files, no build. Right for "does this CSS rule still hold its box".
 - **`npm run overflowguard`** renders the REAL Session pane through the REAL
   reducer and asserts nothing inside it scrolls sideways, at four widths.
+- **`npm run spawnguard`** renders the real Spawn pane through its staging and
+  breakpoint path, asserting the responsive form remains usable at three widths.
 
+The first two checks cover static geometry and the Session pane; the third
+covers the Spawn pane, which has a separate responsive layout and failure modes.
 The second exists because the first could not have caught the bug that
 prompted it. Hand-authored markup freezes whatever was current when the case
 was written, so restoring the old glyph would have left the guard green while
-the app broke. Both are manual pre-merge checks, not wired into `make lint`.
+the app broke. All three are owned by `make test-web-browser`, which is required
+by the CI web job and remains separate from `make lint` and `make test` because
+it needs Chrome.
 
 Three traps, each of which produced a false-green here. They are listed in the
 order they were found, because each was hiding the next.
