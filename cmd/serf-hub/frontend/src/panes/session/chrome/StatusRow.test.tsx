@@ -14,6 +14,7 @@ import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { StatusRow } from "./StatusRow";
+import rawStatusStyles from "./statusrow.module.css";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -592,11 +593,17 @@ test("context has one meter semantic with wide and compact visual variants", () 
   );
   const meter = screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i });
   expect(meter.tagName).toBe("METER");
+  expect(meter.classList.contains(requireClass(rawStatusStyles.srOnly, "statusrow.module.css", "srOnly"))).toBe(true);
   expect(meter.getAttribute("value")).toBe("64000");
   expect(meter.getAttribute("max")).toBe("128000");
-  expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBe("true");
+  const context = screen.getByTestId("status-row-context");
+  expect(context.tagName).toBe("SPAN");
+  expect(context.getAttribute("aria-hidden")).toBe("true");
+  expect(context.contains(meter)).toBe(false);
+  expect(meter.nextElementSibling).toBe(context);
+  expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
-  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getAllByRole("meter")).toHaveLength(1);
 });
 

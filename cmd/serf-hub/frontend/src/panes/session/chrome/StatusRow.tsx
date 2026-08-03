@@ -163,31 +163,33 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       </span>
       {hasContext && (
-        <meter
-          className={CLASS.context}
-          data-testid="status-row-context"
-          aria-label={contextLabel}
-          min={0}
-          value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
-          max={model.contextWindow}
-          title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
-        >
-          <span className={CLASS.contextMeter} data-testid="status-row-context-meter" aria-hidden="true">
-            <Meter
-              label={contextLabel}
-              value={model.contextUsed}
-              max={model.contextWindow}
-              tone={contextTone(model.contextPressure)}
-            />
-          </span>
+        <>
+          <meter
+            className={CLASS.srOnly}
+            aria-label={contextLabel}
+            min={0}
+            value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
+            max={model.contextWindow}
+          />
           <span
-            className={`${CLASS.contextPercent} ${CLASS.mono}`}
-            data-testid="status-row-context-percent"
+            className={CLASS.context}
+            data-testid="status-row-context"
             aria-hidden="true"
+            title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
           >
-            {`${contextPercent}%`}
+            <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
+              <Meter
+                label={contextLabel}
+                value={model.contextUsed}
+                max={model.contextWindow}
+                tone={contextTone(model.contextPressure)}
+              />
+            </span>
+            <span className={`${CLASS.contextPercent} ${CLASS.mono}`} data-testid="status-row-context-percent">
+              {`${contextPercent}%`}
+            </span>
           </span>
-        </meter>
+        </>
       )}
       {/* An unmeasured zero renders NOTHING, never formatWorkDuration's "1s":
           that clamp exists so a real sub-second duration doesn't read "0s", so

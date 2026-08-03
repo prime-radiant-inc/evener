@@ -15,6 +15,18 @@ export default function assert(measurements) {
     if (m.body.bottom > m.right.bottom + tolerance) fail("status body grew onto a second line");
     if (m.actions.right > m.chrome.right + tolerance) fail("session actions escape the footer");
     if (m.effort.right > m.body.right + tolerance) fail("effort is clipped");
+    if (m.contextStructure.semanticTag !== "METER") fail("context semantic is not a native meter");
+    if (m.contextStructure.semanticChildren !== 0) fail("native context meter contains visual fallback children");
+    if (
+      m.contextStructure.semanticBox.width > tolerance ||
+      m.contextStructure.semanticBox.height > tolerance
+    ) {
+      fail("native context meter is not visually hidden");
+    }
+    if (!m.contextStructure.semanticNextIsVisual) fail("context meter and visual wrapper are not siblings");
+    if (m.contextStructure.visualTag !== "SPAN" || m.contextStructure.visualAriaHidden !== "true") {
+      fail("context visual wrapper is not an aria-hidden span");
+    }
     if (m.model.textOverflow !== "ellipsis" || m.model.whiteSpace !== "nowrap") fail("model does not ellipsize");
     if (m.focusedModelBoxShadow === "none" || !m.focusedModelBoxShadow.includes("inset")) {
       fail("focused model ring is not inset");
