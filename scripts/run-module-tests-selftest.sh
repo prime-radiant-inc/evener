@@ -486,6 +486,13 @@ if wait_for_file "$state/root-list.started" 500; then
 	assert_has "$out" "effective GOMODCACHE: $case_dir/gomodcache" "a root package-discovery timeout reports the effective GOMODCACHE"
 	assert_has "$out" "worktree/module: $root_worktree (.)" "a root package-discovery timeout reports its worktree and module"
 	assert_has "$out" "retained package-list log:" "a root package-discovery timeout names the retained package-list log"
+	timeout_logs="$(full_logs_path "$out")"
+	timeout_package_list="$(awk '/^run-module-tests\.sh: retained package-list log: / { sub(/^run-module-tests\.sh: retained package-list log: /, ""); print; exit }' "$out")"
+	if [ -n "$timeout_logs" ] && [ "$timeout_package_list" = "$timeout_logs/root.packages" ] && [ -f "$timeout_package_list" ]; then
+		ok "a root package-discovery timeout retains the reported root package-list log"
+	else
+		bad "a root package-discovery timeout names a missing or wrong package-list log (logs '$timeout_logs', package list '$timeout_package_list')"
+	fi
 	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
 	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
 	child_pid="$(cat "$state/root-list-child.pid" 2>/dev/null || :)"
