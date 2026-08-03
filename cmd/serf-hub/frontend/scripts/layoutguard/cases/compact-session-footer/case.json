@@ -1,0 +1,21 @@
+{
+  "name": "compact-session-footer",
+  "description": "the complete session footer stays on one line and compresses status facts in priority order",
+  "cssFiles": [
+    "styles/global.css",
+    "panes/session/chrome/sessionchrome.module.css",
+    "panes/session/chrome/statusrow.module.css",
+    "panes/session/chrome/modelswitch.module.css",
+    "panes/session/chrome/goalcontrol.module.css",
+    "widgets/meter/meter.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "forcePseudoStates": [
+    { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] }
+  ]
+}
