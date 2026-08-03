@@ -133,7 +133,25 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
 		return
 	}
-	favs := hubcore.ClassifyFavoriteDecisions(decisions, authority).Presentation
+	if err := s.ensureLegacyPinsMigrated(time.Now(), authority); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
+		return
+	}
+	revalidation := hubcore.ClassifyFavoriteDecisions(decisions, authority)
+	assignments, err := s.pinSectionAssignments()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
+		return
+	}
+	sections, err := s.pinSections()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
+		return
+	}
+	pinRevalidation := classifySessionPins(assignments, authority)
+	assignments = canonicalPinAssignments(assignments, pinRevalidation)
+	bySession := pinSectionAssignmentLookup(assignments, pinRevalidation.Presentation)
+	favs := projectFavoritePresentation(revalidation.Presentation)
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),
@@ -226,27 +244,188 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Pinned tier: favorited, unarchived sessions across all projects,
-	// excluding anything already surfaced in NeedsYou, most-recently-updated
-	// first.
-	needsYouIDs := map[string]bool{}
-	for _, n := range resp.NeedsYou {
-		needsYouIDs[n.SessionID] = true
-	}
+	// Named pin sections project durable assignments onto the uncapped,
+	// authoritative top-level session candidates. Empty and currently dormant
+	// sections stay in storage but are omitted from this navigation response.
+	nodes := make(map[string]hubapi.TreeNode)
 	for _, n := range tree.FavoriteCandidates() {
-		if n.Kind != "session" && n.Kind != "fork" || !favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}] {
+		if n.Kind != "session" {
 			continue
 		}
-		if needsYouIDs[hubRefFromTreeNodeID(n.ID).SessionID] {
-			continue
-		}
-		resp.Favorites = append(resp.Favorites, s.apiTreeNodeTier("pinned", "", "pinned", favs, n))
+		node := s.apiTreeNodeTier("pinned", "", "pinned", favs, n)
+		indexPinSectionNode(nodes, n.ID, node)
 	}
-	sort.SliceStable(resp.Favorites, func(i, j int) bool {
-		return resp.Favorites[i].UpdatedAt.After(resp.Favorites[j].UpdatedAt)
-	})
+	resp.PinSections = pinSectionTrees(sections, assignments, pinRevalidation.Presentation, nodes)
+	annotateTreeResponsePinSections(&resp, bySession)
 
 	writeAPIJSON(w, http.StatusOK, resp)
+}
+
+func (s *WebServer) ensureLegacyPinsMigrated(now time.Time, authority hubcore.FavoriteAuthority) error {
+	if s.cfg.PinSections == nil {
+		return nil
+	}
+	decisions, err := s.favoriteDecisions()
+	if err != nil {
+		return err
+	}
+	classified := hubcore.ClassifyFavoriteDecisions(decisions, authority)
+	legacy := make([]hubcore.LegacyPinDecision, 0, len(decisions))
+	for key := range decisions {
+		if key.Kind != "session" {
+			continue
+		}
+		legacy = append(legacy, hubcore.LegacyPinDecision{
+			StoredID:       key.ID,
+			Classification: classified.Classifications[key],
+		})
+	}
+	changed, err := s.cfg.PinSections.MigrateLegacy(legacy, now)
+	if err != nil {
+		return err
+	}
+	if changed && s.cfg.Inputs != nil {
+		s.cfg.Inputs.Bump()
+	}
+	return nil
+}
+
+func (s *WebServer) pinSectionAssignments() (map[string]hubcore.SessionPin, error) {
+	if s.cfg.PinSections == nil {
+		return map[string]hubcore.SessionPin{}, nil
+	}
+	return s.cfg.PinSections.Assignments()
+}
+
+func (s *WebServer) pinSections() ([]hubcore.PinSection, error) {
+	if s.cfg.PinSections == nil {
+		return []hubcore.PinSection{}, nil
+	}
+	return s.cfg.PinSections.Sections()
+}
+
+func classifySessionPins(assignments map[string]hubcore.SessionPin, authority hubcore.FavoriteAuthority) hubcore.FavoriteRevalidation {
+	decisions := make(map[hubcore.ArchiveKey]bool, len(assignments))
+	for storedID := range assignments {
+		decisions[hubcore.ArchiveKey{Kind: "session", ID: storedID}] = true
+	}
+	return hubcore.ClassifyFavoriteDecisions(decisions, authority)
+}
+
+func canonicalPinAssignments(assignments map[string]hubcore.SessionPin, classified hubcore.FavoriteRevalidation) map[string]hubcore.SessionPin {
+	out := make(map[string]hubcore.SessionPin, len(assignments)*2)
+	for storedID, assignment := range assignments {
+		out[storedID] = assignment
+		classification := classified.Classifications[hubcore.ArchiveKey{Kind: "session", ID: storedID}]
+		if classification.State == hubcore.FavoriteDecisionValid && classification.CanonicalKey.ID != "" {
+			out[classification.CanonicalKey.ID] = assignment
+		}
+	}
+	return out
+}
+
+func pinSectionAssignmentLookup(assignments map[string]hubcore.SessionPin, visible map[hubcore.ArchiveKey]bool) map[string]string {
+	bySession := make(map[string]string, len(assignments)*3)
+	for sessionID, assignment := range assignments {
+		if !visible[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] {
+			continue
+		}
+		for _, alias := range favoriteSessionAliases(sessionID) {
+			bySession[alias] = assignment.SectionID
+		}
+	}
+	return bySession
+}
+
+func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[hubcore.ArchiveKey]bool {
+	projects := make(map[hubcore.ArchiveKey]bool)
+	for key, favorite := range presentation {
+		if key.Kind == "project" && favorite {
+			projects[key] = true
+		}
+	}
+	return projects
+}
+
+func indexPinSectionNode(nodes map[string]hubapi.TreeNode, id string, node hubapi.TreeNode) {
+	for _, alias := range uniqueStrings(append(favoriteSessionAliases(id), node.Ref, node.SessionID)) {
+		nodes[alias] = node
+	}
+}
+
+func pinSectionTrees(sections []hubcore.PinSection, assignments map[string]hubcore.SessionPin, visible map[hubcore.ArchiveKey]bool, nodes map[string]hubapi.TreeNode) []hubapi.PinSectionTree {
+	bySection := make(map[string][]hubapi.TreeNode)
+	seen := make(map[string]map[string]bool)
+	for sessionID, assignment := range assignments {
+		if !visible[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] {
+			continue
+		}
+		node, ok := nodes[sessionID]
+		if !ok {
+			continue
+		}
+		if seen[assignment.SectionID] == nil {
+			seen[assignment.SectionID] = make(map[string]bool)
+		}
+		if seen[assignment.SectionID][node.Ref] {
+			continue
+		}
+		seen[assignment.SectionID][node.Ref] = true
+		node.PinSectionID = assignment.SectionID
+		bySection[assignment.SectionID] = append(bySection[assignment.SectionID], node)
+	}
+	out := make([]hubapi.PinSectionTree, 0, len(sections))
+	for _, section := range sections {
+		rows := bySection[section.ID]
+		if len(rows) == 0 {
+			continue
+		}
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].UpdatedAt.After(rows[j].UpdatedAt) })
+		out = append(out, hubapi.PinSectionTree{ID: section.ID, Name: section.Name, Sessions: rows})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left, right := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
+		if left == right {
+			return out[i].ID < out[j].ID
+		}
+		return left < right
+	})
+	return out
+}
+
+func annotatePinSection(node hubapi.TreeNode, bySession map[string]string) hubapi.TreeNode {
+	if sectionID := bySession[node.Ref]; sectionID != "" {
+		node.PinSectionID = sectionID
+	}
+	if node.PinSectionID == "" {
+		node.PinSectionID = bySession[node.SessionID]
+	}
+	for i := range node.Children {
+		node.Children[i] = annotatePinSection(node.Children[i], bySession)
+	}
+	return node
+}
+
+func annotateTreeResponsePinSections(response *hubapi.TreeResponse, bySession map[string]string) {
+	annotateRows := func(rows []hubapi.TreeNode) {
+		for i := range rows {
+			rows[i] = annotatePinSection(rows[i], bySession)
+		}
+	}
+	annotateRows(response.Live)
+	annotateRows(response.NeedsYou)
+	for i := range response.Projects {
+		annotateRows(response.Projects[i].Sessions)
+	}
+	for i := range response.ArchivedProjects {
+		annotateRows(response.ArchivedProjects[i].Sessions)
+	}
+	for i := range response.TestRuns {
+		annotateRows(response.TestRuns[i].Sessions)
+	}
+	for i := range response.PinSections {
+		annotateRows(response.PinSections[i].Sessions)
+	}
 }
 
 // memoTree returns the memoized full tree + attention summary, single-sourced

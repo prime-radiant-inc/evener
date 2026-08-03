@@ -341,6 +341,11 @@ func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID 
 			decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
 		}
 	}
+	if s.cfg.PinSections != nil {
+		if _, err := s.cfg.PinSections.DeleteSession(threadID); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("pin section store error: %v", err))
+		}
+	}
 	return true, nil, decisionErrors
 }
 

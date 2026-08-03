@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -388,5 +389,46 @@ func TestSessionDeleteRejectsInvalidSessionID(t *testing.T) {
 	web.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed session ID must be rejected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	targetID := projectDeleteCanonicalSessionIDs[0]
+	writeSession(t, stateDir, targetID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	pinStore := hubcore.NewPinSectionStore(dbPath)
+	section, _, err := pinStore.CreateOrReuseAndAssign("Research", targetID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, Past: past, PinSections: pinStore, Roster: hubcore.NewRosterWithEntries(),
+	})
+
+	rec, response := postSessionDelete(t, web, targetID)
+	if rec.Code != http.StatusOK || len(response.Deleted) != 1 {
+		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	}
+	pins, err := pinStore.Assignments()
+	if err != nil || len(pins) != 0 {
+		t.Fatalf("pins = %+v, %v", pins, err)
+	}
+	sections, err := pinStore.Sections()
+	if err != nil || len(sections) != 1 || sections[0].ID != section.ID || sections[0].MemberCount != 0 {
+		t.Fatalf("sections = %+v, %v", sections, err)
 	}
 }

@@ -42,11 +42,11 @@ func TestAPITreeFavoriteRevalidation_EndedOfflineSessionRemainsPinned(t *testing
 
 	response := getTreeResponse(t, web)
 	node, ok := treeResponseNode(response, sessionID)
-	if !ok || !node.Favorite {
-		t.Fatalf("ended offline session node = %+v, want favorite=true", node)
+	if !ok || node.PinSectionID == "" {
+		t.Fatalf("ended offline session node = %+v, want pin section annotation", node)
 	}
 	if !treeResponseHasFavorite(response, sessionID) {
-		t.Fatalf("ended offline session missing from pinned favorites: %+v", response.Favorites)
+		t.Fatalf("ended offline session missing from pin sections: %+v", response.PinSections)
 	}
 }
 
@@ -79,7 +79,7 @@ func TestAPITreeFavoriteRevalidation_CappedSessionRemainsPinned(t *testing.T) {
 		t.Fatalf("oldest capped session unexpectedly appeared in the ordinary tree rows")
 	}
 	if !treeResponseHasFavorite(response, targetID) {
-		t.Fatalf("capped valid favorite missing from pinned favorites: %+v", response.Favorites)
+		t.Fatalf("capped valid favorite missing from pin sections: %+v", response.PinSections)
 	}
 }
 
@@ -106,7 +106,6 @@ func TestAPITreeFavoriteRevalidation_ConfirmedInvalidRowsRemainUnchanged(t *test
 	if err := favorites.Set("session", malformedID, false, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, metas)
 
 	response := getTreeResponse(t, web)
@@ -118,8 +117,41 @@ func TestAPITreeFavoriteRevalidation_ConfirmedInvalidRowsRemainUnchanged(t *test
 			t.Fatalf("confirmed-invalid session %q was rendered as favorite: %+v", id, node)
 		}
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("confirmed-invalid/false favorite rows changed during tree read")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite rows survived migration: %+v", rows)
+	}
+	if pins, err := web.cfg.PinSections.Assignments(); err != nil || len(pins) != 0 {
+		t.Fatalf("confirmed-invalid assignments = %+v, %v", pins, err)
+	}
+}
+
+func TestAPITreePinSectionsDoNotRenderInvalidAssignmentsOrDeleteThem(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	parentID := hubtest.SessionID(t)
+	subagentID := hubtest.SessionID(t)
+	forkID := hubtest.SessionID(t)
+	branchID := hubtest.SessionID(t)
+	metas := []schema.SessionMeta{
+		{ID: parentID, UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: subagentID, ParentSessionID: parentID, IsSubagent: true, UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: forkID, ForkLabel: "before edit", UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: branchID, ParentSessionID: forkID, UpdatedAt: favoriteRevalidationTreeTime},
+	}
+	web, pins := namedPinTreeWeb(t, metas)
+	section, _, err := pins.CreateOrReuseAndAssign("Research", subagentID, favoriteRevalidationTreeTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pins.Assign(section.ID, forkID, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	response := getTreeResponse(t, web)
+	if len(response.PinSections) != 0 {
+		t.Fatalf("invalid assignments rendered: %+v", response.PinSections)
+	}
+	assignments, err := pins.Assignments()
+	if err != nil || len(assignments) != 2 {
+		t.Fatalf("invalid assignments were mutated: %+v, %v", assignments, err)
 	}
 }
 
@@ -159,7 +191,7 @@ func TestAPITreeFavoriteRevalidation_RemoteFailureDormantThenRecovers(t *testing
 	source.err = nil
 	recovered := getTreeResponse(t, web)
 	if !treeResponseHasFavorite(recovered, remoteID) {
-		t.Fatalf("favorite did not reappear after authoritative remote recovery: %+v", recovered.Favorites)
+		t.Fatalf("favorite did not reappear after authoritative remote recovery: %+v", recovered.PinSections)
 	}
 	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
 		t.Fatalf("remote recovery changed stored favorite rows")
@@ -178,7 +210,6 @@ func TestAPITreeFavoriteRevalidation_AmbiguousAuthorityIsDormant(t *testing.T) {
 	if err := favorites.Set("session", missingID, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, []schema.SessionMeta{
 		{ID: id, UpdatedAt: favoriteRevalidationTreeTime},
 		{ID: ambiguousID, UpdatedAt: favoriteRevalidationTreeTime},
@@ -194,8 +225,11 @@ func TestAPITreeFavoriteRevalidation_AmbiguousAuthorityIsDormant(t *testing.T) {
 	if node, ok := treeResponseNode(response, ambiguousID); ok && node.Favorite {
 		t.Fatalf("ambiguous local/ref authority received a favorite flag: %+v", node)
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("ambiguous authority changed stored favorite rows")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite rows survived migration: %+v", rows)
+	}
+	if pins, err := web.cfg.PinSections.Assignments(); err != nil || len(pins) != 2 {
+		t.Fatalf("dormant assignments = %+v, %v", pins, err)
 	}
 }
 
@@ -210,8 +244,8 @@ func TestAPITreeFavoriteRevalidation_ClusterSpellingDoesNotDecideValidity(t *tes
 		ID: legitimateID, Name: "real session", UpdatedAt: favoriteRevalidationTreeTime,
 	}})
 	response := getTreeResponse(t, web)
-	if node, ok := treeResponseNode(response, legitimateID); !ok || !node.Favorite {
-		t.Fatalf("legitimate cluster-shaped session = %+v, want favorite=true", node)
+	if node, ok := treeResponseNode(response, legitimateID); !ok || node.PinSectionID == "" {
+		t.Fatalf("legitimate cluster-shaped session = %+v, want pin section annotation", node)
 	}
 	if !treeResponseHasFavorite(response, legitimateID) {
 		t.Fatalf("legitimate cluster-shaped session missing from pinned favorites")
@@ -232,7 +266,7 @@ func TestAPITreeFavoriteRevalidation_ClusterSpellingDoesNotDecideValidity(t *tes
 	}
 	clusterResponse = getTreeResponse(t, clusterWeb)
 	if treeResponseHasFavorite(clusterResponse, clusterNode.Ref) {
-		t.Fatalf("synthetic cluster row received a favorite flag: %+v", clusterResponse.Favorites)
+		t.Fatalf("synthetic cluster row received a pin assignment: %+v", clusterResponse.PinSections)
 	}
 	if node, ok := treeResponseNode(clusterResponse, clusterNode.Ref); ok && node.Favorite {
 		t.Fatalf("synthetic cluster row was presented as favorite: %+v", node)
@@ -316,7 +350,7 @@ func TestAPITreeFavoriteRevalidation_UsesOneSourceGeneration(t *testing.T) {
 		t.Fatalf("source list calls=%d, want exactly one snapshot read", source.calls)
 	}
 	if !treeResponseHasFavorite(response, firstRef) {
-		t.Fatalf("favorite from the tree snapshot was not presented: %+v", response.Favorites)
+		t.Fatalf("favorite from the tree snapshot was not presented: %+v", response.PinSections)
 	}
 	if treeResponseHasFavorite(response, secondRef) {
 		t.Fatalf("second source generation leaked into first response")
@@ -334,11 +368,14 @@ func TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot(t *testi
 	}
 	cache := &hubcore.RemoteThreadCache{}
 	cache.StoreSnapshot([]appwire.Thread{thread}, true)
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	favorites := hubcore.NewFavoriteStore(dbPath)
 	if err := favorites.Set("session", remoteID, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
+	web := NewWebServer(hubcore.WebConfig{
+		Favorite: favorites, PinSections: hubcore.NewPinSectionStore(dbPath), Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache,
+	})
 
 	previousInputs := hubNavigationInputs
 	firstSnapshotReady := make(chan struct{})
@@ -401,7 +438,7 @@ func TestAPITreeFavoriteRevalidation_ConcurrentCacheReadUsesOneSnapshot(t *testi
 		}
 	}
 	if !treeResponseHasFavorite(first.body, remoteID) {
-		t.Fatalf("first request paired its rows with the later incomplete authority: %+v", first.body.Favorites)
+		t.Fatalf("first request paired its rows with the later incomplete authority: %+v", first.body.PinSections)
 	}
 }
 
@@ -618,7 +655,7 @@ func TestAPITreeFavoriteRevalidation_HealthySourceSurvivesUnrelatedFailure(t *te
 
 	response := getTreeResponse(t, web)
 	if !treeResponseHasFavorite(response, healthyRef) {
-		t.Fatalf("healthy source favorite was hidden by unrelated failure: %+v", response.Favorites)
+		t.Fatalf("healthy source favorite was hidden by unrelated failure: %+v", response.PinSections)
 	}
 }
 
@@ -679,7 +716,7 @@ func TestAPITreeFavoriteRevalidation_PaginatedSnapshotIncludesCappedAwayFavorite
 
 	response := getTreeResponse(t, web)
 	if !treeResponseHasFavorite(response, targetRef) {
-		t.Fatalf("favorite from terminal page was not presented: %+v", response.Favorites)
+		t.Fatalf("favorite from terminal page was not presented: %+v", response.PinSections)
 	}
 }
 
@@ -702,7 +739,7 @@ func TestAPITreeFavoriteRevalidation_LaterPageFailureDormantsLastGoodRows(t *tes
 	web.sources.Add(source)
 	first := getTreeResponse(t, web)
 	if !treeResponseHasFavorite(first, targetRef) {
-		t.Fatalf("setup page did not present target favorite: %+v", first.Favorites)
+		t.Fatalf("setup page did not present target favorite: %+v", first.PinSections)
 	}
 	before := favoriteDecisionRows(t, favorites)
 	source.failCursor = "page-2"
@@ -773,7 +810,7 @@ func TestAPITreeFavoriteRevalidation_SourceRefConflictAndMalformedRowDoNotHideHe
 		t.Fatalf("malformed ref identity was treated as valid")
 	}
 	if !treeResponseHasFavorite(response, validRef) {
-		t.Fatalf("valid unrelated remote identity was hidden by malformed rows: %+v", response.Favorites)
+		t.Fatalf("valid unrelated remote identity was hidden by malformed rows: %+v", response.PinSections)
 	}
 	for _, id := range []string{conflictRef, malformedRef} {
 		if node, ok := treeResponseNode(response, id); ok && node.Favorite {
@@ -845,7 +882,6 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateWithoutOwningSourceSnapshotI
 	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, nil)
 	web.cfg.RemoteThreadCache = cache
 
@@ -856,8 +892,11 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateWithoutOwningSourceSnapshotI
 	if node, ok := treeResponseNode(response, ref); !ok || node.Favorite {
 		t.Fatalf("remote candidate without owning source snapshot node = found %t, %+v; want rendered non-favorite", ok, node)
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("missing remote source snapshot changed stored favorite row")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite row survived migration: %+v", rows)
+	}
+	if pins, err := web.cfg.PinSections.Assignments(); err != nil || pins[ref].SessionID != ref {
+		t.Fatalf("dormant remote assignment = %+v, %v", pins, err)
 	}
 }
 
@@ -880,7 +919,6 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateMissingExactSourceMembership
 	if err := favorites.Set("session", targetRef, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, nil)
 	web.cfg.RemoteThreadCache = cache
 
@@ -891,8 +929,11 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateMissingExactSourceMembership
 	if node, ok := treeResponseNode(response, targetRef); !ok || node.Favorite {
 		t.Fatalf("remote candidate absent from exact source membership node = found %t, %+v; want rendered non-favorite", ok, node)
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("missing remote source membership changed stored favorite row")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite row survived migration: %+v", rows)
+	}
+	if pins, err := web.cfg.PinSections.Assignments(); err != nil || pins[targetRef].SessionID != targetRef {
+		t.Fatalf("dormant remote assignment = %+v, %v", pins, err)
 	}
 }
 
@@ -913,7 +954,6 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateWithExactSourceMembershipIsV
 	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, nil)
 	web.cfg.RemoteThreadCache = cache
 
@@ -921,11 +961,11 @@ func TestAPITreeFavoriteRevalidation_RemoteCandidateWithExactSourceMembershipIsV
 	if !treeResponseHasFavorite(response, ref) {
 		t.Fatalf("remote candidate with exact complete source membership was not pinned")
 	}
-	if node, ok := treeResponseNode(response, ref); !ok || !node.Favorite {
-		t.Fatalf("remote candidate with exact complete source membership node = found %t, %+v; want rendered favorite", ok, node)
+	if node, ok := treeResponseNode(response, ref); !ok || node.PinSectionID == "" {
+		t.Fatalf("remote candidate with exact complete source membership node = found %t, %+v; want rendered pin", ok, node)
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("valid remote source membership changed stored favorite row")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite row survived migration: %+v", rows)
 	}
 }
 
@@ -942,7 +982,6 @@ func TestAPITreeFavoriteRevalidation_LocalCandidateUnaffectedByMissingRemoteSour
 	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
 		t.Fatal(err)
 	}
-	before := favoriteDecisionRows(t, favorites)
 	web := favoriteRevalidationWeb(t, favorites, []schema.SessionMeta{{
 		ID: ref, CreatedAt: favoriteRevalidationTreeTime.Add(-time.Hour), UpdatedAt: favoriteRevalidationTreeTime,
 	}})
@@ -952,11 +991,11 @@ func TestAPITreeFavoriteRevalidation_LocalCandidateUnaffectedByMissingRemoteSour
 	if !treeResponseHasFavorite(response, ref) {
 		t.Fatalf("local candidate was downgraded when remote source metadata was absent")
 	}
-	if node, ok := treeResponseNode(response, ref); !ok || !node.Favorite {
-		t.Fatalf("local candidate node = found %t, %+v; want rendered favorite", ok, node)
+	if node, ok := treeResponseNode(response, ref); !ok || node.PinSectionID == "" {
+		t.Fatalf("local candidate node = found %t, %+v; want rendered pin", ok, node)
 	}
-	if !reflect.DeepEqual(before, favoriteDecisionRows(t, favorites)) {
-		t.Fatalf("local candidate check changed stored favorite row")
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite row survived migration: %+v", rows)
 	}
 }
 
@@ -1441,7 +1480,10 @@ func useFavoriteRevalidationTreeClock(t *testing.T) {
 
 func favoriteRevalidationWeb(t *testing.T, favorites *hubcore.FavoriteStore, metas []schema.SessionMeta) *WebServer {
 	t.Helper()
-	web := NewWebServer(hubcore.WebConfig{Favorite: favorites, Past: hubcore.NewPastIndex("")})
+	dbPath := reflect.ValueOf(favorites).Elem().FieldByName("dbPath").String()
+	web := NewWebServer(hubcore.WebConfig{
+		Favorite: favorites, PinSections: hubcore.NewPinSectionStore(dbPath), Past: hubcore.NewPastIndex(""),
+	})
 	web.injectMetasForTest(metas)
 	return web
 }
@@ -1461,9 +1503,11 @@ func getTreeResponse(t *testing.T, web *WebServer) hubapi.TreeResponse {
 }
 
 func treeResponseHasFavorite(response hubapi.TreeResponse, ref string) bool {
-	for _, node := range response.Favorites {
-		if node.Ref == ref || node.SessionID == ref {
-			return true
+	for _, section := range response.PinSections {
+		for _, node := range section.Sessions {
+			if node.Ref == ref || node.SessionID == ref {
+				return true
+			}
 		}
 	}
 	return false

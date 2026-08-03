@@ -984,8 +984,8 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
 	if !node.Rename {
 		t.Fatalf("orphan-live row Rename=false, want true (local session): %+v", *node)
 	}
-	if len(got.Favorites) != 1 || got.Favorites[0].SessionID != liveSessionID {
-		t.Fatalf("orphan-live favorite pin = %+v, want the favorited orphan", got.Favorites)
+	if len(got.PinSections) != 1 || len(got.PinSections[0].Sessions) != 1 || got.PinSections[0].Sessions[0].SessionID != liveSessionID {
+		t.Fatalf("orphan-live favorite pin = %+v, want the favorited orphan", got.PinSections)
 	}
 }
 
@@ -1092,4 +1092,139 @@ func TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited(t *testing.T) {
 	if _, present := raw["favorite"]; present {
 		t.Fatalf("unfavorited project should omit the favorite key entirely, got %+v", raw)
 	}
+}
+
+func TestAPITreeProjectsNamedPinSectionsAndDuplicateMembership(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	web, store := namedPinTreeWeb(t, []schema.SessionMeta{{
+		ID: sessionID, Name: "Alpha", CreatedAt: favoriteRevalidationTreeTime, UpdatedAt: favoriteRevalidationTreeTime,
+	}})
+	section, _, err := store.CreateOrReuseAndAssign("Research", sessionID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := getTreeResponse(t, web)
+	if len(got.PinSections) != 1 || got.PinSections[0].ID != section.ID {
+		t.Fatalf("sections = %+v", got.PinSections)
+	}
+	if len(got.PinSections[0].Sessions) != 1 || got.PinSections[0].Sessions[0].PinSectionID != section.ID {
+		t.Fatalf("pinned row = %+v", got.PinSections[0].Sessions)
+	}
+	projectNode, ok := treeResponseNode(got, sessionID)
+	if !ok || projectNode.PinSectionID != section.ID {
+		t.Fatalf("project duplicate = %+v, found=%v", projectNode, ok)
+	}
+}
+
+func TestAPITreePinSectionsSortSectionsAndSessionsAndHideEmpty(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	ids := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ", "02wMz5Txv7t1QjsT0Z2tAo"}
+	web, store := namedPinTreeWeb(t, []schema.SessionMeta{
+		{ID: ids[0], Name: "old", UpdatedAt: favoriteRevalidationTreeTime.Add(-time.Hour)},
+		{ID: ids[1], Name: "new", UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: ids[2], Name: "personal", UpdatedAt: favoriteRevalidationTreeTime.Add(-time.Minute)},
+	})
+	research, _, err := store.CreateOrReuseAndAssign("Research", ids[0], time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Assign(research.ID, ids[1], time.Unix(2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CreateOrReuseAndAssign("Personal", ids[2], time.Unix(3, 0)); err != nil {
+		t.Fatal(err)
+	}
+	empty, _, err := store.CreateOrReuseAndAssign("client", "missing", time.Unix(4, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Unpin("missing"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := getTreeResponse(t, web)
+	if names := pinSectionTreeNames(got.PinSections); strings.Join(names, ",") != "Personal,Research" {
+		t.Fatalf("visible section order = %v", names)
+	}
+	if rows := got.PinSections[1].Sessions; len(rows) != 2 || rows[0].SessionID != ids[1] || rows[1].SessionID != ids[0] {
+		t.Fatalf("research sessions = %+v", rows)
+	}
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/pin-sections", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pin sections status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var sections []hubapi.PinSection
+	if err := json.Unmarshal(rec.Body.Bytes(), &sections); err != nil {
+		t.Fatal(err)
+	}
+	foundEmpty := false
+	for _, section := range sections {
+		foundEmpty = foundEmpty || section.ID == empty.ID && section.MemberCount == 0
+	}
+	if !foundEmpty {
+		t.Fatalf("empty section not retained: %+v", sections)
+	}
+}
+
+func TestAPITreePinSectionIDAnnotatesLiveProjectTestRunAndPinnedCopies(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	section, _, err := store.CreateOrReuseAndAssign("Research", sessionID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""), PinSections: store,
+		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: sessionID, Status: appwire.ThreadStatusActive}),
+	})
+	web.injectMetasForTest([]schema.SessionMeta{{ID: sessionID, Name: "test", Origin: "test", UpdatedAt: favoriteRevalidationTreeTime}})
+	got := getTreeResponse(t, web)
+	if len(got.Live) != 1 || got.Live[0].PinSectionID != section.ID {
+		t.Fatalf("live = %+v", got.Live)
+	}
+	if len(got.TestRuns) != 1 || len(got.TestRuns[0].Sessions) != 1 || got.TestRuns[0].Sessions[0].PinSectionID != section.ID {
+		t.Fatalf("test runs = %+v", got.TestRuns)
+	}
+	if len(got.PinSections) != 1 || got.PinSections[0].Sessions[0].PinSectionID != section.ID {
+		t.Fatalf("pins = %+v", got.PinSections)
+	}
+}
+
+func TestAPITreeNoLongerSerializesFavorites(t *testing.T) {
+	web, _ := namedPinTreeWeb(t, nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["favorites"]; ok {
+		t.Fatalf("favorites compatibility field survived: %s", rec.Body.String())
+	}
+	if _, ok := raw["pin_sections"]; !ok {
+		t.Fatalf("pin_sections missing: %s", rec.Body.String())
+	}
+}
+
+func namedPinTreeWeb(t *testing.T, metas []schema.SessionMeta) (*WebServer, *hubcore.PinSectionStore) {
+	t.Helper()
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
+	web.injectMetasForTest(metas)
+	return web, store
+}
+
+func pinSectionTreeNames(sections []hubapi.PinSectionTree) []string {
+	names := make([]string, 0, len(sections))
+	for _, section := range sections {
+		names = append(names, section.Name)
+	}
+	return names
 }

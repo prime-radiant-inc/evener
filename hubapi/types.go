@@ -23,16 +23,23 @@ type HealthCapabilities struct {
 
 // TreeResponse is returned by GET /api/tree.
 type TreeResponse struct {
-	GeneratedAt      time.Time     `json:"generated_at"`
-	Sources          []Source      `json:"sources"`
-	Live             []TreeNode    `json:"live"`
-	NeedsYou         []TreeNode    `json:"needs_you"`
-	Favorites        []TreeNode    `json:"favorites"`
-	Projects         []TreeProject `json:"projects"`
-	ArchivedProjects []TreeProject `json:"archived_projects"`
-	TestRuns         []TreeProject `json:"test_runs"`
+	GeneratedAt      time.Time        `json:"generated_at"`
+	Sources          []Source         `json:"sources"`
+	Live             []TreeNode       `json:"live"`
+	NeedsYou         []TreeNode       `json:"needs_you"`
+	PinSections      []PinSectionTree `json:"pin_sections"`
+	Projects         []TreeProject    `json:"projects"`
+	ArchivedProjects []TreeProject    `json:"archived_projects"`
+	TestRuns         []TreeProject    `json:"test_runs"`
 	// serf:naming-ignore
 	AttentionSummary AttentionSummary `json:"attentionSummary"` // camelCase: see AttentionSummary's doc
+}
+
+// PinSectionTree is one non-empty named pin section in GET /api/tree.
+type PinSectionTree struct {
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Sessions []TreeNode `json:"sessions"`
 }
 
 // AttentionSummary is the authoritative badge count set: how many live,
@@ -127,6 +134,7 @@ type TreeNode struct {
 	Branch       string `json:"branch,omitempty"`
 	ClusterCount int    `json:"cluster_count,omitempty"`
 	Favorite     bool   `json:"favorite,omitempty"`
+	PinSectionID string `json:"pin_section_id,omitempty"`
 	Rename       bool   `json:"rename,omitempty"`
 	Live         bool   `json:"live"`
 	AskPending   bool   `json:"ask_pending,omitempty"`
