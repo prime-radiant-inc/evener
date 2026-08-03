@@ -356,6 +356,58 @@ test("a body-less descriptor still becomes an expandable details when the call e
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
+test("an expanded shell row drops the one-line summary - the body's pretty-printed block is the single copy", () => {
+  // A nonzero exit auto-expands the row on settle (descriptor.autoExpand).
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "shell",
+        argumentsJSON: JSON.stringify({ command: "echo hi" }),
+        output: "oops\n[exit 1]",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  // The command still appears exactly once: the body's pretty-printed block.
+  expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
+  // The row stays toggleable: with no purpose and no summary, the chevron
+  // still renders.
+  expect(screen.getByTestId("tool-row-chevron")).toBeTruthy();
+});
+
+test("a collapsed shell row keeps the one-line summary; opening the row drops it", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "shell",
+        argumentsJSON: JSON.stringify({ command: "echo hi" }),
+        output: "hi\n[exit 0]",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
+  expandRow();
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+});
+
+test("an expanded row of a descriptor WITHOUT summaryHiddenWhenExpanded keeps its summary", () => {
+  registerToolRenderer({
+    match: "tci_keep_summary",
+    summary: () => "did a thing",
+    body: () => <div>body text</div>,
+    autoExpand: () => true,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_keep_summary" })} turn={turn} live={false} />);
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
+});
+
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);

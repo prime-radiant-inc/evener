@@ -23,6 +23,11 @@ export interface CodeBlockProps {
   /** Display-only decoration for plain source lines. The callback receives a
    * source line without its separator and its zero-based source line index. */
   renderLine?: (line: string, lineNumber: number) => ReactNode;
+  /** Fold long content to its tail behind a "Show N earlier lines" control
+   * (the default, 67zh). A caller whose content is the PRIMARY thing the
+   * reader opened - not a supporting dump - opts out: the block always
+   * renders every line, with no fold control at all. */
+  fold?: boolean;
 }
 
 const CLASS = {
@@ -89,9 +94,10 @@ export function CodeBlock({
   showLineNumbers = false,
   copyLabel = "Copy",
   renderLine,
+  fold = true,
 }: CodeBlockProps) {
   const allLines = useMemo(() => (ansi ? parseAnsiLines(text) : text.split("\n")), [ansi, text]);
-  const isLong = allLines.length > TAIL_VISIBLE_LINES;
+  const isLong = fold && allLines.length > TAIL_VISIBLE_LINES;
   // "revealed" lifts the fold - once the reader has asked to see everything,
   // re-folding is their own explicit "Show fewer lines" click below, not
   // something a re-render should silently undo out from under them.

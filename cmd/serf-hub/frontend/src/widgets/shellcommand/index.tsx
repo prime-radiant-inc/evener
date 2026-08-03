@@ -17,6 +17,9 @@ export function ShellCommandBlock({ command }: ShellCommandBlockProps): JSX.Elem
       text={displayText}
       copyText={command}
       copyLabel="Copy command"
+      // The command is the PRIMARY content of an expanded shell row, not a
+      // supporting dump: render every formatted line, never a tail fold.
+      fold={false}
       renderLine={(line, lineNumber) => {
         const layout = lines[lineNumber];
         const lineTokens = tokens[lineNumber] ?? [{ text: line, kind: "plain" as const }];
