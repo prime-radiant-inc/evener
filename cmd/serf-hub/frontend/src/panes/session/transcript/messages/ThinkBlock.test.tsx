@@ -256,20 +256,43 @@ test("through TurnBlock: a later item landing in the turn collapses the live tho
   );
 });
 
-// --- live: the draft treatment (mockup #4) ----------------------------------
-// In-flight reasoning reads as a DRAFT - italic while streaming, settling to
-// roman - and the whole of it is on screen: the thought stays OPEN and
+// --- live: open and unbounded while running ---------------------------------
+// The whole of an in-flight thought is on screen: it stays OPEN and
 // unbounded for as long as it runs (Jesse, bh8h), scrolling with the
 // transcript like every other growing item.
 
-test("the live body carries the draft treatment - italic in flight, roman once settled (declaration-level)", () => {
+// --- the always-italic body ---------------------------------------------------
+// A thought's body is italic in BOTH states - in flight and inside the
+// settled disclosure (Jesse, 2026-08-03: thinking is always italic) - and
+// the ONE exception is content the agent itself marked up as italic: <em>
+// inside the body inverts to roman, so deliberate emphasis still stands out
+// against the italic field instead of vanishing into it. The collapsed
+// summary line is chrome, not thought content, and stays roman.
+
+test("the thinking body is ALWAYS italic - live and settled - never roman-on-settle (declaration-level)", () => {
   const css = thinkCss();
-  const rule = /\.liveBody\s*\{([^}]*)\}/.exec(css);
-  expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("font-style: italic");
-  // Nothing re-italicizes the settled views: summary and body stay roman.
-  expect(css).not.toMatch(/\.body\s*\{[^}]*font-style/);
+  const liveBody = /\.liveBody\s*\{([^}]*)\}/.exec(css);
+  expect(liveBody).not.toBeNull();
+  expect(liveBody![1]).toContain("font-style: italic");
+  const body = /\.body\s*\{([^}]*)\}/.exec(css);
+  expect(body).not.toBeNull();
+  expect(body![1]).toContain("font-style: italic");
+  // The summary chrome is never italicized.
   expect(css).not.toMatch(/\.summary\s*\{[^}]*font-style/);
+});
+
+test("emphasis inside a thinking body inverts to roman - live and settled (declaration-level)", () => {
+  const css = thinkCss();
+  const rule = /\.(liveBody|body)\s+:where\(em\)\s*,\s*\.(liveBody|body)\s+:where\(em\)\s*\{([^}]*)\}/.exec(css);
+  expect(rule).not.toBeNull();
+  expect(rule![3]).toContain("font-style: normal");
+});
+
+test("an emphasized span inside a settled thought renders as an em element (the CSS inversion's hook)", () => {
+  const { container } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["thoughts with *emphasized* words"]] })} turn={turn} live={false} />,
+  );
+  expect(container.querySelector("em")?.textContent).toBe("emphasized");
 });
 
 test("a running thought is not height-bounded - the whole block is readable as it streams", () => {
@@ -502,17 +525,25 @@ test("live parses markdown while streaming - a heading token becomes a real head
   expect(screen.queryByTestId("streaming-text")).toBeNull();
 });
 
-test("live re-parses as deltas arrive - emphasis appears the moment its closing marker streams in", () => {
+test("live auto-closes an unterminated marker - bold renders BEFORE its closer streams in", () => {
   const { container, rerender } = render(
     <ThinkBlock item={item({ reasoningSummaries: [["**bol"]] })} turn={turn} live={true} />,
   );
-  // An unterminated ** is literal text so far - marked cannot invent the
-  // emphasis early, and must not either.
-  expect(container.querySelector("strong")).toBeNull();
-  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("**bol");
+  // The stream tail is treated as open-ended: the truncated ** is closed for
+  // the live render (see widgets/markdown/streaming.ts), so the thought
+  // shows its formatting while streaming, not literal marker source.
+  expect(container.querySelector("strong")?.textContent).toBe("bol");
 
   rerender(<ThinkBlock item={item({ reasoningSummaries: [["**bol", "d**"]] })} turn={turn} live={true} />);
   expect(container.querySelector("strong")?.textContent).toBe("bold");
+});
+
+test("a genuinely unterminated marker in the SETTLED source stays literal (auto-close is a live-only preview)", () => {
+  const { container } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["**bol"]] })} turn={turn} live={false} />,
+  );
+  expect(container.querySelector("strong")).toBeNull();
+  expect(container.textContent).toContain("**bol");
 });
 
 test("markdown in a thought is parsed identically while live and once settled (same item, same text)", () => {

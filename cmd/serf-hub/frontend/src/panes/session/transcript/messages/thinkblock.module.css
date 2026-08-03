@@ -1,9 +1,10 @@
 /* The quietest layer in the transcript (mockup #5): never out-shouts the
  * agent's own prose — quiet through INK, not size. Thinking is body text
  * like the turns around it (Jesse's review call: caption-sized thoughts
- * read as footnotes, and they are not footnotes). Live streams open in the
- * draft italic at reduced contrast, at whatever height its own text needs;
- * settled collapses to a single ink-low summary line with a trailing
+ * read as footnotes, and they are not footnotes). The body is italic in
+ * both states at reduced contrast (Jesse, 2026-08-03: always italic, with
+ * marked-up emphasis inverted to roman), at whatever height its own text
+ * needs; settled collapses to a single ink-low summary line with a trailing
  * chevron.
  *
  * Both live and expanded-settled are STACKED ROWS, never a label-beside-
@@ -69,9 +70,11 @@
   }
 }
 
-/* The live body is the draft (mockup #4): italics are the state signal -
- * in-flight reasoning reads as provisional, and the same words settle to
- * roman in the disclosure body the moment the item completes.
+/* The thinking body is ALWAYS italic (Jesse, 2026-08-03): a thought reads
+ * as the agent's internal monologue in both states - in flight and inside
+ * the settled disclosure. The ONE inversion: content the agent itself marked
+ * up as italic renders roman (the :where(em) rule below), so deliberate
+ * emphasis stands out against the italic field instead of vanishing into it.
  *
  * The body renders through the Markdown widget, which sets its own body
  * color; --markdown-ink is the widget's hook for overriding it so a
@@ -164,7 +167,8 @@
 /* A settled thought renders through the Markdown widget, which sets its own
  * body color; --markdown-ink is the widget's hook for overriding it so a
  * thought stays quieter than the agent message below it. .liveBody applies
- * the same override for the live streaming path.
+ * the same override for the live streaming path. The body is italic for the
+ * same always-italic rule .liveBody documents above.
  *
  * The body is a full-width ROW below the summary line - no left border, no
  * inset, no label column (the second review pass: beside-the-label it read
@@ -172,7 +176,18 @@
  * layout inside. */
 .body {
   margin-top: var(--space-1);
+  font-style: italic;
   --markdown-ink: var(--ink-mid);
+}
+
+/* The one inversion of the always-italic body (Jesse, 2026-08-03): spans the
+ * agent marked up as italic render roman, so emphasis still reads AS
+ * emphasis against the italic field. Bare-tag descendant selectors are
+ * untouched by CSS Modules (see widgets/markdown's own comment), so this
+ * reaches the <em> inside the Markdown widget's innerHTML output. */
+.liveBody :where(em),
+.body :where(em) {
+  font-style: normal;
 }
 
 /* Same subtle open as every other disclosure in the app (A6): an opacity fade

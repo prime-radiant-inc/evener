@@ -823,7 +823,9 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
       params: { ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "hello" },
     } as AnyNotification);
   });
-  await waitFor(() => expect(within(paneA.container).getByTestId("streaming-text").textContent).toBe("hello"));
+  await waitFor(() =>
+    expect(within(paneA.container).getByTestId("agent-message-stream").textContent?.trim()).toBe("hello"),
+  );
 
   paneA.unmount(); // real dockview behavior: pane A's whole tree unmounts on a tab switch
 
@@ -838,16 +840,19 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   });
   expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText).toEqual(["hello", " world"]);
 
-  // Remount pane A - a fresh component instance (StreamingText's own
-  // internal ref/text node from before are gone; if the rendered content
-  // depended on THAT instead of the store, this would render blank or stale).
+  // Remount pane A - a fresh component instance (the live stream's rendered
+  // markdown from before is gone; if the rendered content depended on
+  // component-local state instead of the store, this would render blank or
+  // stale).
   const paneARemounted = render(
     <ClientProvider client={fake}>
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
   await waitFor(() =>
-    expect(within(paneARemounted.container).getByTestId("streaming-text").textContent).toBe("hello world"),
+    expect(within(paneARemounted.container).getByTestId("agent-message-stream").textContent?.trim()).toBe(
+      "hello world",
+    ),
   );
 });
 

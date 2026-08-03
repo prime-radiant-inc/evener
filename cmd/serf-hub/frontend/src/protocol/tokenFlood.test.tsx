@@ -218,10 +218,10 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     // ("DummyRenderer"/"LiveEcho"/"TurnEcho") rather than instrumenting a
     // real production component. Mirrored here: a probe component counts
     // its own render-function invocations for the settled sibling; the
-    // LIVE item renders through the real, unmodified AgentMessageItem/
-    // StreamingText path (registered by SessionPane's own `import
+    // LIVE item renders through the real, unmodified AgentMessageItem
+    // path (registered by SessionPane's own `import
     // "./transcript/messages"` side effect), so the flood still exercises
-    // the genuine end-to-end streaming fast path this test is named for.
+    // the genuine end-to-end streaming render path this test is named for.
     //
     // Wrapped with the same `memo(Component, ignoringTurn)` treatment T5c
     // gives every registered production renderer except SystemNoticeItem
@@ -266,18 +266,20 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
       });
     }
 
-    // Asserted synchronously, NOT polled: StreamingText appends each delta to
-    // its text node from a useLayoutEffect (see that component), which React
-    // runs inside the commit of the act() that emitted the delta - so the
-    // final text is in the DOM the instant the loop above ends. Instrumenting
-    // this line showed the polled version finding the condition already true
-    // on its first check in every run, quiet or starved, yet still costing
-    // 40ms idle and up to 2233ms when the box was oversubscribed: waitFor's
-    // interval and RTL's own trailing setTimeout are wall-clock round trips,
-    // and starving them inflates a zero-wait assertion into seconds of this
-    // test's 5000ms budget. Polling for something already settled is the same
-    // mistake as racing a clock for something that is not.
-    expect(document.querySelector('[data-testid="streaming-text"]')?.textContent).toBe(chunks.join(""));
+    // Asserted synchronously, NOT polled: the live agent message renders its
+    // markdown in the same render pass that applies each delta (Markdown is a
+    // pure function of the joined chunks - there is no layout-effect flush to
+    // wait for), so the final text is in the DOM the instant the loop above
+    // ends. Instrumenting this line showed the polled version finding the
+    // condition already true on its first check in every run, quiet or
+    // starved, yet still costing 40ms idle and up to 2233ms when the box was
+    // oversubscribed: waitFor's interval and RTL's own trailing setTimeout
+    // are wall-clock round trips, and starving them inflates a zero-wait
+    // assertion into seconds of this test's 5000ms budget. Polling for
+    // something already settled is the same mistake as racing a clock for
+    // something that is not. (trimmed: marked closes the document with a
+    // trailing newline, invisible in layout.)
+    expect(document.querySelector('[data-testid="agent-message-stream"]')?.textContent?.trim()).toBe(chunks.join(""));
 
     // The settled sibling's own DOM content must still be correct after the
     // flood regardless of how many times it re-rendered - this probe

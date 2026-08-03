@@ -11,18 +11,23 @@
 // MARKDOWN, LIVE AND SETTLED: agents write reasoning in markdown, so BOTH
 // states parse it through the same Markdown widget that renders a settled
 // agent message - and from the SAME source (joinedReasoningParagraphs,
-// blank-line joined), so the live-to-settled transition changes chrome
-// (draft italic -> roman disclosure), never the document. The live view
-// re-parses the whole joined document on every delta. The trade-off,
-// stated plainly:
+// blank-line joined), so the live-to-settled transition changes only the
+// chrome around the document (open stream -> collapsed disclosure), never
+// the document itself. The body is ALWAYS italic in both states (Jesse,
+// 2026-08-03), with markup-emphasis inverted to roman - see
+// thinkblock.module.css. The live view passes the widget's `live` flag, so
+// constructs left open at the stream tail are closed for the preview (see
+// widgets/markdown/streaming.ts), and re-parses the whole joined document
+// on every delta. The trade-off, stated plainly:
 //
 //   - What live gives up: StreamingText's append-only DOM contract (the
 //     fast path that exists precisely so a burst of deltas never re-diffs
-//     settled text - AgentMessageItem keeps it for agent prose, where
-//     markdown-parsing per delta was rejected as the wave-4 binding
-//     constraint) and, with it, the guarantee that settled text is never
-//     re-laid-out mid-stream. A construct whose closer has not streamed yet
-//     renders literal (`**bol` stays visible source until `d**` arrives).
+//     settled text) and, with it, the guarantee that settled text is never
+//     re-laid-out mid-stream. The tail's auto-close is a preview heuristic:
+//     a truncated `**bol` renders bold on the GUESS that its closer is
+//     still coming, which is wrong for the rare genuinely-unbalanced final
+//     source (the settled render then shows it literal - the preview always
+//     converges to the truth at settle).
 //   - What live keeps: the reader sees the thought the way the agent wrote
 //     it - headings, lists, emphasis, code - while it is still streaming,
 //     instead of reading markdown source for the whole in-flight window.
@@ -124,8 +129,12 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
               explicit guard keeps the zero-content case from depending on
               that detail. Paragraphs that join to whitespace are already
               dropped by joinedReasoningParagraphs, so a zero-chunk
-              summaryIndex leaves no empty-paragraph gap. */}
-          {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} />}
+              summaryIndex leaves no empty-paragraph gap.
+              live: the stream is truncated by definition - open constructs
+              at its tail (`**bo`, an unclosed fence) are closed for this
+              render (see widgets/markdown/streaming.ts), so formatting is
+              visible WHILE streaming instead of literal marker source. */}
+          {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} live />}
         </div>
       </div>
     </div>
