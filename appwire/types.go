@@ -116,6 +116,7 @@ const (
 	NotifySerfSteeringInjected         = "serf/steering/injected"
 	NotifySerfJobStarted               = "serf/job/started"
 	NotifySerfJobFinished              = "serf/job/finished"
+	NotifySerfJobsTreeUpdated          = "serf/jobs/treeUpdated"
 	NotifySerfAuthUpdated              = "serf/auth/updated"
 	NotifySerfLaunchUpdated            = "serf/launch/updated"
 	NotifySerfAttentionChanged         = "serf/attention/changed"
@@ -1177,11 +1178,82 @@ type TaskListResponse struct {
 }
 
 type JobsListParams struct {
-	Ref string `json:"ref,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	Continuation string `json:"continuation,omitempty"`
 }
 
 type JobsListResponse struct {
 	Data any `json:"data"`
+}
+
+type JobsTreeUpdatedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	Revision uint64 `json:"revision"`
+}
+
+type JobActivityCounts struct {
+	Active    int  `json:"active"`
+	Failed    int  `json:"failed"`
+	Completed int  `json:"completed"`
+	Complete  bool `json:"complete"`
+}
+
+type JobActivityBranchState struct {
+	Error        string `json:"error,omitempty"`
+	Truncated    bool   `json:"truncated,omitempty"`
+	Continuation string `json:"continuation,omitempty"`
+}
+
+type JobActivityJob struct {
+	JobID          string `json:"jobId"`
+	OwnerSessionID string `json:"ownerSessionId"`
+	OwnerRef       string `json:"ownerRef"`
+	Type           string `json:"type"`
+	Status         string `json:"status"`
+	Outcome        string `json:"outcome,omitempty"`
+	Terminal       bool   `json:"terminal"`
+	Background     bool   `json:"background"`
+	HasOutput      bool   `json:"hasOutput"`
+	Description    string `json:"description"`
+	Command        string `json:"command,omitempty"`
+	Task           string `json:"task,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	StartedAt      string `json:"startedAt"`
+	EndedAt        string `json:"endedAt,omitempty"`
+	ExitCode       *int   `json:"exitCode,omitempty"`
+	OutputBytes    int64  `json:"outputBytes"`
+}
+
+type JobActivityDelegate struct {
+	DelegateID     string                 `json:"delegateId"`
+	ChildSessionID string                 `json:"childSessionId"`
+	ChildRef       string                 `json:"childRef"`
+	Mandate        string                 `json:"mandate,omitempty"`
+	Turns          []JobActivityJob       `json:"turns"`
+	Child          *JobActivitySession    `json:"child,omitempty"`
+	Branch         JobActivityBranchState `json:"branch"`
+}
+
+type JobActivityEntry struct {
+	Kind     string               `json:"kind"` // shell | delegate
+	Job      *JobActivityJob      `json:"job,omitempty"`
+	Delegate *JobActivityDelegate `json:"delegate,omitempty"`
+}
+
+type JobActivitySession struct {
+	SessionID string                 `json:"sessionId"`
+	Ref       string                 `json:"ref"`
+	Label     string                 `json:"label"`
+	Aggregate string                 `json:"aggregate"`
+	Counts    JobActivityCounts      `json:"counts"`
+	Entries   []JobActivityEntry     `json:"entries"`
+	Branch    JobActivityBranchState `json:"branch"`
+}
+
+type JobActivityTree struct {
+	Revision uint64             `json:"revision"`
+	Root     JobActivitySession `json:"root"`
 }
 
 // JobSummary is the UI wire projection of one job record — the shape

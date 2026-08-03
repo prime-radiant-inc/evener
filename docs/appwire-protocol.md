@@ -182,6 +182,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `serf/job/started` | `SerfJobParams` | A background job started. |
 | `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
+| `serf/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
 | `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `serf/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
@@ -489,6 +490,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` | yes |  |
+| `continuation` | `string` | yes |  |
 
 
 ### `JobsListResponse`
@@ -512,6 +514,15 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `interface {}` |  |  |
+
+
+### `JobsTreeUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `revision` | `uint64` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`

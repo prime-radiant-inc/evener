@@ -287,6 +287,7 @@ export interface ItemLifecycleParams {
 
 export interface JobsListParams {
   ref?: string;
+  continuation?: string;
 }
 
 export interface JobsListResponse {
@@ -301,6 +302,12 @@ export interface JobsOutputParams {
 
 export interface JobsOutputResponse {
   data: unknown;
+}
+
+export interface JobsTreeUpdatedParams {
+  threadId: string;
+  ref: string;
+  revision: number;
 }
 
 export interface LaunchConfigDiagnostic {
@@ -1376,6 +1383,7 @@ export const NOTIFICATION_NAMES = [
   "serf/steering/injected",
   "serf/job/started",
   "serf/job/finished",
+  "serf/jobs/treeUpdated",
   "serf/auth/updated",
   "serf/launch/updated",
   "serf/attention/changed",
@@ -1525,6 +1533,7 @@ export interface NotificationTypes {
   "serf/steering/injected": SerfSteeringInjectedParams;
   "serf/job/started": SerfJobParams;
   "serf/job/finished": SerfJobParams;
+  "serf/jobs/treeUpdated": JobsTreeUpdatedParams;
   "serf/auth/updated": SerfAuthUpdatedParams;
   "serf/launch/updated": SerfLaunchUpdatedParams;
   "serf/attention/changed": AttentionChangedPayload;
