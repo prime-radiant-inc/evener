@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
@@ -316,6 +319,23 @@ function pendingAskTurns(): Pick<Thread, "turns"> {
     ],
   };
 }
+
+test("while ask_pending is open, the AskDock replacement surface is exposed and the message textbox is hidden", async () => {
+  await mountComposer("ref_a", {
+    ...pendingAskTurns(),
+  });
+
+  expect(screen.getByText("Answer the agent’s questions.")).toBeTruthy();
+  expect(screen.getByText("Ship now?")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+});
+
+test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toContain("flex: 1 1 auto");
+  expect(css).toContain("min-height: 0");
+  expect(css).toContain("justify-content: flex-end");
+});
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
