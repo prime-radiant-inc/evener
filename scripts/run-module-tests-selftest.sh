@@ -133,11 +133,27 @@ set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
 case "${1:-}" in
+	env)
+		case "${2:-}" in
+			GOCACHE) printf '%s\n' "${GOCACHE:-}" ;;
+			GOMODCACHE) printf '%s\n' "${GOMODCACHE:-}" ;;
+			*) exit 1 ;;
+		esac
+		exit 0
+		;;
 	list)
 		if [ "${FAKE_LIST_FAIL:-0}" -ne 0 ]; then
 			printf 'go: cannot load module\n' >&2
 			exit 1
 		fi
+		if [ "${FAKE_LIST_HOLD:-0}" -ne 0 ]; then
+			: >"$FAKE_STATE/root-list.started"
+			sleep 1000 &
+			printf '%s\n' "$!" >"$FAKE_STATE/root-list-child.pid"
+			wait "$!"
+			exit $?
+		fi
+		: >"$FAKE_STATE/root.listed"
 		printf 'primeradiant.com/serf/%s\n' "$module"
 		exit 0
 		;;
@@ -234,6 +250,7 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -245,6 +262,7 @@ run_tests_async() {
 	(
 		cd "$repo" || exit 1
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
@@ -256,6 +274,7 @@ run_tests_default_modules() {
 	(
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -272,6 +291,16 @@ wait_for_file() {
 	local path="$1" attempts=200
 	while [ "$attempts" -gt 0 ]; do
 		[ -f "$path" ] && return 0
+		sleep 0.01
+		attempts=$((attempts - 1))
+	done
+	return 1
+}
+
+wait_for_process_exit() {
+	local pid="$1" attempts=200
+	while [ "$attempts" -gt 0 ]; do
+		kill -0 "$pid" 2>/dev/null || return 0
 		sleep 0.01
 		attempts=$((attempts - 1))
 	done
@@ -296,6 +325,7 @@ assert_eq "$rc" "0" "all-passing run exits zero"
 assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent llm web" "every stream reports once, in wave order"
 assert_one_verdict_per_name "$out" "all-passing run reports no name twice"
 assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
+if [ -f "$state/root.listed" ]; then ok "a root package-discovery success reaches the root test invocation"; else bad "a root package-discovery success never listed root packages"; fi
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
 assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
@@ -420,8 +450,54 @@ new_case
 out="$case_dir/root-package-discovery-failure.out"
 if FAKE_LIST_FAIL=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "a root package-discovery failure exits nonzero"; else bad "a root package-discovery failure unexpectedly exits zero"; fi
+assert_has "$out" "FAIL  ." "a root package-discovery failure contributes a root verdict"
+assert_has "$out" "----- . -----" "a root package-discovery failure is included in aggregate output"
 assert_has "$out" "go: cannot load module" "a root package-discovery diagnostic reaches the reader"
 assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery failure does not fall into an empty-array error"
+
+# Root package discovery happens before the root test command. A wedged cache
+# can therefore freeze the entire gate while the concurrent frontend stream
+# remains live. The watchdog makes the pre-timeout behavior deterministic: it
+# records that the runner needed outside intervention instead of leaving this
+# selftest itself stuck forever.
+new_case
+out="$case_dir/root-package-discovery-timeout.out"
+root_worktree="$(cd "$repo" && pwd -P)"
+FAKE_LIST_HOLD=1 run_tests_async "." "$out" SERF_ROOT_PACKAGE_LIST_TIMEOUT=1
+if wait_for_file "$state/root-list.started"; then
+	(
+		sleep 3
+		if kill -0 "$runner_pid" 2>/dev/null; then
+			: >"$state/root-list.watchdog"
+			kill -TERM "$runner_pid" 2>/dev/null || :
+		fi
+	) &
+	watchdog_pid="$!"
+	if wait "$runner_pid"; then rc=0; else rc=$?; fi
+	wait "$watchdog_pid" || :
+	assert_eq "$rc" "1" "a root package-discovery timeout exits nonzero"
+	if [ -f "$state/root-list.watchdog" ]; then
+		bad "root package discovery required the watchdog despite its configured timeout"
+	else
+		ok "root package discovery finishes before the watchdog"
+	fi
+	assert_has "$out" "go list ./... timed out" "a root package-discovery timeout names the blocked command"
+	assert_has "$out" "effective GOCACHE: $case_dir/gocache" "a root package-discovery timeout reports the effective GOCACHE"
+	assert_has "$out" "effective GOMODCACHE: $case_dir/gomodcache" "a root package-discovery timeout reports the effective GOMODCACHE"
+	assert_has "$out" "worktree/module: $root_worktree (.)" "a root package-discovery timeout reports its worktree and module"
+	assert_has "$out" "retained package-list log:" "a root package-discovery timeout names the retained package-list log"
+	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
+	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
+	child_pid="$(cat "$state/root-list-child.pid" 2>/dev/null || :)"
+	if [ -n "$child_pid" ] && wait_for_process_exit "$child_pid"; then
+		ok "a root package-discovery timeout reaps its descendant"
+	else
+		bad "a root package-discovery timeout leaves its descendant alive"
+		[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
+	fi
+else
+	bad "the root package-discovery timeout fixture never started"
+	fi
 
 new_case
 out="$case_dir/web-failure.out"
