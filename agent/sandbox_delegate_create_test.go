@@ -231,6 +231,27 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *tes
 	}
 }
 
+// TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected: a child
+// can be fully prepared and then rejected by the parent-closing gate before it
+// is adopted. That late failure must roll back a fresh sandbox environment too.
+func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	s.cfg.testOnly.subagentAfterPrepare = func(parent *Session) { parent.Close() }
+
+	ctx := context.WithValue(context.Background(), ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	if _, err := s.spawnAgent(ctx, "child task", "", lane, 0, "", "", nil, nil); err == nil || !strings.Contains(err.Error(), "session is closed") {
+		t.Fatalf("spawnAgent error = %v, want session-closed launch rejection", err)
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("per-delegate sandbox scratch leaked on launch rejection: %v", left)
+	}
+}
+
 // TestParentClose_RetainsPerDelegateSandboxScratch: a completed+retained
 // per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
 // scratch dir. At PARENT close, retained children are torn down via close(false),
@@ -398,14 +419,13 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 					// worktree and the real read-only file tool must reject it.
 					chosenPath = "dumb-report.md"
 				} else {
-					start := strings.Index(promptText, scratchMarker)
-					if start < 0 {
+					_, scratch, found := strings.Cut(promptText, scratchMarker)
+					if !found {
 						modelError = "prompt had the write-boundary sentence but no scratch path"
 						chosenPath = "dumb-report.md"
 					} else {
-						scratch := promptText[start+len(scratchMarker):]
-						if end := strings.Index(scratch, ". "+guidance); end >= 0 {
-							scratch = scratch[:end]
+						if before, _, found := strings.Cut(scratch, ". "+guidance); found {
+							scratch = before
 						}
 						scratch = strings.TrimSpace(strings.SplitN(scratch, "\n", 2)[0])
 						if scratch == "" {

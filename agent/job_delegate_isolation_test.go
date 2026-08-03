@@ -707,9 +707,22 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	wtGit(t, lane, "add", "lane.txt")
 	wtGit(t, lane, "commit", "-m", "lane work")
 	tip := strings.TrimSpace(wtGit(t, lane, "rev-parse", "HEAD"))
+	var revListRange string
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 5 && args[2] == "rev-list" && args[3] == "--count" {
+				revListRange = args[4]
+			}
+			return next(args...)
+		}
+	}
 	got = r.s.isolatedDelegateWorktreeReport(desc)
 	if got == nil || got.Ahead != 1 || got.Dirty || got.HeadSHA != tip {
 		t.Errorf("one-commit-ahead report = %+v, want head=%s ahead=1 dirty=false", got, tip)
+	}
+	if want := baseSHA + ".." + tip; revListRange != want {
+		t.Fatalf("ahead query range = %q, want captured HEAD range %q", revListRange, want)
 	}
 	if tip == baseSHA {
 		t.Fatal("test setup: lane HEAD did not move past base")

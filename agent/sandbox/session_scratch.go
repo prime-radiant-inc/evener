@@ -147,8 +147,7 @@ func (s *SessionScratch) Cleanup() error {
 		!strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
-	var releaseErr error
-	releaseErr = s.Retain()
+	releaseErr := s.Retain()
 	return errors.Join(releaseErr, os.RemoveAll(dir))
 }
 

@@ -383,7 +383,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	run, err := s.attachDelegateJobWithPreparedAndDelegate(jm, childID, task, sub, jobID, delegateID, delegateGeneration, args.AgentType, args.ResultSchema, false, prepared)
 	if err != nil {
 		prepared.runCancel()
-		sub.sess.Close()
+		prepared.disposeUnadopted()
 		if workingDir != "" {
 			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)
 		}
@@ -402,7 +402,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		// in job_delegate_isolation_test.go for those). The rollback call
 		// itself is identical to, and already proven correct by, those two.
 		prepared.runCancel()
-		sub.sess.Close()
+		prepared.disposeUnadopted()
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
 		if workingDir != "" {
 			s.rollbackFreshDelegateWorktree(delegateID, workingDir, worktreeProject)

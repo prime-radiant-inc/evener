@@ -111,8 +111,8 @@ type subagent struct {
 	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
 	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
 	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
-	// parent's env cleanup does not reach, so the parent disposes it at child
-	// teardown. False for a child that shares the parent env (nothing to dispose).
+	// parent's env cleanup does not reach. Unadopted setup failures dispose it;
+	// normal teardown retains its scratch until the explicit disposal operation.
 	ownsEnv bool
 }
 
@@ -147,6 +147,30 @@ type preparedSubagentRun struct {
 	// attach (an error path, or the legacy in-process spawn that mints no
 	// delegate job), the reservation is released so the slot is not leaked.
 	treeSlot *treeReservation
+}
+
+// disposeUnadoptedSubagentSession tears down a child that never became a
+// tracked/adopted delegate. Normal session cleanup retains sandbox scratch for
+// the human handoff, but an unadopted fresh environment has no owner left to
+// perform that handoff, so its scratch is rolled back here.
+func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+	if sess == nil {
+		return
+	}
+	sess.Close()
+	if !ownsEnv {
+		return
+	}
+	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+		le.DisposeSandboxScratch()
+	}
+}
+
+func (p *preparedSubagentRun) disposeUnadopted() {
+	if p == nil || p.sub == nil {
+		return
+	}
+	disposeUnadoptedSubagentSession(p.sub.sess, p.sub.ownsEnv)
 }
 
 func hasString(items []string, want string) bool {
@@ -381,7 +405,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		hook(s)
 	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
-		prepared.sub.sess.Close()
+		prepared.disposeUnadopted()
 		return "", err
 	}
 
@@ -660,12 +684,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		return nil, err
 	}
 	disposeUnadopted := func() {
-		subSess.Close()
-		if ownsFreshEnv {
-			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeSandboxScratch()
-			}
-		}
+		disposeUnadoptedSubagentSession(subSess, ownsFreshEnv)
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
