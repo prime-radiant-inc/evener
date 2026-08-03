@@ -11,13 +11,13 @@
 // item.output, so its existing output parser is the useful representation;
 // raw duplicates that state. job_list returns human-formatted text in output
 // but a stable direct jobListResult in raw, which supplies valuable row fields
-// and is rendered below. job_stop and delegate_send return concise actionable
-// text/footers in output; their direct raw results duplicate that status or
-// would repeat details already present in the existing correlation bodies, so
-// those bodies stay output-driven. job_send_message is a retired/banned tool
-// name kept only as a defensive alias reading its legacy target arg.
+// and is rendered below. job_stop remains formatted-output-driven; delegate_send
+// prefers validated raw state and otherwise falls back to its historical
+// formatted output. job_send_message is a retired/banned tool name kept only
+// as a defensive alias reading its legacy target arg.
 import { useLayoutEffect } from "react";
 import type { ItemModel } from "../../../../protocol/model";
+import { CodeBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -33,6 +33,27 @@ const ID_CLIP = 26;
 // display - never spawning a fresh row (subagentModule.tsx's own
 // updateSubagentRowIfExists already enforces that; this is just the
 // per-tool row-key/kind/preview derivation).
+type CorrelationResolvers = {
+  resolveKey: (item: ItemModel) => string;
+  resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
+  resolvePreview: (item: ItemModel) => string;
+};
+
+function useCorrelateSubagentRow(
+  { item, sessionRef }: Pick<ToolRenderProps, "item" | "sessionRef">,
+  { resolveKey, resolveKind, resolvePreview }: CorrelationResolvers,
+): void {
+  useLayoutEffect(() => {
+    const kind = resolveKind(item);
+    if (kind === undefined) return; // nothing settled to report yet
+    updateSubagentRowIfExists(turnScopeKey(sessionRef, item.turnId), resolveKey(item), {
+      kind,
+      resultPreview: resolvePreview(item),
+      completedAt: item.completedAt,
+    });
+  });
+}
+
 function CorrelatingBody({
   item,
   sessionRef,
@@ -44,15 +65,7 @@ function CorrelatingBody({
   resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
   resolvePreview: (item: ItemModel) => string;
 }) {
-  useLayoutEffect(() => {
-    const kind = resolveKind(item);
-    if (kind === undefined) return; // nothing settled to report yet
-    updateSubagentRowIfExists(turnScopeKey(sessionRef, item.turnId), resolveKey(item), {
-      kind,
-      resultPreview: resolvePreview(item),
-      completedAt: item.completedAt,
-    });
-  });
+  useCorrelateSubagentRow({ item, sessionRef }, { resolveKey, resolveKind, resolvePreview });
   return <HeadClippedOutputBody item={item} live={false} />;
 }
 
@@ -201,30 +214,161 @@ function delegateSendTarget(args: Record<string, unknown>): string {
   return str(args, "to") ?? str(args, "target") ?? "";
 }
 
+type DelegateSendRawState = {
+  action: string;
+  running_in_background: boolean;
+  output?: string;
+};
+
+function delegateSendResult(raw: unknown): raw is DelegateSendRawState {
+  const state = asJsonObject(raw);
+  return (
+    state !== undefined &&
+    typeof state.action === "string" &&
+    state.action.trim() !== "" &&
+    typeof state.running_in_background === "boolean" &&
+    (state.output === undefined || typeof state.output === "string")
+  );
+}
+
+const KNOWN_DELEGATE_SEND_STATUSES = new Set([
+  "running",
+  "completed",
+  "failed",
+  "exhausted",
+  "cancelled",
+  "stopped",
+  "delivered",
+  "not_delivered",
+]);
+
+type DelegateSendFooterInfo = { text: string; index: number };
+
+function delegateSendFooter(output: string): DelegateSendFooterInfo | undefined {
+  const trimmed = output.trimEnd();
+  const lines = trimmed.split("\n");
+
+  let index = lines.length - 1;
+  while (index >= 0) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("structured_result (valid=") || line === "watches:" || line.startsWith("- ")) {
+      index -= 1;
+      continue;
+    }
+    break;
+  }
+
+  const footerLine = lines[index];
+  if (footerLine === undefined || !footerLine.startsWith("[") || !footerLine.endsWith("]")) return undefined;
+
+  const footer = footerLine.slice(1, -1);
+  const fields = footer.split(" · ");
+  if (fields.length < 2) return undefined;
+
+  let fieldIndex = 0;
+  const delegateField = fields[fieldIndex] ?? "";
+  if (!delegateField.startsWith("delegate_id ")) return undefined;
+  if (delegateField.slice("delegate_id ".length).trim() === "") return undefined;
+  fieldIndex += 1;
+
+  const actionField = fields[fieldIndex] ?? "";
+  if (actionField.trim() === "") return undefined;
+  fieldIndex += 1;
+
+  const startedJobField = fields[fieldIndex] ?? "";
+  if (startedJobField.startsWith("started_job_id ")) {
+    if (startedJobField.slice("started_job_id ".length).trim() === "") return undefined;
+    fieldIndex += 1;
+  }
+
+  const statusField = fields[fieldIndex];
+  if (statusField !== undefined && KNOWN_DELEGATE_SEND_STATUSES.has(statusField)) {
+    fieldIndex += 1;
+  }
+
+  const runningField = fields[fieldIndex] ?? "";
+  if (runningField === "running in background") {
+    fieldIndex += 1;
+  }
+
+  const watchingField = fields[fieldIndex] ?? "";
+  if (watchingField === "watching") {
+    fieldIndex += 1;
+  }
+
+  const waitIgnoredField = fields[fieldIndex] ?? "";
+  if (waitIgnoredField.startsWith("wait ignored: ")) {
+    if (waitIgnoredField.slice("wait ignored: ".length).trim() === "") return undefined;
+    fieldIndex += 1;
+  }
+
+  if (fieldIndex !== fields.length) return undefined;
+  return { text: footer, index };
+}
+
+function delegateSendResponse(item: ItemModel): string | undefined {
+  if (delegateSendResult(item.raw)) {
+    const rawOutput = item.raw.output;
+    if (rawOutput !== undefined && rawOutput.trim() !== "") return rawOutput;
+  }
+
+  const output = item.output ?? "";
+  if (output === "") return undefined;
+  const footer = delegateSendFooter(output);
+  if (footer === undefined) return output;
+
+  const response = output.trimEnd().split("\n").slice(0, footer.index).join("\n");
+  return response.trim() === "" ? undefined : response;
+}
+
+function DelegateSendBody(props: ToolRenderProps) {
+  const { item } = props;
+  const message = str(parseArgs(item.argumentsJSON), "message");
+  const response = delegateSendResponse(item);
+
+  useCorrelateSubagentRow(props, {
+    resolveKey: (item) =>
+      resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id),
+    resolveKind: (item) => {
+      const footer = delegateSendFooter(item.output ?? "");
+      return footer ? classifyJobStatus(statusWordFromText(footer.text)) : undefined;
+    },
+    resolvePreview: (item) => delegateSendFooter(item.output ?? "")?.text ?? "",
+  });
+
+  if (!message && !response) return null;
+  return (
+    <div data-testid="delegate-send-body">
+      {message ? (
+        <section>
+          <strong>Message</strong>
+          <div data-testid="delegate-send-message">
+            <CodeBlock text={message} copyLabel="Copy message" />
+          </div>
+        </section>
+      ) : null}
+      {response ? (
+        <section>
+          <strong>Response</strong>
+          <div data-testid="delegate-send-response">
+            <CodeBlock text={response} copyLabel="Copy response" />
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   icon: "send",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const target = clip(delegateSendTarget(args), ID_CLIP);
-    const footer = trailingBracketFooter(item.output ?? "");
-    return footer ? `Messaged ${target} · ${footer}` : `Messaged ${target}`;
+    const footer = delegateSendFooter(item.output ?? "");
+    return footer ? `Messaged ${target} · ${footer.text}` : `Messaged ${target}`;
   },
-  body(props: ToolRenderProps) {
-    return (
-      <CorrelatingBody
-        {...props}
-        resolveKey={(item) =>
-          resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id)
-        }
-        resolveKind={(item) => {
-          const footer = trailingBracketFooter(item.output ?? "");
-          return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
-        }}
-        resolvePreview={(item) => trailingBracketFooter(item.output ?? "") ?? ""}
-      />
-    );
-  },
+  body: DelegateSendBody,
 });
 
 // Generic fallback for any other job_*-family tool (e.g. job_watch) not
