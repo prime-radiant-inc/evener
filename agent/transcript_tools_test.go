@@ -60,7 +60,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("expanded", 100)))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("expanded", 4000)))); err != nil {
 		_ = w.Close()
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 	registered := readTranscriptTool(deps)
 	properties := registered.Definition.Parameters["properties"].(map[string]any)
-	for _, name := range []string{"offset_bytes", "max_bytes"} {
+	for _, name := range []string{"offset_bytes"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("read_transcript public definition is missing %q", name)
 		}
@@ -81,32 +81,57 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 	first, err := registered.Exec(context.Background(), nil, map[string]any{
 		"transcript_ref": sessionID,
 		"expand_turn":    float64(0),
-		"max_bytes":      float64(32),
 	})
 	if err != nil {
 		t.Fatalf("first read_transcript expansion: %v", err)
 	}
 	firstEnvelope := first.(readMarkdownEnvelope)
-	if firstEnvelope.Continuation == nil || firstEnvelope.Continuation.OffsetBytes != 32 {
-		t.Fatalf("first continuation = %+v, want offset 32", firstEnvelope.Continuation)
+	if firstEnvelope.Continuation == nil || firstEnvelope.Continuation.OffsetBytes != defaultExpansionBytes {
+		t.Fatalf("first continuation = %+v, want offset %d", firstEnvelope.Continuation, defaultExpansionBytes)
 	}
 
 	second, err := registered.Exec(context.Background(), nil, map[string]any{
 		"transcript_ref": sessionID,
 		"expand_turn":    float64(0),
 		"offset_bytes":   float64(firstEnvelope.Continuation.OffsetBytes),
-		"max_bytes":      float64(32),
 	})
 	if err != nil {
 		t.Fatalf("continued read_transcript expansion: %v", err)
 	}
 	secondEnvelope := second.(readMarkdownEnvelope)
-	if secondEnvelope.Expansion == nil || secondEnvelope.Expansion.OffsetBytes != 32 {
-		t.Fatalf("second expansion = %+v, want offset 32", secondEnvelope.Expansion)
+	if secondEnvelope.Expansion == nil || secondEnvelope.Expansion.OffsetBytes != defaultExpansionBytes {
+		t.Fatalf("second expansion = %+v, want offset %d", secondEnvelope.Expansion, defaultExpansionBytes)
 	}
 }
 
-// TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs spells its four
+func TestReadTranscriptPublicSurfaceOmitsLegacyReaderAndPrivateOptions(t *testing.T) {
+	registered := readTranscriptTool(&toolDeps{stateDir: t.TempDir(), sessionID: "current"})
+	properties := registered.Definition.Parameters["properties"].(map[string]any)
+	for _, name := range []string{"source", "attempt_id", "body", "max_bytes"} {
+		if _, ok := properties[name]; ok {
+			t.Fatalf("read_transcript still exposes removed option %q", name)
+		}
+	}
+
+	for _, args := range []map[string]any{
+		{"transcript_ref": "current", "source": "api_log"},
+		{"transcript_ref": "current", "max_bytes": float64(1024)},
+	} {
+		if _, err := registered.Exec(context.Background(), nil, args); err == nil || !strings.Contains(err.Error(), "not supported") {
+			t.Fatalf("read_transcript args %#v error = %v, want unsupported-option error", args, err)
+		}
+	}
+
+	names := map[string]bool{}
+	for _, candidate := range transcriptTools(&toolDeps{stateDir: t.TempDir(), sessionID: "current"}) {
+		names[candidate.Definition.Name] = true
+	}
+	if names["read_session_transcript"] {
+		t.Fatal("legacy read_session_transcript remains in the callable transcript tool surface")
+	}
+}
+
+// TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs spells its three
 // parameter names out rather than ranging over jobRefRejectedParams. Reading
 // the list from the implementation would make this test agree with whatever
 // the implementation happens to say — dropping an entry there would silently
@@ -114,7 +139,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 // read_transcript_description_test.go is the half that keys to the var, so an
 // ADDED rejection still cannot land unannounced.
 func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
-	for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
+	for _, name := range []string{"range", "expand_turn", "offset_bytes"} {
 		t.Run(name, func(t *testing.T) {
 			value := any(float64(1))
 			if name == "range" {

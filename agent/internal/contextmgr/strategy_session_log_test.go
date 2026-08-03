@@ -443,8 +443,8 @@ func TestSessionLogStrategy_SessionLogCheckpoint_ContainsTranscriptRecoveryPoint
 	if !strings.Contains(checkpointText, sessionID) {
 		t.Errorf("expected session id %q in checkpoint, got: %s", sessionID, checkpointText)
 	}
-	if !strings.Contains(checkpointText, "read_session_transcript") {
-		t.Errorf("expected read_session_transcript in checkpoint, got: %s", checkpointText)
+	if !strings.Contains(checkpointText, "read_transcript") {
+		t.Errorf("expected read_transcript in checkpoint, got: %s", checkpointText)
 	}
 }
 

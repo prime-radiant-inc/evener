@@ -116,6 +116,23 @@ func TestGlob_DoublestarPattern(t *testing.T) {
 	}
 }
 
+func TestGlob_BraceAlternatives(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one.ts", "two.tsx", "three.css", "four.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NewLocalExecutionEnvironment(dir).Glob("*.{ts,tsx,css}", "")
+	if err != nil {
+		t.Fatalf("Glob brace alternatives: %v", err)
+	}
+	if len(got) != 3 || strings.HasSuffix(got[0], "four.go") {
+		t.Fatalf("Glob brace alternatives = %v, want exactly the three requested extensions", got)
+	}
+}
+
 func TestGlob_InvalidPattern(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
@@ -779,5 +796,10 @@ func TestShellEscape(t *testing.T) {
 	// A word containing a single quote uses the '"'"' splice.
 	if got := shellEscape("it's"); got != `'it'"'"'s'` {
 		t.Fatalf("single-quote = %q, want %q", got, `'it'"'"'s'`)
+	}
+	for _, pattern := range []string{"file?name", "file[name]", "file{one,two}", "~user", "#comment"} {
+		if got := shellEscape(pattern); got == pattern {
+			t.Fatalf("shell glob/comment syntax was left unquoted: %q", pattern)
+		}
 	}
 }

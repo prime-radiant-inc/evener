@@ -186,7 +186,7 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
 	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
 	if s.session != nil {
-		fmt.Fprintf(&b, "This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", s.session.ID())
+		fmt.Fprintf(&b, "This session's id is %s. Use read_transcript to recover earlier detail, or find_session_transcripts to search it.\n", s.session.ID())
 	}
 	b.WriteString("\n")
 

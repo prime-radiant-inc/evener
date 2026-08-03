@@ -104,6 +104,10 @@ func toFsErr(err error) error {
 // dropping any match under a masked path. Results are absolute and sorted like the
 // off path (newest mtime first, ties by path).
 func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
+	patterns, err := expandSearchPattern(pattern)
+	if err != nil {
+		return nil, err
+	}
 	baseFd, canonical, err := s.openReadBaseFd(tool, base)
 	if err != nil {
 		return nil, err
@@ -111,17 +115,24 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
-	matches, err := doublestar.Glob(fsys, pattern)
-	if err != nil {
-		return nil, err
-	}
-	abs := make([]string, 0, len(matches))
-	for _, m := range matches {
-		p := filepath.Join(canonical, m)
-		if s.underMasked(p) {
-			continue
+	seen := make(map[string]struct{})
+	var abs []string
+	for _, pattern := range patterns {
+		matches, err := doublestar.Glob(fsys, pattern)
+		if err != nil {
+			return nil, err
 		}
-		abs = append(abs, p)
+		for _, m := range matches {
+			p := filepath.Join(canonical, m)
+			if s.underMasked(p) {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			abs = append(abs, p)
+		}
 	}
 	sortPathsByMtimeDesc(abs)
 	return abs, nil
@@ -132,6 +143,10 @@ func (s *sandboxFS) glob(tool, base, pattern string) ([]string, error) {
 // into masked subtrees. The per-file matching/formatting is shared with the off
 // path via grepAccum, so output semantics are identical.
 func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	globFilters, err := expandGrepFilter(globFilter)
+	if err != nil {
+		return "", err
+	}
 	baseFd, canonical, err := s.openReadBaseFd("grep", base)
 	if err != nil {
 		return "", err
@@ -163,8 +178,11 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		if globFilter != "" {
-			matched, _ := filepath.Match(globFilter, d.Name())
+		if len(globFilters) > 0 {
+			matched, matchErr := matchesAnyGrepFilter(d.Name(), globFilters)
+			if matchErr != nil {
+				return matchErr
+			}
 			if !matched {
 				return nil
 			}

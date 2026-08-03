@@ -644,6 +644,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
 	lane := r.lanePath(t, res.DelegateID)
+	head := strings.TrimSpace(wtGit(t, lane, "rev-parse", "HEAD"))
 
 	// The child finishes asynchronously and arms the parent's completion
 	// notification; drive the parent's notification turn so the block is
@@ -657,6 +658,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 	for _, want := range []string{
 		`worktree_path="` + lane + `"`,
 		`worktree_branch="` + res.DelegateID + `"`,
+		`worktree_head_sha="` + head + `"`,
 		`worktree_ahead="0"`,
 		`worktree_dirty="false"`,
 	} {
@@ -694,8 +696,8 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	if got == nil {
 		t.Fatal("report is nil on a fresh clean lane")
 	}
-	if got.Path != lane || got.Branch != branch || got.Ahead != 0 || got.Dirty {
-		t.Errorf("fresh lane report = %+v, want path=%s branch=%s ahead=0 dirty=false", got, lane, branch)
+	if got.Path != lane || got.Branch != branch || got.Ahead != 0 || got.Dirty || got.HeadSHA != baseSHA {
+		t.Errorf("fresh lane report = %+v, want path=%s branch=%s head=%s ahead=0 dirty=false", got, lane, branch, baseSHA)
 	}
 
 	// One commit ahead, still clean.
@@ -704,11 +706,24 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	}
 	wtGit(t, lane, "add", "lane.txt")
 	wtGit(t, lane, "commit", "-m", "lane work")
-	got = r.s.isolatedDelegateWorktreeReport(desc)
-	if got == nil || got.Ahead != 1 || got.Dirty {
-		t.Errorf("one-commit-ahead report = %+v, want ahead=1 dirty=false", got)
-	}
 	tip := strings.TrimSpace(wtGit(t, lane, "rev-parse", "HEAD"))
+	var revListRange string
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 5 && args[2] == "rev-list" && args[3] == "--count" {
+				revListRange = args[4]
+			}
+			return next(args...)
+		}
+	}
+	got = r.s.isolatedDelegateWorktreeReport(desc)
+	if got == nil || got.Ahead != 1 || got.Dirty || got.HeadSHA != tip {
+		t.Errorf("one-commit-ahead report = %+v, want head=%s ahead=1 dirty=false", got, tip)
+	}
+	if want := baseSHA + ".." + tip; revListRange != want {
+		t.Fatalf("ahead query range = %q, want captured HEAD range %q", revListRange, want)
+	}
 	if tip == baseSHA {
 		t.Fatal("test setup: lane HEAD did not move past base")
 	}
@@ -718,8 +733,8 @@ func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 		t.Fatalf("write dirty file: %v", err)
 	}
 	got = r.s.isolatedDelegateWorktreeReport(desc)
-	if got == nil || got.Ahead != 1 || !got.Dirty {
-		t.Errorf("dirty report = %+v, want ahead=1 dirty=true", got)
+	if got == nil || got.Ahead != 1 || !got.Dirty || got.HeadSHA != tip {
+		t.Errorf("dirty report = %+v, want head=%s ahead=1 dirty=true", got, tip)
 	}
 }
 

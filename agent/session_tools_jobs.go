@@ -1006,10 +1006,11 @@ type delegateToolResult struct {
 // delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
 // (native worktree tools spec §9 lifecycle step 3).
 type delegateWorktreeToolResult struct {
-	Path   string `json:"path"`
-	Branch string `json:"branch"`
-	Ahead  int    `json:"ahead_commits"`
-	Dirty  bool   `json:"dirty"`
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Ahead   int    `json:"ahead_commits"`
+	Dirty   bool   `json:"dirty"`
 	// DisposalHint carries the spec §P2 completion nudge. It MUST be exported —
 	// an unexported field is silently dropped by encoding/json (roborev finding
 	// 2718-2). Empty (and omitted) unless the receiving session has the dispose
@@ -1021,7 +1022,7 @@ func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktre
 	if wt == nil {
 		return nil
 	}
-	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
+	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
 }
 
 type delegateSandboxToolResult struct {
@@ -1125,6 +1126,11 @@ func formatDelegateSend(out delegateSendResult) string {
 		for _, w := range out.Watches {
 			fmt.Fprintf(&b, "\n- %s → %s (%s)", w.ID, w.Source, w.Condition)
 		}
+	}
+	if out.Worktree != nil {
+		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
+			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA,
+			out.Worktree.Ahead, out.Worktree.Dirty)
 	}
 	if out.StructuredResult != nil {
 		if sr, err := json.Marshal(out.StructuredResult); err == nil {

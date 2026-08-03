@@ -749,7 +749,7 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 
 func compactionReminderWant(sessionID string) string {
 	ref := "local:" + sessionID
-	return "<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>"
+	return "<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>"
 }
 
 func compactionReminders(sess *Session) []string {

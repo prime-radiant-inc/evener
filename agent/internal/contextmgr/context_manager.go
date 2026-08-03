@@ -832,7 +832,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Transcript pointer — tells the model how to access full history via transcript tools.
 	if meta != nil && meta.SessionID != "" {
-		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID)
+		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s. Use read_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID)
 	}
 
 	// Files modified.

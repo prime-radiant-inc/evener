@@ -478,15 +478,14 @@ func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	}
 }
 
-// TestTranscriptToolDefinitions locks the two-tool surface: correct names, strict
-// opt-out (so the model omits unused args), find takes no session selector, read takes
-// transcript_ref plus explicit transcript/API-log selection and bounded expansion
-// knobs.
+// TestTranscriptToolDefinitions locks the public transcript surface: find discovers
+// sessions and read handles both session and job references without exposing the
+// retired API-log reader options.
 func TestTranscriptToolDefinitions(t *testing.T) {
 	find := DefFindSessionTranscripts()
-	read := DefReadSessionTranscript()
+	read := DefReadTranscript()
 
-	if find.Name != "find_session_transcripts" || read.Name != "read_session_transcript" {
+	if find.Name != "find_session_transcripts" || read.Name != "read_transcript" {
 		t.Fatalf("names: %q %q", find.Name, read.Name)
 	}
 	if find.Strict == nil || *find.Strict || read.Strict == nil || *read.Strict {
@@ -505,30 +504,20 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 
 	rp := read.Parameters["properties"].(map[string]any)
 	for _, k := range []string{
-		"transcript_ref", "source", "format", "range", "expand_turn",
-		"attempt_id", "body", "offset_bytes", "max_bytes",
+		"transcript_ref", "format", "range", "expand_turn", "offset_bytes",
 	} {
 		if _, ok := rp[k]; !ok {
 			t.Errorf("read missing param %q", k)
 		}
 	}
-	if source, ok := rp["source"].(map[string]any); ok {
-		sourceEnum, _ := source["enum"].([]string)
-		if !reflect.DeepEqual(sourceEnum, []string{"transcript", "api_log"}) {
-			t.Errorf("source enum = %v, want transcript|api_log", sourceEnum)
+	for _, retired := range []string{"source", "attempt_id", "body", "max_bytes"} {
+		if _, ok := rp[retired]; ok {
+			t.Errorf("read still exposes retired param %q", retired)
 		}
 	}
-	if body, ok := rp["body"].(map[string]any); ok {
-		bodyEnum, _ := body["enum"].([]string)
-		if !reflect.DeepEqual(bodyEnum, []string{"request", "response", "request_headers"}) {
-			t.Errorf("body enum = %v, want request|response|request_headers", bodyEnum)
-		}
-		bodyDescription, _ := body["description"].(string)
-		if !strings.Contains(bodyDescription, "Stored API request or response body") {
-			t.Errorf("body description = %q, want truthful stored-body wording", bodyDescription)
-		}
-		if strings.Contains(bodyDescription, "Exact API") {
-			t.Errorf("body description = %q, must not promise exact bodies", bodyDescription)
+	for _, forbidden := range []string{"read_session_transcript", "api_log", "max_bytes"} {
+		if strings.Contains(read.Description, forbidden) {
+			t.Errorf("read description still exposes retired surface %q: %s", forbidden, read.Description)
 		}
 	}
 	// format enum is exactly outline|markdown|jsonl.
@@ -548,6 +537,9 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 		if !strings.Contains(expandDescription, contract) {
 			t.Errorf("expand_turn description = %q, want public contract %q", expandDescription, contract)
 		}
+	}
+	if !strings.Contains(read.Description, "fixed 16 KiB") {
+		t.Errorf("read description does not explain fixed expansion pages: %q", read.Description)
 	}
 }
 

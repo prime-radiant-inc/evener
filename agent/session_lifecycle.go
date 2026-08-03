@@ -213,12 +213,13 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
 			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
 			// deliberately skips (child env cleanup is the parent's job because children
-			// historically SHARED the parent env). Dispose that OWNED scratch here so it
-			// is not leaked. Guarded on ownsEnv: a child sharing the parent env is never
-			// disposed — the parent owns and cleans that env below.
+			// historically SHARED the parent env). Release that env's live scratch lease
+			// and cached file-tool fds here, but retain the directory for the human
+			// handoff. Guarded on ownsEnv: a child sharing the parent env is never
+			// retained — the parent owns that env below.
 			if sub.ownsEnv {
 				if le, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-					le.DisposeSandboxScratch()
+					le.RetainSandboxScratch()
 				}
 			}
 		}

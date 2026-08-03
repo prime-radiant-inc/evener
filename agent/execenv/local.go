@@ -108,10 +108,12 @@ type LocalExecutionEnvironment struct {
 	sandboxReRootErr error
 
 	// ownedSessionTmp, when non-nil, is a per-session/per-lane scratch dir this env
-	// OWNS: Cleanup() disposes it at session/lane end. It is provisioned at sandbox
-	// construction (EnableSandbox) and deliberately NOT copied by WithWorkingDirectory
-	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
-	// owner's dir out from under it. nil for off and for re-rooted clones.
+	// owns. Normal teardown releases its live lease but retains the directory for
+	// the human handoff; DisposeSandboxScratch is the explicit removal operation.
+	// It is provisioned at sandbox construction (EnableSandbox) and deliberately
+	// NOT copied by WithWorkingDirectory — a re-rooted clone shares the wrapper's
+	// tmp path but must never dispose the owner's dir out from under it. nil for off
+	// and for re-rooted clones.
 	ownedSessionTmp *sandbox.SessionScratch
 
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
@@ -269,9 +271,9 @@ func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) 
 
 // EnableSandbox provisions this env for a sandboxed session from an already-
 // resolved policy: it creates a fresh per-session scratch directory that the env
-// OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
+// owns and retains at Cleanup, attaches the policy, and — on the bwrap backend —
 // builds the kernel wrapper from the policy, the probed bwrap binary, and that
-// tmp. It is the single "provision at env construction, clean at session end"
+// tmp. It is the single "provision at env construction, retain at session end"
 // wiring point the live flag path (M5) and M4's own tests call; the --sandbox flag
 // stays feature-gated, so production does not reach it yet.
 //
@@ -289,12 +291,12 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	// stale re-root error and, on the off path, any policy/wrapper a prior
 	// WithWorkingDirectory re-rooted onto this env — a delegate's box must be a pure
 	// function of ITS OWN policy, never a parent's leaked one. The policy is being
-	// replaced, so drop the cached fd layer, and dispose any tmp a prior call owned
-	// so a second EnableSandbox never leaks the first's dir.
+	// replaced, so drop the cached fd layer, and release (but retain) any tmp a prior
+	// call owned so a second EnableSandbox never silently deletes handed-off work.
 	e.sandboxReRootErr = nil
 	e.invalidateSandboxFS()
 	if e.ownedSessionTmp != nil {
-		_ = e.ownedSessionTmp.Cleanup()
+		_ = e.ownedSessionTmp.Retain()
 		e.ownedSessionTmp = nil
 	}
 	if policy == nil || !policy.Enforced() {
@@ -340,6 +342,23 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.Sandbox = policy
 	e.ownedSessionTmp = tmp
 	return nil
+}
+
+// RetainSandboxScratch releases the per-session/per-lane scratch lease and cached
+// file-tool fds this env provisioned via EnableSandbox without removing the path.
+// Normal session and delegate teardown use this so a parent can inspect or retain
+// artifacts after the child exits. DisposeSandboxScratch is the explicit removal
+// operation for an allocation that should not survive.
+func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
+	e.sbMu.Lock()
+	if e.sbfs != nil {
+		e.sbfs.close()
+		e.sbfs = nil
+	}
+	e.sbMu.Unlock()
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		_ = tmp.Retain()
+	}
 }
 
 // DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
@@ -513,17 +532,13 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	}
 	e.sbMu.Unlock()
 
-	// Dispose the per-session/per-lane scratch dir this env owns (provisioned by
-	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: the tracked
-	// children's TMPDIR/GOCACHE/npm/cargo caches (via ApplyEnvFloor) point into this
-	// dir, so removing it before a graceful shutdown would pull it out from under
-	// them. defer runs last on every return path, including the no-children early
-	// return, so the dir is never leaked. Re-rooted clones never own one, so a
-	// clone's Cleanup never removes the owner's tmp.
-	if tmp := e.ownedSessionTmp; tmp != nil {
-		e.ownedSessionTmp = nil
-		defer func() { _ = tmp.Cleanup() }()
-	}
+	// Retain the per-session/per-lane scratch dir this env owns (provisioned by
+	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: tracked
+	// children may still be writing artifacts into it. RetainSandboxScratch releases
+	// the live lease and closes any cached file-tool fds, but deliberately leaves the
+	// absolute path available for the human handoff. Re-rooted clones never own one,
+	// so a clone's Cleanup never retains or removes the owner's tmp.
+	defer e.RetainSandboxScratch()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a
 	// commandRuntime so scripted runtimes own their teardown too; a legacy marker
@@ -991,6 +1006,10 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // not absolute. Results are sorted by modification time, newest first, with
 // ties broken by path.
 func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]string, error) {
+	patterns, err := expandSearchPattern(pattern)
+	if err != nil {
+		return nil, err
+	}
 	base := strings.TrimSpace(basePath)
 	if base == "" {
 		base = e.RootDir
@@ -1003,13 +1022,21 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob("glob", base, pattern)
 	}
-	matches, err := doublestar.Glob(os.DirFS(base), pattern)
-	if err != nil {
-		return nil, err
-	}
-	abs := make([]string, 0, len(matches))
-	for _, m := range matches {
-		abs = append(abs, filepath.Join(base, m))
+	seen := make(map[string]struct{})
+	var abs []string
+	for _, pattern := range patterns {
+		matches, err := doublestar.Glob(os.DirFS(base), pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			path := filepath.Join(base, m)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			abs = append(abs, path)
+		}
 	}
 	sortPathsByMtimeDesc(abs)
 	return abs, nil
@@ -1040,6 +1067,14 @@ func resolveGrepDir(path, rootDir string) string {
 // one output-mode flag (files-with-matches / count / line-number), then optional
 // case-insensitivity and glob filter, then the trailing pattern and directory.
 func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string) []string {
+	filters := []string(nil)
+	if strings.TrimSpace(globFilter) != "" {
+		filters = []string{globFilter}
+	}
+	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir)
+}
+
+func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string) []string {
 	args := []string{"--no-heading", "--color", "never"}
 	switch outputMode {
 	case "files_with_matches":
@@ -1052,14 +1087,20 @@ func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, patte
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
-	if strings.TrimSpace(globFilter) != "" {
-		args = append(args, "-g", globFilter)
+	for _, globFilter := range globFilters {
+		if strings.TrimSpace(globFilter) != "" {
+			args = append(args, "-g", globFilter)
+		}
 	}
 	args = append(args, pattern, dir)
 	return args
 }
 
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	globFilters, err := expandGrepFilter(globFilter)
+	if err != nil {
+		return "", err
+	}
 	dir := resolveGrepDir(path, e.RootDir)
 
 	if sfs := e.sandbox(); sfs != nil {
@@ -1079,7 +1120,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
 
-	args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
+	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir)
 
 	ctx := context.Background()
 	if maxResults <= 0 {
@@ -1102,6 +1143,10 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 }
 
 func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	globFilters, err := expandGrepFilter(globFilter)
+	if err != nil {
+		return "", err
+	}
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
 	if err != nil {
 		return "", err
@@ -1121,8 +1166,11 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		if globFilter != "" {
-			matched, _ := filepath.Match(globFilter, filepath.Base(p))
+		if len(globFilters) > 0 {
+			matched, matchErr := matchesAnyGrepFilter(filepath.Base(p), globFilters)
+			if matchErr != nil {
+				return matchErr
+			}
 			if !matched {
 				return nil
 			}
@@ -1710,7 +1758,7 @@ func shellEscape(s string) string {
 		return "''"
 	}
 	if strings.IndexFunc(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '\\' || r == '$' || r == '`' || r == '!' || r == '(' || r == ')' || r == ';' || r == '|' || r == '&' || r == '<' || r == '>' || r == '*'
+		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '\\' || r == '$' || r == '`' || r == '!' || r == '(' || r == ')' || r == ';' || r == '|' || r == '&' || r == '<' || r == '>' || r == '*' || r == '?' || r == '[' || r == ']' || r == '{' || r == '}' || r == '~' || r == '#'
 	}) == -1 {
 		return s
 	}

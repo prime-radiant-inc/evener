@@ -2066,21 +2066,15 @@ func writeTestAPILog(t *testing.T, bucketDir, sessionID string, records ...apilo
 
 func executeReadSessionTranscript(t *testing.T, deps *toolDeps, args map[string]any) tool.ExecResult {
 	t.Helper()
-	reg := tool.NewRegistry()
-	for _, registered := range transcriptTools(deps) {
-		if err := reg.Register(registered); err != nil {
-			t.Fatalf("register %s: %v", registered.Definition.Name, err)
-		}
-	}
-	rawArgs, err := json.Marshal(args)
+	value, err := execReadSessionTranscript(deps, args)
 	if err != nil {
-		t.Fatalf("marshal read_session_transcript args: %v", err)
+		return tool.ExecResult{ToolName: "read_transcript", IsError: true, Output: err.Error(), FullOutput: err.Error(), Err: err}
 	}
-	return reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
-		ID:        "call-read-session-transcript",
-		Name:      "read_session_transcript",
-		Arguments: rawArgs,
-	})
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal internal transcript read: %v", err)
+	}
+	return tool.ExecResult{ToolName: "read_transcript", Output: string(raw), FullOutput: string(raw)}
 }
 
 func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T) {
@@ -2363,7 +2357,7 @@ func TestReadSessionTranscriptAPILogScansHonorCancellation(t *testing.T) {
 				return reader, nil
 			}
 
-			_, err := readSessionTranscriptTool(deps).Exec(ctx, nil, tc.args)
+			_, err := execReadSessionTranscriptWithContext(ctx, deps, tc.args)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("API-log %s error = %v, want context.Canceled", tc.name, err)
 			}

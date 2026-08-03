@@ -237,6 +237,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 			if le.Sandbox.Mode == sandbox.ModeReadOnly {
 				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
 			}
+			line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 		}
 	}
 	return line

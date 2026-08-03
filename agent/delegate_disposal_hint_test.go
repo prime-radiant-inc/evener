@@ -57,7 +57,7 @@ func TestDisposalHint_OwnedDelegateInlineResultCarriesSentence(t *testing.T) {
 // an unexported field would be silently dropped by encoding/json).
 func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 	t.Parallel()
-	in := &delegateWorktreeToolResult{Path: "/lane", Branch: "b", DisposalHint: wantDisposalSentence}
+	in := &delegateWorktreeToolResult{Path: "/lane", Branch: "b", HeadSHA: "abc123", DisposalHint: wantDisposalSentence}
 	blob, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -71,6 +71,9 @@ func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 	}
 	if back.DisposalHint != wantDisposalSentence {
 		t.Errorf("round-trip DisposalHint = %q, want %q", back.DisposalHint, wantDisposalSentence)
+	}
+	if back.HeadSHA != "abc123" {
+		t.Errorf("round-trip HeadSHA = %q, want abc123", back.HeadSHA)
 	}
 }
 

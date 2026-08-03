@@ -30,6 +30,9 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 		},
 		StructuredResult:      map[string]any{"k": "v"},
 		StructuredResultValid: func() *bool { b := true; return &b }(),
+		Worktree: &delegateWorktreeToolResult{
+			Path: "/tmp/lane", Branch: "feature", HeadSHA: "abc123", Ahead: 2, Dirty: true,
+		},
 	}
 	got := formatDelegateSend(out)
 	for _, want := range []string{
@@ -41,6 +44,7 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 		"wait ignored: already complete",
 		"watches:",
 		"w1 → src (on_complete)",
+		"worktree: path=/tmp/lane, branch=feature, head=abc123, 2 commits ahead, dirty=true",
 		"structured_result (valid=true)",
 	} {
 		if !strings.Contains(got, want) {

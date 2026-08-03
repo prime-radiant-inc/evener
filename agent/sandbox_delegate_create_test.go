@@ -203,13 +203,62 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 }
 
-// TestParentClose_DisposesRetainedPerDelegateSandboxScratch: a completed+retained
+// TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure: a
+// per-delegate sandbox that reaches the post-NewSession grant validation must
+// dispose its scratch when the child cannot adopt a parent-only tool.
+func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	s.RegisterTool("parent_only_tool", "parent-only test tool", nil, func(context.Context, any) (any, error) {
+		return "ok", nil
+	})
+	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
+		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
+	}
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	_, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, []string{"parent_only_tool"})
+	if err == nil || !strings.Contains(err.Error(), "cannot grant tool(s)") {
+		t.Fatalf("prepareSubagentRun error = %v, want missing child grant", err)
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("per-delegate sandbox scratch leaked on grant failure: %v", left)
+	}
+}
+
+// TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected: a child
+// can be fully prepared and then rejected by the parent-closing gate before it
+// is adopted. That late failure must roll back a fresh sandbox environment too.
+func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	s.cfg.testOnly.subagentAfterPrepare = func(parent *Session) { parent.Close() }
+
+	ctx := context.WithValue(context.Background(), ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	if _, err := s.spawnAgent(ctx, "child task", "", lane, 0, "", "", nil, nil); err == nil || !strings.Contains(err.Error(), "session is closed") {
+		t.Fatalf("spawnAgent error = %v, want session-closed launch rejection", err)
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("per-delegate sandbox scratch leaked on launch rejection: %v", left)
+	}
+}
+
+// TestParentClose_RetainsPerDelegateSandboxScratch: a completed+retained
 // per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
 // scratch dir. At PARENT close, retained children are torn down via close(false),
 // which skips env cleanup (children historically shared the parent env), so the
-// sandboxed child's scratch would leak. The parent teardown must dispose owned child
-// scratches. Not parallel: isolates TMPDIR to observe the scratch base.
-func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
+// sandboxed child's scratch must be retained and its live lease released. Not
+// parallel: isolates TMPDIR to observe the scratch base.
+func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -242,10 +291,16 @@ func TestParentClose_DisposesRetainedPerDelegateSandboxScratch(t *testing.T) {
 		t.Fatalf("expected a per-delegate sandbox scratch dir after spawn, found none in %s", isolated)
 	}
 
-	// Closing the parent must dispose the retained child's owned scratch.
+	// Closing the parent must retain the child's owned scratch for the handoff.
 	s.Close()
-	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
-		t.Errorf("retained per-delegate-sandbox scratch leaked at parent close: %v", left)
+	left := sandboxScratchDirs(t, isolated)
+	if len(left) == 0 {
+		t.Errorf("parent close must retain the per-delegate-sandbox scratch for manual cleanup")
+	}
+	for _, name := range left {
+		if err := os.RemoveAll(filepath.Join(isolated, name)); err != nil {
+			t.Errorf("manual cleanup of retained scratch %q: %v", name, err)
+		}
 	}
 }
 
@@ -283,7 +338,7 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	local := execenv.NewLocalExecutionEnvironment(root)
-	t.Cleanup(local.Cleanup)
+	t.Cleanup(func() { local.Cleanup(); local.DisposeSandboxScratch() })
 	if err := local.EnableSandbox(&rp); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
@@ -310,7 +365,7 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	local := execenv.NewLocalExecutionEnvironment(root)
-	t.Cleanup(local.Cleanup)
+	t.Cleanup(func() { local.Cleanup(); local.DisposeSandboxScratch() })
 	if err := local.EnableSandbox(&rp); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
@@ -329,6 +384,9 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
 		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
 	}
+	if !strings.Contains(got, "In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual.") {
+		t.Fatalf("sandbox prompt line must explain the handoff contract: %q", got)
+	}
 }
 
 func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
@@ -338,6 +396,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	)
 
 	root := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	var chosenPath string
 	var sawGuidance bool
@@ -360,14 +419,13 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 					// worktree and the real read-only file tool must reject it.
 					chosenPath = "dumb-report.md"
 				} else {
-					start := strings.Index(promptText, scratchMarker)
-					if start < 0 {
+					_, scratch, found := strings.Cut(promptText, scratchMarker)
+					if !found {
 						modelError = "prompt had the write-boundary sentence but no scratch path"
 						chosenPath = "dumb-report.md"
 					} else {
-						scratch := promptText[start+len(scratchMarker):]
-						if end := strings.Index(scratch, ". "+guidance); end >= 0 {
-							scratch = scratch[:end]
+						if before, _, found := strings.Cut(scratch, ". "+guidance); found {
+							scratch = before
 						}
 						scratch = strings.TrimSpace(strings.SplitN(scratch, "\n", 2)[0])
 						if scratch == "" {

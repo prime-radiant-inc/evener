@@ -684,6 +684,14 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	if strings.Contains(result, "test.txt") {
 		t.Fatalf("glob *.go should not match .txt, got: %q", result)
 	}
+
+	result, err = env.grepNative("hello", dir, "*.{go,txt}", true, 100, "")
+	if err != nil {
+		t.Fatalf("brace glob filter: %v", err)
+	}
+	if !strings.Contains(result, "test.go") || !strings.Contains(result, "test.txt") {
+		t.Fatalf("brace glob filter should match both files, got: %q", result)
+	}
 }
 
 func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
