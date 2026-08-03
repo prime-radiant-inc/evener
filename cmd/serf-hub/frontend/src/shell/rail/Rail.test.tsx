@@ -552,6 +552,72 @@ describe("sections", () => {
     expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}")).toEqual({ "pinsection:client": false });
   });
 
+  test("rename validation error is the input's accessible description", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.click(screen.getByRole("button", { name: "Rename section" }));
+
+    const error = screen.getByRole("alert");
+    const descriptionID = input.getAttribute("aria-describedby");
+    expect(descriptionID).toBe(error.id);
+    expect(screen.getByRole("textbox", { name: "Section name", description: "Section name is required" })).toBe(input);
+  });
+
+  test("rename admits one in-flight submit and restores editable controls with the server error", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let releasePatch!: (response: Response) => void;
+    const heldPatch = new Promise<Response>((resolve) => {
+      releasePatch = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH" && url === "/api/pin-sections/client") {
+        const body = JSON.parse(init?.body as string) as unknown;
+        mutationCalls.push({ method: "PATCH", path: url, body });
+        return heldPatch;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.type(input, "Still editable");
+    const submit = screen.getByRole("button", { name: "Rename section" });
+
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.keyDown(submit, { key: "Enter" });
+
+    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+
+    releasePatch(jsonResponse({ error: "rename conflict" }, 409));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("rename conflict");
+    expect(input.hasAttribute("disabled")).toBe(false);
+    expect(submit.hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
+    expect(input.getAttribute("value")).toBe("Still editable");
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).getAllByText(/rename conflict/i)).toHaveLength(
+      1,
+    );
+  });
+
   test("delete refreshes summaries before confirmation and uses durable member_count", async () => {
     treeResponseBody = NAMED_PIN_TREE;
     renderRail();

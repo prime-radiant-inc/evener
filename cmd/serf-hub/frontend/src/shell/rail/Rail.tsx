@@ -8,7 +8,7 @@
 // and the rename/delete-project confirmation dialogs. Every mutation goes
 // through actions.ts, showing optimistically (railPending) while the request
 // is in flight, refetching the tree on success and toasting on failure.
-import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useRef, useState } from "react";
 import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
 import {
@@ -294,6 +294,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [sectionRenameTarget, setSectionRenameTarget] = useState<PinSectionTree | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
   const [sectionRenameError, setSectionRenameError] = useState("");
+  const [sectionRenameSubmitting, setSectionRenameSubmitting] = useState(false);
+  const sectionRenameInputID = useId();
+  const sectionRenameErrorID = useId();
+  // State updates do not become visible until React renders. This ref is the
+  // synchronous lock that rejects a second click/Enter in that gap; the token
+  // also prevents an obsolete async completion from changing a later dialog.
+  const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
+  const sectionRenameToken = useRef(0);
   const [sectionDeleteTarget, setSectionDeleteTarget] = useState<{
     section: PinSectionTree;
     memberCount: number;
@@ -338,6 +346,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   useEffect(() => {
     void treeStore.getState().ensureLoaded();
   }, []);
+
+  useEffect(
+    () => () => {
+      sectionRenameToken.current += 1;
+      sectionRenameSubmission.current = null;
+    },
+    [],
+  );
 
   // Every disclosure in the rail funnels through here - project rows, subagent
   // folds, the Archived section - so persisting on this one path covers all of
@@ -668,18 +684,25 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   function openSectionRename(section: PinSectionTree): void {
+    sectionRenameToken.current += 1;
+    sectionRenameSubmission.current = null;
     setSectionRenameTarget(section);
     setSectionRenameValue(section.name);
     setSectionRenameError("");
+    setSectionRenameSubmitting(false);
   }
 
   function closeSectionRename(): void {
+    if (sectionRenameSubmission.current) return;
+    sectionRenameToken.current += 1;
     setSectionRenameTarget(null);
     setSectionRenameValue("");
     setSectionRenameError("");
+    setSectionRenameSubmitting(false);
   }
 
   async function confirmSectionRename(): Promise<void> {
+    if (sectionRenameSubmission.current) return;
     const target = sectionRenameTarget;
     const name = sectionRenameValue.trim();
     if (!target) return;
@@ -693,6 +716,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       return;
     }
     setSectionRenameError("");
+    const submission = { token: sectionRenameToken.current + 1, sectionID: target.id };
+    sectionRenameToken.current = submission.token;
+    sectionRenameSubmission.current = submission;
+    setSectionRenameSubmitting(true);
     try {
       await runAction(
         () => renamePinSection(target.id, name),
@@ -700,9 +727,17 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         (section): PendingOp => ({ kind: "pinSectionRename", id: target.id, name: section.name }),
         true,
       );
-      closeSectionRename();
+      if (sectionRenameSubmission.current !== submission || sectionRenameToken.current !== submission.token) return;
+      sectionRenameSubmission.current = null;
+      setSectionRenameTarget(null);
+      setSectionRenameValue("");
+      setSectionRenameError("");
+      setSectionRenameSubmitting(false);
     } catch (err) {
+      if (sectionRenameSubmission.current !== submission || sectionRenameToken.current !== submission.token) return;
+      sectionRenameSubmission.current = null;
       setSectionRenameError(errorText(err));
+      setSectionRenameSubmitting(false);
     }
   }
 
@@ -945,25 +980,30 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           title="Rename pin section"
           footer={
             <div className={CLASS.dialogActions}>
-              <Button variant="quiet" onClick={closeSectionRename}>
+              <Button variant="quiet" onClick={closeSectionRename} disabled={sectionRenameSubmitting}>
                 Cancel
               </Button>
-              <Button onClick={() => void confirmSectionRename()}>Rename section</Button>
+              <Button onClick={() => void confirmSectionRename()} disabled={sectionRenameSubmitting}>
+                Rename section
+              </Button>
             </div>
           }
         >
-          <label className={CLASS.dialogField}>
+          <label className={CLASS.dialogField} htmlFor={sectionRenameInputID}>
             Section name
             <Input
+              id={sectionRenameInputID}
               value={sectionRenameValue}
               onChange={(event: ChangeEvent<HTMLInputElement>) => {
                 setSectionRenameValue(event.target.value);
                 setSectionRenameError("");
               }}
+              disabled={sectionRenameSubmitting}
+              aria-describedby={sectionRenameError ? sectionRenameErrorID : undefined}
             />
           </label>
           {sectionRenameError && (
-            <p className={CLASS.pickerError} role="alert">
+            <p id={sectionRenameErrorID} className={CLASS.pickerError} role="alert">
               {sectionRenameError}
             </p>
           )}
