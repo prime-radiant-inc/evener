@@ -128,15 +128,17 @@ type delegateArgs struct {
 }
 
 // delegateWorktreeReport is the native worktree tools spec §9 lifecycle step 3
-// per-job report for an isolated delegate: the lane's path, branch, commits
-// ahead of its base, and dirty state, so the parent can merge a lane's
-// commits from the main root between jobs without guessing where it lives.
+// per-job report for an isolated delegate: the lane's path, branch, exact
+// observed HEAD, commits ahead of its base, and dirty state, so the parent can
+// merge a lane's commits from the main root between jobs without guessing where
+// it lives.
 // nil on a non-isolated delegate or when the lane cannot be inspected.
 type delegateWorktreeReport struct {
-	Path   string
-	Branch string
-	Ahead  int
-	Dirty  bool
+	Path    string
+	Branch  string
+	HeadSHA string
+	Ahead   int
+	Dirty   bool
 	// DisposalHint is the spec §P2 completion nudge, rendered verbatim on both
 	// surfaces (inline tool result and background notification) iff the
 	// receiving session has the dispose op AND owns the delegate. Empty when
@@ -2573,12 +2575,12 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 }
 
 // isolatedDelegateWorktreeReport computes the native worktree tools spec §9
-// lifecycle step 3 fields (path, branch, commits-ahead-of-base, dirty state)
-// for a terminal job belonging to an isolation delegate, by inspecting the
-// lane directly through the parent's control env. Returns nil when desc is
-// not an isolation delegate's descriptor, or the lane cannot be inspected
-// (its sidecar or the worktree itself is gone, or git fails) — a broken
-// partial report is omitted rather than surfaced.
+// lifecycle step 3 fields (path, branch, exact observed HEAD,
+// commits-ahead-of-base, dirty state) for a terminal job belonging to an
+// isolation delegate, by inspecting the lane directly through the parent's
+// control env. Returns nil when desc is not an isolation delegate's descriptor,
+// or the lane cannot be inspected (its sidecar or the worktree itself is gone,
+// or git fails) — a broken partial report is omitted rather than surfaced.
 func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreDescriptor) *delegateWorktreeReport {
 	if s == nil || desc == nil || strings.TrimSpace(desc.Isolation) != "worktree" {
 		return nil
@@ -2614,6 +2616,14 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	if err != nil {
 		return nil
 	}
+	headOut, err := run("-C", lanePath, "rev-parse", "HEAD")
+	if err != nil {
+		return nil
+	}
+	headSHA := strings.TrimSpace(headOut)
+	if headSHA == "" {
+		return nil
+	}
 	clean, _, err := worktree.CleanTree(run, lanePath)
 	if err != nil {
 		return nil
@@ -2629,6 +2639,7 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	return &delegateWorktreeReport{
 		Path:         lanePath,
 		Branch:       sc.Branch,
+		HeadSHA:      headSHA,
 		Ahead:        ahead,
 		Dirty:        !clean,
 		DisposalHint: s.delegateDisposalHint(desc, filepath.Base(lanePath)),

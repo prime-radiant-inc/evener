@@ -1006,10 +1006,11 @@ type delegateToolResult struct {
 // delegateWorktreeToolResult is the tool-facing shape of delegateWorktreeReport
 // (native worktree tools spec §9 lifecycle step 3).
 type delegateWorktreeToolResult struct {
-	Path   string `json:"path"`
-	Branch string `json:"branch"`
-	Ahead  int    `json:"ahead_commits"`
-	Dirty  bool   `json:"dirty"`
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Ahead   int    `json:"ahead_commits"`
+	Dirty   bool   `json:"dirty"`
 	// DisposalHint carries the spec §P2 completion nudge. It MUST be exported —
 	// an unexported field is silently dropped by encoding/json (roborev finding
 	// 2718-2). Empty (and omitted) unless the receiving session has the dispose
@@ -1021,7 +1022,7 @@ func delegateWorktreeToolResultFrom(wt *delegateWorktreeReport) *delegateWorktre
 	if wt == nil {
 		return nil
 	}
-	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
+	return &delegateWorktreeToolResult{Path: wt.Path, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Ahead: wt.Ahead, Dirty: wt.Dirty, DisposalHint: wt.DisposalHint}
 }
 
 type delegateSandboxToolResult struct {

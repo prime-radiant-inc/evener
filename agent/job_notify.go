@@ -211,6 +211,7 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 		attrs = append(attrs,
 			notificationAttr("worktree_path", wt.Path),
 			notificationAttr("worktree_branch", wt.Branch),
+			notificationAttr("worktree_head_sha", wt.HeadSHA),
 			notificationAttr("worktree_ahead", strconv.Itoa(wt.Ahead)),
 			notificationAttr("worktree_dirty", strconv.FormatBool(wt.Dirty)),
 		)
