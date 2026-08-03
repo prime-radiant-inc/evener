@@ -1,8 +1,11 @@
-// StreamingText is the imperative leaf for in-flight streaming text (a
-// live agentMessage/reasoning delta tail, or - in wave 4's raw fallback
-// view - any other still-streaming item). It appends ONLY the chunks not
-// yet flushed to a single DOM text node, never touching what's already
-// there, so a burst of deltas never re-renders (or re-diffs) settled text.
+// StreamingText is the imperative leaf for in-flight streaming text. Its
+// only remaining caller is wave 4's raw fallback view (RawItemView): the
+// production item renderers (AgentMessageItem, ThinkBlock) parse markdown
+// WHILE streaming through the Markdown widget's `live` flag instead
+// (Jesse, 2026-08-03), trading this leaf's append-only DOM contract for
+// formatted preview. It appends ONLY the chunks not yet flushed to a single
+// DOM text node, never touching what's already there, so a burst of deltas
+// never re-renders (or re-diffs) settled text.
 import { useLayoutEffect, useRef } from "react";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./streamingtext.module.css";
@@ -16,12 +19,12 @@ export interface StreamingTextProps {
    * design system's one reserved "streaming" motion, a blinking caret
    * glyph (docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-
    * system.md, Motion: "streaming caret blink"). Defaults to true, since
-   * every current caller (RawItemView/AgentMessageItem/ThinkBlock) only
-   * ever mounts this component while genuinely live in the first place -
-   * they swap to a settled view entirely rather than flipping this prop.
-   * Honest by construction: the caret exists only while `live` says so,
-   * never as an idle/decorative animation - see streamingtext.module.css's
-   * own comment for the CSS side of that contract. */
+   * the one remaining caller (RawItemView) only ever mounts this component
+   * while genuinely live in the first place - it swaps to a settled view
+   * entirely rather than flipping this prop. Honest by construction: the
+   * caret exists only while `live` says so, never as an idle/decorative
+   * animation - see streamingtext.module.css's own comment for the CSS
+   * side of that contract. */
   live?: boolean;
 }
 

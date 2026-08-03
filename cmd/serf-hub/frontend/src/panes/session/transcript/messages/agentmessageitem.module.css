@@ -1,10 +1,10 @@
-/* Layout/spacing only - typography is owned entirely by Markdown's and
- * StreamingText's own stylesheets (both already source font-family/
- * line-height/color from the same tokens), so the live and settled paths
- * can never visually mismatch. The one exception is the speaker header,
- * whose words ARE this component's own chrome: "Agent" at body size /
- * medium weight / ink-hi, meta at caption / ink-low (slack-lean spec,
- * 2026-07-29-transcript-slack-lean-messages.md, decision 1).
+/* Layout/spacing only - typography is owned entirely by Markdown's own
+ * stylesheet, which the live and settled paths now share (both render the
+ * same widget), so the two can never visually mismatch. The two exceptions:
+ * the speaker header, whose words ARE this component's own chrome ("Agent"
+ * at body size / medium weight / ink-hi, meta at caption / ink-low -
+ * slack-lean spec, 2026-07-29-transcript-slack-lean-messages.md,
+ * decision 1), and the live stream's caret (see .stream below).
  *
  * Agent prose is body-size like everything else (tiered-density spec,
  * 2026-07-27): the hierarchy against the user's ink-mid text is carried
@@ -86,4 +86,40 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
+}
+
+/* The live stream wrapper. Its only job is the streaming caret - the design
+ * system's one reserved "live" motion (docs/superpowers/plans/2026-07-20-
+ * webui-rewrite-wave2-design-system.md, Motion: "streaming caret blink").
+ * The live path renders the Markdown widget, so the caret cannot ride
+ * StreamingText's .live class anymore; it reattaches here as an inline
+ * ::after inside the markdown root's LAST block child, which seats the bar
+ * at the end of the last line of text whatever block that is (paragraph,
+ * heading, list). Same bar geometry and blink timing streamingtext.module
+ * .css's caret uses; currentColor for the same reason its comment records -
+ * streaming is not an attention state. The wrapper exists ONLY in the live
+ * branch, so the caret can never idle on a settled message (the honest-
+ * liveness rule). */
+.stream > div > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: var(--space-1);
+  background: currentColor;
+  animation: streamingCaretBlink 1s step-end infinite;
+}
+
+@keyframes streamingCaretBlink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream > div > :last-child::after {
+    /* Disables the blink but keeps the static caret - the glyph itself
+     * still honestly reflects "still live", only the motion is removed. */
+    animation: none;
+  }
 }

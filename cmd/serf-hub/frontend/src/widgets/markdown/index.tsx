@@ -4,9 +4,17 @@ import { useMemo } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import styles from "./markdown.module.css";
+import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
   source: string;
+  /** True while `source` is a possibly-truncated stream still in flight:
+   * constructs left open at the tail (unterminated `**`/`*`/`~~`, inline
+   * code, fenced code blocks) are closed before parsing via
+   * closeOpenMarkdown, so formatting renders WHILE streaming instead of
+   * showing literal marker source. Settled renders must NOT pass this - a
+   * genuinely unterminated final source stays honestly literal. */
+  live?: boolean;
 }
 
 const CLASS = {
@@ -139,13 +147,15 @@ const SANITIZE_CONFIG = {
  * DOMPurify sanitizes it against a fixed allowlist, and the result is set
  * as innerHTML. Fenced code blocks render through CodeBlock's own
  * stylesheet; links always open in a new tab without opener access; raw
- * HTML in the source is never interpreted as markup.
+ * HTML in the source is never interpreted as markup. With `live`, the
+ * source is treated as a truncated stream and its open constructs are
+ * closed before parsing (see streaming.ts).
  */
-export function Markdown({ source }: MarkdownProps) {
+export function Markdown({ source, live = false }: MarkdownProps) {
   const html = useMemo(() => {
-    const rawHtml = md.parse(source, { async: false });
+    const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
     return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
-  }, [source]);
+  }, [source, live]);
 
   // Reviewed: this is the narrow, legitimate case for dangerouslySetInnerHTML
   // (rendering markdown-to-HTML has no alternative in React without a full

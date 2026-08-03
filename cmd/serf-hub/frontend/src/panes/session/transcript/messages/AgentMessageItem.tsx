@@ -1,13 +1,18 @@
-// The agentMessage item renderer - the streaming fast path (wave-4 binding
-// constraint): live text streams as PLAIN text via StreamingText (no
-// markdown parsing per delta); markdown parses exactly ONCE, at settle,
-// through the Markdown widget. DOMAIN FINDING from T1's live run: this
-// harness routes final answers through a one-shot communicate tool, so a
-// streaming window can be sub-second - the live path must look right even
-// then (see AgentMessageItem.test.tsx's "rapid-settle" cases). Nothing in
-// this file re-declares typography (see agentmessageitem.module.css's own
-// comment) specifically so there is no gap for a live/settled mismatch to
-// live in.
+// The agentMessage item renderer. Live and settled BOTH parse markdown
+// through the same Markdown widget (Jesse, 2026-08-03: streaming messages
+// are markdown-rendered too) - the live branch passes the widget's `live`
+// flag so constructs truncated at the stream tail are closed for the
+// preview (widgets/markdown/streaming.ts), and wraps it in .stream, whose
+// only job is the blinking caret (the design system's one reserved
+// streaming cue for agent prose - see agentmessageitem.module.css). This
+// replaces the wave-4 binding constraint (live streams as plain
+// StreamingText, markdown parses once at settle) with a re-parse per delta;
+// live and settled being the SAME component also makes their typography
+// parity automatic rather than a two-stylesheet agreement. DOMAIN FINDING
+// from T1's live run still stands: this harness routes final answers
+// through a one-shot communicate tool, so a streaming window can be
+// sub-second - the live path must look right even then (see
+// AgentMessageItem.test.tsx's "rapid-settle" cases).
 //
 // Speaker treatment (slack-lean spec, 2026-07-29-transcript-slack-lean-
 // messages.md, decisions 1-2): at exchange boundaries ONLY (opensExchange -
@@ -26,7 +31,6 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the controller-owned widgets barrel: this pane
 // must not take a dependency on the barrel's ownership boundary.
 import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
-import { StreamingText } from "../StreamingText";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./agentmessageitem.module.css";
 import { formatClockTime } from "./format";
@@ -40,6 +44,7 @@ const CLASS = {
   header: requireClass(styles.header, "agentmessageitem.module.css", "header"),
   name: requireClass(styles.name, "agentmessageitem.module.css", "name"),
   meta: requireClass(styles.meta, "agentmessageitem.module.css", "meta"),
+  stream: requireClass(styles.stream, "agentmessageitem.module.css", "stream"),
 };
 
 // The header meta is "{model label} · {clock time}", each part only when
@@ -116,7 +121,15 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     // empty shell would only flash in and out; wait for real content,
     // mirroring RawItemView's own "no chunks yet" fallback rule.
     if (!chunks || chunks.length === 0) return null;
-    return wrap(<StreamingText chunks={chunks} />, "true");
+    // The .stream wrapper carries the blinking caret (see the stylesheet);
+    // the Markdown widget's `live` flag auto-closes whatever construct the
+    // stream's tail truncates, so formatting renders while streaming.
+    return wrap(
+      <div className={CLASS.stream} data-testid="agent-message-stream">
+        <Markdown source={chunks.join("")} live />
+      </div>,
+      "true",
+    );
   }
 
   // Settled with nothing to show (an empty finalize, or reset with no

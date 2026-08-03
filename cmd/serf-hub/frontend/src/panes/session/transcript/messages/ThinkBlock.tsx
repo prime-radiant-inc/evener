@@ -1,57 +1,52 @@
 // The reasoning ("think block") item renderer. Live: open and streaming the
-// whole time it is the turn's CURRENT thought (wave-4 T2's "OPEN +
-// StreamingText while live"), then settling the moment anything later starts
-// in the turn - the wire never completes a reasoning item mid-turn, so tail
-// position stands in for the completion the wire withholds (see
-// isCurrentThought). Settled: collapses to "Thought [· duration] · context"
-// with a trailing rotate-on-open chevron (the draft restyle, mockup #4 of
-// /dev/thoughts, Jesse's pick 2026-07-31), while the full Markdown body
-// remains available at the one disclosure level.
+// whole time it is the turn's CURRENT thought (wave-4 T2's "OPEN while
+// live"), then settling the moment anything later starts in the turn - the
+// wire never completes a reasoning item mid-turn, so tail position stands in
+// for the completion the wire withholds (see isCurrentThought). Settled:
+// collapses to "Thought [· duration] · context" with a trailing
+// rotate-on-open chevron (the draft restyle, mockup #4 of /dev/thoughts,
+// Jesse's pick 2026-07-31), while the full Markdown body remains available
+// at the one disclosure level.
 //
-// reasoningSummaries is string[][] - per-summaryIndex chunk lists
-// (protocol/model.ts). Each index's chunks only ever grow by appending
-// (reducer.ts's appendReasoningDelta always pushes onto summaries[i]
-// specifically) but DIFFERENT indices can interleave (a delta for index 0
-// arriving after index 1 has already started) - flattening every index
-// into one StreamingText's chunks prop would violate StreamingText's own
-// "only ever grows by appending, tracked by count" invariant the moment
-// that happens (an earlier index growing would shift a later index's
-// chunks to new positions in the flattened array, duplicating/dropping
-// text - see ThinkBlock.test.tsx's own interleaving test). Rendering one
-// independent StreamingText per index sidesteps this entirely: each index's
-// own chunk array is safe in isolation, regardless of what any other index
-// does.
+// MARKDOWN, LIVE AND SETTLED: agents write reasoning in markdown, so BOTH
+// states parse it through the same Markdown widget that renders a settled
+// agent message - and from the SAME source (joinedReasoningParagraphs,
+// blank-line joined), so the live-to-settled transition changes only the
+// chrome around the document (open stream -> collapsed disclosure), never
+// the document itself. The body is ALWAYS italic in both states (Jesse,
+// 2026-08-03), with markup-emphasis inverted to roman - see
+// thinkblock.module.css. The live view passes the widget's `live` flag, so
+// constructs left open at the stream tail are closed for the preview (see
+// widgets/markdown/streaming.ts), and re-parses the whole joined document
+// on every delta. The trade-off, stated plainly:
 //
-// MARKDOWN, AND WHY ONLY WHEN SETTLED: agents write reasoning in markdown,
-// so the settled body parses it through the same Markdown widget that
-// renders a settled agent message. The live path deliberately does NOT -
-// it keeps streaming literal text. The trade-off, stated plainly:
+//   - What live gives up: StreamingText's append-only DOM contract (the
+//     fast path that exists precisely so a burst of deltas never re-diffs
+//     settled text) and, with it, the guarantee that settled text is never
+//     re-laid-out mid-stream. The tail's auto-close is a preview heuristic:
+//     a truncated `**bol` renders bold on the GUESS that its closer is
+//     still coming, which is wrong for the rare genuinely-unbalanced final
+//     source (the settled render then shows it literal - the preview always
+//     converges to the truth at settle).
+//   - What live keeps: the reader sees the thought the way the agent wrote
+//     it - headings, lists, emphasis, code - while it is still streaming,
+//     instead of reading markdown source for the whole in-flight window.
 //
-//   - What live gives up: markdown formatting is visible as source
-//     (`## heading`, `**bold**`) for the seconds a thought is in flight.
-//   - What live keeps: StreamingText's append-only DOM contract, and with
-//     it the interleaving guarantee above. A markdown parser consumes a
-//     WHOLE document and emits a whole element tree, so parsing while live
-//     would mean either re-parsing every index on every delta (throwing
-//     away the append-only fast path that exists precisely because a burst
-//     of deltas must not re-diff settled text) or flattening indices into
-//     one document (which breaks interleaving outright).
-//
-// Per-paragraph parsing was the alternative and was rejected: a markdown
-// block is not always one paragraph (a fenced code block, a multi-line
-// list, a table all span blank lines), so "parse each summaryIndex as it
-// stabilizes" has no reliable signal for "stabilized" mid-stream - the
-// reducer never tells us an index is finished, only that the whole item
-// is. Since the item settling IS that signal, parse there. This mirrors
-// AgentMessageItem's identical live-plain/settled-markdown split, so both
-// message types behave the same way under streaming.
+// The interleaving hazard this file's history warns about does not apply
+// here: reasoningSummaries is string[][] - per-summaryIndex chunk lists
+// (protocol/model.ts) - and DIFFERENT indices can interleave (a delta for
+// index 0 arriving after index 1 has already started). That only corrupts
+// an append-only renderer tracking "how much is rendered" by chunk count;
+// the Markdown widget consumes the WHOLE joined source and emits a whole
+// element tree on every render, so a mid-document insertion is just another
+// re-parse - correct by construction (see ThinkBlock.test.tsx's own
+// interleaving test).
 
 import { memo } from "react";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { Chevron, Markdown, ToolIcon } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { StreamingText } from "../StreamingText";
 import { itemScopeKey } from "../tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
@@ -68,7 +63,6 @@ const CLASS = {
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
   icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
-  paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
   summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
@@ -104,8 +98,8 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
 }
 
 // The live view (mockup #4's draft treatment): a quiet "Thinking…" eyebrow
-// over the streaming draft text, in its own component so the two states read
-// as the two separate layouts they are.
+// over the streaming markdown body, in its own component so the two states
+// read as the two separate layouts they are.
 //
 // It carries NO height bound (Jesse, bh8h): a thought that is still running is
 // shown in full, however long it grows, so the reader can follow the whole
@@ -113,6 +107,14 @@ function thoughtLabel(durationMs: number | undefined, preview: string): string {
 // same one every other growing item shares - so there is nothing here to clip,
 // to fade, or to pin to a tail.
 function LiveThinkBlock({ item }: { item: ItemModel }) {
+  // One document, not one per summaryIndex: a markdown parser needs the whole
+  // text to resolve block structure. Blank-line joined so each index still
+  // starts its own block-level token rather than being folded into the
+  // previous index's paragraph - the SAME source the settled body renders,
+  // so settling never reflows the document. Re-parsed on every delta; safe
+  // under interleaved indices because nothing here is append-only (see this
+  // file's top comment).
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="true">
       <div className={CLASS.live}>
@@ -121,29 +123,18 @@ function LiveThinkBlock({ item }: { item: ItemModel }) {
           Thinking…
         </span>
         <div className={CLASS.liveBody} data-testid="think-block-live-body">
-          {(item.reasoningSummaries ?? []).map((chunks, i) =>
-            // A zero-chunk index (a later summaryIndex has started streaming
-            // before this earlier one has) renders nothing rather than an
-            // empty <p> - .paragraph carries its own margin, so an empty one
-            // would still show as a visible gap. It appears in position the
-            // instant its first chunk arrives.
-            //
-            // index-as-key is deliberate: i IS the stable identity here
-            // (summaryIndex, per this file's top comment - "each index's
-            // chunks only ever grow by appending", positions never reorder).
-            chunks.length === 0 ? null : (
-              // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
-              <p key={i} className={CLASS.paragraph}>
-                {/* live={false}: NO blinking caret (Jesse's review call).
-                    The caret is the design system's reserved streaming cue
-                    for AGENT prose; inside a read-only reasoning view it
-                    reads as an edit cursor, and the thought's liveness is
-                    already carried by the "Thinking…" eyebrow plus the
-                    visibly growing text. */}
-                <StreamingText chunks={chunks} live={false} />
-              </p>
-            ),
-          )}
+          {/* Empty so far (the item exists the instant it starts, possibly
+              before its first delta) renders no Markdown at all - marked
+              turns an empty string into an empty <p>-less document, but an
+              explicit guard keeps the zero-content case from depending on
+              that detail. Paragraphs that join to whitespace are already
+              dropped by joinedReasoningParagraphs, so a zero-chunk
+              summaryIndex leaves no empty-paragraph gap.
+              live: the stream is truncated by definition - open constructs
+              at its tail (`**bo`, an unclosed fence) are closed for this
+              render (see widgets/markdown/streaming.ts), so formatting is
+              visible WHILE streaming instead of literal marker source. */}
+          {paragraphs.length > 0 && <Markdown source={paragraphs.join("\n\n")} live />}
         </div>
       </div>
     </div>

@@ -29,6 +29,43 @@ test("renders bold and italic emphasis", () => {
   expect(container.querySelector("em")?.textContent).toBe("italic");
 });
 
+// --- live: auto-closing the stream tail ---------------------------------------
+// The `live` prop marks the source as a possibly-truncated stream still in
+// flight: constructs left open at the tail are closed before parsing (see
+// streaming.ts), so formatting is visible WHILE streaming instead of literal
+// marker source. The settled path never passes it, so a genuinely
+// unterminated final source stays honestly literal.
+
+test("live closes an unterminated ** at the stream tail - bold renders while still streaming", () => {
+  const { container } = render(<Markdown source="the answer is **bo" live />);
+  expect(container.querySelector("strong")?.textContent).toBe("bo");
+  expect(container.textContent).not.toContain("**");
+});
+
+test("live closes an unterminated fenced code block at the stream tail", () => {
+  const { container } = render(<Markdown source={"```js\nconst x = 1;"} live />);
+  expect(container.querySelector("pre code")?.textContent).toBe("const x = 1;");
+});
+
+test("live closes nested emphasis in reverse-open order - the result parses as nested, not literal", () => {
+  const { container } = render(<Markdown source="**a *b" live />);
+  const strong = container.querySelector("strong");
+  expect(strong).not.toBeNull();
+  expect(strong?.querySelector("em")?.textContent).toBe("b");
+});
+
+test("live leaves an already-balanced source byte-identical (no invented closers)", () => {
+  const balanced = render(<Markdown source="**bold** plain" live />);
+  const settled = render(<Markdown source="**bold** plain" />);
+  expect(balanced.container.innerHTML).toBe(settled.container.innerHTML);
+});
+
+test("without live, an unterminated ** stays literal source (the settled contract)", () => {
+  const { container } = render(<Markdown source="the answer is **bo" />);
+  expect(container.querySelector("strong")).toBeNull();
+  expect(container.textContent).toContain("**bo");
+});
+
 test("renders a bullet list", () => {
   const { container } = render(<Markdown source={"- one\n- two"} />);
   const items = Array.from(container.querySelectorAll("li")).map((li) => li.textContent);

@@ -41,13 +41,34 @@ test("settled with blank text and no pendingText renders nothing at all", () => 
   expect(container.firstChild).toBeNull();
 });
 
-// --- live: StreamingText, plain text - the fast-path law -------------------
+// --- live: Markdown with auto-close ------------------------------------------
+// Agent prose parses markdown WHILE streaming (Jesse, 2026-08-03), through
+// the same Markdown widget as the settled path - with the widget's `live`
+// flag, so constructs truncated at the stream tail are closed for the
+// preview (widgets/markdown/streaming.ts).
 
-test("live with pendingText chunks streams via StreamingText as plain text (markdown syntax NOT parsed while live)", () => {
-  render(<AgentMessageItem item={item({ pendingText: ["**bo", "ld**"] })} turn={turn} live={true} />);
-  const el = screen.getByTestId("streaming-text");
-  expect(el.textContent).toBe("**bold**");
-  expect(el.querySelector("strong")).toBeNull();
+test("live parses markdown WHILE streaming - emphasis renders as emphasis, not literal source", () => {
+  const { container } = render(
+    <AgentMessageItem item={item({ pendingText: ["**bold", " text**"] })} turn={turn} live={true} />,
+  );
+  expect(container.querySelector("strong")?.textContent).toBe("bold text");
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
+});
+
+test("live auto-closes a marker truncated at the stream tail - bold renders before its closer arrives", () => {
+  const { container } = render(
+    <AgentMessageItem item={item({ pendingText: ["the answer is **bo"] })} turn={turn} live={true} />,
+  );
+  expect(container.querySelector("strong")?.textContent).toBe("bo");
+  expect(container.textContent).not.toContain("**");
+});
+
+test("auto-close is preview-only: a genuinely unterminated SETTLED source stays literal", () => {
+  const { container } = render(
+    <AgentMessageItem item={item({ text: "the answer is **bo" })} turn={turn} live={false} />,
+  );
+  expect(container.querySelector("strong")).toBeNull();
+  expect(container.textContent).toContain("**bo");
 });
 
 test("live with no pendingText yet (item just started, zero deltas so far) renders nothing rather than an empty shell", () => {
@@ -62,9 +83,9 @@ test("live with an empty pendingText array is treated the same as no pendingText
 
 test("incremental growth: re-rendering with more pendingText chunks grows the streamed content without duplication", () => {
   const { rerender } = render(<AgentMessageItem item={item({ pendingText: ["Hel"] })} turn={turn} live={true} />);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("Hel");
+  expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hel");
   rerender(<AgentMessageItem item={item({ pendingText: ["Hel", "lo"] })} turn={turn} live={true} />);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("Hello");
+  expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hello");
 });
 
 // --- the live-to-settled transition: the canonical T1 pattern --------------
@@ -72,15 +93,15 @@ test("incremental growth: re-rendering with more pendingText chunks grows the st
 // instance without residue" test - every renderer in this stream follows
 // this shape per the wave-4 T2 binding constraints.
 
-test("live streaming settles cleanly: StreamingText unmounts, Markdown takes over, no duplicated content", () => {
+test("live streaming settles cleanly: the stream wrapper unmounts, settled Markdown takes over, no duplicated content", () => {
   const liveItem = item({ pendingText: ["Hel", "lo"] });
   const { rerender } = render(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("Hello");
+  expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Hello");
 
   const settledItem = { ...liveItem, text: "Hello", pendingText: undefined };
   rerender(<AgentMessageItem item={settledItem} turn={{ ...turn, status: "completed" }} live={false} />);
 
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("agent-message-stream")).toBeNull();
   expect(screen.queryAllByText("Hello").length).toBe(1);
 });
 
@@ -93,11 +114,11 @@ test("live streaming settles cleanly: StreamingText unmounts, Markdown takes ove
 test("rapid-settle: a single-chunk live frame immediately followed by settlement still lands correctly", () => {
   const liveItem = item({ pendingText: ["Done."] });
   const { rerender } = render(<AgentMessageItem item={liveItem} turn={turn} live={true} />);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("Done.");
+  expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("Done.");
 
   const settledItem = { ...liveItem, text: "Done.", pendingText: undefined };
   rerender(<AgentMessageItem item={settledItem} turn={{ ...turn, status: "completed" }} live={false} />);
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("agent-message-stream")).toBeNull();
   expect(screen.getByText("Done.")).toBeTruthy();
 });
 
@@ -107,7 +128,7 @@ test("rapid-settle: settling WITHOUT ever having rendered live (turn/completed a
   // to settled with full text, no live frame ever observed by this
   // component instance.
   render(<AgentMessageItem item={item({ text: "straight to settled" })} turn={turn} live={false} />);
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("agent-message-stream")).toBeNull();
   expect(screen.getByText("straight to settled")).toBeTruthy();
 });
 
@@ -157,7 +178,7 @@ test("the speaker header renders in the LIVE branch too - the eyebrow appeared i
   );
   const header = screen.getByTestId("agent-speaker-header");
   expect(header.textContent).toBe(`Agentk3 · ${TIME}`);
-  expect(screen.getByTestId("streaming-text")).toBeTruthy();
+  expect(screen.getByTestId("agent-message-stream").textContent?.trim()).toBe("streaming");
 });
 
 test("the speaker header survives the live-to-settled transition on the same instance", () => {
@@ -175,7 +196,7 @@ test("the speaker header survives the live-to-settled transition on the same ins
       agentLabel="k3"
     />,
   );
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("agent-message-stream")).toBeNull();
   expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agentk3 · ${TIME}`);
 });
 
@@ -271,7 +292,7 @@ test("the agent message keeps .message a bare layout row - the bubble treatment 
 test("every fragment renders its prose inside the bubble wrapper, live and settled", () => {
   const { rerender } = render(<AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />);
   const liveBubble = screen.getByTestId("agent-bubble");
-  expect(liveBubble.contains(screen.getByTestId("streaming-text"))).toBe(true);
+  expect(liveBubble.contains(screen.getByTestId("agent-message-stream"))).toBe(true);
   rerender(<AgentMessageItem item={item({ text: "x", pendingText: undefined })} turn={turn} live={false} />);
   const settledBubble = screen.getByTestId("agent-bubble");
   expect(settledBubble.textContent).toContain("x");
@@ -305,11 +326,29 @@ test("the bubble fills are token color-mixes and the continuation radius is unif
   expect(css).toMatch(/\.continuation\s*\{[^}]*border-radius:\s*var\(--radius-pane\);/);
 });
 
-test("Markdown and StreamingText read --prose-font-size with the identical fallback, so live and settled can never disagree on size", () => {
+// The live path renders through the SAME Markdown widget as the settled
+// path (Jesse, 2026-08-03: streaming messages are markdown-rendered too),
+// so size/ink parity no longer needs two stylesheets agreeing on a hook -
+// it is the same component. What the live branch adds is the caret: the
+// design system's one reserved streaming cue, now attached to the stream
+// wrapper instead of StreamingText's .live class. jsdom computes no
+// cascade, so the caret contract is checked at the declaration level, the
+// same technique StreamingText.test.tsx uses for its own caret.
+
+test("the live stream keeps the blinking caret, as an inline bar at the end of the last markdown block (declaration-level)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const markdownCss = readFileSync(join(here, "../../../../widgets/markdown/markdown.module.css"), "utf8");
-  const streamingCss = readFileSync(join(here, "../streamingtext.module.css"), "utf8");
-  const HOOK = "font-size: var(--prose-font-size, var(--font-size-body));";
-  expect(markdownCss).toContain(HOOK);
-  expect(streamingCss).toContain(HOOK);
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const caret = /\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{([^}]*)\}/.exec(css);
+  expect(caret).not.toBeNull();
+  expect(caret![1]).toContain("display: inline-block");
+  expect(caret![1]).toContain("background: currentColor");
+  expect(caret![1]).toContain("animation: streamingCaretBlink");
+});
+
+test("the stream caret's blink sits behind the reduced-motion gate, keeping the static bar (declaration-level)", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const gate = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  expect(gate).not.toBeNull();
+  expect(gate![1]).toMatch(/\.stream\s*>\s*div\s*>\s*:last-child::after\s*\{[^}]*animation:\s*none/);
 });
