@@ -64,7 +64,8 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
-    onToggleFavorite: vi.fn(),
+    onPinSectionRequest: vi.fn(),
+    onMovePinSectionRequest: vi.fn(),
     onToggleArchiveSession: vi.fn(),
     onRenameRequest: vi.fn(),
     onDeleteSessionRequest: vi.fn(),
@@ -323,13 +324,15 @@ describe("session row", () => {
     expect(row?.children[1]?.textContent).toContain("Fix flaky test");
   });
 
-  test("shows a favorite star when the session is favorited, hides it otherwise", () => {
+  test("shows a pin star when the session has a section assignment, hides it otherwise", () => {
     const { rerender } = render(
-      <RailRow node={sessionRailNode(apiNode({ favorite: true }))} info={info()} actions={actions()} />,
+      <RailRow node={sessionRailNode(apiNode({ pin_section_id: "research" }))} info={info()} actions={actions()} />,
     );
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
 
-    rerender(<RailRow node={sessionRailNode(apiNode({ favorite: false }))} info={info()} actions={actions()} />);
+    rerender(
+      <RailRow node={sessionRailNode(apiNode({ pin_section_id: undefined }))} info={info()} actions={actions()} />,
+    );
     expect(screen.queryByTestId("favorite-star")).toBeNull();
   });
 
@@ -696,20 +699,22 @@ describe("session row", () => {
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
   });
 
-  test("menu offers 'Add to pinned' for an unfavorited session and calls onToggleFavorite on select", async () => {
+  test("menu offers 'Pin this session…' for an unassigned top-level session", async () => {
     const acts = actions();
-    const session = apiNode({ favorite: false, ref: "local:a" });
+    const session = apiNode({ pin_section_id: undefined, ref: "local:a" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
     const user = await openMenu(/actions for/i);
-    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
-    expect(acts.onToggleFavorite).toHaveBeenCalledWith(session);
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    expect(acts.onPinSectionRequest).toHaveBeenCalledWith(session);
   });
 
-  test("menu offers 'Remove from pinned' for a favorited session", async () => {
-    const session = apiNode({ favorite: true });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Remove from pinned" })).toBeTruthy();
+  test("menu offers 'Move pinned session…' for an assigned top-level session", async () => {
+    const acts = actions();
+    const session = apiNode({ pin_section_id: "research" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Move pinned session…" }));
+    expect(acts.onMovePinSectionRequest).toHaveBeenCalledWith(session);
   });
 
   test("menu omits Rename when the session does not support it", async () => {
@@ -808,13 +813,13 @@ describe("session row", () => {
   // session at all, so it writes a decision row nothing will ever clean up.
   // Both verified against a live hub.
   for (const kind of ["subagent", "fork", "cluster"]) {
-    test(`menu omits the pin action on a ${kind} row - it cannot reach the Pinned tier`, async () => {
+    test(`menu omits pin and move on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
       const trigger = screen.queryByRole("button", { name: /actions for/i });
       if (trigger) {
         await openMenu(/actions for/i);
-        expect(screen.queryByRole("menuitem", { name: "Add to pinned" })).toBeNull();
-        expect(screen.queryByRole("menuitem", { name: "Remove from pinned" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Move pinned session…" })).toBeNull();
       }
     });
   }
@@ -838,7 +843,7 @@ describe("session row", () => {
       />,
     );
     await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Add to pinned" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
@@ -898,8 +903,8 @@ describe("session row", () => {
     expect(activity.getAttribute("title")).toBe(activity.textContent);
   });
 
-  // hub tree-wire gaps round (wave 3 task 6): a live-tier row's own
-  // Tier/Favorite/Rename fields used to arrive unstamped (undefined/false)
+  // A live-tier row's own Tier/PinSectionID/Rename fields must all survive the
+  // duplicate projection. RailRow reads pin_section_id/rename directly,
   // regardless of the session's real decisions, since handleAPITree's Live
   // loop bypassed the tier-stamping helper entirely. RailRow never gated
   // these on tier itself - it just reads session.favorite/session.rename
@@ -908,14 +913,14 @@ describe("session row", () => {
   // here (rather than left to incidental coverage from fixtures that never
   // set tier at all) since a live row is the realistic shape a reviewer
   // would specifically want proof for.
-  test("favorite star and Rename affordance both work on a live-tier row, not just current/archived ones", async () => {
+  test("pin star, Move, and Rename all work on a live-tier duplicate", async () => {
     const acts = actions();
-    const session = apiNode({ tier: "live", favorite: true, rename: true });
+    const session = apiNode({ tier: "live", pin_section_id: "research", rename: true });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
 
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
     const user = await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Remove from pinned" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Move pinned session…" })).toBeTruthy();
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     expect(acts.onRenameRequest).toHaveBeenCalledWith(session);
   });
@@ -1204,11 +1209,11 @@ describe("row actions overlay (Rail.module.css)", () => {
 // before pinning was scoped, or by a direct API call - and rendering the star
 // there is a dead end: the menu offers no way to take it off. Suppressing it
 // keeps "only top-level sessions can be pinned" true in both directions.
-describe("favorite star follows the same scoping as the pin action", () => {
+describe("pin star follows the same scoping as the pin action", () => {
   test("a top-level session shows its star", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ kind: "session", favorite: true }))}
+        node={sessionRailNode(apiNode({ kind: "session", pin_section_id: "research" }))}
         info={info()}
         actions={actions()}
       />,
@@ -1217,8 +1222,14 @@ describe("favorite star follows the same scoping as the pin action", () => {
   });
 
   for (const kind of ["subagent", "fork", "cluster"]) {
-    test(`a ${kind} row shows no star even when the wire says favorite`, () => {
-      render(<RailRow node={sessionRailNode(apiNode({ kind, favorite: true }))} info={info()} actions={actions()} />);
+    test(`a ${kind} row shows no star even when the wire carries a section assignment`, () => {
+      render(
+        <RailRow
+          node={sessionRailNode(apiNode({ kind, pin_section_id: "research" }))}
+          info={info()}
+          actions={actions()}
+        />,
+      );
       expect(screen.queryByTestId("favorite-star")).toBeNull();
     });
   }

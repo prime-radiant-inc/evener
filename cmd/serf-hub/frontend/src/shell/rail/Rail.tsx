@@ -14,6 +14,8 @@ import { useConnectionStore } from "../../stores/connection";
 import {
   type TreeNode as ApiTreeNode,
   type TreeProject as ApiTreeProject,
+  type PinSectionSummary,
+  type PinSectionTree,
   type TreeResponse,
   treeStore,
   useTreeStore,
@@ -25,6 +27,7 @@ import {
   EmptyState,
   IconButton,
   Input,
+  Menu,
   Skeleton,
   Tooltip,
   Tree,
@@ -34,7 +37,19 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate, paneToURL, urlToPane } from "../routing";
 import { workspaceStore } from "../workspace";
-import { deleteProject, deleteSession, renameSession, setArchived, setFavorite } from "./actions";
+import {
+  assignSessionPin,
+  deletePinSection,
+  deleteProject,
+  deleteSession,
+  listPinSections,
+  renamePinSection,
+  renameSession,
+  setArchived,
+  setFavorite,
+  unpinSession,
+} from "./actions";
+import { PinSectionPicker } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -45,6 +60,7 @@ import {
   archivedSessionGroups,
   type OverflowRailNode,
   overrideLookup,
+  pinSectionDisclosureID,
   projectNodeIdForSessionRef,
   projectNodes,
   type RailNode,
@@ -64,8 +80,12 @@ const CLASS = {
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
+  sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
+  sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
   dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
   dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
+  pickerError: requireClass(styles.pickerError, "Rail.module.css", "pickerError"),
+  srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
 // The Archived section's key in the same expand-override map every row uses.
@@ -155,6 +175,62 @@ function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectio
   );
 }
 
+interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
+  section: PinSectionTree;
+  open: boolean;
+  onToggleOpen: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  isExpanded: ReturnType<typeof overrideLookup>;
+}
+
+function PinnedRailSection({
+  section,
+  open,
+  onToggleOpen,
+  onRename,
+  onDelete,
+  isExpanded,
+  onToggle,
+  onActivate,
+  actions,
+}: PinnedRailSectionProps) {
+  return (
+    <section className={CLASS.section}>
+      <div className={CLASS.sectionHeadingRow}>
+        <h3 className={CLASS.sectionTitle} aria-label={section.name}>
+          <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+            <Chevron direction={open ? "down" : "right"} /> {section.name}
+          </button>
+        </h3>
+        <div className={CLASS.sectionHeadingAction}>
+          <Menu
+            variant="quiet"
+            trigger={
+              <>
+                <span aria-hidden="true">⋯</span>
+                <span className={CLASS.srOnly}>{`Actions for ${section.name}`}</span>
+              </>
+            }
+            items={[
+              { id: "rename", label: "Rename", onSelect: onRename },
+              { id: "delete", label: "Delete", onSelect: onDelete },
+            ]}
+          />
+        </div>
+      </div>
+      {open && (
+        <Tree
+          nodes={sessionNodes(section.sessions, isExpanded)}
+          onToggle={onToggle}
+          onActivate={onActivate}
+          renderRow={renderRailRow(actions)}
+        />
+      )}
+    </section>
+  );
+}
+
 interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
   count: number;
   open: boolean;
@@ -214,6 +290,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [pickerTarget, setPickerTarget] = useState<{ session: ApiTreeNode; mode: "pin" | "move" } | null>(null);
+  const [sectionRenameTarget, setSectionRenameTarget] = useState<PinSectionTree | null>(null);
+  const [sectionRenameValue, setSectionRenameValue] = useState("");
+  const [sectionRenameError, setSectionRenameError] = useState("");
+  const [sectionDeleteTarget, setSectionDeleteTarget] = useState<{
+    section: PinSectionTree;
+    memberCount: number;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
   const [deleteSessionTarget, setDeleteSessionTarget] = useState<ApiTreeNode | null>(null);
   // Mutations currently in flight. Everything below renders from the tree with
@@ -389,22 +473,39 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // fired and forgotten, because its completion is precisely the moment the
   // real tree carries the change and the overlay stops being needed. Dropping
   // the op any earlier would flash the pre-mutation row back for one render.
-  async function runAction(fn: () => Promise<unknown>, failureMessage: string, optimistic?: PendingOp): Promise<void> {
-    if (optimistic) setPending((ops) => [...ops, optimistic]);
+  async function runAction<T>(
+    fn: () => Promise<T>,
+    failureMessage: string,
+    optimistic?: PendingOp | ((result: T) => PendingOp),
+    propagateFailure = false,
+  ): Promise<void> {
+    let installed = typeof optimistic === "object" ? optimistic : undefined;
+    if (installed) {
+      const initial = installed;
+      setPending((ops) => [...ops, initial]);
+    }
     try {
-      await fn();
+      const result = await fn();
+      if (typeof optimistic === "function") {
+        const next = optimistic(result);
+        installed = next;
+        setPending((ops) => [...ops, next]);
+      }
       await treeStore.getState().refresh();
     } catch (err) {
       toasts.push("error", `${failureMessage}: ${errorText(err)}`);
+      if (propagateFailure) throw err;
     } finally {
-      if (optimistic) setPending((ops) => ops.filter((op) => op !== optimistic));
+      if (installed) setPending((ops) => ops.filter((op) => op !== installed));
     }
   }
 
   const rowActions: RailRowActions = {
-    onToggleFavorite: (session) => {
-      const value = !session.favorite;
-      void runAction(() => setFavorite("session", session.ref, value), "Couldn't update favorite");
+    onPinSectionRequest: (session) => {
+      setPickerTarget({ session, mode: "pin" });
+    },
+    onMovePinSectionRequest: (session) => {
+      setPickerTarget({ session, mode: "move" });
     },
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
@@ -531,11 +632,111 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     }
   }
 
+  async function assignPickerTarget(
+    target: { section_id: string } | { section_name: string },
+    selectedSection?: PinSectionSummary,
+  ): Promise<void> {
+    const picker = pickerTarget;
+    if (!picker) return;
+    const optimistic = selectedSection
+      ? ({ kind: "sessionPin", ref: picker.session.ref, source: picker.session, section: selectedSection } as const)
+      : (result: Awaited<ReturnType<typeof assignSessionPin>>): PendingOp => ({
+          kind: "sessionPin",
+          ref: picker.session.ref,
+          source: picker.session,
+          section: result.assignment.section,
+        });
+    await runAction(
+      () => assignSessionPin(picker.session.ref, target),
+      "Couldn't assign pinned session",
+      optimistic,
+      true,
+    );
+    setPickerTarget(null);
+  }
+
+  async function unpinPickerTarget(): Promise<void> {
+    const picker = pickerTarget;
+    if (!picker) return;
+    await runAction(
+      () => unpinSession(picker.session.ref),
+      "Couldn't unpin session",
+      { kind: "sessionUnpin", ref: picker.session.ref },
+      true,
+    );
+    setPickerTarget(null);
+  }
+
+  function openSectionRename(section: PinSectionTree): void {
+    setSectionRenameTarget(section);
+    setSectionRenameValue(section.name);
+    setSectionRenameError("");
+  }
+
+  function closeSectionRename(): void {
+    setSectionRenameTarget(null);
+    setSectionRenameValue("");
+    setSectionRenameError("");
+  }
+
+  async function confirmSectionRename(): Promise<void> {
+    const target = sectionRenameTarget;
+    const name = sectionRenameValue.trim();
+    if (!target) return;
+    const count = Array.from(name).length;
+    if (count === 0) {
+      setSectionRenameError("Section name is required");
+      return;
+    }
+    if (count > 80) {
+      setSectionRenameError("Section names must be 80 characters or fewer");
+      return;
+    }
+    setSectionRenameError("");
+    try {
+      await runAction(
+        () => renamePinSection(target.id, name),
+        "Couldn't rename pin section",
+        (section): PendingOp => ({ kind: "pinSectionRename", id: target.id, name: section.name }),
+        true,
+      );
+      closeSectionRename();
+    } catch (err) {
+      setSectionRenameError(errorText(err));
+    }
+  }
+
+  async function requestSectionDelete(section: PinSectionTree): Promise<void> {
+    try {
+      const summaries = await listPinSections();
+      const durable = summaries.find((summary) => summary.id === section.id);
+      if (!durable) throw new Error("pin section not found");
+      setSectionDeleteTarget({ section, memberCount: durable.member_count });
+    } catch (err) {
+      toasts.push("error", `Couldn't load pin section details: ${errorText(err)}`);
+    }
+  }
+
+  async function confirmSectionDelete(): Promise<void> {
+    const target = sectionDeleteTarget;
+    if (!target) return;
+    setSectionDeleteTarget(null);
+    await runAction(() => deletePinSection(target.section.id), "Couldn't delete pin section", {
+      kind: "pinSectionDelete",
+      id: target.section.id,
+    });
+  }
+
   const isExpanded = overrideLookup(expandedOverrides);
   // The Archived section is a disclosure like any other, so it lives in the
   // same override map rather than in a useState of its own - one expand
   // mechanism for the whole rail, and it persists for free.
   const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
+  const pinSections = tree
+    ? [...tree.pin_sections].sort(
+        (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
+      )
+    : [];
 
   // Everything the bottom Archived-sessions disclosure holds: whole archived
   // projects (stubs until their own first expand), then one sub-branch per
@@ -632,8 +833,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
                 tree.needs_you itself is untouched (RailHost's ☰ chip badge
                 and attentionSummary.needsYou still read the underlying tiers)
                 - only this one RailSection is gone. Per Jesse's decision,
-                Live/Pinned/Projects/Archived/Test runs are all retained
-                as-is, including Live's own residual overlap with Projects. */}
+                Live/named pin sections/Projects/Archived/Test runs are all
+                retained, including Live's own residual overlap with Projects. */}
             <RailSection
               title="Live"
               nodes={sessionNodes(tree.live, isExpanded)}
@@ -641,16 +842,24 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
               onActivate={handleActivate}
               actions={rowActions}
             />
-            <RailSection
-              title="Pinned"
-              nodes={sessionNodes(
-                tree.pin_sections.flatMap((section) => section.sessions),
-                isExpanded,
-              )}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-            />
+            {pinSections.map((section) => {
+              const disclosureID = pinSectionDisclosureID(section.id);
+              const open = isExpanded(disclosureID, true);
+              return (
+                <PinnedRailSection
+                  key={section.id}
+                  section={section}
+                  open={open}
+                  onToggleOpen={() => setExpanded(disclosureID, !open)}
+                  onRename={() => openSectionRename(section)}
+                  onDelete={() => void requestSectionDelete(section)}
+                  isExpanded={isExpanded}
+                  onToggle={handleToggle}
+                  onActivate={handleActivate}
+                  actions={rowActions}
+                />
+              );
+            })}
             <RailSection
               title="Projects"
               nodes={projectNodes(tree.projects, isExpanded)}
@@ -715,6 +924,69 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
               onChange={(e: ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value)}
             />
           </label>
+        </Dialog>
+      )}
+
+      {pickerTarget && (
+        <PinSectionPicker
+          session={pickerTarget.session}
+          currentSectionId={pickerTarget.session.pin_section_id}
+          mode={pickerTarget.mode}
+          onAssign={assignPickerTarget}
+          onUnpin={pickerTarget.mode === "move" ? unpinPickerTarget : undefined}
+          onClose={() => setPickerTarget(null)}
+        />
+      )}
+
+      {sectionRenameTarget && (
+        <Dialog
+          open
+          onClose={closeSectionRename}
+          title="Rename pin section"
+          footer={
+            <div className={CLASS.dialogActions}>
+              <Button variant="quiet" onClick={closeSectionRename}>
+                Cancel
+              </Button>
+              <Button onClick={() => void confirmSectionRename()}>Rename section</Button>
+            </div>
+          }
+        >
+          <label className={CLASS.dialogField}>
+            Section name
+            <Input
+              value={sectionRenameValue}
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                setSectionRenameValue(event.target.value);
+                setSectionRenameError("");
+              }}
+            />
+          </label>
+          {sectionRenameError && (
+            <p className={CLASS.pickerError} role="alert">
+              {sectionRenameError}
+            </p>
+          )}
+        </Dialog>
+      )}
+
+      {sectionDeleteTarget && (
+        <Dialog
+          open
+          onClose={() => setSectionDeleteTarget(null)}
+          title="Delete pin section?"
+          footer={
+            <div className={CLASS.dialogActions}>
+              <Button variant="quiet" onClick={() => setSectionDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => void confirmSectionDelete()}>
+                Delete section
+              </Button>
+            </div>
+          }
+        >
+          <p>{`Delete “${sectionDeleteTarget.section.name}”? This will unpin ${sectionDeleteTarget.memberCount} session${sectionDeleteTarget.memberCount === 1 ? "" : "s"}.`}</p>
         </Dialog>
       )}
 

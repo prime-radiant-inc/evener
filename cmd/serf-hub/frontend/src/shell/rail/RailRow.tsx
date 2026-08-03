@@ -251,7 +251,8 @@ function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boo
 }
 
 export interface RailRowActions {
-  onToggleFavorite: (session: ApiTreeNode) => void;
+  onPinSectionRequest: (session: ApiTreeNode) => void;
+  onMovePinSectionRequest: (session: ApiTreeNode) => void;
   onToggleArchiveSession: (session: ApiTreeNode) => void;
   onRenameRequest: (session: ApiTreeNode) => void;
   onDeleteSessionRequest: (session: ApiTreeNode) => void;
@@ -354,9 +355,10 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
   // it - the request 404s for those ids, and the menu never offers it.
   if (isTopLevelSession(session)) {
     items.push({
-      id: "favorite",
-      label: session.favorite ? "Remove from pinned" : "Add to pinned",
-      onSelect: () => actions.onToggleFavorite(session),
+      id: "pin-section",
+      label: session.pin_section_id ? "Move pinned session…" : "Pin this session…",
+      onSelect: () =>
+        session.pin_section_id ? actions.onMovePinSectionRequest(session) : actions.onPinSectionRequest(session),
     });
   }
   if (session.rename) {
@@ -537,7 +539,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           favorite:true on a nested or synthetic node (a decision written
           before pinning was scoped, or a direct API call), and a star on a row
           whose menu offers no way to remove it is a dead end. */}
-      {session.favorite === true && isTopLevelSession(session) && (
+      {session.pin_section_id !== undefined && isTopLevelSession(session) && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>
