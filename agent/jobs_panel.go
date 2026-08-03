@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -15,14 +14,10 @@ import (
 // paths need errors.Is.)
 func isOutputNotExistErr(err error) bool { return errors.Is(err, os.ErrNotExist) }
 
-// JobSummary and JobOutputTail are wire payloads, so their definitions live
-// in appwire beside the serf/jobs/list and serf/jobs/output shapes (and
-// under that package's camelCase tag carve-out). The aliases keep this
-// package's producers named in domain terms.
-type (
-	JobSummary    = appwire.JobSummary
-	JobOutputTail = appwire.JobOutputTail
-)
+// JobOutputTail is a wire payload, so its definition lives in appwire beside
+// the serf/jobs/output shape (and under that package's camelCase tag
+// carve-out). The alias keeps this package's producer named in domain terms.
+type JobOutputTail = appwire.JobOutputTail
 
 const (
 	jobOutputTailDefaultBytes = 4096
@@ -37,74 +32,6 @@ func clampJobTailBytes(maxBytes int64) int64 {
 		return jobOutputTailMaxBytes
 	}
 	return maxBytes
-}
-
-// summarizeJobRecord projects the temporary flat jobs-list compatibility
-// payload from the shared activity job projection. Description is the first
-// non-empty of Description, Command, Task. HasOutput means a tail read is worth
-// attempting: an output path is recorded or bytes were counted.
-func summarizeJobRecord(rec *jobstore.JobRecord) JobSummary {
-	job := projectActivityJob(rec, "")
-	return JobSummary{
-		JobID:       job.JobID,
-		Type:        job.Type,
-		Status:      job.Status,
-		Reason:      job.Reason,
-		Description: job.Description,
-		Command:     job.Command,
-		Task:        job.Task,
-		Background:  job.Background,
-		HasOutput:   job.HasOutput,
-		StartedAt:   job.StartedAt,
-		EndedAt:     job.EndedAt,
-		ExitCode:    job.ExitCode,
-		OutputBytes: job.OutputBytes,
-	}
-}
-
-func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
-	out := make([]JobSummary, 0, len(ordered))
-	for _, rec := range ordered {
-		if rec == nil {
-			continue
-		}
-		out = append(out, summarizeJobRecord(rec))
-	}
-	return out
-}
-
-// JobSummaries is the live-daemon serf/jobs/list payload: every job in the
-// session's durable store, in append order, with the manager's live records
-// laid over the fold (liveJobRecords, the same overlay listWithError applies).
-// A running job's live state is not all in the log — Background is live-only
-// and OutputBytes is stamped durably only at terminal — so the fold alone
-// would report every job foreground and every running job silent. A nil
-// jobManager (a session that never started job infrastructure) yields an
-// empty, non-nil slice, so the wire carries [] rather than null.
-//
-// A store that cannot be read is an ERROR, never an empty list. "No jobs
-// ran" and "I can't tell you what ran" are different answers, and only one
-// of them is reassuring; a corrupt jobs.jsonl reported as the first would
-// reach the panel as "No jobs yet". LoadSessionJobList, the past-session
-// reader for this same payload, has always surfaced it.
-func (s *Session) JobSummaries() ([]JobSummary, error) {
-	if s == nil || s.jobManager == nil {
-		return []JobSummary{}, nil
-	}
-	ordered, err := s.jobManager.store.LoadOrdered()
-	if err != nil {
-		return nil, err
-	}
-	live := s.jobManager.liveJobRecords()
-	for i, rec := range ordered {
-		if rec == nil {
-			continue
-		}
-		if liveRec, ok := live[rec.JobID]; ok {
-			ordered[i] = liveRec
-		}
-	}
-	return summarizeJobRecords(ordered), nil
 }
 
 // JobOutputTail is the live-daemon serf/jobs/output payload. found=false
@@ -130,30 +57,6 @@ func (s *Session) JobOutputTail(jobID string, maxBytes int64) (JobOutputTail, bo
 func jobOutputTailFrom(content string, total int64, truncated bool) JobOutputTail {
 	retainedStart := max(total-int64(len(content)), 0)
 	return JobOutputTail{Tail: content, TotalBytes: total, RetainedStart: retainedStart, Truncated: truncated}
-}
-
-// LoadSessionJobList reads one local session's durable jobs.jsonl and
-// returns every job in append order, projected for the webui jobs panel. It
-// is read-only: a session with no jobs.jsonl yields an empty slice and
-// creates no file.
-func LoadSessionJobList(stateDir, sessionID string) ([]JobSummary, error) {
-	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := historicalJobsStat(path); err != nil {
-		if os.IsNotExist(err) {
-			return []JobSummary{}, nil
-		}
-		return nil, err
-	}
-	store, err := historicalJobsOpen(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = store.Close() }()
-	ordered, err := store.LoadOrdered()
-	if err != nil {
-		return nil, err
-	}
-	return summarizeJobRecords(ordered), nil
 }
 
 // LoadSessionJobOutputTail reads one local session's durable jobs.jsonl and

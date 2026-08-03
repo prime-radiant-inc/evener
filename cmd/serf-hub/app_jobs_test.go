@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
-	"primeradiant.com/serf/rendezvous"
 )
 
 // jobsListSource is a minimal appsource.Source test double that stubs the
@@ -25,20 +25,24 @@ import (
 // (app_rpc_test.go), mirroring taskListSource's existing override pattern.
 type jobsListSource struct {
 	relayLifecycleSource
-	id       string
-	jobsResp appwire.JobsListResponse
-	jobsErr  error
-	outResp  appwire.JobsOutputResponse
-	outErr   error
+	id          string
+	jobsResp    appwire.JobsListResponse
+	jobsErr     error
+	jobsParams  appwire.JobsListParams
+	outResp     appwire.JobsOutputResponse
+	outErr      error
+	outputParams appwire.JobsOutputParams
 }
 
 func (s *jobsListSource) ID() string { return s.id }
 
-func (s *jobsListSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+func (s *jobsListSource) ListJobs(_ context.Context, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	s.jobsParams = params
 	return s.jobsResp, s.jobsErr
 }
 
-func (s *jobsListSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+func (s *jobsListSource) JobOutput(_ context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	s.outputParams = params
 	return s.outResp, s.outErr
 }
 
@@ -147,51 +151,235 @@ func writePersistedJobsLog(t *testing.T, stateDir, sessionID string, now time.Ti
 	}
 }
 
+func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig, string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-jobs-0000000000")
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	for sessionID, name := range map[string]string{rootID: "Root", childID: "Child"} {
+		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+			ID:        sessionID,
+			ProfileID: "openai",
+			Model:     "gpt-5",
+			Name:      name,
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePersistedActivityLog(t, stateDir, rootID, now, []map[string]any{
+		{
+			"kind":        "delegate_created",
+			"ts":          now.Format(time.RFC3339Nano),
+			"delegate_id": "dlg_child",
+			"delegate": map[string]any{
+				"child_session_id":   childID,
+				"transcript_ref":    "local:" + childID,
+				"owner_session_id":   rootID,
+				"visible_session_id": rootID,
+				"generation":         "gen_1",
+				"resumable":          true,
+			},
+		},
+		{
+			"kind":                  "job_started",
+			"ts":                    now.Add(time.Second).Format(time.RFC3339Nano),
+			"job_id":                "job_delegate_child",
+			"type":                  "delegate",
+			"status":                "running",
+			"task":                  "inspect child",
+			"owner_session_id":      rootID,
+			"visible_to_session_id": rootID,
+			"delegate_id":           "dlg_child",
+			"transcript_ref":        "local:" + childID,
+			"started_at":            now.Add(time.Second).Format(time.RFC3339Nano),
+		},
+		{
+			"kind":     "job_finished",
+			"ts":       now.Add(2 * time.Second).Format(time.RFC3339Nano),
+			"job_id":   "job_delegate_child",
+			"status":   "completed",
+			"reason":   "exit_zero",
+			"ended_at": now.Add(2 * time.Second).Format(time.RFC3339Nano),
+		},
+		{
+			"kind":                  "job_started",
+			"ts":                    now.Add(3 * time.Second).Format(time.RFC3339Nano),
+			"job_id":                "job_root_shell",
+			"type":                  "shell",
+			"status":                "running",
+			"description":           "root shell",
+			"command":               "make root",
+			"owner_session_id":      rootID,
+			"visible_to_session_id": rootID,
+			"started_at":            now.Add(3 * time.Second).Format(time.RFC3339Nano),
+		},
+		{
+			"kind":     "job_finished",
+			"ts":       now.Add(4 * time.Second).Format(time.RFC3339Nano),
+			"job_id":   "job_root_shell",
+			"status":   "completed",
+			"reason":   "exit_zero",
+			"ended_at": now.Add(4 * time.Second).Format(time.RFC3339Nano),
+		},
+	})
+	childEvents := make([]map[string]any, 0, childJobs*2)
+	for i := 0; i < childJobs; i++ {
+		started := now.Add(time.Duration(i+10) * time.Second)
+		ended := started.Add(500 * time.Millisecond)
+		jobID := fmt.Sprintf("job_child_%04d", i)
+		startedText := started.Format(time.RFC3339Nano)
+		endedText := ended.Format(time.RFC3339Nano)
+		childEvents = append(childEvents,
+			map[string]any{
+				"kind":                  "job_started",
+				"ts":                    startedText,
+				"job_id":                jobID,
+				"type":                  "shell",
+				"status":                "running",
+				"description":           fmt.Sprintf("child shell %d", i),
+				"command":               fmt.Sprintf("echo child-%d", i),
+				"owner_session_id":      childID,
+				"visible_to_session_id": childID,
+				"started_at":            startedText,
+			},
+			map[string]any{
+				"kind":     "job_finished",
+				"ts":       endedText,
+				"job_id":   jobID,
+				"status":   "completed",
+				"reason":   "exit_zero",
+				"ended_at": endedText,
+			},
+		)
+	}
+	writePersistedActivityLog(t, stateDir, childID, now, childEvents)
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	return hubcore.WebConfig{Past: idx}, rootID, childID, stateDir
+}
+
+func writePersistedActivityLog(t *testing.T, stateDir, sessionID string, _ time.Time, events []map[string]any) {
+	t.Helper()
+	dir := filepath.Join(stateDir, "sessions", sessionID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, 0, len(events))
+	for i, event := range events {
+		event["seq"] = i + 1
+		b, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(b))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "jobs.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustActivityTree(t *testing.T, data any) appwire.JobActivityTree {
+	t.Helper()
+	tree, ok := data.(appwire.JobActivityTree)
+	if !ok {
+		t.Fatalf("activity tree = %#v (%T), want appwire.JobActivityTree", data, data)
+	}
+	return tree
+}
+
+func findActivityDelegate(t *testing.T, session appwire.JobActivitySession, childID string) appwire.JobActivityDelegate {
+	t.Helper()
+	for _, entry := range session.Entries {
+		if entry.Delegate != nil && entry.Delegate.ChildSessionID == childID {
+			return *entry.Delegate
+		}
+	}
+	t.Fatalf("no delegate for child %q in %+v", childID, session.Entries)
+	return appwire.JobActivityDelegate{}
+}
+
 // TestHubJobsListLiveDaemon proves a running daemon's jobstore is
 // authoritative: even though a past index entry (with its own, different,
 // persisted job) exists for the same session, a successful live ListJobs
 // response is passed through untouched and past is never consulted.
 func TestHubJobsListLiveDaemon(t *testing.T) {
-	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_stale", description: "stale past job", command: "make stale"},
-	})
-	liveJobs := []agent.JobSummary{{JobID: "job_live", Type: "shell", Status: "running", Description: "live job", StartedAt: "2026-07-31T12:00:00Z"}}
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
+	liveTree := appwire.JobActivityTree{Root: appwire.JobActivitySession{
+		SessionID: sessionID,
+		Ref:       "local:" + sessionID,
+		Entries: []appwire.JobActivityEntry{{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
+			DelegateID:     "dlg_live",
+			ChildSessionID: childID,
+			ChildRef:       "local:" + childID,
+		}}},
+	}}
+	source := &jobsListSource{id: "local", jobsResp: appwire.JobsListResponse{Data: liveTree}}
 	sources := appsource.NewRegistry()
-	sources.Add(&jobsListSource{id: "local", jobsResp: appwire.JobsListResponse{Data: liveJobs}})
+	sources.Add(source)
 
-	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
+	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID, Continuation: "live-next"})
 	if err != nil {
 		t.Fatalf("hubJobsList: %v", err)
 	}
-	jobs, ok := resp.Data.([]agent.JobSummary)
-	if !ok || len(jobs) != 1 || jobs[0].JobID != "job_live" {
-		t.Fatalf("resp.Data = %#v, want the live job (past must not be consulted)", resp.Data)
+	tree := mustActivityTree(t, resp.Data)
+	if tree.Root.SessionID != liveTree.Root.SessionID || tree.Root.Ref != liveTree.Root.Ref {
+		t.Fatalf("resp.Data = %#v, want the live tree root (past must not be consulted)", resp.Data)
 	}
-}
+	if len(tree.Root.Entries) != 1 || tree.Root.Entries[0].Delegate == nil || tree.Root.Entries[0].Delegate.DelegateID != "dlg_live" {
+		t.Fatalf("resp.Data = %#v, want the live delegate entry", resp.Data)
+	}
+	if source.jobsParams.Ref != "local:"+sessionID || source.jobsParams.Continuation != "live-next" {
+		t.Fatalf("live params = %+v", source.jobsParams)
+	}
+	if delegate := tree.Root.Entries[0].Delegate; delegate == nil || delegate.ChildSessionID != childID {
+		t.Fatalf("live delegate = %+v", tree.Root.Entries[0].Delegate)
+	}
+	}
 
 // TestHubJobsListDeadSessionFallsBackToPast is the RED case: a session whose
-// daemon has exited (no live rendezvous entry) must still serve its real
-// persisted jobs from <StateDir>/sessions/<id>/jobs.jsonl, not the
-// SessionUnavailable error entryForRef raises for a live-only lookup.
+// daemon has exited (no live rendezvous entry) must still serve its recursive
+// persisted activity tree from jobs.jsonl, not the SessionUnavailable error
+// entryForRef raises for a live-only lookup.
 func TestHubJobsListDeadSessionFallsBackToPast(t *testing.T) {
-	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_a", description: "run the build", command: "make build", output: "build ok\n"},
-	})
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
 	sources := newExitedLocalRegistry()
 
 	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
 	if err != nil {
 		t.Fatalf("hubJobsList: %v", err)
 	}
-	jobs, ok := resp.Data.([]agent.JobSummary)
-	if !ok {
-		t.Fatalf("resp.Data = %#v (%T), want []agent.JobSummary", resp.Data, resp.Data)
+	tree := mustActivityTree(t, resp.Data)
+	if tree.Root.SessionID != sessionID || tree.Root.Ref != "local:"+sessionID {
+		t.Fatalf("root = %+v", tree.Root)
 	}
-	if len(jobs) != 1 || jobs[0].JobID != "job_a" || jobs[0].Description != "run the build" {
-		t.Fatalf("jobs = %+v, want one job %q", jobs, "run the build")
+	if len(tree.Root.Entries) != 2 {
+		t.Fatalf("root entries = %+v", tree.Root.Entries)
 	}
-	if jobs[0].Status != "completed" || !jobs[0].HasOutput || jobs[0].OutputBytes != int64(len("build ok\n")) {
-		t.Fatalf("jobs[0] = %+v, want the completed fixture with its output bookkeeping", jobs[0])
+	delegate := findActivityDelegate(t, tree.Root, childID)
+	if delegate.Child == nil {
+		t.Fatalf("delegate child missing: %+v", delegate)
+	}
+	if delegate.Child.SessionID != childID || delegate.Child.Ref != "local:"+childID {
+		t.Fatalf("child = %+v", delegate.Child)
+	}
+	if len(delegate.Child.Entries) != 1 || delegate.Child.Entries[0].Job == nil || delegate.Child.Entries[0].Job.OwnerRef != "local:"+childID {
+		t.Fatalf("child entries = %+v", delegate.Child.Entries)
 	}
 }
 
@@ -226,9 +414,7 @@ func TestHubJobsListDeadSessionNotInPastIndex(t *testing.T) {
 // the codex ref's thread id — dropping the local-source check would serve
 // another source's caller this local session's job list.
 func TestHubJobsListNonLocalRefKeepsTheLiveError(t *testing.T) {
-	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_local", description: "local past job", command: "make local"},
-	})
+	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
 	sources := appsource.NewRegistry()
 	sources.Add(&jobsListSource{id: "codex", jobsErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
 
@@ -245,31 +431,48 @@ func TestHubJobsListNonLocalRefKeepsTheLiveError(t *testing.T) {
 // NOT the dead-session condition; hubJobsList must propagate it rather than
 // silently serving the stale past-index job list.
 func TestHubJobsListLiveErrorPropagates(t *testing.T) {
-	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_stale", description: "stale past job", command: "make stale"},
-	})
+	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
+	sourceErr := appwire.SessionUnavailable("local daemon unavailable: broken pipe")
 	sources := appsource.NewRegistry()
-	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws://127.0.0.1:1/rpc", // reserved port: dial fails ECONNREFUSED
-			ThreadID:  sessionID,
-			SessionID: sessionID,
-		}}}
-	}, nil))
+	sources.Add(&jobsListSource{id: "local", jobsErr: sourceErr})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := hubJobsList(ctx, cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
+	_, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
 	if err == nil {
-		t.Fatal("hubJobsList returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
+		t.Fatal("hubJobsList returned nil error, want the live daemon failure (only the dead-session sentinel may fall back)")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
-		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
+	if !errors.As(err, &wire) || wire.Message != "local daemon unavailable: broken pipe" {
+		t.Fatalf("err = %v, want the live local source error preserved", err)
 	}
 	if isDeadSessionError(err) {
-		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
+		t.Fatalf("err = %v misclassified as the dead-session condition; it is a live-source failure", err)
+	}
+}
+
+func TestHubJobsListContinuationFallsBackToPastUnchanged(t *testing.T) {
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2002)
+	sources := newExitedLocalRegistry()
+
+	first, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("hubJobsList first page: %v", err)
+	}
+	firstTree := mustActivityTree(t, first.Data)
+	delegate := findActivityDelegate(t, firstTree.Root, childID)
+	if delegate.Child == nil || !delegate.Child.Branch.Truncated || delegate.Child.Branch.Continuation == "" {
+		t.Fatalf("first child branch = %+v child = %+v", delegate.Branch, delegate.Child)
+	}
+	continued, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID, Continuation: delegate.Child.Branch.Continuation})
+	if err != nil {
+		t.Fatalf("hubJobsList continuation: %v", err)
+	}
+	continuedTree := mustActivityTree(t, continued.Data)
+	continuedDelegate := findActivityDelegate(t, continuedTree.Root, childID)
+	if continuedDelegate.Child == nil || continuedDelegate.Child.SessionID != childID {
+		t.Fatalf("continued delegate child = %+v", continuedDelegate.Child)
+	}
+	if len(continuedDelegate.Child.Entries) == 0 {
+		t.Fatalf("continued child entries = %+v", continuedDelegate.Child.Entries)
 	}
 }
 
@@ -300,37 +503,27 @@ func TestHubJobsOutputLiveDaemon(t *testing.T) {
 }
 
 // TestHubJobsOutputLiveErrorPropagates is the output path's counterpart to
-// TestHubJobsListLiveErrorPropagates: a LIVE rendezvous entry whose endpoint
-// is unreachable. The dial failure maps to a SessionUnavailable-SHAPED error
-// ("local daemon unavailable: ...") that is NOT the dead-session condition;
-// hubJobsOutput must propagate it rather than silently serving the stale
-// past-index output tail.
+// TestHubJobsListLiveErrorPropagates: only the precise dead-session sentinel
+// may fall back. Any other live-source failure must be propagated as-is rather
+// than silently serving stale persisted output.
 func TestHubJobsOutputLiveErrorPropagates(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
 		{id: "job_x", description: "stale past job", command: "make stale", output: "0123456789"},
 	})
+	sourceErr := appwire.SessionUnavailable("local daemon unavailable: broken pipe")
 	sources := appsource.NewRegistry()
-	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
-			Protocol:  appwire.ProtocolVersion,
-			Endpoint:  "ws://127.0.0.1:1/rpc", // reserved port: dial fails ECONNREFUSED
-			ThreadID:  sessionID,
-			SessionID: sessionID,
-		}}}
-	}, nil))
+	sources.Add(&jobsListSource{id: "local", outErr: sourceErr})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := hubJobsOutput(ctx, cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "local:" + sessionID, JobID: "job_x", MaxBytes: 4})
 	if err == nil {
-		t.Fatal("hubJobsOutput returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
+		t.Fatal("hubJobsOutput returned nil error, want the live daemon failure (only the dead-session sentinel may fall back)")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
-		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
+	if !errors.As(err, &wire) || wire.Message != "local daemon unavailable: broken pipe" {
+		t.Fatalf("err = %v, want the live local source error preserved", err)
 	}
 	if isDeadSessionError(err) {
-		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
+		t.Fatalf("err = %v misclassified as the dead-session condition; it is a live-source failure", err)
 	}
 }
 
@@ -453,9 +646,7 @@ func corruptPersistedJobsLog(t *testing.T, stateDir, sessionID string) {
 // Either laundering would pass every other test in this file while hiding
 // real data loss.
 func TestHubJobsListCorruptJobsLogReturnsErrorNotEmptySuccess(t *testing.T) {
-	cfg, sessionID, stateDir := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_a", description: "run the build", command: "make build"},
-	})
+	cfg, sessionID, _, stateDir := seedPastSessionWithActivity(t, 1)
 	corruptPersistedJobsLog(t, stateDir, sessionID)
 	sources := newExitedLocalRegistry()
 
@@ -489,12 +680,10 @@ func dispatchHubJobsRPC(t *testing.T, cfg hubcore.WebConfig, sources *appsource.
 
 // TestSerfJobsListRouteReachesTheHubHandler proves serf/jobs/list is wired to
 // hubJobsList with this hub's cfg and sources: the route answers, the ref
-// decodes, and the past-fallback list built from cfg.Past comes back as the
-// typed JobsListResponse.
+// decodes, and the past-fallback activity tree built from cfg.Past comes back
+// as the typed JobsListResponse.
 func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
-	cfg, sessionID, _ := seedPastSessionWithJobs(t, []persistedJobFixture{
-		{id: "job_a", description: "run the build", command: "make build"},
-	})
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 1)
 
 	raw, err := dispatchHubJobsRPC(t, cfg, newExitedLocalRegistry(), appwire.MethodSerfJobsList, `{"ref":"local:`+sessionID+`"}`)
 	if err != nil {
@@ -504,9 +693,10 @@ func TestSerfJobsListRouteReachesTheHubHandler(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %#v (%T), want appwire.JobsListResponse", raw, raw)
 	}
-	jobs, ok := resp.Data.([]agent.JobSummary)
-	if !ok || len(jobs) != 1 || jobs[0].JobID != "job_a" {
-		t.Fatalf("resp.Data = %#v, want the seeded job (the route must reach hubJobsList with the decoded ref)", resp.Data)
+	tree := mustActivityTree(t, resp.Data)
+	delegate := findActivityDelegate(t, tree.Root, childID)
+	if tree.Root.SessionID != sessionID || delegate.Child == nil || delegate.Child.SessionID != childID {
+		t.Fatalf("resp.Data = %#v, want the seeded activity tree (the route must reach hubJobsList with the decoded ref)", resp.Data)
 	}
 }
 
