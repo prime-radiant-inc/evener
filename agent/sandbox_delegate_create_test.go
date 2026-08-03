@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/sandbox"
@@ -295,6 +298,165 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	}
 	if !strings.Contains(got, scratch) {
 		t.Fatalf("sandbox prompt line must name the scratch directory so the model can find it: got %q, want it to contain %q", got, scratch)
+	}
+}
+
+func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
+	root := t.TempDir()
+	net := true
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly, Network: &net}, host, root)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	local := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(local.Cleanup)
+	if err := local.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+
+	got := sandboxPromptLine(local)
+	if !strings.Contains(got, "read-only (network on) — fixed for this session") {
+		t.Fatalf("read-only prompt line lost the mode/network text: %q", got)
+	}
+	scratch := local.Wrapper.SessionTmp()
+	if scratch == "" {
+		t.Fatal("EnableSandbox must provision a session scratch dir")
+	}
+	if !strings.Contains(got, scratch) {
+		t.Fatalf("read-only prompt line must name the scratch directory: got %q, want it to contain %q", got, scratch)
+	}
+	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
+		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
+	}
+}
+
+func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
+	const (
+		scratchMarker = "Scratch directory (read-write even in this sandbox; also $TMPDIR / $SERF_SCRATCH_DIR for shell commands): "
+		guidance      = "Read-only delegates may write only inside this scratch directory; all other writes are denied."
+	)
+
+	root := t.TempDir()
+	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	var chosenPath string
+	var sawGuidance bool
+	var modelError string
+	childClient := llm.NewClient()
+	childAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				var prompt strings.Builder
+				for _, msg := range req.Messages {
+					prompt.WriteString(msg.Text())
+					prompt.WriteByte('\n')
+				}
+				promptText := prompt.String()
+				sawGuidance = strings.Contains(promptText, guidance)
+				if !sawGuidance {
+					// This intentionally literal model has no recovery strategy: without
+					// the explicit rule, it tries the obvious relative path in the
+					// worktree and the real read-only file tool must reject it.
+					chosenPath = "dumb-report.md"
+				} else {
+					start := strings.Index(promptText, scratchMarker)
+					if start < 0 {
+						modelError = "prompt had the write-boundary sentence but no scratch path"
+						chosenPath = "dumb-report.md"
+					} else {
+						scratch := promptText[start+len(scratchMarker):]
+						if end := strings.Index(scratch, ". "+guidance); end >= 0 {
+							scratch = scratch[:end]
+						}
+						scratch = strings.TrimSpace(strings.SplitN(scratch, "\n", 2)[0])
+						if scratch == "" {
+							modelError = "prompt named an empty scratch path"
+							chosenPath = "dumb-report.md"
+						} else {
+							chosenPath = filepath.Join(scratch, "dumb-report.md")
+						}
+					}
+				}
+
+				args, _ := json.Marshal(map[string]string{
+					"file_path": chosenPath,
+					"content":   "the literal delegate wrote this report\n",
+				})
+				return toolCallResponse(llm.ToolCallData{
+					ID:        "write_scratch_report",
+					Name:      "write_file",
+					Arguments: args,
+					Type:      "function",
+				})
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("wrote the report")
+			},
+		},
+	}
+	childClient.Register(childAdapter)
+
+	parent := newSession(t, withClient(delegateTestClient(func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("parent done")
+	})), withDir(root), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot: true,
+			noSyncJobStore:  true,
+			childClientFactory: func() *llm.Client {
+				return childClient
+			},
+			sandboxProber: sandbox.FakeProber{Facts: host},
+		},
+	}))
+	eventsDone := make(chan struct{})
+	go func() {
+		for range parent.Events() {
+		}
+		close(eventsDone)
+	}()
+	t.Cleanup(func() {
+		parent.Close()
+		<-eventsDone
+	})
+
+	net := true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res := parent.createDelegate(ctx, delegateArgs{
+		Task:           "write a tiny report in the only writable location available to you",
+		Sandbox:        "read-only",
+		SandboxNet:     &net,
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if !sawGuidance {
+		t.Fatal("the literal delegate did not find the read-only scratch write rule in its system prompt")
+	}
+	if modelError != "" {
+		t.Fatal(modelError)
+	}
+	if filepath.Base(chosenPath) != "dumb-report.md" || !filepath.IsAbs(chosenPath) {
+		t.Fatalf("literal delegate chose %q, want an absolute scratch report path", chosenPath)
+	}
+	contents, err := os.ReadFile(chosenPath)
+	if err != nil {
+		t.Fatalf("read delegate scratch report %q: %v", chosenPath, err)
+	}
+	if string(contents) != "the literal delegate wrote this report\n" {
+		t.Fatalf("scratch report contents = %q", contents)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dumb-report.md")); !os.IsNotExist(err) {
+		t.Fatalf("literal delegate unexpectedly wrote in the read-only worktree: err=%v", err)
+	}
+	if len(childAdapter.Requests()) < 2 {
+		t.Fatalf("child model made %d requests, want a write turn followed by communicate", len(childAdapter.Requests()))
 	}
 }
 
