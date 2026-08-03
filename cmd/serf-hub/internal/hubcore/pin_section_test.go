@@ -250,7 +250,8 @@ func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	if ok, err := store.Unpin("canonical-valid"); err != nil || !ok {
 		t.Fatalf("unpin after migrate = %v, %v", ok, err)
 	}
-	pins, err = store.Assignments()
+	reopened := NewPinSectionStore(store.dbPath)
+	pins, err = reopened.Assignments()
 	if err != nil {
 		t.Fatal(err)
 	}
