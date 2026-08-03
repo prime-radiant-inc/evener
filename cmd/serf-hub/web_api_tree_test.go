@@ -379,6 +379,42 @@ func TestAPITreeProjectServedFromTree(t *testing.T) {
 	}
 }
 
+func TestAPITreeProjectLazyResponseAnnotatesPinSection(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "lazy-pinned")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	section, _, err := store.CreateOrReuseAndAssign("Research", sessionID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
+	web.injectMetasForTest([]schema.SessionMeta{{
+		ID: sessionID, UpdatedAt: favoriteRevalidationTreeTime,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+	}})
+
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+project.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeProject
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].PinSectionID != section.ID {
+		t.Fatalf("lazy project sessions = %+v", got.Sessions)
+	}
+}
+
 func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "paged")
@@ -424,6 +460,185 @@ func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
 	if page.Sessions[0].SessionID == "" || page.Sessions[0].SessionID == "01PAGE00" {
 		t.Fatalf("page did not contain a capped-away session: %+v", page.Sessions[0])
 	}
+}
+
+func TestAPITreeProjectPageAnnotatesCappedAwayPinSection(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "paged-pinned")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := make([]schema.SessionMeta, 0, 60)
+	targetID := ""
+	for i := range 60 {
+		id := fmt.Sprintf("01PINPAGE%02d", i)
+		if i == 55 {
+			targetID = id
+		}
+		metas = append(metas, schema.SessionMeta{
+			ID: id, UpdatedAt: favoriteRevalidationTreeTime.Add(-time.Duration(i) * time.Minute),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	section, _, err := store.CreateOrReuseAndAssign("Research", targetID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
+	web.injectMetasForTest(metas)
+
+	rec := httptest.NewRecorder()
+	url := "/api/tree/project?key=" + project.ID + "&tier=current&offset=50&limit=50"
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page hubapi.TreeProjectPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	node := findTreeNodeBySessionID(t, page.Sessions, targetID)
+	if node.PinSectionID != section.ID {
+		t.Fatalf("capped-away row = %+v", node)
+	}
+}
+
+func TestAPITreeArchivedProjectLazyResponseAnnotatesPinSection(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "archived-pinned")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	archive := hubcore.NewArchiveStore(dbPath)
+	if err := archive.Set("project", project.ID, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	pins := hubcore.NewPinSectionStore(dbPath)
+	section, _, err := pins.CreateOrReuseAndAssign("Research", sessionID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Archive: archive, PinSections: pins})
+	web.injectMetasForTest([]schema.SessionMeta{{
+		ID: sessionID, UpdatedAt: favoriteRevalidationTreeTime,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+	}})
+
+	response := getTreeResponse(t, web)
+	if len(response.PinSections) != 1 || response.PinSections[0].Sessions[0].SessionID != sessionID {
+		t.Fatalf("archived project pin section = %+v", response.PinSections)
+	}
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+project.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeProject
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].PinSectionID != section.ID {
+		t.Fatalf("archived lazy sessions = %+v", got.Sessions)
+	}
+}
+
+func TestAPITreeActiveProjectArchivedTierPopulatesPinSection(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "mixed-pins")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentID := "02wMz5Txv1C3Hut0M8GCeB"
+	archivedID := "02wMz5Txv47YP64RR3B9YJ"
+	pins := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	section, _, err := pins.CreateOrReuseAndAssign("Research", archivedID, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: pins})
+	web.injectMetasForTest([]schema.SessionMeta{
+		{ID: currentID, UpdatedAt: favoriteRevalidationTreeTime, EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}},
+		{ID: archivedID, UpdatedAt: favoriteRevalidationTreeTime.Add(-15 * 24 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath}},
+	})
+
+	response := getTreeResponse(t, web)
+	if len(response.PinSections) != 1 || response.PinSections[0].ID != section.ID || len(response.PinSections[0].Sessions) != 1 || response.PinSections[0].Sessions[0].SessionID != archivedID {
+		t.Fatalf("active-project archived pin = %+v", response.PinSections)
+	}
+}
+
+func TestAPITreePinSectionEqualTimestampOrderIsDeterministic(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	ids := []string{"02wMz5Txv7t1QjsT0Z2tAo", "02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ"}
+	web, pins := namedPinTreeWeb(t, []schema.SessionMeta{
+		{ID: ids[0], UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: ids[1], UpdatedAt: favoriteRevalidationTreeTime},
+		{ID: ids[2], UpdatedAt: favoriteRevalidationTreeTime},
+	})
+	section, _, err := pins.CreateOrReuseAndAssign("Research", ids[0], time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids[1:] {
+		if _, _, err := pins.Assign(section.ID, id, time.Unix(1, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "local:" + ids[1] + ",local:" + ids[2] + ",local:" + ids[0]
+	for range 20 {
+		response := getTreeResponse(t, web)
+		refs := make([]string, 0, 3)
+		for _, node := range response.PinSections[0].Sessions {
+			refs = append(refs, node.Ref)
+		}
+		if got := strings.Join(refs, ","); got != want {
+			t.Fatalf("equal-time order=%q, want %q", got, want)
+		}
+	}
+}
+
+func findTreeNodeBySessionID(t *testing.T, rows []hubapi.TreeNode, id string) hubapi.TreeNode {
+	t.Helper()
+	for _, row := range rows {
+		if row.SessionID == id || row.Ref == id {
+			return row
+		}
+		if len(row.Children) > 0 {
+			if child := findTreeNodeBySessionIDOptional(row.Children, id); child != nil {
+				return *child
+			}
+		}
+	}
+	t.Fatalf("session %q not found in %+v", id, rows)
+	return hubapi.TreeNode{}
+}
+
+func findTreeNodeBySessionIDOptional(rows []hubapi.TreeNode, id string) *hubapi.TreeNode {
+	for i := range rows {
+		if rows[i].SessionID == id || rows[i].Ref == id {
+			return &rows[i]
+		}
+		if child := findTreeNodeBySessionIDOptional(rows[i].Children, id); child != nil {
+			return child
+		}
+	}
+	return nil
 }
 
 func TestAPITreeProjectPageServesCappedAwayTestRunRows(t *testing.T) {

@@ -248,7 +248,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	// authoritative top-level session candidates. Empty and currently dormant
 	// sections stay in storage but are omitted from this navigation response.
 	nodes := make(map[string]hubapi.TreeNode)
-	for _, n := range tree.FavoriteCandidates() {
+	for _, n := range tree.PinCandidates() {
 		if n.Kind != "session" {
 			continue
 		}
@@ -380,7 +380,15 @@ func pinSectionTrees(sections []hubcore.PinSection, assignments map[string]hubco
 		if len(rows) == 0 {
 			continue
 		}
-		sort.SliceStable(rows, func(i, j int) bool { return rows[i].UpdatedAt.After(rows[j].UpdatedAt) })
+		sort.SliceStable(rows, func(i, j int) bool {
+			if !rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) {
+				return rows[i].UpdatedAt.After(rows[j].UpdatedAt)
+			}
+			if rows[i].Ref != rows[j].Ref {
+				return rows[i].Ref < rows[j].Ref
+			}
+			return rows[i].RowID < rows[j].RowID
+		})
 		out = append(out, hubapi.PinSectionTree{ID: section.ID, Name: section.Name, Sessions: rows})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -505,7 +513,19 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
 		return
 	}
-	favs := hubcore.ClassifyFavoriteDecisions(decisions, authority).Presentation
+	if err := s.ensureLegacyPinsMigrated(time.Now(), authority); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
+		return
+	}
+	assignments, err := s.pinSectionAssignments()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
+		return
+	}
+	pinRevalidation := classifySessionPins(assignments, authority)
+	assignments = canonicalPinAssignments(assignments, pinRevalidation)
+	bySession := pinSectionAssignmentLookup(assignments, pinRevalidation.Presentation)
+	favs := projectFavoritePresentation(hubcore.ClassifyFavoriteDecisions(decisions, authority).Presentation)
 	projects := navigationProjectBuckets(tree).all()
 	for _, p := range projects {
 		if p.Key == key {
@@ -515,10 +535,18 @@ func (s *WebServer) handleAPITreeProject(w http.ResponseWriter, r *http.Request)
 					writeAPIError(w, http.StatusBadRequest, "invalid project page")
 					return
 				}
-				writeAPIJSON(w, http.StatusOK, s.apiTreeProjectPage("project", favs, p, tier, offset, rows, remaining))
+				page := s.apiTreeProjectPage("project", favs, p, tier, offset, rows, remaining)
+				for i := range page.Sessions {
+					page.Sessions[i] = annotatePinSection(page.Sessions[i], bySession)
+				}
+				writeAPIJSON(w, http.StatusOK, page)
 				return
 			}
-			writeAPIJSON(w, http.StatusOK, s.apiTreeProject("project", favs, p))
+			project := s.apiTreeProject("project", favs, p)
+			for i := range project.Sessions {
+				project.Sessions[i] = annotatePinSection(project.Sessions[i], bySession)
+			}
+			writeAPIJSON(w, http.StatusOK, project)
 			return
 		}
 	}

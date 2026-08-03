@@ -273,7 +273,7 @@ func TestAPITreeFavoriteRevalidation_ClusterSpellingDoesNotDecideValidity(t *tes
 	}
 }
 
-func TestAPITreeFavoriteRevalidation_ArchivedSessionStaysOutOfPinnedTier(t *testing.T) {
+func TestAPITreeFavoriteRevalidation_ArchivedSessionStaysInNamedPinSection(t *testing.T) {
 	useFavoriteRevalidationTreeClock(t)
 	sessionID := hubtest.SessionID(t)
 	favorites := hubcore.NewFavoriteStore(t.TempDir() + "/index.db")
@@ -285,8 +285,8 @@ func TestAPITreeFavoriteRevalidation_ArchivedSessionStaysOutOfPinnedTier(t *test
 	}})
 
 	response := getTreeResponse(t, web)
-	if treeResponseHasFavorite(response, sessionID) {
-		t.Fatalf("archived favorite entered pinned tier")
+	if !treeResponseHasFavorite(response, sessionID) {
+		t.Fatalf("archived migrated favorite missing from named pin section: %+v", response.PinSections)
 	}
 	if len(response.ArchivedProjects) != 1 || response.ArchivedProjects[0].SessionCount != 1 {
 		t.Fatalf("archived session was not retained by archive presentation: %+v", response.ArchivedProjects)
