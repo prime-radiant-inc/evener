@@ -530,6 +530,45 @@ func TestJobActivityTree_UnavailableDescendantRetainsDelegate(t *testing.T) {
 	}
 }
 
+func TestJobActivityTree_LiveChildOutsideStateDirIsUnavailable(t *testing.T) {
+	parentStateDir := t.TempDir()
+	childStateDir := t.TempDir()
+	parent := newActivityTestSession(t, parentStateDir)
+	child := newActivityTestSession(t, childStateDir)
+	_, _ = linkActivityChild(t, parent, child, "cross-state child")
+	started := time.Unix(150, 0).UTC()
+	childJobID := fmt.Sprintf("job_child_outside_%s", started.Format("150405"))
+	if err := child.jobManager.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            childJobID,
+		Type:             jobstore.JobShell,
+		Description:      "outside child shell",
+		OwnerSessionID:   child.ID(),
+		VisibleToSession: child.ID(),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append outside child job: %v", err)
+	}
+	saveActivityMeta(t, parentStateDir, parent)
+	got, err := parent.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := findDelegateEntry(t, got.Root, child.ID())
+	if delegate.Child != nil {
+		t.Fatalf("delegate child=%+v, want unavailable live child outside state dir", delegate.Child)
+	}
+	if !strings.Contains(delegate.Branch.Error, "state directory") {
+		t.Fatalf("branch error=%q, want state-directory boundary failure", delegate.Branch.Error)
+	}
+	for _, entry := range got.Root.Entries {
+		if entry.Job != nil && entry.Job.JobID == childJobID {
+			t.Fatalf("projected child job %q across state-dir boundary", childJobID)
+		}
+	}
+}
+
 func TestDecodeActivityContinuation_Validation(t *testing.T) {
 	valid := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
 	if got, err := decodeActivityContinuation(valid, "root"); err != nil || got.SessionID != "root" || !reflect.DeepEqual(got.Path, []string{"dlg_1"}) {

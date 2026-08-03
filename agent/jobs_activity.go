@@ -309,6 +309,9 @@ func resolveActivityChildLocator(parent activitySessionLocator, loaded activityL
 		closed := sub.closed
 		sub.mu.Unlock()
 		if !closed {
+			if !sameActivityStateDir(parent.stateDir, sub.sess.StateDir()) {
+				return activitySessionLocator{}, fmt.Errorf("child session %q crosses state directory boundary", childID)
+			}
 			return activitySessionLocator{live: sub.sess, stateDir: parent.stateDir, sessionID: childID}, nil
 		}
 	}
@@ -316,6 +319,15 @@ func resolveActivityChildLocator(parent activitySessionLocator, loaded activityL
 		return activitySessionLocator{}, fmt.Errorf("child session %q unavailable: no state directory", childID)
 	}
 	return activitySessionLocator{stateDir: parent.stateDir, sessionID: childID}, nil
+}
+
+func sameActivityStateDir(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return left == right
+	}
+	return canonicalOrClean(left) == canonicalOrClean(right)
 }
 
 func activitySessionLabel(meta schema.SessionMeta) string {
