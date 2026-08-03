@@ -150,6 +150,7 @@ cat >"$cache_bin/go" <<'FAKE_GO'
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = env ]; then
+	printf 'go-env\t%s\n' "$*" >>"$FAKE_STATE/calls"
 	case "${2:-}" in
 		GOOS) printf 'darwin\n' ;;
 		GOARCH) printf 'arm64\n' ;;
@@ -194,16 +195,35 @@ run_cache_target() {
 	fi
 }
 
+run_cache_dry_target() {
+	target="$1"
+	output="$2"
+	: >"$cache_state/calls"
+	if (
+		cd "$cache_repo" || exit 1
+		PATH="$cache_bin:/usr/bin:/bin" FAKE_STATE="$cache_state" \
+			"$real_make" -f "$repo_root/Makefile" --no-print-directory -n "$target"
+	) >"$output" 2>&1; then
+		cache_rc=0
+	else
+		cache_rc=$?
+	fi
+}
+
 FAKE_DISK_STATUS=41 run_cache_target lint "$cache_case/lint-stalled.out"
 assert_eq "$cache_rc" "2" "stalled cache makes aggregate lint fail through make"
 assert_has "$cache_case/lint-stalled.out" "fixture GOCACHE is STALLED and unavailable" "lint keeps the cache diagnosis visible"
 assert_eq "$(cat "$cache_state/calls")" "disk-reclaim	--check" "stalled cache stops lint before any Go command"
+assert_not_has "$cache_state/calls" "go-env	env GOOS" "lint parsing does not invoke go env before its cache preflight"
+assert_not_has "$cache_state/calls" "go-env	env GOARCH" "lint parsing does not invoke Go architecture discovery"
 
 FAKE_DISK_STATUS=41 run_cache_target build "$cache_case/build-stalled.out"
 assert_eq "$cache_rc" "2" "stalled cache makes build fail through make"
 assert_has "$cache_case/build-stalled.out" "fixture GOCACHE is STALLED and unavailable" "build keeps the cache diagnosis visible"
 assert_has "$cache_state/calls" "disk-reclaim	--check" "build runs the cache preflight"
 assert_not_has "$cache_state/calls" "go-build-runtime" "stalled cache stops build before Go work"
+assert_not_has "$cache_state/calls" "go-env	env GOOS" "build parsing does not invoke go env before its cache preflight"
+assert_not_has "$cache_state/calls" "go-env	env GOARCH" "build parsing does not invoke Go architecture discovery"
 
 FAKE_DISK_STATUS=0 run_cache_target lint "$cache_case/lint-reachable.out"
 assert_eq "$cache_rc" "0" "reachable cache permits aggregate lint"
@@ -214,6 +234,11 @@ assert_eq "$cache_rc" "0" "reachable cache permits build"
 assert_before "$cache_state/calls" "disk-reclaim	--check" "go-build-runtime" "build checks the cache before runtime Go work"
 assert_before "$cache_state/calls" "web-preflight" "npm	run build" "build-web keeps web-preflight before the frontend build"
 assert_before "$cache_state/calls" "npm	run build" "go-build-runtime" "build waits for the frontend build before runtime Go work"
+
+run_cache_dry_target dist "$cache_case/dist-dry-run.out"
+assert_eq "$cache_rc" "0" "dist still resolves its default target platform"
+assert_has "$cache_state/calls" "go-env	env GOOS" "dist discovers its default operating system"
+assert_has "$cache_state/calls" "go-env	env GOARCH" "dist discovers its default architecture"
 
 printf '%s\n' "merge-approval-gate-selftest: $checks checks, $fails failed"
 [ "$fails" -eq 0 ]
