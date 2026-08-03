@@ -1498,7 +1498,10 @@ describe("useThreadsStore.ensureThread", () => {
         return readResponse(ref, { id: "thr_root", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
       }
       if (ref === "local:child") {
-        return readResponse(ref, { id: "thr_child", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+        return readResponse(ref, {
+          id: "thr_child",
+          serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
       }
       throw new Error(`unexpected ref ${ref}`);
     });
@@ -3745,6 +3748,19 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     const call = fake.calls.find((c) => c.method === "serf/jobs/list");
     expect(call?.params).toEqual({ ref: "ref_a" });
     expect(result).toEqual(JOBS_DATA);
+  });
+
+  test("listJobs includes continuation only when non-empty and keeps the AppWire method name", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: JOBS_DATA }));
+
+    await threadsStore.getState().listJobs("ref_a", "page-2");
+    await threadsStore.getState().listJobs("ref_a", "");
+
+    const calls = fake.calls.filter((c) => c.method === "serf/jobs/list");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.params).toEqual({ ref: "ref_a", continuation: "page-2" });
+    expect(calls[1]?.params).toEqual({ ref: "ref_a" });
   });
 
   test("jobOutput sends serf/jobs/output with {ref, jobId} and returns the raw data field", async () => {

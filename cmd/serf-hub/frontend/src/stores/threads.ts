@@ -204,7 +204,7 @@ export interface ThreadsStoreState {
   // so the store stays shape-agnostic; the caller owns interpreting it (the
   // chrome stream's parseJobListData / parseJobOutputData). Wire truth:
   // agent/jobs_panel.go's JobSummary / JobOutputTail.
-  listJobs(ref: string): Promise<unknown>;
+  listJobs(ref: string, continuation?: string): Promise<unknown>;
   jobOutput(ref: string, jobId: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
@@ -2024,10 +2024,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async listJobs(ref) {
+  async listJobs(ref, continuation) {
     const client = requireClient();
     // No mapConflict here either, same reasoning as listModels/listTasks above.
-    const resp = await client.request("serf/jobs/list", { ref });
+    const resp = await client.request("serf/jobs/list", { ref, ...(continuation ? { continuation } : {}) });
     return resp.data;
   },
 
