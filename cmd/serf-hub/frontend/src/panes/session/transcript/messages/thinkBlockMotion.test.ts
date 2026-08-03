@@ -62,16 +62,18 @@ test("the motion is a fade, not a slide or a bounce", () => {
 
 // Not motion, but the same declaration-level style of check: thinking is body
 // text like the turns around it (Jesse's review call) - quiet through INK,
-// not size. The settled "Thought · preview" summary, the live streaming
-// paragraph AND the live "Thinking…" eyebrow all render at --font-size-body
-// (the eyebrow joined with the draft restyle, mockup #4: a caption-sized
-// label was quiet through size, which the design law bans).
+// not size. The settled "Thought · preview" summary and the live "Thinking…"
+// eyebrow both render at --font-size-body (the eyebrow joined with the draft
+// restyle, mockup #4: a caption-sized label was quiet through size, which the
+// design law bans). The live and settled BODIES both render through the
+// Markdown widget, whose root defaults to --font-size-body (see
+// widgets/markdown/markdown.module.css), so neither body may re-declare a
+// smaller size - quiet there comes from --markdown-ink alone.
 test("settled and live thinking render at body size, not caption/ui", () => {
   const text = css();
   expect(text).toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
-  expect(text).toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
   expect(text).toMatch(/\.label\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);
   expect(text).not.toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
   expect(text).not.toMatch(/\.label\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
-  expect(text).not.toMatch(/\.paragraph\s*\{[^}]*font-size:\s*var\(--font-size-ui\)/);
+  expect(text).not.toMatch(/\.(liveBody|body)\s*\{[^}]*font-size:/);
 });

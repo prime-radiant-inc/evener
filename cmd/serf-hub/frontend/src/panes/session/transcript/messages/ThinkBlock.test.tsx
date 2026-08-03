@@ -49,26 +49,29 @@ test("is memoized: the comparator ignores turn identity but tracks the current-t
   expect(compare(base, { ...base, turn: { ...turn, items: [think, later] } })).toBe(false);
 });
 
-// --- live: open, StreamingText, "Thinking…" ---------------------------------
+// --- live: open, Markdown, "Thinking…" ---------------------------------------
 
-test("live shows a Thinking label and streams the reasoning text open (not collapsed)", () => {
+test("live shows a Thinking label and renders the reasoning text open (not collapsed)", () => {
   render(
     <ThinkBlock item={item({ reasoningSummaries: [["thinking about ", "the problem"]] })} turn={turn} live={true} />,
   );
   expect(screen.getByText("Thinking…")).toBeTruthy();
-  expect(screen.getByTestId("streaming-text").textContent).toBe("thinking about the problem");
+  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("thinking about the problem");
   // Open while live: no collapsed <details> present at all.
   expect(document.querySelector("details")).toBeNull();
 });
 
 // Jesse's review call: a blinking caret inside a read-only reasoning view
 // reads as an edit cursor. Liveness is carried by the "Thinking…" eyebrow
-// and the visibly growing text, so ThinkBlock mounts StreamingText with the
-// caret class OFF even while the stream is live. (Agent prose keeps the
-// caret - it is the design system's reserved streaming cue THERE.)
+// and the visibly growing text, so the live view mounts no StreamingText at
+// all - the caret glyph cannot appear. (Agent prose keeps the caret - it is
+// the design system's reserved streaming cue THERE.)
 test("live streaming shows NO blinking caret", () => {
-  render(<ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />);
-  expect(screen.getByTestId("streaming-text").classList.contains(STREAMING_LIVE)).toBe(false);
+  const { container } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["streaming"]] })} turn={turn} live={true} />,
+  );
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(container.querySelector(`.${STREAMING_LIVE}`)).toBeNull();
 });
 
 // The layout contract behind the second review pass: both the live view and
@@ -133,15 +136,18 @@ test("an expanded thought renders as a full-width row below its summary - no col
 });
 
 // jsdom does not evaluate CSS cascade, so the live quiet-ink contract is
-// checked at the two stylesheet boundary points: StreamingText's fallback
-// and ThinkBlock's ancestor override must use the same custom property.
-test("ThinkBlock quiets live StreamingText through the shared prose ink hook", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const streamingCss = readFileSync(join(here, "../streamingtext.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const thinkCss = readFileSync(join(here, "thinkblock.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-
-  expect(streamingCss).toContain("color: var(--prose-ink, var(--ink-hi));");
-  expect(thinkCss).toContain("--prose-ink: var(--ink-mid);");
+// checked at the stylesheet boundary: the live body overrides the Markdown
+// widget's --markdown-ink hook with the same --ink-mid the settled body uses
+// (see .body in thinkblock.module.css), so a thought reads quieter than agent
+// prose in BOTH states.
+test("ThinkBlock quiets the live markdown body through the Markdown widget's ink hook", () => {
+  const css = thinkCss();
+  const liveBody = /\.liveBody\s*\{([^}]*)\}/.exec(css);
+  expect(liveBody).not.toBeNull();
+  expect(liveBody![1]).toContain("--markdown-ink: var(--ink-mid);");
+  const body = /\.body\s*\{([^}]*)\}/.exec(css);
+  expect(body).not.toBeNull();
+  expect(body![1]).toContain("--markdown-ink: var(--ink-mid);");
 });
 
 test("live with zero chunks so far still shows the open Thinking label (a reasoning item exists the instant it starts)", () => {
@@ -149,51 +155,51 @@ test("live with zero chunks so far still shows the open Thinking label (a reason
   expect(screen.getByText("Thinking…")).toBeTruthy();
 });
 
-test("live renders one independent StreamingText per summaryIndex, joined per-index (not flattened across indices)", () => {
+test("live joins every summaryIndex into ONE markdown document, blank-line separated so each stays its own block", () => {
   render(
     <ThinkBlock
       item={item({
-        reasoningSummaries: [
-          ["first ", "paragraph"],
-          ["second ", "paragraph"],
-        ],
+        reasoningSummaries: [["first ", "thought"], ["# second thought"]],
       })}
       turn={turn}
       live={true}
     />,
   );
-  const streams = screen.getAllByTestId("streaming-text");
-  expect(streams).toHaveLength(2);
-  expect(streams[0]!.textContent).toBe("first paragraph");
-  expect(streams[1]!.textContent).toBe("second paragraph");
+  const body = screen.getByTestId("think-block-live-body");
+  // Blank-line joined: the second index is parsed as its own block-level
+  // token, not swallowed into the first index's paragraph - the same source
+  // shape the settled body renders.
+  expect(body.querySelector("p")?.textContent).toBe("first thought");
+  expect(screen.getByRole("heading", { level: 1, name: "second thought" })).toBeTruthy();
 });
 
 test("live incremental growth on one summaryIndex does not disturb another index's already-rendered text", () => {
   const { rerender } = render(
     <ThinkBlock item={item({ reasoningSummaries: [["a"], ["x"]] })} turn={turn} live={true} />,
   );
-  let streams = screen.getAllByTestId("streaming-text");
-  expect(streams.map((s) => s.textContent)).toEqual(["a", "x"]);
+  let paragraphs = screen.getByTestId("think-block-live-body").querySelectorAll("p");
+  expect(Array.from(paragraphs).map((p) => p.textContent)).toEqual(["a", "x"]);
 
   // A delta lands on the EARLIER index after the LATER index already
-  // started - exactly the interleaving case a naive flatten would corrupt
-  // (see reasoningFormat.ts / ThinkBlock.tsx's own design comments).
+  // started - the interleaving case. The live view re-parses the whole
+  // document per render (no append-only DOM contract), so the later index's
+  // rendered text is recomputed, never corrupted.
   rerender(<ThinkBlock item={item({ reasoningSummaries: [["a", "b"], ["x"]] })} turn={turn} live={true} />);
-  streams = screen.getAllByTestId("streaming-text");
-  expect(streams.map((s) => s.textContent)).toEqual(["ab", "x"]);
+  paragraphs = screen.getByTestId("think-block-live-body").querySelectorAll("p");
+  expect(Array.from(paragraphs).map((p) => p.textContent)).toEqual(["ab", "x"]);
 });
 
-test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-paragraph gap) until it gets content", () => {
-  const { container, rerender } = render(
+test("live skips a zero-chunk summaryIndex (no empty-paragraph gap) until it gets content", () => {
+  const { rerender } = render(
     <ThinkBlock item={item({ reasoningSummaries: [[], ["second"]] })} turn={turn} live={true} />,
   );
-  expect(container.querySelectorAll("p")).toHaveLength(1);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("second");
+  const body = screen.getByTestId("think-block-live-body");
+  expect(body.querySelectorAll("p")).toHaveLength(1);
+  expect(body.textContent?.trim()).toBe("second");
 
   rerender(<ThinkBlock item={item({ reasoningSummaries: [["first"], ["second"]] })} turn={turn} live={true} />);
-  expect(container.querySelectorAll("p")).toHaveLength(2);
-  const streams = screen.getAllByTestId("streaming-text");
-  expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
+  expect(body.querySelectorAll("p")).toHaveLength(2);
+  expect(Array.from(body.querySelectorAll("p")).map((p) => p.textContent)).toEqual(["first", "second"]);
 });
 
 // --- superseded live thoughts settle --------------------------------------
@@ -270,17 +276,18 @@ test("a running thought is not height-bounded - the whole block is readable as i
   const css = thinkCss();
   // Every rule the live subtree wears, checked for a cap of any shape: a
   // max-height, a line clamp, or a clipping box to hide an overflow inside.
-  const liveRules = [...css.matchAll(/\.(live|liveBody|liveScroll|paragraph)\s*\{([^}]*)\}/g)];
-  expect(liveRules.length).toBeGreaterThanOrEqual(3);
+  const liveRules = [...css.matchAll(/\.(live|liveBody|liveScroll)\s*\{([^}]*)\}/g)];
+  expect(liveRules.length).toBeGreaterThanOrEqual(2);
   for (const [, name, declarations] of liveRules) {
     expect(`.${name} {${declarations}}`).not.toMatch(/max-height|line-clamp|overflow:\s*hidden/);
   }
-  // And no element between the italic wrapper and the paragraphs to clip them.
+  // And no element between the italic wrapper and the markdown body to clip it.
   render(<ThinkBlock item={item({ reasoningSummaries: [["first\n", "second"]] })} turn={turn} live={true} />);
   const body = screen.getByTestId("think-block-live-body");
   expect(screen.queryByTestId("think-block-live-scroll")).toBeNull();
-  expect(body.querySelector("p")?.parentElement).toBe(body);
-  expect(body.textContent).toBe("first\nsecond");
+  expect(body.querySelector("p")?.closest('[data-testid="think-block-live-body"]')).toBe(body);
+  expect(body.textContent).toContain("first");
+  expect(body.textContent).toContain("second");
 });
 
 test("the live wrapper carries its stylesheet class - the italic actually binds to the DOM", () => {
@@ -469,7 +476,7 @@ test("settled joins every summaryIndex into ONE markdown document, blank-line se
   expect(screen.getByRole("heading", { level: 1, name: "second thought" })).toBeTruthy();
 });
 
-test("settled does not re-wrap markdown output in the live path's paragraph class (Markdown owns its own block layout)", () => {
+test("settled does not re-wrap markdown output in any paragraph class of its own (Markdown owns its own block layout)", () => {
   const { container } = render(
     <ThinkBlock item={item({ reasoningSummaries: [["plain thought"]] })} turn={turn} live={false} />,
   );
@@ -478,29 +485,47 @@ test("settled does not re-wrap markdown output in the live path's paragraph clas
   expect(paragraph?.className).toBe("");
 });
 
-// --- live stays plain text: the deliberate trade-off -------------------------
-// A markdown parser needs a whole document; StreamingText's append-only DOM
-// contract needs deltas. Live wins by staying unparsed - see ThinkBlock.tsx.
+// --- live parses markdown too ------------------------------------------------
+// Agents write reasoning in markdown; the live view parses it through the
+// same Markdown widget as the settled body, from the same joined source, so
+// the live-to-settled transition changes chrome (draft italic -> roman
+// disclosure), never the document. See ThinkBlock.tsx's top comment for the
+// re-parse-per-delta trade-off this accepts.
 
-test("live streams markdown source as LITERAL text (no parsing per delta) - the append-only streaming contract wins while in flight", () => {
+test("live parses markdown while streaming - a heading token becomes a real heading, not literal source", () => {
   const { container } = render(
     <ThinkBlock item={item({ reasoningSummaries: [["## heading and **bold**"]] })} turn={turn} live={true} />,
   );
-  expect(screen.getByTestId("streaming-text").textContent).toBe("## heading and **bold**");
-  expect(container.querySelector("h2")).toBeNull();
-  expect(container.querySelector("strong")).toBeNull();
+  expect(screen.getByRole("heading", { level: 2, name: "heading and bold" })).toBeTruthy();
+  expect(container.querySelector("strong")?.textContent).toBe("bold");
+  expect(screen.queryByText("## heading and **bold**")).toBeNull();
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
 });
 
-test("markdown in a thought is literal while live and parsed once it settles (same item, same text)", () => {
+test("live re-parses as deltas arrive - emphasis appears the moment its closing marker streams in", () => {
+  const { container, rerender } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["**bol"]] })} turn={turn} live={true} />,
+  );
+  // An unterminated ** is literal text so far - marked cannot invent the
+  // emphasis early, and must not either.
+  expect(container.querySelector("strong")).toBeNull();
+  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("**bol");
+
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["**bol", "d**"]] })} turn={turn} live={true} />);
+  expect(container.querySelector("strong")?.textContent).toBe("bold");
+});
+
+test("markdown in a thought is parsed identically while live and once settled (same item, same text)", () => {
   const markdown = "## Decision\n\n- ship it";
   const liveItem = item({ reasoningSummaries: [[markdown]] });
   const { container, rerender } = render(<ThinkBlock item={liveItem} turn={turn} live={true} />);
-  expect(container.querySelector("h2")).toBeNull();
+  expect(screen.getByRole("heading", { level: 2, name: "Decision" })).toBeTruthy();
+  expect(container.querySelector("li")?.textContent?.trim()).toBe("ship it");
 
   rerender(<ThinkBlock item={liveItem} turn={{ ...turn, status: "completed" }} live={false} />);
   expect(screen.getByRole("heading", { level: 2, name: "Decision" })).toBeTruthy();
   expect(container.querySelector("li")?.textContent?.trim()).toBe("ship it");
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
 });
 
 // yt2q: the settled think block's open/closed state lives in the shared
@@ -649,15 +674,15 @@ test("settled with only whitespace-only summary chunks renders nothing", () => {
 
 // --- the live-to-settled transition: the canonical T1 pattern --------------
 
-test("live streaming settles cleanly into the collapsed disclosure, no leftover StreamingText", () => {
+test("live streaming settles cleanly into the collapsed disclosure, no leftover live body", () => {
   const liveItem = item({ reasoningSummaries: [["thinking..."]] });
   const { rerender } = render(<ThinkBlock item={liveItem} turn={turn} live={true} />);
-  expect(screen.getAllByTestId("streaming-text")).toHaveLength(1);
+  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("thinking...");
 
   const settledItem = { ...liveItem, status: "completed" };
   rerender(<ThinkBlock item={settledItem} turn={{ ...turn, status: "completed" }} live={false} />);
 
-  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(screen.queryByText("Thinking…")).toBeNull();
   expect(screen.getByText("Thought · thinking...")).toBeTruthy();
 });
@@ -665,20 +690,19 @@ test("live streaming settles cleanly into the collapsed disclosure, no leftover 
 test("a reset (a new item id replacing the live one) discards prior streamed text without residue", () => {
   // Mirrors RawItemView.test.tsx's own reset test: the "new item id -> no
   // residue" guarantee comes from TurnBlock's `key={item.id}` forcing a
-  // full remount (a fresh StreamingText instance), not from anything
-  // ThinkBlock does on its own - so this exercises it through TurnBlock,
-  // the same way every renderer in this stream is actually used in
-  // practice.
+  // full remount (a fresh live body), not from anything ThinkBlock does on
+  // its own - so this exercises it through TurnBlock, the same way every
+  // renderer in this stream is actually used in practice.
   const itemA = item({ id: "item_A", status: "inProgress", reasoningSummaries: [["chunk-a"]] });
   const turnWithA = { ...turn, items: [itemA] };
   const { rerender } = render(<TurnBlock turn={turnWithA} />);
-  expect(screen.getByTestId("streaming-text").textContent).toBe("chunk-a");
+  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("chunk-a");
 
   const itemB = item({ id: "item_B", status: "inProgress", reasoningSummaries: [["chunk-b"]] });
   const turnWithB = { ...turn, items: [itemB] };
   rerender(<TurnBlock turn={turnWithB} />);
   expect(screen.queryByText("chunk-a")).toBeNull();
-  expect(screen.getByTestId("streaming-text").textContent).toBe("chunk-b");
+  expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("chunk-b");
 });
 
 test("both live and settled render inside the same stable wrapper testid", () => {

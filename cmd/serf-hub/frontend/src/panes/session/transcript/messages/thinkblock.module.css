@@ -73,6 +73,13 @@
  * in-flight reasoning reads as provisional, and the same words settle to
  * roman in the disclosure body the moment the item completes.
  *
+ * The body renders through the Markdown widget, which sets its own body
+ * color; --markdown-ink is the widget's hook for overriding it so a
+ * thought stays quieter than the agent message below it - the same
+ * override the settled .body below applies, so the ink never shifts at
+ * settle. Font SIZE is deliberately not declared here: the widget's root
+ * already defaults to --font-size-body, and quiet comes from ink alone.
+ *
  * NO height bound of any kind here (Jesse, bh8h): a thought that is still
  * running shows in full, so the reader can follow the whole block as it
  * streams. Nothing is cut off, so nothing needs a fade, a scroller, or a
@@ -80,20 +87,7 @@
 .liveBody {
   min-width: 0;
   font-style: italic;
-}
-
-.paragraph {
-  margin: 0 0 var(--space-2);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  line-height: var(--line-height-body);
-  --prose-ink: var(--ink-mid);
-}
-
-.paragraph:last-child {
-  margin-bottom: 0;
+  --markdown-ink: var(--ink-mid);
 }
 
 .details {
@@ -169,8 +163,8 @@
 
 /* A settled thought renders through the Markdown widget, which sets its own
  * body color; --markdown-ink is the widget's hook for overriding it so a
- * thought stays quieter than the agent message below it. .paragraph's
- * --ink-mid does the same job for the live streaming path.
+ * thought stays quieter than the agent message below it. .liveBody applies
+ * the same override for the live streaming path.
  *
  * The body is a full-width ROW below the summary line - no left border, no
  * inset, no label column (the second review pass: beside-the-label it read
