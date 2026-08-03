@@ -6,11 +6,9 @@
 // it uses the production Spawn component and actual viewport metrics at 390px,
 // 899px, and 900px. It is deterministic because the harness uses FakeClient,
 // and it has no dependency on provider credentials or the shared dev server.
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIDTHS = [390, 899, 900];
@@ -18,21 +16,6 @@ const WIDTHS = [390, 899, 900];
 // measured at the widest the product allows it to get.
 const STAGED_ATTACHMENTS = 8;
 const TILE_PX = 80;
-const CHROME_CANDIDATES = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-];
-
-function findChrome() {
-  for (const candidate of CHROME_CANDIDATES) if (existsSync(candidate)) return candidate;
-  throw new Error(`no Chrome/Chromium found (looked at: ${CHROME_CANDIDATES.join(", ")})`);
-}
-
-function pickPort() {
-  return 20000 + Math.floor(Math.random() * 20000);
-}
 
 async function waitForHttp(url, label) {
   for (let attempt = 0; attempt < 300; attempt++) {
@@ -209,52 +192,18 @@ function assertResult(result, expectedWidth) {
 }
 
 async function main() {
-  const vitePort = pickPort();
-  const cdpPort = pickPort();
-  const profileDir = mkdtempSync(path.join(tmpdir(), "spawnguard-chrome-"));
-  const vite = spawn(
-    "./node_modules/.bin/vite",
-    ["--port", String(vitePort), "--strictPort", "--host", "127.0.0.1", "--clearScreen", "false"],
-    { cwd: FRONTEND, stdio: ["ignore", "ignore", "pipe"] },
-  );
-  let viteErr = "";
-  vite.stderr.on("data", (chunk) => {
-    viteErr += chunk;
+  const guard = await startBrowserGuard({
+    frontend: FRONTEND,
+    profilePrefix: "spawnguard-chrome-",
   });
-  const chrome = spawn(
-    findChrome(),
-    [
-      "--headless=new",
-      "--disable-gpu",
-      `--remote-debugging-port=${cdpPort}`,
-      `--user-data-dir=${profileDir}`,
-      "--no-first-run",
-      "--disable-extensions",
-      "about:blank",
-    ],
-    { stdio: "ignore" },
-  );
-  const cleanup = () => {
-    for (const process of [chrome, vite]) {
-      try {
-        process.kill();
-      } catch {
-        // The child already exited.
-      }
-    }
-    try {
-      rmSync(profileDir, { recursive: true, force: true });
-    } catch {
-      // Best effort cleanup of the private profile.
-    }
-  };
+  const { vitePort, cdpPort, cleanup } = guard;
 
   let failed = 0;
   try {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/spawnguard.html`, "vite dev server");
     } catch (error) {
-      throw new Error(`${error.message}\nvite stderr:\n${viteErr}`);
+      throw new Error(`${error.message}\nvite stderr:\n${guard.getViteError()}`);
     }
     await waitForHttp(`http://127.0.0.1:${cdpPort}/json/version`, "chrome devtools endpoint");
     for (const width of WIDTHS) {

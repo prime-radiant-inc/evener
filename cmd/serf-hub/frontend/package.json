@@ -8,7 +8,7 @@
     "build": "tsc --noEmit --incremental false && vite build",
     "typecheck": "tsc --noEmit --incremental false",
     "typecheck:fast": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude scripts/browserGuardProcess.test.mjs && node --test scripts/browserGuardProcess.test.mjs",
     "lint": "biome ci src",
     "format": "biome format --write src",
     "check": "biome check --write src",
