@@ -51,6 +51,9 @@ paths = [
   # test suite grows new fixture shapes over time.
   '''agent/redact_test\.go''',
   '''agent/subagent_output_test\.go''',
+  # This tracked frontend test uses a deterministic project identifier as a
+  # fixture, not a credential; the generic API-key rule cannot distinguish it.
+  '''cmd/serf-hub/frontend/src/shell/rail/Rail\.test\.tsx''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
   # committed, but `make secret-scan` walks the whole working tree.
@@ -63,6 +66,9 @@ paths = [
   # "claude/worktrees/" mid-component; every real worktree path is one of
   # these two shapes, so this is marginally tighter with no behavior change.
   '''(^|/)\.claude/worktrees/.*''',
+  # .superpowers/ holds local skill-run state and logs. It is gitignored and
+  # never committed, so transient prompt fixtures must not fail repo scans.
+  '''(^|/)\.superpowers/.*''',
   # .env is the local, gitignored credential file a dev checkout carries by
   # design. The regex matches the basename at ANY depth (root or any
   # subdirectory), not just the repo root: gitignore's own `.env` entry

@@ -478,7 +478,7 @@ lint-naming:
 # configuration in golangci-lint is not the Makefile gate and may not run in
 # every lint mode.
 lint-gofmt:
-	$(call run_quiet_lint,files="$$(gofmt -l .)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
+	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # lint-serffuzz is the compile floor for the //go:build serffuzz sources. Every
 # other gate is tag-free — `make test`, `make lint`, `make vet` and

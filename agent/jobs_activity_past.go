@@ -47,8 +47,8 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 				SessionID: sessionID,
 				Ref:       encodeRef("", sessionID),
 				Label:     activityLabelFromMeta(sessionID, meta, metaErr),
-					RootID:    activityRootIDFromMeta(sessionID, meta),
-					Revision:  activityRevisionFromMeta(meta),
+				RootID:    activityRootIDFromMeta(sessionID, meta),
+				Revision:  activityRevisionFromMeta(meta),
 				Jobs:      []*jobstore.JobRecord{},
 				LiveJobs:  map[string]*jobstore.JobRecord{},
 				Delegates: map[string]*jobstore.DelegateRecord{},
@@ -98,9 +98,13 @@ func loadHistoricalActivityDelegates(path string) (map[string]*jobstore.Delegate
 		return nil, err
 	}
 	defer func() { _ = store.Close() }()
-	loader, ok := store.(interface{ LoadDelegates() (map[string]*jobstore.DelegateRecord, error) })
+	loader, ok := store.(interface {
+		LoadDelegates() (map[string]*jobstore.DelegateRecord, error)
+	})
 	if !ok {
-		eventsLoader, ok := store.(interface{ LoadEvents() ([]jobstore.Event, error) })
+		eventsLoader, ok := store.(interface {
+			LoadEvents() ([]jobstore.Event, error)
+		})
 		if !ok {
 			return nil, fmt.Errorf("jobstore at %s cannot load delegates", path)
 		}

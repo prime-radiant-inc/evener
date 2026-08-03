@@ -25,7 +25,7 @@ func TestLoadSessionJobActivityTree_FollowsOnlyDurableDelegateChildren(t *testin
 		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_child", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_delegate_child", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_child", StartedAt: &started, Task: "child task", TranscriptRef: encodeRef("", childID)},
 		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_delegate_child", Status: jobstore.StatusCompleted, EndedAt: &ended},
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(2*time.Second), JobID: "job_stray", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_stray", StartedAt: &started, Task: "stray task", TranscriptRef: encodeRef("", strayID)},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(2 * time.Second), JobID: "job_stray", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_stray", StartedAt: &started, Task: "stray task", TranscriptRef: encodeRef("", strayID)},
 	)
 	s1cov_writeJobLog(t, stateDir, childID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child_shell", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started, Description: "child shell"},

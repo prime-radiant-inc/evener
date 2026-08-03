@@ -114,14 +114,14 @@ func (s *Session) Meta() schema.SessionMeta {
 	if s.worktreeRestoreEnv != nil {
 		restoreRoot = s.worktreeRestoreEnv.WorkingDirectory()
 	}
-		jobTreeRootSessionID := ""
-		jobTreeRevision := uint64(0)
-		if s.jobTreeClock != nil {
-			if s.jobTreeClock.rootSessionID != "" && s.jobTreeClock.rootSessionID != s.id {
-				jobTreeRootSessionID = s.jobTreeClock.rootSessionID
-			}
-			jobTreeRevision = s.jobTreeClock.revision.Load()
+	jobTreeRootSessionID := ""
+	jobTreeRevision := uint64(0)
+	if s.jobTreeClock != nil {
+		if s.jobTreeClock.rootSessionID != "" && s.jobTreeClock.rootSessionID != s.id {
+			jobTreeRootSessionID = s.jobTreeClock.rootSessionID
 		}
+		jobTreeRevision = s.jobTreeClock.revision.Load()
+	}
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -151,8 +151,8 @@ func (s *Session) Meta() schema.SessionMeta {
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
-			JobTreeRootSessionID:     jobTreeRootSessionID,
-			JobTreeRevision:          jobTreeRevision,
+		JobTreeRootSessionID:     jobTreeRootSessionID,
+		JobTreeRevision:          jobTreeRevision,
 	}
 }
 

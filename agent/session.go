@@ -391,10 +391,10 @@ type Session struct {
 
 	// subagents
 	depth                            int
-	delegationAllowance              int          // mu-guarded; allowance to grant further sub-agent delegation levels
+	delegationAllowance              int           // mu-guarded; allowance to grant further sub-agent delegation levels
 	jobTreeClock                     *jobTreeClock // root-shared job lifecycle revision clock
-	treeCounter                      *treeCounter // tree-wide running delegate-turn counter (spec §4)
-	driveCounter                     *treeCounter // tree-wide drive-down turn counter, budgeted separately from spawns
+	treeCounter                      *treeCounter  // tree-wide running delegate-turn counter (spec §4)
+	driveCounter                     *treeCounter  // tree-wide drive-down turn counter, budgeted separately from spawns
 	subagents                        *subagentManager
 	delegateRestoreAfterClaim        func()
 	delegateRestoreBeforeTrack       func()

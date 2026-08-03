@@ -88,7 +88,7 @@ type serveServer interface {
 	SetReasoningEffortFunc(func(string))
 	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
 	SetTasksFunc(func() any)
-		SetJobsFunc(func(appwire.JobsListParams) (any, error))
+	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64) (any, bool, error))
 	SetClearFunc(func(context.Context) error)
 	SetWorkingDir(string)
@@ -828,19 +828,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
-		srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
-			sess := getSession()
-			if strings.TrimSpace(params.Ref) != "" {
-				ref, err := appwire.ParseRef(params.Ref)
-				if err != nil {
-					return nil, appwire.InvalidParams(err.Error())
-				}
-				if ref.SourceID != "local" || ref.ThreadID != sess.ID() {
-					return nil, appwire.SessionUnavailable("thread not found: " + ref.ThreadID)
-				}
+	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
+		sess := getSession()
+		if strings.TrimSpace(params.Ref) != "" {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return nil, appwire.InvalidParams(err.Error())
 			}
-			return sess.JobActivityTree(params)
-		})
+			if ref.SourceID != "local" || ref.ThreadID != sess.ID() {
+				return nil, appwire.SessionUnavailable("thread not found: " + ref.ThreadID)
+			}
+		}
+		return sess.JobActivityTree(params)
+	})
 	srv.SetJobOutputFunc(func(jobID string, maxBytes int64) (any, bool, error) {
 		return getSession().JobOutputTail(jobID, maxBytes)
 	})

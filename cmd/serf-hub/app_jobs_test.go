@@ -25,12 +25,12 @@ import (
 // (app_rpc_test.go), mirroring taskListSource's existing override pattern.
 type jobsListSource struct {
 	relayLifecycleSource
-	id          string
-	jobsResp    appwire.JobsListResponse
-	jobsErr     error
-	jobsParams  appwire.JobsListParams
-	outResp     appwire.JobsOutputResponse
-	outErr      error
+	id           string
+	jobsResp     appwire.JobsListResponse
+	jobsErr      error
+	jobsParams   appwire.JobsListParams
+	outResp      appwire.JobsOutputResponse
+	outErr       error
 	outputParams appwire.JobsOutputParams
 }
 
@@ -187,7 +187,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 			"delegate_id": "dlg_child",
 			"delegate": map[string]any{
 				"child_session_id":   childID,
-				"transcript_ref":    "local:" + childID,
+				"transcript_ref":     "local:" + childID,
 				"owner_session_id":   rootID,
 				"visible_session_id": rootID,
 				"generation":         "gen_1",
@@ -350,7 +350,7 @@ func TestHubJobsListLiveDaemon(t *testing.T) {
 	if delegate := tree.Root.Entries[0].Delegate; delegate == nil || delegate.ChildSessionID != childID {
 		t.Fatalf("live delegate = %+v", tree.Root.Entries[0].Delegate)
 	}
-	}
+}
 
 // TestHubJobsListDeadSessionFallsBackToPast is the RED case: a session whose
 // daemon has exited (no live rendezvous entry) must still serve its recursive

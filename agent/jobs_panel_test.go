@@ -47,7 +47,6 @@ func TestProjectActivityJobFields(t *testing.T) {
 	}
 }
 
-
 func TestLoadSessionJobOutputTail(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
