@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
