@@ -579,7 +579,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
           {triggerLabel(tree)}
         </Button>
       )}
-      <Sheet open={open} onClose={() => setOpen(false)} title="Activity">
+      <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
         {renderBody()}
       </Sheet>
     </>

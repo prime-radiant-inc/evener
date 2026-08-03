@@ -393,6 +393,8 @@ describe("ActivityPanel", () => {
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
 
     act(() => gate.resolve({ data: activityTree() }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.className).not.toBe("");
     await screen.findByRole("tree");
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });

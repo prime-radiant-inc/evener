@@ -31,6 +31,26 @@ test("defaults to side=right", () => {
   expect(container.firstElementChild).toBeTruthy();
 });
 
+test("defaults to size=standard and wide adds a distinct sizing class while preserving side wiring", () => {
+  const { rerender } = render(
+    <Sheet open side="right" onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const standardClass = screen.getByRole("dialog").className;
+
+  rerender(
+    <Sheet open side="right" size="wide" onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const wideClass = screen.getByRole("dialog").className;
+
+  expect(standardClass).not.toBe("");
+  expect(wideClass).not.toBe("");
+  expect(wideClass).not.toBe(standardClass);
+});
+
 test("renders as a modal dialog when open, labelled by its title, same contract as Dialog", () => {
   render(
     <Sheet open onClose={vi.fn()} title="Session settings">
