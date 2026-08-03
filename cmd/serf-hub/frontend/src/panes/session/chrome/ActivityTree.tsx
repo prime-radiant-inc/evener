@@ -168,6 +168,7 @@ function buildSessionNode(
   expanded: ReadonlySet<string>,
   level: number,
   parentID?: string,
+  parentRef?: string,
 ): RenderNode {
   const id = activityNodeID(session);
   const children: RenderNode[] = session.entries.map((entry) =>
@@ -188,6 +189,7 @@ function buildSessionNode(
     branchError: session.branch.error,
     continuation: session.branch.continuation ? { token: session.branch.continuation, targetID: id } : undefined,
     transcriptRef: session.ref,
+    parentRef,
     children,
   };
 }
@@ -200,7 +202,7 @@ function buildDelegateNode(
   parentRef: string,
 ): RenderNode {
   const id = activityNodeID({ kind: "delegate", delegateId: delegate.delegateId });
-  const children: RenderNode[] = delegate.child ? [buildSessionNode(delegate.child, expanded, level + 1, id)] : [];
+  const children = delegate.child ? [buildSessionNode(delegate.child, expanded, level + 1, id, parentRef)] : [];
   const childLabel = delegate.child?.label ?? delegate.childSessionId;
   const mandate = delegate.mandate;
   const useMandateLabel = mandate !== undefined && delegateHasActiveChild(delegate);

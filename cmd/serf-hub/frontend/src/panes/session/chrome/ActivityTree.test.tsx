@@ -226,7 +226,7 @@ describe("ActivityTree", () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(openTranscript).toHaveBeenNthCalledWith(1, "ref_root", undefined);
     expect(openTranscript).toHaveBeenNthCalledWith(2, "ref_child", "ref_root");
-    expect(openTranscript).toHaveBeenNthCalledWith(3, "ref_child", undefined);
+    expect(openTranscript).toHaveBeenNthCalledWith(3, "ref_child", "ref_root");
     expect(openTranscript).toHaveBeenNthCalledWith(4, "job:job_child_shell", "ref_child");
     expect(openTranscript).toHaveBeenNthCalledWith(5, "job:job_root_done", "ref_root");
   });
