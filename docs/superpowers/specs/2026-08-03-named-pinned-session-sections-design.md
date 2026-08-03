@@ -110,14 +110,14 @@ On first use of the new pin-section store, Serf performs an idempotent internal 
 
 1. create the section and assignment tables if absent;
 2. if any legacy `favorited=true`, `kind="session"` rows exist, create or reuse a section named **Pinned**;
-3. assign each valid legacy top-level session favorite to that section unless it already has an assignment;
+3. classify each legacy session favorite with the existing authority rules, assign valid favorites under their canonical identity, retain dormant favorites under their stored identity, and discard only confirmed-invalid favorites;
 4. leave project favorite rows unchanged;
 5. delete every `kind="session"` favorite decision, including false decisions, in the same transaction;
 6. record the completed migration in the schema version so later startup cannot recreate an assignment that a user removed.
 
 This migration has no user-facing prompt. It preserves the current **Pinned** name as an ordinary section: users may rename it, delete it, or let it become hidden when empty. No permanent fallback section exists.
 
-Existing favorite authority and revalidation rules still determine which top-level sessions are valid candidates. Invalid subagent, fork, malformed, missing-authority, or ambiguous identities must not become assignments. Temporarily unavailable remote assignments remain durable but appear only when the authoritative session is available, matching current dormant-favorite behavior.
+The WebServer runs this migration only after it has collected the same authority snapshot used by tree revalidation. Existing favorite authority rules determine each legacy row's migration outcome. Confirmed-invalid subagent, fork, cluster, or malformed identities do not become assignments. Missing or incomplete authority is dormant rather than invalid: the migration retains that stored identity so a temporarily unavailable remote favorite survives and reappears when authority recovers.
 
 Deleting one session also deletes its assignment. Project deletion deletes assignments only for sessions actually removed; assignments for skipped live sessions survive. These cleanup paths report pin-store failures through the deletion result's existing decision-error mechanism and do not remove a section that becomes empty.
 
