@@ -76,14 +76,6 @@ func (s *WebServer) handleAPIPinSection(w http.ResponseWriter, r *http.Request) 
 		writePinSectionError(w, err)
 		return
 	}
-	section, err = s.pinSectionWithCount(section.ID)
-	if err != nil {
-		if changed {
-			s.notifyMutation()
-		}
-		writePinSectionError(w, err)
-		return
-	}
 	if changed {
 		s.notifyMutation()
 	}
@@ -147,14 +139,6 @@ func (s *WebServer) handleAPISessionPin(w http.ResponseWriter, r *http.Request) 
 		writePinSectionError(w, err)
 		return
 	}
-	section, err = s.pinSectionWithCount(section.ID)
-	if err != nil {
-		if changed {
-			s.notifyMutation()
-		}
-		writePinSectionError(w, err)
-		return
-	}
 	if changed {
 		s.notifyMutation()
 	}
@@ -190,19 +174,6 @@ func (s *WebServer) handleAPISessionUnpin(w http.ResponseWriter, r *http.Request
 			SessionRef: hubRefFromTreeNodeID(sessionID).String(),
 		},
 	})
-}
-
-func (s *WebServer) pinSectionWithCount(sectionID string) (hubcore.PinSection, error) {
-	sections, err := s.cfg.PinSections.Sections()
-	if err != nil {
-		return hubcore.PinSection{}, err
-	}
-	for _, section := range sections {
-		if section.ID == sectionID {
-			return section, nil
-		}
-	}
-	return hubcore.PinSection{}, hubcore.ErrPinSectionNotFound
 }
 
 func apiPinSection(section hubcore.PinSection) hubapi.PinSection {

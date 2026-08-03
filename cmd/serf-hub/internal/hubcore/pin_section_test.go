@@ -32,16 +32,16 @@ func TestNormalizePinSectionName(t *testing.T) {
 func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
 	first, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
-	if err != nil || !changed {
+	if err != nil || !changed || first.MemberCount != 1 {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
 	}
 	reused, changed, err := store.CreateOrReuseAndAssign("research", "session-b", time.Unix(2, 0))
-	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Research" {
+	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Research" || reused.MemberCount != 2 {
 		t.Fatalf("reuse = %+v, %v, %v", reused, changed, err)
 	}
 	other, _, err := store.CreateOrReuseAndAssign("Client", "session-a", time.Unix(3, 0))
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || other.MemberCount != 1 {
+		t.Fatalf("other = %+v, %v", other, err)
 	}
 	pins, err := store.Assignments()
 	if err != nil {
@@ -114,7 +114,7 @@ func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
 	}
 	renamed, changed, err := store.Rename(section.ID, "research", time.Unix(2, 0))
-	if err != nil || !changed || renamed.Name != "research" {
+	if err != nil || !changed || renamed.Name != "research" || renamed.MemberCount != 1 {
 		t.Fatalf("rename = %+v, %v, %v", renamed, changed, err)
 	}
 	other, changed, err := store.CreateOrReuseAndAssign("Client", "session-b", time.Unix(3, 0))
@@ -132,9 +132,9 @@ func TestPinSectionStoreDeleteSectionReturnsMemberCountAndCascadesAssignments(t 
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
 	}
-	_, changed, err = store.Assign(section.ID, "session-b", time.Unix(2, 0))
-	if err != nil || !changed {
-		t.Fatalf("assign = %v, %v", changed, err)
+	assigned, changed, err := store.Assign(section.ID, "session-b", time.Unix(2, 0))
+	if err != nil || !changed || assigned.MemberCount != 2 {
+		t.Fatalf("assign = %+v, %v, %v", assigned, changed, err)
 	}
 	count, changed, err := store.DeleteSection(section.ID)
 	if err != nil || !changed || count != 2 {

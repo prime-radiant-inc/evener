@@ -224,6 +224,15 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 			}
 			return PinSection{}, false, err
 		}
+		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
 		if pinSectionBeforeAssignmentCommitHook != nil {
 			pinSectionBeforeAssignmentCommitHook()
 		}
@@ -274,6 +283,15 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 			return PinSection{}, false, err
 		}
 		changed, err := upsertSessionPinTx(tx, sessionID, section.ID, now)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -340,6 +358,15 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 			_ = db.Close()
 			return PinSection{}, false, ErrPinSectionNotFound
 		}
+		section.MemberCount, err = sessionPinCountTx(tx, section.ID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
 		if section.Name == display {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -384,6 +411,7 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 			_ = db.Close()
 			return PinSection{}, false, ErrPinSectionNotFound
 		}
+		updated.MemberCount = section.MemberCount
 		if err := tx.Commit(); err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()

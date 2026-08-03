@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
@@ -222,7 +225,7 @@ func TestAPIPinSectionDeleteReturnsMemberCountAndRemovesAssignments(t *testing.T
 	}
 }
 
-func TestAPISessionPinMutationsBroadcastOnlyOnChange(t *testing.T) {
+func TestAPISessionPinMutationsCallNotifyMutationOnlyOnChange(t *testing.T) {
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	store := hubcore.NewPinSectionStore(t.TempDir() + "/index.db")
@@ -317,6 +320,93 @@ func TestAPISessionPinMutationsBroadcastOnlyOnChange(t *testing.T) {
 	}
 	if notifications != 5 {
 		t.Fatalf("failed delete notifications = %d, want 5 total", notifications)
+	}
+}
+
+type failSecondMkdirFS struct {
+	afero.Fs
+	calls int
+}
+
+func (f *failSecondMkdirFS) MkdirAll(path string, perm os.FileMode) error {
+	f.calls++
+	if f.calls > 1 {
+		return errors.New("unexpected post-commit store read")
+	}
+	return f.Fs.MkdirAll(path, perm)
+}
+
+func TestAPISessionPinSuccessDoesNotReadStoreAfterCommit(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		setup     func(t *testing.T, store *hubcore.PinSectionStore) string
+		method    string
+		body      string
+		wantCount string
+	}{
+		{
+			name: "create or reuse and assign",
+			setup: func(t *testing.T, _ *hubcore.PinSectionStore) string {
+				return "/api/session-pin"
+			},
+			method:    http.MethodPost,
+			body:      `{"session_ref":"local:session-a","section_name":"Research"}`,
+			wantCount: `"member_count":1`,
+		},
+		{
+			name: "assign existing section",
+			setup: func(t *testing.T, store *hubcore.PinSectionStore) string {
+				section, _, err := store.CreateOrReuseAndAssign("Research", "session-seed", timeNowForTest())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/api/session-pin?section=" + url.QueryEscape(section.ID)
+			},
+			method:    http.MethodPost,
+			wantCount: `"member_count":2`,
+		},
+		{
+			name: "rename",
+			setup: func(t *testing.T, store *hubcore.PinSectionStore) string {
+				section, _, err := store.CreateOrReuseAndAssign("Research", "session-a", timeNowForTest())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/api/pin-sections/" + url.PathEscape(section.ID)
+			},
+			method:    http.MethodPatch,
+			body:      `{"name":"RESEARCH"}`,
+			wantCount: `"member_count":1`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			past := hubcore.NewPastIndex("")
+			past.SeedForTest([]schema.SessionMeta{topLevelMeta("session-a")})
+			store := hubcore.NewPinSectionStore(t.TempDir() + "/index.db")
+			target := tt.setup(t, store)
+			body := tt.body
+			if tt.name == "assign existing section" {
+				sectionID := strings.TrimPrefix(target, "/api/session-pin?section=")
+				target = "/api/session-pin"
+				body = `{"session_ref":"local:session-a","section_id":"` + sectionID + `"}`
+			}
+			fs := &failSecondMkdirFS{Fs: afero.NewOsFs()}
+			store.SetFs(fs)
+			notifications := 0
+			web := NewWebServer(hubcore.WebConfig{
+				Past: past, PinSections: store,
+				PokeAttention: func() { notifications++ },
+			})
+
+			rr := apiRequest(t, web.Handler(), tt.method, target, body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+			}
+			assertJSONContains(t, rr.Body.Bytes(), `"changed":true`, tt.wantCount)
+			if fs.calls != 1 || notifications != 1 {
+				t.Fatalf("store opens = %d, notifications = %d; want 1, 1", fs.calls, notifications)
+			}
+		})
 	}
 }
 
