@@ -182,6 +182,18 @@ class MemoryStorage {
   }
 }
 
+const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
+  /\/\*[\s\S]*?\*\//g,
+  "",
+);
+
+test("keeps the desktop shell full-bleed contract in AppShell.module.css", () => {
+  expect(appShellCss).not.toContain("padding: var(--space-4);");
+  expect(appShellCss).toContain("gap: var(--space-3);");
+  expect(appShellCss).toContain("padding: 0;");
+  expect(appShellCss).toContain("gap: 0;");
+});
+
 // Renders a route to completion so both halves of its lazy-loading cost are
 // already paid by the time a test measures it. The module cache is only the
 // first half: React.lazy keeps a payload of its own that stays uninitialized
