@@ -157,6 +157,104 @@ test("delegate_send: summary shows the target delegate and the tool's own footer
   );
 });
 
+function renderDelegateSendBody({
+  toolName = "delegate_send",
+  argumentsJSON = JSON.stringify({ to: "dlg_abc123", message: "Inspect the parser.\nReport exact findings." }),
+  output = "Found two call sites.\nBoth need coverage.\n[delegate_id dlg_abc123 · delivered · completed]",
+  raw,
+}: {
+  toolName?: "delegate_send" | "job_send_message";
+  argumentsJSON?: string;
+  output?: string;
+  raw?: unknown;
+} = {}) {
+  const Body = toolRendererFor(toolName).body!;
+  render(
+    <Body
+      item={item({
+        toolName,
+        argumentsJSON,
+        output,
+        raw,
+      })}
+      live={false}
+    />,
+  );
+}
+
+test("delegate_send: expanded body shows the complete sent message and response without repeated status metadata", () => {
+  renderDelegateSendBody();
+
+  expect(screen.getByText("Message")).toBeTruthy();
+  expect(screen.getByTestId("delegate-send-message").textContent).toBe("Inspect the parser.\nReport exact findings.");
+  expect(screen.getByText("Response")).toBeTruthy();
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("Found two call sites.\nBoth need coverage.");
+  expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();
+});
+
+test("delegate_send: canonical raw output preserves the delegate response when formatted output has trailing metadata", () => {
+  renderDelegateSendBody({
+    output:
+      'Exact response\n[delegate_id dlg_abc123 · delivered · completed]\nstructured_result (valid=true): {"ok":true}',
+    raw: { output: "Exact response", status: "completed", action: "delivered" },
+  });
+
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("Exact response");
+  expect(screen.queryByText(/structured_result/)).toBeNull();
+});
+
+test("delegate_send: footer-only and in-flight calls omit the Response section", () => {
+  const Body = toolRendererFor("delegate_send").body!;
+
+  const { rerender } = render(
+    <Body
+      item={item({
+        toolName: "delegate_send",
+        argumentsJSON: JSON.stringify({ to: "dlg_abc123", message: "status?" }),
+        output: "[delegate_id dlg_abc123 · delivered · running]",
+      })}
+      live={false}
+    />,
+  );
+  expect(screen.queryByText("Response")).toBeNull();
+
+  rerender(
+    <Body
+      item={item({
+        toolName: "delegate_send",
+        argumentsJSON: JSON.stringify({ to: "dlg_abc123", message: "status?" }),
+        output: "",
+      })}
+      live={true}
+    />,
+  );
+  expect(screen.queryByText("Response")).toBeNull();
+});
+
+test("delegate_send: unrecognized output remains visible as the response", () => {
+  renderDelegateSendBody({ output: "historical result without a recognized footer" });
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe(
+    "historical result without a recognized footer",
+  );
+});
+
+test("delegate_send: malformed or missing message arguments omit Message without hiding a response", () => {
+  renderDelegateSendBody({ argumentsJSON: "not json", output: "reply from historical data" });
+  expect(screen.queryByText("Message")).toBeNull();
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("reply from historical data");
+});
+
+test("job_send_message: expanded body reads the legacy target shape and shows message and response", () => {
+  renderDelegateSendBody({
+    toolName: "job_send_message",
+    argumentsJSON: JSON.stringify({ target: "dlg_legacy", message: "continue" }),
+    output: "continuing\n[delegate_id dlg_legacy · delivered · running]",
+  });
+
+  expect(screen.getByTestId("delegate-send-message").textContent).toBe("continue");
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("continuing");
+});
+
 test("job_send_message aliases to the same descriptor as delegate_send, reading its legacy `target` arg", () => {
   const delegateSend = toolRendererFor("delegate_send");
   const jobSendMessage = toolRendererFor("job_send_message");
