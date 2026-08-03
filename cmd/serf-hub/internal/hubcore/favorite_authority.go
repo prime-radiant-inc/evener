@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
 )
 
 // FavoriteAuthorityQuality records whether an authority fact is complete and
@@ -290,6 +291,16 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
 	ids := sessions.byAlias[key.ID]
+	if len(ids) == 0 {
+		ref, err := hubapi.ParseRef(key.ID)
+		if err == nil && ref.HostID == "local" && identifier.ValidateSessionID(ref.SessionID) == nil {
+			return FavoriteDecisionClassification{
+				State:        FavoriteDecisionDormant,
+				CanonicalKey: ArchiveKey{Kind: "session", ID: ref.SessionID},
+			}
+		}
+		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
+	}
 	if len(ids) != 1 || sessions.ambiguousIDs[ids[0]] {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}

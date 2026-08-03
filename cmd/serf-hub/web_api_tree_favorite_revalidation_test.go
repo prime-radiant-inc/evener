@@ -240,6 +240,35 @@ func TestAPITreeFavoriteRevalidation_AmbiguousAuthorityIsDormant(t *testing.T) {
 	}
 }
 
+func TestAPITreeFavoriteRevalidation_DormantLocalRefMigratesToBareSessionID(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	id := hubtest.SessionID(t)
+	ref := hubapi.LocalRef(id).String()
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favorites.Set("session", ref, true, favoriteRevalidationTreeTime); err != nil {
+		t.Fatal(err)
+	}
+	web := favoriteRevalidationWeb(t, favorites, nil)
+
+	response := getTreeResponse(t, web)
+	if treeResponseHasFavorite(response, ref) {
+		t.Fatalf("dormant local favorite appeared without authority")
+	}
+	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
+		t.Fatalf("legacy favorite row survived migration: %+v", rows)
+	}
+	pins, err := web.cfg.PinSections.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins[ref]; ok {
+		t.Fatalf("host-qualified local ref persisted as an assignment: %+v", pins)
+	}
+	if pin, ok := pins[id]; !ok || pin.SessionID != id || len(pins) != 1 {
+		t.Fatalf("dormant local assignment = %+v, want only canonical bare %q (got %+v)", pin, id, pins)
+	}
+}
+
 func TestAPITreeFavoriteRevalidation_ClusterSpellingDoesNotDecideValidity(t *testing.T) {
 	useFavoriteRevalidationTreeClock(t)
 	legitimateID := "cluster:" + hubtest.SessionID(t)
