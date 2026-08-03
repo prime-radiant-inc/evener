@@ -854,6 +854,7 @@ function targetsPendingHydration(n: AnyNotification, pending: PendingThreadHydra
   const threadId = notificationThreadId(n);
   if (ref !== undefined) {
     if (ref !== routing.ref) return false;
+    if (n.method === "serf/jobs/treeUpdated") return true;
     // A ref-targeted frame is authoritative for the requested subscription,
     // but once that subscription has also taught us its thread id, a
     // contradictory id is a different thread and must not enter this buffer.

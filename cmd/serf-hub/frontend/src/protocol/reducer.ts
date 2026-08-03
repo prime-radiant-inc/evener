@@ -289,6 +289,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.serf.tasks ?? null,
     jobsUpdatedAt: null,
+    jobsTreeRevision: null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
     capabilities: thread.serf.capabilities,
@@ -862,6 +863,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, jobsUpdatedAt: now, lastFrameAt: now };
+    }
+
+    case "serf/jobs/treeUpdated": {
+      if (!notificationTargetsThread(n, model)) return model;
+      if (model.jobsTreeRevision !== null && n.params.revision <= model.jobsTreeRevision) return model;
+      return { ...model, jobsTreeRevision: n.params.revision, jobsUpdatedAt: now };
     }
 
     case "warning": {

@@ -507,6 +507,23 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
   expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} }, model)).toBe(false);
 });
 
+test("serf/jobs/treeUpdated updates only jobsTreeRevision and jobsUpdatedAt, not lastFrameAt", () => {
+  const model = testHydrate();
+
+  const updated = applyNotification(
+    model,
+    {
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_t", ref: "ref_t", revision: 9 },
+    },
+    2000,
+  );
+
+  expect(updated.jobsTreeRevision).toBe(9);
+  expect(updated.jobsUpdatedAt).toBe(2000);
+  expect(updated.lastFrameAt).toBe(model.lastFrameAt);
+});
+
 test("turn/completed applies with authoritative ref and thread identity", () => {
   let model = testHydrate();
   model = applyNotification(

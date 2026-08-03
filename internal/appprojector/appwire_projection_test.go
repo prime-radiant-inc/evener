@@ -207,6 +207,69 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	}
 }
 
+func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventJobStarted,
+		Data: events.JobStartedData{
+			JobID:         "job_1",
+			JobType:       "shell",
+			Status:        "running",
+			RootSessionID: "root",
+			TreeRevision:  9,
+		},
+	})
+	if len(out) != 2 {
+		t.Fatalf("want job started + jobs tree updated notifications, got %+v", out)
+	}
+	if !hasAppNotification(out, appwire.NotifySerfJobStarted) {
+		t.Fatalf("missing %q in %+v", appwire.NotifySerfJobStarted, out)
+	}
+	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifySerfJobsTreeUpdated)
+	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {
+		t.Fatalf("params=%+v", params)
+	}
+}
+
+func TestProject_JobFinishedAlsoEmitsJobsTreeUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventJobFinished,
+		Data: events.JobFinishedData{
+			JobID:         "job_1",
+			JobType:       "shell",
+			Status:        "completed",
+			Reason:        "exit_zero",
+			RootSessionID: "root",
+			TreeRevision:  9,
+		},
+	})
+	if len(out) != 2 {
+		t.Fatalf("want job finished + jobs tree updated notifications, got %+v", out)
+	}
+	if !hasAppNotification(out, appwire.NotifySerfJobFinished) {
+		t.Fatalf("missing %q in %+v", appwire.NotifySerfJobFinished, out)
+	}
+	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifySerfJobsTreeUpdated)
+	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {
+		t.Fatalf("params=%+v", params)
+	}
+}
+
+func TestProject_JobsTreeUpdatedOmittedForLegacyJobFixtures(t *testing.T) {
+	tests := []events.SessionEvent{
+		{Kind: events.EventJobStarted, Data: events.JobStartedData{JobID: "job_1", JobType: "shell", Status: "running"}},
+		{Kind: events.EventJobFinished, Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed", Reason: "exit_zero"}},
+	}
+	for _, event := range tests {
+		p := NewAppEventProjector("th1", "local:th1")
+		out := p.Project(event)
+		if hasAppNotification(out, appwire.NotifySerfJobsTreeUpdated) {
+			t.Fatalf("legacy fixture unexpectedly emitted jobs tree update: %+v", out)
+		}
+	}
+}
+
 func TestProject_SandboxEscalationRequested(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
@@ -2353,6 +2416,15 @@ func notificationParamsJSON(t *testing.T, items []AppNotification, method string
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
 	return nil
+}
+
+func notificationParams[T any](t *testing.T, items []AppNotification, method string) T {
+	t.Helper()
+	var params T
+	if err := json.Unmarshal(notificationParamsJSON(t, items, method), &params); err != nil {
+		t.Fatalf("unmarshal params for %s: %v", method, err)
+	}
+	return params
 }
 
 func notificationTurnID(t *testing.T, items []AppNotification, method string) string {

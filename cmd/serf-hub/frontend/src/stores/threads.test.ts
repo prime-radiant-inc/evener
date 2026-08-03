@@ -1490,6 +1490,58 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 
+  test("routes serf/jobs/treeUpdated by root ref while a child thread is open, ignoring stale revisions", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const ref = params.ref ?? "";
+      if (ref === "local:root") {
+        return readResponse(ref, { id: "thr_root", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+      }
+      if (ref === "local:child") {
+        return readResponse(ref, { id: "thr_child", serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } } });
+      }
+      throw new Error(`unexpected ref ${ref}`);
+    });
+
+    await threadsStore.getState().ensureThread("local:root");
+    await threadsStore.getState().ensureThread("local:child");
+
+    const rootBefore = threadsStore.getState().threads.get("local:root");
+    const childBefore = threadsStore.getState().threads.get("local:child");
+    expect(rootBefore).toBeDefined();
+    expect(childBefore).toBeDefined();
+
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 7 },
+    });
+
+    let root = threadsStore.getState().threads.get("local:root");
+    let child = threadsStore.getState().threads.get("local:child");
+    expect(root?.jobsTreeRevision).toBe(7);
+    expect(root?.jobsUpdatedAt).not.toBeNull();
+    expect(root?.lastFrameAt).toBe(rootBefore?.lastFrameAt);
+    expect(child).toEqual(childBefore);
+    expect(threadsStore.getState().frameTimes.get("local:root")).toHaveLength(1);
+
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 7 },
+    });
+    fake.emitNotification({
+      method: "serf/jobs/treeUpdated",
+      params: { threadId: "thr_root", ref: "local:root", revision: 6 },
+    });
+
+    root = threadsStore.getState().threads.get("local:root");
+    child = threadsStore.getState().threads.get("local:child");
+    expect(root?.jobsTreeRevision).toBe(7);
+    expect(root?.lastFrameAt).toBe(rootBefore?.lastFrameAt);
+    expect(child).toEqual(childBefore);
+    expect(threadsStore.getState().frameTimes.get("local:root")).toHaveLength(1);
+    expect(threadsStore.getState().frameTimes.get("local:child")).toBeUndefined();
+  });
+
   test("a second ensureThread(ref) does not re-read", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
