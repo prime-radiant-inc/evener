@@ -1,0 +1,19 @@
+{
+  "name": "activity-tree-responsive",
+  "description": "deep Activity trees must not create a sheet-level horizontal scroller; desktop keeps tree and inspector visible together while mobile shows exactly one readable pane and confines horizontal scrolling to output only",
+  "viewport": {
+    "width": 1600,
+    "height": 5200,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/dialog/dialog.module.css",
+    "widgets/sheet/sheet.module.css",
+    "panes/session/chrome/activitypanel.module.css",
+    "widgets/button/button.module.css",
+    "widgets/statusdot/statusdot.module.css"
+  ]
+}
