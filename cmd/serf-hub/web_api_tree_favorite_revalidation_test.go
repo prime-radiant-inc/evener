@@ -228,8 +228,15 @@ func TestAPITreeFavoriteRevalidation_AmbiguousAuthorityIsDormant(t *testing.T) {
 	if rows := favoriteDecisionRows(t, favorites); len(rows) != 0 {
 		t.Fatalf("legacy favorite rows survived migration: %+v", rows)
 	}
-	if pins, err := web.cfg.PinSections.Assignments(); err != nil || len(pins) != 2 {
-		t.Fatalf("dormant assignments = %+v, %v", pins, err)
+	pins, err := web.cfg.PinSections.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins[ambiguousID]; ok {
+		t.Fatalf("ambiguous local/ref alias was promoted: %+v", pins)
+	}
+	if pin, ok := pins[missingID]; !ok || len(pins) != 1 {
+		t.Fatalf("dormant bare assignment = %+v, want only %q (got %+v)", pin, missingID, pins)
 	}
 }
 
