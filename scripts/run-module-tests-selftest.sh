@@ -147,6 +147,9 @@ case "${1:-}" in
 			exit 1
 		fi
 		if [ "${FAKE_LIST_HOLD:-0}" -ne 0 ]; then
+			if [ -n "${FAKE_READY_FIFO:-}" ] && [ -p "$FAKE_READY_FIFO" ]; then
+				printf 'go-list-started\n' >"$FAKE_READY_FIFO"
+			fi
 			: >"$FAKE_STATE/root-list.started"
 			sleep 1000 &
 			printf '%s\n' "$!" >"$FAKE_STATE/root-list-child.pid"
@@ -259,8 +262,23 @@ run_tests_async() {
 	modules="$1"
 	output="$2"
 	shift 2
+	ready_fifo=""
+	for argument in "$@"; do
+		case "$argument" in
+			FAKE_READY_FIFO=*) ready_fifo="${argument#FAKE_READY_FIFO=}" ;;
+		esac
+	done
 	(
 		cd "$repo" || exit 1
+		if [ -n "$ready_fifo" ]; then
+			printf 'runner-started\n' >"$ready_fifo"
+		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
+			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			runner_status="$?"
+			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
+			exit "$runner_status"
+		fi
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
 			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
@@ -463,8 +481,38 @@ assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery 
 new_case
 out="$case_dir/root-package-discovery-timeout.out"
 root_worktree="$(cd "$repo" && pwd -P)"
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1
-if wait_for_file "$state/root-list.started" 500; then
+ready_fifo="$state/root-list.ready"
+mkfifo "$ready_fifo"
+(
+	exec 8>"$ready_fifo"
+	sleep 10
+) &
+ready_keeper_pid="$!"
+exec 9<"$ready_fifo"
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1 FAKE_READY_FIFO="$ready_fifo"
+
+(
+	sleep 5
+	if kill -0 "$runner_pid" 2>/dev/null; then
+		: >"$state/root-list.watchdog"
+		kill -TERM "$runner_pid" 2>/dev/null || :
+	fi
+	printf 'startup-watchdog\n' >"$ready_fifo"
+) &
+startup_watchdog_pid="$!"
+ready_signal=""
+startup_ready=0
+if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "runner-started" ]; then
+	if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "go-list-started" ]; then
+		startup_ready=1
+	fi
+fi
+if [ "$startup_ready" -eq 1 ]; then
+	kill "$startup_watchdog_pid" 2>/dev/null || :
+	wait "$startup_watchdog_pid" 2>/dev/null || :
+	exec 9<&-
+	kill "$ready_keeper_pid" 2>/dev/null || :
+	wait "$ready_keeper_pid" 2>/dev/null || :
 	(
 		sleep 3
 		if kill -0 "$runner_pid" 2>/dev/null; then
@@ -503,8 +551,15 @@ if wait_for_file "$state/root-list.started" 500; then
 		[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
 	fi
 else
-	bad "the root package-discovery timeout fixture never started"
-	fi
+	bad "the root package-discovery timeout fixture did not reach held go list (last event '$ready_signal')"
+	if kill -0 "$runner_pid" 2>/dev/null; then kill -TERM "$runner_pid" 2>/dev/null || :; fi
+	wait "$runner_pid" 2>/dev/null || :
+	kill "$startup_watchdog_pid" 2>/dev/null || :
+	wait "$startup_watchdog_pid" 2>/dev/null || :
+	exec 9<&-
+	kill "$ready_keeper_pid" 2>/dev/null || :
+	wait "$ready_keeper_pid" 2>/dev/null || :
+fi
 
 new_case
 out="$case_dir/web-failure.out"
