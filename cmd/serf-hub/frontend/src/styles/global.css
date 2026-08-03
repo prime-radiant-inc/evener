@@ -89,9 +89,14 @@ body {
 }
 
 /* The mobile app shell owns the viewport; panes provide their own scroll
- * containers. Lock the document so browser/PWA overscroll cannot move the
- * StackHost top bar or a pane footer with the page. */
+ * containers. The document lock and overscroll containment keep browser/PWA
+ * pull-to-refresh, page bounce, and root scroll chaining from moving the app
+ * shell while panes retain their own scroll containers. */
 @media (max-width: 899px) {
+  html {
+    overscroll-behavior: none;
+  }
+
   html,
   body {
     overflow: hidden;
