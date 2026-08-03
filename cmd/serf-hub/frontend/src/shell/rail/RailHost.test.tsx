@@ -32,7 +32,7 @@ function emptyTree(needsYou = 0) {
     sources: [],
     live: [],
     needs_you: [],
-    favorites: [],
+    pin_sections: [],
     projects: [],
     archived_projects: [],
     test_runs: [],

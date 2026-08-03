@@ -5,7 +5,12 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, TreeTier } from "../../stores/tree";
+import type {
+  TreeNode as ApiTreeNode,
+  TreeProject as ApiTreeProject,
+  PinSectionTree,
+  TreeTier,
+} from "../../stores/tree";
 import type { TreeNode as WidgetTreeNode } from "../../widgets";
 
 export interface SessionRailNode extends WidgetTreeNode {
@@ -177,6 +182,14 @@ function toSessionNode(n: ApiTreeNode, isExpanded: IsExpanded): SessionRailNode 
  * clusters), handled by toSessionNode regardless of which tier it's in. */
 export function sessionNodes(nodes: ApiTreeNode[], isExpanded: IsExpanded): SessionRailNode[] {
   return nodes.map((n) => toSessionNode(n, isExpanded));
+}
+
+export function pinSectionNodes(section: PinSectionTree, isExpanded: IsExpanded): SessionRailNode[] {
+  return sessionNodes(section.sessions, isExpanded);
+}
+
+export function pinSectionDisclosureID(sectionID: string): string {
+  return `pinsection:${sectionID}`;
 }
 
 // Inlined rather than imported from RailRow's cadenceStateFor: importing it

@@ -27,7 +27,7 @@ const EMPTY_WIRE_TREE = {
   sources: null,
   live: null,
   needs_you: null,
-  favorites: null,
+  pin_sections: null,
   projects: null,
   archived_projects: null,
   test_runs: null,
@@ -39,7 +39,7 @@ const NORMALIZED_EMPTY_TREE = {
   sources: [],
   live: [],
   needs_you: [],
-  favorites: [],
+  pin_sections: [],
   projects: [],
   archived_projects: [],
   test_runs: [],
@@ -83,10 +83,46 @@ describe("refresh", () => {
     expect(tree).toEqual(NORMALIZED_EMPTY_TREE);
   });
 
-  test("normalizes nested nullable arrays: TreeProject.sessions and TreeNode.children", async () => {
+  test("normalizes pin sections and nested nullable arrays while preserving recursive pin section IDs", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         ...EMPTY_WIRE_TREE,
+        pin_sections: [
+          { id: "opaque-section", name: "Research", sessions: null },
+          {
+            id: "nested-section",
+            name: "Nested",
+            sessions: [
+              {
+                row_id: "pin:nested-section:local:parent",
+                ref: "local:parent",
+                host_id: "local",
+                session_id: "parent",
+                title: "Parent",
+                project: "Proj",
+                state: "idle",
+                kind: "session",
+                live: true,
+                pin_section_id: "nested-section",
+                children: [
+                  {
+                    row_id: "pin:nested-section:local:child",
+                    ref: "local:child",
+                    host_id: "local",
+                    session_id: "child",
+                    title: "Child",
+                    project: "Proj",
+                    state: "idle",
+                    kind: "session",
+                    live: false,
+                    pin_section_id: "nested-section",
+                    children: null,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
         projects: [
           {
             key: "p1",
@@ -112,6 +148,12 @@ describe("refresh", () => {
     );
     await treeStore.getState().refresh();
     const { tree } = treeStore.getState();
+    expect(tree?.pin_sections[0]).toEqual({ id: "opaque-section", name: "Research", sessions: [] });
+    expect(tree?.pin_sections[1]?.sessions[0]?.pin_section_id).toBe("nested-section");
+    expect(tree?.pin_sections[1]?.sessions[0]?.children[0]).toMatchObject({
+      pin_section_id: "nested-section",
+      children: [],
+    });
     expect(tree?.projects[0]?.sessions[0]?.children).toEqual([]);
     expect(tree?.archived_projects[0]?.sessions).toEqual([]);
     expect(tree?.archived_projects[0]?.session_count).toBe(3);
@@ -553,7 +595,7 @@ describe("loadProjectPage", () => {
       sources: [],
       live: [],
       needs_you: [],
-      favorites: [],
+      pin_sections: [],
       projects: [{ key: "p1", name: "Proj", sessions: [...current, recent], more_current: 1 }],
       archived_projects: [],
       test_runs: [],

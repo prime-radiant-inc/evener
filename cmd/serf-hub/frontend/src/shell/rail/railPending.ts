@@ -19,11 +19,21 @@
 // form - where the row reappears depends on server-side tier classification
 // this layer cannot predict - which matches the htmx behavior exactly.
 
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, TreeResponse } from "../../stores/tree";
+import type {
+  TreeNode as ApiTreeNode,
+  TreeProject as ApiTreeProject,
+  PinSectionSummary,
+  PinSectionTree,
+  TreeResponse,
+} from "../../stores/tree";
 
 export type PendingOp =
   | { kind: "hideSession"; ref: string }
   | { kind: "hideProject"; key: string }
+  | { kind: "sessionPin"; ref: string; section: PinSectionSummary }
+  | { kind: "sessionUnpin"; ref: string }
+  | { kind: "pinSectionRename"; id: string; name: string }
+  | { kind: "pinSectionDelete"; id: string }
   | { kind: "sessionFavorite"; ref: string; value: boolean }
   | { kind: "projectFavorite"; key: string; value: boolean }
   | { kind: "sessionTitle"; ref: string; title: string };
@@ -49,11 +59,102 @@ function mapEverySession(tree: TreeResponse, fn: (n: ApiTreeNode) => ApiTreeNode
     ...tree,
     live: mapNodes(tree.live, fn),
     needs_you: mapNodes(tree.needs_you, fn),
-    favorites: mapNodes(tree.favorites, fn),
+    pin_sections: tree.pin_sections.map((section) => ({ ...section, sessions: mapNodes(section.sessions, fn) })),
     projects: mapProjects(tree.projects),
     archived_projects: mapProjects(tree.archived_projects),
     test_runs: mapProjects(tree.test_runs),
   };
+}
+
+function findSessionNode(tree: TreeResponse, ref: string): ApiTreeNode | undefined {
+  const findIn = (nodes: ApiTreeNode[]): ApiTreeNode | undefined => {
+    for (const node of nodes) {
+      if (node.ref === ref) return node;
+      const child = findIn(node.children);
+      if (child) return child;
+    }
+    return undefined;
+  };
+  const projectRows = (projects: ApiTreeProject[]) => projects.flatMap((project) => project.sessions);
+  return (
+    findIn(tree.live) ??
+    findIn(tree.needs_you) ??
+    findIn(projectRows(tree.projects)) ??
+    findIn(projectRows(tree.archived_projects)) ??
+    findIn(projectRows(tree.test_runs)) ??
+    findIn(tree.pin_sections.flatMap((section) => section.sessions))
+  );
+}
+
+function annotateSessionPin(tree: TreeResponse, ref: string, sectionID: string | undefined): TreeResponse {
+  return mapEverySession(tree, (node) => {
+    if (node.ref !== ref) return node;
+    if (sectionID === undefined) {
+      const { pin_section_id: _pinSectionID, ...unpinned } = node;
+      return unpinned;
+    }
+    return { ...node, pin_section_id: sectionID };
+  });
+}
+
+function withoutSession(section: PinSectionTree, ref: string): PinSectionTree {
+  return { ...section, sessions: mapNodes(section.sessions, (node) => (node.ref === ref ? null : node)) };
+}
+
+function applySessionPin(tree: TreeResponse, ref: string, summary: PinSectionSummary): TreeResponse {
+  const source = findSessionNode(tree, ref);
+  if (!source) return tree;
+
+  const annotated = annotateSessionPin(tree, ref, summary.id);
+  let foundTarget = false;
+  const pinSections = annotated.pin_sections.flatMap((section) => {
+    const currentIndex = section.sessions.findIndex((node) => node.ref === ref);
+    const cleaned = withoutSession(section, ref);
+    if (section.id !== summary.id) return cleaned.sessions.length === 0 ? [] : [cleaned];
+    foundTarget = true;
+    const sessions = [...cleaned.sessions];
+    sessions.splice(currentIndex < 0 ? sessions.length : Math.min(currentIndex, sessions.length), 0, {
+      ...source,
+      pin_section_id: summary.id,
+    });
+    return [
+      {
+        ...cleaned,
+        name: summary.name,
+        sessions,
+      },
+    ];
+  });
+  if (!foundTarget) {
+    pinSections.push({ id: summary.id, name: summary.name, sessions: [{ ...source, pin_section_id: summary.id }] });
+  }
+  return { ...annotated, pin_sections: pinSections };
+}
+
+function applySessionUnpin(tree: TreeResponse, ref: string): TreeResponse {
+  const annotated = annotateSessionPin(tree, ref, undefined);
+  return {
+    ...annotated,
+    pin_sections: annotated.pin_sections
+      .map((section) => withoutSession(section, ref))
+      .filter((section) => section.sessions.length > 0),
+  };
+}
+
+function applyPinSectionDelete(tree: TreeResponse, id: string): TreeResponse {
+  const deleted = tree.pin_sections.find((section) => section.id === id);
+  if (!deleted) return tree;
+  const refs = new Set<string>();
+  const collect = (nodes: ApiTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.pin_section_id === id) refs.add(node.ref);
+      collect(node.children);
+    }
+  };
+  collect(deleted.sessions);
+  let projected = { ...tree, pin_sections: tree.pin_sections.filter((section) => section.id !== id) };
+  for (const ref of refs) projected = annotateSessionPin(projected, ref, undefined);
+  return projected;
 }
 
 function mapEveryProject(tree: TreeResponse, fn: (p: ApiTreeProject) => ApiTreeProject | null): TreeResponse {
@@ -75,6 +176,19 @@ function applyOne(tree: TreeResponse, op: PendingOp): TreeResponse {
       return mapEverySession(tree, (n) => (n.ref === op.ref ? null : n));
     case "hideProject":
       return mapEveryProject(tree, (p) => (p.key === op.key ? null : p));
+    case "sessionPin":
+      return applySessionPin(tree, op.ref, op.section);
+    case "sessionUnpin":
+      return applySessionUnpin(tree, op.ref);
+    case "pinSectionRename":
+      return {
+        ...tree,
+        pin_sections: tree.pin_sections.map((section) =>
+          section.id === op.id ? { ...section, name: op.name } : section,
+        ),
+      };
+    case "pinSectionDelete":
+      return applyPinSectionDelete(tree, op.id);
     case "sessionFavorite":
       return mapEverySession(tree, (n) => (n.ref === op.ref ? { ...n, favorite: op.value } : n));
     case "sessionTitle":

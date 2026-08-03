@@ -32,7 +32,7 @@ function tree(needsYou: TreeNode[]): TreeResponse {
     sources: [],
     live: [],
     needs_you: needsYou,
-    favorites: [],
+    pin_sections: [],
     projects: [],
     archived_projects: [],
     test_runs: [],

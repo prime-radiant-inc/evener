@@ -74,7 +74,7 @@ const TREE_RESPONSE_WITH_NESTED_SESSION = {
   sources: [],
   live: [],
   needs_you: [],
-  favorites: [],
+  pin_sections: [],
   projects: [
     {
       key: "proj1",

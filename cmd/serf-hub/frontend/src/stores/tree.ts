@@ -39,6 +39,7 @@ export interface TreeNode {
   branch?: string;
   cluster_count?: number;
   favorite?: boolean;
+  pin_section_id?: string;
   rename?: boolean;
   live: boolean;
   ask_pending?: boolean;
@@ -85,6 +86,18 @@ export interface TreeProject {
   sessions: TreeNode[];
 }
 
+export interface PinSectionSummary {
+  id: string;
+  name: string;
+  member_count: number;
+}
+
+export interface PinSectionTree {
+  id: string;
+  name: string;
+  sessions: TreeNode[];
+}
+
 export type TreeTier = "current" | "recent" | "archived";
 
 export interface TreeProjectPage {
@@ -106,7 +119,7 @@ export interface TreeResponse {
   sources: Source[];
   live: TreeNode[];
   needs_you: TreeNode[];
-  favorites: TreeNode[];
+  pin_sections: PinSectionTree[];
   projects: TreeProject[];
   archived_projects: TreeProject[];
   test_runs: TreeProject[];
@@ -123,18 +136,21 @@ interface WireTreeNode extends Omit<TreeNode, "children"> {
 interface WireTreeProject extends Omit<TreeProject, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
+interface WirePinSectionTree extends Omit<PinSectionTree, "sessions"> {
+  sessions: WireTreeNode[] | null;
+}
 interface WireTreeProjectPage extends Omit<TreeProjectPage, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
 interface WireTreeResponse
   extends Omit<
     TreeResponse,
-    "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"
+    "sources" | "live" | "needs_you" | "pin_sections" | "projects" | "archived_projects" | "test_runs"
   > {
   sources: Source[] | null;
   live: WireTreeNode[] | null;
   needs_you: WireTreeNode[] | null;
-  favorites: WireTreeNode[] | null;
+  pin_sections: WirePinSectionTree[] | null;
   projects: WireTreeProject[] | null;
   archived_projects: WireTreeProject[] | null;
   test_runs: WireTreeProject[] | null;
@@ -148,6 +164,10 @@ function normalizeProject(p: WireTreeProject): TreeProject {
   return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
 }
 
+function normalizePinSection(section: WirePinSectionTree): PinSectionTree {
+  return { ...section, sessions: (section.sessions ?? []).map(normalizeNode) };
+}
+
 function normalizeProjectPage(p: WireTreeProjectPage): TreeProjectPage {
   return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
 }
@@ -158,7 +178,7 @@ function normalizeResponse(r: WireTreeResponse): TreeResponse {
     sources: r.sources ?? [],
     live: (r.live ?? []).map(normalizeNode),
     needs_you: (r.needs_you ?? []).map(normalizeNode),
-    favorites: (r.favorites ?? []).map(normalizeNode),
+    pin_sections: (r.pin_sections ?? []).map(normalizePinSection),
     projects: (r.projects ?? []).map(normalizeProject),
     archived_projects: (r.archived_projects ?? []).map(normalizeProject),
     test_runs: (r.test_runs ?? []).map(normalizeProject),

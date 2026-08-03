@@ -1,13 +1,15 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, PinSectionTree } from "../../stores/tree";
 import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
   needsYouDescendantCount,
   overrideLookup,
+  pinSectionDisclosureID,
+  pinSectionNodes,
   projectNodeIdForSessionRef,
   projectNodes,
   sessionNodes,
@@ -43,6 +45,35 @@ function project(overrides: Partial<ApiTreeProject> = {}): ApiTreeProject {
 // the callback directly - keeps each test's intent about expand state
 // explicit rather than riding a shared default.
 const NEVER_EXPANDED = () => false;
+
+describe("pin section nodes", () => {
+  test("maps sessions without a fake project and preserves server order", () => {
+    const section: PinSectionTree = {
+      id: "opaque/section-id",
+      name: "Research",
+      sessions: [node({ row_id: "newest", ref: "local:newest" }), node({ row_id: "older", ref: "local:older" })],
+    };
+
+    const rails = pinSectionNodes(section, NEVER_EXPANDED);
+    expect(rails.map((rail) => rail.id)).toEqual(["newest", "older"]);
+    expect(rails.every((rail) => rail.kind === "session")).toBe(true);
+  });
+
+  test("uses the caller's expansion lookup for recursively copied session rows", () => {
+    const section: PinSectionTree = {
+      id: "opaque",
+      name: "Mutable display name",
+      sessions: [node({ row_id: "parent", children: [node({ row_id: "child", state: "active" })] })],
+    };
+
+    expect(pinSectionNodes(section, overrideLookup(new Map([["parent", true]])))[0]?.expanded).toBe(true);
+  });
+
+  test("builds a stable opaque disclosure ID independent of display name", () => {
+    expect(pinSectionDisclosureID("opaque/section-id")).toBe("pinsection:opaque/section-id");
+    expect(pinSectionDisclosureID("opaque/section-id")).not.toContain("Research");
+  });
+});
 
 describe("sessionNodes", () => {
   test("maps each session's row_id to the rail node id and carries the source node", () => {

@@ -57,7 +57,7 @@ function treeOf(nodes: TreeNode[], working = 0): TreeResponse {
     sources: [],
     live: [],
     needs_you: nodes,
-    favorites: [],
+    pin_sections: [],
     projects: [],
     archived_projects: [],
     test_runs: [],

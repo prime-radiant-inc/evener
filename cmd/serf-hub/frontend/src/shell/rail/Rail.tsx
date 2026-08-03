@@ -78,7 +78,7 @@ function isEmptyTree(tree: TreeResponse): boolean {
   return (
     tree.needs_you.length === 0 &&
     tree.live.length === 0 &&
-    tree.favorites.length === 0 &&
+    tree.pin_sections.length === 0 &&
     tree.projects.length === 0 &&
     tree.archived_projects.length === 0 &&
     tree.test_runs.length === 0
@@ -629,7 +629,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             />
             <RailSection
               title="Pinned"
-              nodes={sessionNodes(tree.favorites, isExpanded)}
+              nodes={sessionNodes(
+                tree.pin_sections.flatMap((section) => section.sessions),
+                isExpanded,
+              )}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
