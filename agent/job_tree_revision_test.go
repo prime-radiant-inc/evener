@@ -82,6 +82,47 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	}
 }
 
+func TestJobTreeRevisionBareChildRestoreStartsIndependentRootTree(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root := newSession(t,
+		withClient(client),
+		withDir(stateDir),
+		withConfig(SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 2,
+			NoProjectPrompts: true,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}),
+	)
+
+	prepared := prepareSubagentForTreeRevisionTest(t, root, "child task")
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.runCancel()
+	child := prepared.sub.sess
+	childMeta := child.Meta()
+	child.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(stateDir),
+		childMeta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	started := createShellAndReadJobStarted(t, restored, "printf standalone")
+	if started.RootSessionID != child.ID() {
+		t.Fatalf("bare restored child root_session_id=%q, want independent root %q", started.RootSessionID, child.ID())
+	}
+}
+
 func prepareSubagentForTreeRevisionTest(t *testing.T, parent *Session, task string) *preparedSubagentRun {
 	t.Helper()
 	ctx := context.Background()

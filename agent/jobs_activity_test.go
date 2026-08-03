@@ -379,6 +379,27 @@ func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
 	}
 }
 
+func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(t *testing.T) {
+	clock := newJobTreeClock("root")
+	loads := 0
+	load := func() (*activitySessionSnapshot, int, error) {
+		loads++
+		clock.revision.Add(1) // Simulate one lifecycle change during every snapshot load.
+		return &activitySessionSnapshot{
+			SessionID: "root",
+			Ref:       "local:root",
+			RootID:    "root",
+		}, 0, nil
+	}
+
+	if _, err := projectStableLiveActivityTree(clock, "root", load); err == nil {
+		t.Fatal("expected bounded revision churn to reject an inconsistent snapshot")
+	}
+	if loads != 8 {
+		t.Fatalf("snapshot loads=%d, want 8 bounded stable attempts", loads)
+	}
+}
+
 func TestJobActivityTree_TruncatesWithScopedContinuation(t *testing.T) {
 	s := buildActivityTreeWithJobs(t, activityMaxWorkUnits+1)
 	got, err := s.JobActivityTree(appwire.JobsListParams{})

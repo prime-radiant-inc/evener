@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	activityMaxWorkUnits      = 2000
-	activityMaxNewDepth       = 32
-	activityMaxEncodedBytes   = 4 << 20
-	activityMaxTokenBytes     = 16 << 10
-	activityContinuationV1    = 1
+	activityMaxWorkUnits    = 2000
+	activityMaxNewDepth     = 32
+	activityMaxEncodedBytes = 4 << 20
+	activityMaxTokenBytes   = 16 << 10
+	activityContinuationV1  = 1
 )
 
 type activityContinuation struct {
@@ -148,22 +148,24 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 		}
 		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0)
 	}
+	return projectStableLiveActivityTree(s.jobTreeClock, root.sessionID, func() (*activitySessionSnapshot, int, error) {
+		return loadActivitySnapshotForParams(root, params)
+	})
+}
+
+func projectStableLiveActivityTree(clock *jobTreeClock, rootID string, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
 	for attempt := 0; attempt < 8; attempt++ {
-		before := activityCurrentRootRevision(s.jobTreeClock)
-		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+		before := activityCurrentRootRevision(clock)
+		snapshot, startDepth, err := load()
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		after := activityCurrentRootRevision(s.jobTreeClock)
+		after := activityCurrentRootRevision(clock)
 		if before == after {
-			return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, after)
+			return projectBoundedActivityTree(*snapshot, rootID, startDepth, after)
 		}
 	}
-	snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
-	if err != nil {
-		return appwire.JobActivityTree{}, err
-	}
-	return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, activityCurrentRootRevision(s.jobTreeClock))
+	return appwire.JobActivityTree{}, errors.New("activity tree changed while snapshot was being built; retry")
 }
 
 func activityCurrentRootRevision(clock *jobTreeClock) uint64 {
@@ -303,8 +305,8 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		SessionID: s.ID(),
 		Ref:       encodeRef("", s.ID()),
 		Label:     activitySessionLabel(s.Meta()),
-			RootID:    activityCurrentRootID(s.jobTreeClock, s.ID()),
-			Revision:  activityCurrentRootRevision(s.jobTreeClock),
+		RootID:    activityCurrentRootID(s.jobTreeClock, s.ID()),
+		Revision:  activityCurrentRootRevision(s.jobTreeClock),
 		Jobs:      []*jobstore.JobRecord{},
 		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: map[string]*jobstore.DelegateRecord{},

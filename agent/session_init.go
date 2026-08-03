@@ -521,15 +521,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.spawn.driveCounter = dc
 	jobClock := resolveJobTreeClock(tc)
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-			rootSessionID := strings.TrimSpace(meta.JobTreeRootSessionID)
-			if rootSessionID == "" {
-				rootSessionID = meta.ID
-			}
-			jobClock = newJobTreeClock(rootSessionID)
+		// A restore without the parent's live tree carrier is a new root runtime.
+		// Persisted ancestor identity remains useful to durable history traversal,
+		// but must not route new lifecycle notifications to that old tree.
+		jobClock = newJobTreeClock(meta.ID)
 	}
-		if jobClock != nil {
-			jobClock.ensureAtLeast(meta.JobTreeRevision)
-		}
+	if jobClock != nil {
+		jobClock.ensureAtLeast(meta.JobTreeRevision)
+	}
 	registerJobTreeClock(tc, jobClock)
 	s := &Session{
 		id:                       meta.ID,
