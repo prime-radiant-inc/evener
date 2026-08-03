@@ -44,6 +44,43 @@ func TestSummarizeJobRecordShell(t *testing.T) {
 	}
 }
 
+func TestProjectActivityJobFields(t *testing.T) {
+	started := time.Date(2026, 7, 31, 12, 0, 0, 0, time.FixedZone("offset", 2*60*60))
+	ended := started.Add(time.Minute)
+	exit := 1
+	rec := &jobstore.JobRecord{
+		JobID:          "job_1",
+		OwnerSessionID: "child",
+		Type:           jobstore.JobShell,
+		Status:         jobstore.StatusFailed,
+		Reason:         "exit_status",
+		Description:    "run tests",
+		Command:        "go test ./...",
+		Background:     true,
+		StartedAt:      started,
+		EndedAt:        &ended,
+		ExitCode:       &exit,
+		OutputBytes:    123,
+		OutputPath:     "/tmp/out.log",
+	}
+	got := projectActivityJob(rec, "local:child")
+	if got.JobID != "job_1" || got.OwnerSessionID != "child" || got.OwnerRef != "local:child" {
+		t.Errorf("identity/owner fields: %+v", got)
+	}
+	if got.Type != "shell" || got.Status != "failed" || !got.Terminal || got.Outcome != "failure" {
+		t.Errorf("lifecycle fields: %+v", got)
+	}
+	if got.Description != "run tests" || got.Command != "go test ./..." || got.Reason != "exit_status" {
+		t.Errorf("description fields: %+v", got)
+	}
+	if !got.Background || !got.HasOutput || got.OutputBytes != 123 || got.ExitCode == nil || *got.ExitCode != 1 {
+		t.Errorf("runtime fields: %+v", got)
+	}
+	if got.StartedAt != started.UTC().Format(time.RFC3339) || got.EndedAt != ended.UTC().Format(time.RFC3339) {
+		t.Errorf("timestamps: %+v", got)
+	}
+}
+
 func TestSummarizeJobRecordDescriptionFallback(t *testing.T) {
 	rec := &jobstore.JobRecord{JobID: "job_2", Type: jobstore.JobDelegate, Status: jobstore.StatusRunning, Task: "scout the repo"}
 	if got := summarizeJobRecord(rec); got.Description != "scout the repo" {

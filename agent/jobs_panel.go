@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/appwire"
@@ -40,38 +39,27 @@ func clampJobTailBytes(maxBytes int64) int64 {
 	return maxBytes
 }
 
-// summarizeJobRecord projects one record. Description is the first non-empty
-// of Description, Command, Task. HasOutput means a tail read is worth
+// summarizeJobRecord projects the temporary flat jobs-list compatibility
+// payload from the shared activity job projection. Description is the first
+// non-empty of Description, Command, Task. HasOutput means a tail read is worth
 // attempting: an output path is recorded or bytes were counted.
 func summarizeJobRecord(rec *jobstore.JobRecord) JobSummary {
-	if rec == nil {
-		return JobSummary{}
+	job := projectActivityJob(rec, "")
+	return JobSummary{
+		JobID:       job.JobID,
+		Type:        job.Type,
+		Status:      job.Status,
+		Reason:      job.Reason,
+		Description: job.Description,
+		Command:     job.Command,
+		Task:        job.Task,
+		Background:  job.Background,
+		HasOutput:   job.HasOutput,
+		StartedAt:   job.StartedAt,
+		EndedAt:     job.EndedAt,
+		ExitCode:    job.ExitCode,
+		OutputBytes: job.OutputBytes,
 	}
-	desc := rec.Description
-	if desc == "" {
-		desc = rec.Command
-	}
-	if desc == "" {
-		desc = rec.Task
-	}
-	s := JobSummary{
-		JobID:       rec.JobID,
-		Type:        string(rec.Type),
-		Status:      string(rec.Status),
-		Reason:      rec.Reason,
-		Description: desc,
-		Command:     rec.Command,
-		Task:        rec.Task,
-		Background:  rec.Background,
-		StartedAt:   rec.StartedAt.UTC().Format(time.RFC3339),
-		ExitCode:    rec.ExitCode,
-		OutputBytes: rec.OutputBytes,
-		HasOutput:   rec.OutputPath != "" || rec.OutputBytes > 0,
-	}
-	if rec.EndedAt != nil {
-		s.EndedAt = rec.EndedAt.UTC().Format(time.RFC3339)
-	}
-	return s
 }
 
 func summarizeJobRecords(ordered []*jobstore.JobRecord) []JobSummary {
