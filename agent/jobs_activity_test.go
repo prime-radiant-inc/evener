@@ -1,12 +1,17 @@
 package agent
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -258,6 +263,337 @@ func TestMergeActivityRecords_DurableReconciliationHasNoDuplicate(t *testing.T) 
 	}
 }
 
+func TestJobActivityTree_LiveTraversalIncludesClosedDurableGrandchildAndGroupsTurnsOnce(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	child := newActivityTestSession(t, stateDir)
+	grand := newActivityTestSession(t, stateDir)
+	freezeClockAt(root.jobManager, time.Unix(10, 0).UTC())
+	freezeClockAt(child.jobManager, time.Unix(20, 0).UTC())
+	freezeClockAt(grand.jobManager, time.Unix(30, 0).UTC())
+
+	rootShell, err := root.jobManager.createShell(createShellOpts{Command: "root", Description: "root shell"})
+	if err != nil {
+		t.Fatalf("root createShell: %v", err)
+	}
+	if err := root.jobManager.finalize(rootShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("root finalize: %v", err)
+	}
+
+	childSub, childRun := linkActivityChild(t, root, child, "inspect child")
+	if _, err := root.attachDelegateJobFromWatchWithDelegate(root.jobManager, child.ID(), "inspect child again", childSub, childRun.rec.DelegateID, nil, nil, false, nil); err != nil {
+		t.Fatalf("attach repeated child delegate: %v", err)
+	}
+	childShell, err := child.jobManager.createShell(createShellOpts{Command: "child", Description: "child shell"})
+	if err != nil {
+		t.Fatalf("child createShell: %v", err)
+	}
+	if err := child.jobManager.finalize(childShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("child finalize: %v", err)
+	}
+
+	grandSub, _ := linkActivityChild(t, child, grand, "inspect grandchild")
+	grandShell, err := grand.jobManager.createShell(createShellOpts{Command: "grand", Description: "grand shell"})
+	if err != nil {
+		t.Fatalf("grand createShell: %v", err)
+	}
+	if err := grand.jobManager.finalize(grandShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("grand finalize: %v", err)
+	}
+	grandSub.mu.Lock()
+	grandSub.closed = true
+	grandSub.mu.Unlock()
+
+	saveActivityMeta(t, stateDir, root)
+	saveActivityMeta(t, stateDir, child)
+	saveActivityMeta(t, stateDir, grand)
+
+	got, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Root.SessionID != root.ID() {
+		t.Fatalf("root session=%q", got.Root.SessionID)
+	}
+	if len(got.Root.Entries) != 2 {
+		t.Fatalf("root entries=%d, want shell + delegate", len(got.Root.Entries))
+	}
+	delegate := got.Root.Entries[1].Delegate
+	if delegate == nil {
+		t.Fatalf("root second entry=%+v, want delegate", got.Root.Entries[1])
+	}
+	if len(delegate.Turns) != 2 {
+		t.Fatalf("delegate turns=%+v, want one grouped row with two turns", delegate.Turns)
+	}
+	if delegate.Child == nil {
+		t.Fatalf("delegate child missing: %+v", delegate)
+	}
+	childTree := delegate.Child
+	if childTree.SessionID != child.ID() {
+		t.Fatalf("child session=%q, want %q", childTree.SessionID, child.ID())
+	}
+	if childTree.Entries[0].Job == nil || childTree.Entries[0].Job.OwnerSessionID != child.ID() {
+		t.Fatalf("child shell owner=%+v", childTree.Entries[0])
+	}
+	grandDelegate := findDelegateEntry(t, *childTree, grand.ID())
+	if grandDelegate.Child == nil || grandDelegate.Branch.Error != "" {
+		t.Fatalf("grandchild branch=%+v child=%+v", grandDelegate.Branch, grandDelegate.Child)
+	}
+	if grandDelegate.Child.Entries[0].Job == nil || grandDelegate.Child.Entries[0].Job.OwnerSessionID != grand.ID() {
+		t.Fatalf("grandchild owner=%+v", grandDelegate.Child.Entries[0])
+	}
+}
+
+func TestJobActivityTree_TruncatesWithScopedContinuation(t *testing.T) {
+	s := buildActivityTreeWithJobs(t, activityMaxWorkUnits+1)
+	got, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := firstTruncatedBranch(t, got.Root)
+	if !branch.Truncated || branch.Continuation == "" {
+		t.Fatalf("branch=%+v", branch)
+	}
+	if _, err := decodeActivityContinuation(branch.Continuation, "other-root"); err == nil {
+		t.Fatal("continuation accepted for another root")
+	}
+}
+
+func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	current := root
+	for i := 0; i < activityMaxNewDepth+1; i++ {
+		child := newActivityTestSession(t, stateDir)
+		_, _ = linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
+		saveActivityMeta(t, stateDir, current)
+		saveActivityMeta(t, stateDir, child)
+		current = child
+	}
+	got, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := firstTruncatedBranch(t, got.Root)
+	if !branch.Truncated || branch.Continuation == "" {
+		t.Fatalf("branch=%+v", branch)
+	}
+	if depth := maxActivityDepth(got.Root); depth != activityMaxNewDepth {
+		t.Fatalf("depth=%d, want %d", depth, activityMaxNewDepth)
+	}
+}
+
+func TestJobActivityTree_TruncatesUnderEncodedBytePressure(t *testing.T) {
+	s := buildActivityTreeWithJobs(t, 64)
+	for i := 0; i < 64; i++ {
+		rec := &jobstore.JobRecord{
+			JobID:          fmt.Sprintf("payload_%02d", i),
+			Type:           jobstore.JobShell,
+			Status:         jobstore.StatusCompleted,
+			OwnerSessionID: s.ID(),
+			StartedAt:      time.Unix(int64(2000+i), 0).UTC(),
+			Description:    strings.Repeat("x", 96*1024),
+		}
+		if err := s.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: rec.StartedAt, JobID: rec.JobID, Type: rec.Type, Description: rec.Description, OwnerSessionID: rec.OwnerSessionID, VisibleToSession: s.ID(), StartedAt: &rec.StartedAt}); err != nil {
+			t.Fatalf("append payload job %d: %v", i, err)
+		}
+		ended := rec.StartedAt.Add(time.Second)
+		if err := s.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: rec.JobID, Status: jobstore.StatusCompleted, EndedAt: &ended}); err != nil {
+			t.Fatalf("append payload finish %d: %v", i, err)
+		}
+	}
+	got, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > activityMaxEncodedBytes {
+		t.Fatalf("encoded bytes=%d, want <= %d", len(raw), activityMaxEncodedBytes)
+	}
+	branch := firstTruncatedBranch(t, got.Root)
+	if !branch.Truncated || branch.Continuation == "" {
+		t.Fatalf("branch=%+v", branch)
+	}
+}
+
+func TestJobActivityTree_CycleDetected(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	child := newActivityTestSession(t, stateDir)
+	_, _ = linkActivityChild(t, root, child, "child")
+	rootAsGrandchild, _ := linkActivityChild(t, child, root, "cycle")
+	t.Cleanup(func() {
+		child.subagents.remove(root.ID())
+	})
+	rootAsGrandchild.mu.Lock()
+	rootAsGrandchild.closed = false
+	rootAsGrandchild.mu.Unlock()
+	saveActivityMeta(t, stateDir, root)
+	saveActivityMeta(t, stateDir, child)
+	got, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childDelegate := findDelegateEntry(t, got.Root, child.ID())
+	cycleDelegate := findDelegateEntry(t, *childDelegate.Child, root.ID())
+	if cycleDelegate.Branch.Error != "cycle detected" {
+		t.Fatalf("cycle branch=%+v", cycleDelegate.Branch)
+	}
+}
+
+func TestJobActivityTree_MalformedRefRetainsUnavailableDelegate(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newActivityTestSession(t, stateDir)
+	now := time.Unix(100, 0).UTC()
+	if err := s.jobManager.store.AppendBatch([]jobstore.Event{
+		{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         now,
+			DelegateID: "dlg_bad",
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   "child",
+				TranscriptRef:    "local:bad.ref",
+				OwnerSessionID:   s.ID(),
+				VisibleSessionID: s.ID(),
+				Generation:       "gen_1",
+				Resumable:        true,
+			},
+		},
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               now,
+			JobID:            "job_bad_ref",
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   s.ID(),
+			VisibleToSession: s.ID(),
+			DelegateID:       "dlg_bad",
+			StartedAt:        &now,
+		},
+	}); err != nil {
+		t.Fatalf("append malformed delegate: %v", err)
+	}
+	saveActivityMeta(t, stateDir, s)
+	got, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Root.Entries) != 1 || got.Root.Entries[0].Delegate == nil {
+		t.Fatalf("entries=%+v", got.Root.Entries)
+	}
+	if !strings.Contains(got.Root.Entries[0].Delegate.Branch.Error, "transcript ref") {
+		t.Fatalf("branch=%+v", got.Root.Entries[0].Delegate.Branch)
+	}
+}
+
+func TestJobActivityTree_UnavailableDescendantRetainsDelegate(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newActivityTestSession(t, stateDir)
+	now := time.Unix(100, 0).UTC()
+	if err := s.jobManager.store.AppendBatch([]jobstore.Event{
+		{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         now,
+			DelegateID: "dlg_missing",
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   "missing",
+				TranscriptRef:    encodeRef("", "missing"),
+				OwnerSessionID:   s.ID(),
+				VisibleSessionID: s.ID(),
+				Generation:       "gen_1",
+				Resumable:        true,
+			},
+		},
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               now,
+			JobID:            "job_missing",
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   s.ID(),
+			VisibleToSession: s.ID(),
+			DelegateID:       "dlg_missing",
+			StartedAt:        &now,
+		},
+	}); err != nil {
+		t.Fatalf("append missing delegate: %v", err)
+	}
+	saveActivityMeta(t, stateDir, s)
+	got, err := s.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := got.Root.Entries[0].Delegate
+	if delegate == nil || delegate.Child != nil || delegate.Branch.Error == "" {
+		t.Fatalf("delegate=%+v", delegate)
+	}
+}
+
+func TestDecodeActivityContinuation_Validation(t *testing.T) {
+	valid := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
+	if got, err := decodeActivityContinuation(valid, "root"); err != nil || got.SessionID != "root" || !reflect.DeepEqual(got.Path, []string{"dlg_1"}) {
+		t.Fatalf("decode valid=(%+v,%v)", got, err)
+	}
+	tooLong := strings.Repeat("a", 16*1024+1)
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{name: "too long", token: tooLong},
+		{name: "bad base64", token: "%%%"},
+		{name: "bad version", token: base64.RawURLEncoding.EncodeToString([]byte(`{"v":2,"root":"root","session":"root"}`))},
+		{name: "duplicate path", token: base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"root":"root","session":"root","path":["dlg_1","dlg_1"]}`))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeActivityContinuation(tc.token, "root"); err == nil {
+				t.Fatalf("decode accepted %q", tc.name)
+			}
+		})
+	}
+}
+
+func TestJobActivityTree_ContinuationGraftEnvelope(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	child := newActivityTestSession(t, stateDir)
+	_, _ = linkActivityChild(t, root, child, "child")
+	saveActivityMeta(t, stateDir, root)
+	saveActivityMeta(t, stateDir, child)
+	for i := 0; i < activityMaxWorkUnits+4; i++ {
+		started := time.Unix(int64(1000+i), 0).UTC()
+		jobID := fmt.Sprintf("job_child_%04d", i)
+		if err := child.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "child work", OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started}); err != nil {
+			t.Fatalf("append child job %d: %v", i, err)
+		}
+	}
+	initial, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childDelegate := findDelegateEntry(t, initial.Root, child.ID())
+	if childDelegate.Child == nil {
+		t.Fatalf("child branch missing: %+v", childDelegate)
+	}
+	if !childDelegate.Child.Branch.Truncated || childDelegate.Child.Branch.Continuation == "" {
+		t.Fatalf("child branch=%+v", childDelegate.Child.Branch)
+	}
+	continued, err := root.JobActivityTree(appwire.JobsListParams{Continuation: childDelegate.Child.Branch.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.Root.SessionID != root.ID() || continued.Root.Ref != encodeRef("", root.ID()) {
+		t.Fatalf("continued root=%+v", continued.Root)
+	}
+	if len(continued.Root.Entries) != 1 || continued.Root.Entries[0].Delegate == nil {
+		t.Fatalf("continued entries=%+v, want only delegate path envelope", continued.Root.Entries)
+	}
+	if continued.Root.Entries[0].Delegate.Child == nil || continued.Root.Entries[0].Delegate.Child.SessionID != child.ID() {
+		t.Fatalf("continued child=%+v", continued.Root.Entries[0].Delegate)
+	}
+}
+
 func ptrActivityJob(job appwire.JobActivityJob) *appwire.JobActivityJob { return &job }
 
 func activityRecordIDs(records []*jobstore.JobRecord) []string {
@@ -266,4 +602,102 @@ func activityRecordIDs(records []*jobstore.JobRecord) []string {
 		ids = append(ids, rec.JobID)
 	}
 	return ids
+}
+
+func newActivityTestSession(t *testing.T, stateDir string) *Session {
+	t.Helper()
+	return newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 8,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+}
+
+func linkActivityChild(t *testing.T, parent, child *Session, task string) (*subagent, *runningJob) {
+	t.Helper()
+	sub := &subagent{id: child.ID(), sess: child, status: SubagentRunning, done: make(chan struct{})}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), task, sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob(%s->%s): %v", parent.ID(), child.ID(), err)
+	}
+	child.jobManager.forward = parent.jobManager.forwardEvent
+	child.jobManager.setParentJobID(run.rec.JobID)
+	return sub, run
+}
+
+func saveActivityMeta(t *testing.T, stateDir string, s *Session) {
+	t.Helper()
+	if err := schema.SaveSessionMeta(stateDir, s.Meta()); err != nil {
+		t.Fatalf("SaveSessionMeta(%s): %v", s.ID(), err)
+	}
+}
+
+func buildActivityTreeWithJobs(t *testing.T, count int) *Session {
+	t.Helper()
+	stateDir := t.TempDir()
+	s := newActivityTestSession(t, stateDir)
+	for i := 0; i < count; i++ {
+		started := time.Unix(int64(i+1), 0).UTC()
+		jobID := fmt.Sprintf("job_tree_%04d", i)
+		if err := s.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "tree job", OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &started}); err != nil {
+			t.Fatalf("append job %d: %v", i, err)
+		}
+	}
+	saveActivityMeta(t, stateDir, s)
+	return s
+}
+
+func firstTruncatedBranch(t *testing.T, root appwire.JobActivitySession) appwire.JobActivityBranchState {
+	t.Helper()
+	if root.Branch.Truncated {
+		return root.Branch
+	}
+	for _, entry := range root.Entries {
+		if entry.Delegate == nil {
+			continue
+		}
+		if entry.Delegate.Branch.Truncated {
+			return entry.Delegate.Branch
+		}
+		if entry.Delegate.Child != nil {
+			if branch := firstTruncatedBranch(t, *entry.Delegate.Child); branch.Truncated {
+				return branch
+			}
+		}
+	}
+	t.Fatalf("no truncated branch in %+v", root)
+	return appwire.JobActivityBranchState{}
+}
+
+func maxActivityDepth(root appwire.JobActivitySession) int {
+	maxDepth := 0
+	var walk func(appwire.JobActivitySession, int)
+	walk = func(node appwire.JobActivitySession, depth int) {
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		for _, entry := range node.Entries {
+			if entry.Delegate != nil && entry.Delegate.Child != nil {
+				walk(*entry.Delegate.Child, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+	return maxDepth
+}
+
+func findDelegateEntry(t *testing.T, root appwire.JobActivitySession, childID string) appwire.JobActivityDelegate {
+	t.Helper()
+	for _, entry := range root.Entries {
+		if entry.Delegate == nil {
+			continue
+		}
+		if entry.Delegate.ChildSessionID == childID {
+			return *entry.Delegate
+		}
+	}
+	t.Fatalf("no delegate for child %q in %+v", childID, root.Entries)
+	return appwire.JobActivityDelegate{}
 }
