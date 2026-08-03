@@ -288,7 +288,7 @@ runner_logdirs() {
 }
 
 wait_for_file() {
-	local path="$1" attempts=200
+	local path="$1" attempts="${2:-200}"
 	while [ "$attempts" -gt 0 ]; do
 		[ -f "$path" ] && return 0
 		sleep 0.01
@@ -464,7 +464,7 @@ new_case
 out="$case_dir/root-package-discovery-timeout.out"
 root_worktree="$(cd "$repo" && pwd -P)"
 FAKE_LIST_HOLD=1 run_tests_async "." "$out" SERF_ROOT_PACKAGE_LIST_TIMEOUT=1
-if wait_for_file "$state/root-list.started"; then
+if wait_for_file "$state/root-list.started" 500; then
 	(
 		sleep 3
 		if kill -0 "$runner_pid" 2>/dev/null; then
