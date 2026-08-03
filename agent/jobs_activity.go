@@ -170,7 +170,7 @@ func projectActivitySession(snapshot activitySessionSnapshot, budget *activityBu
 	defer delete(budget.visiting, cycleKey)
 
 	records := mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs)
-	delegateEntries := make(map[string]int)
+	delegateGroups := groupActivityDelegates(records)
 	for _, rec := range records {
 		if rec == nil {
 			continue
@@ -184,18 +184,13 @@ func projectActivitySession(snapshot activitySessionSnapshot, budget *activityBu
 				appendActivityBranchError(&projected.Branch, fmt.Sprintf("delegate job %q has no delegate id", rec.JobID))
 				continue
 			}
-			if index, ok := delegateEntries[rec.DelegateID]; ok {
-				delegate := projected.Entries[index].Delegate
-				delegate.Turns = append(delegate.Turns, projectActivityJob(rec, snapshot.Ref))
-				if delegate.Mandate == "" {
-					delegate.Mandate = activityMandate(rec)
-				}
+			group := delegateGroups[rec.DelegateID]
+			if group == nil || group.anchor.JobID != rec.JobID {
 				continue
 			}
 
-			delegate := projectActivityDelegate(snapshot, rec, budget)
+			delegate := projectActivityDelegate(snapshot, group, budget)
 			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &delegate})
-			delegateEntries[rec.DelegateID] = len(projected.Entries) - 1
 		default:
 			appendActivityBranchError(&projected.Branch, fmt.Sprintf("job %q has unsupported type %q", rec.JobID, rec.Type))
 		}
@@ -205,11 +200,45 @@ func projectActivitySession(snapshot activitySessionSnapshot, budget *activityBu
 	return projected
 }
 
-func projectActivityDelegate(snapshot activitySessionSnapshot, anchor *jobstore.JobRecord, budget *activityBudget) appwire.JobActivityDelegate {
+type activityDelegateGroup struct {
+	anchor *jobstore.JobRecord
+	turns  []*jobstore.JobRecord
+}
+
+func groupActivityDelegates(records []*jobstore.JobRecord) map[string]*activityDelegateGroup {
+	groups := make(map[string]*activityDelegateGroup)
+	for _, rec := range records {
+		if rec == nil || rec.Type != jobstore.JobDelegate || rec.DelegateID == "" {
+			continue
+		}
+		group := groups[rec.DelegateID]
+		if group == nil {
+			group = &activityDelegateGroup{}
+			groups[rec.DelegateID] = group
+		}
+		group.turns = append(group.turns, rec)
+	}
+	for _, group := range groups {
+		sort.SliceStable(group.turns, func(i, j int) bool {
+			return activityRecordBefore(group.turns[i], group.turns[j])
+		})
+		group.anchor = group.turns[0]
+	}
+	return groups
+}
+
+func projectActivityDelegate(snapshot activitySessionSnapshot, group *activityDelegateGroup, budget *activityBudget) appwire.JobActivityDelegate {
+	anchor := group.anchor
 	delegate := appwire.JobActivityDelegate{
 		DelegateID: anchor.DelegateID,
 		Mandate:    activityMandate(anchor),
-		Turns:      []appwire.JobActivityJob{projectActivityJob(anchor, snapshot.Ref)},
+		Turns:      make([]appwire.JobActivityJob, 0, len(group.turns)),
+	}
+	for _, turn := range group.turns {
+		delegate.Turns = append(delegate.Turns, projectActivityJob(turn, snapshot.Ref))
+		if delegate.Mandate == "" {
+			delegate.Mandate = activityMandate(turn)
+		}
 	}
 	record := snapshot.Delegates[anchor.DelegateID]
 	if record == nil {

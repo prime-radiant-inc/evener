@@ -35,6 +35,26 @@ func TestProjectActivitySession_GroupsDelegateTurnsOnce(t *testing.T) {
 	}
 }
 
+func TestProjectActivitySession_AnchorsDelegateAtEarliestTurn(t *testing.T) {
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", Label: "Root",
+		Jobs: []*jobstore.JobRecord{
+			{JobID: "job_late", Type: jobstore.JobDelegate, DelegateID: "dlg_1", OwnerSessionID: "root", Status: jobstore.StatusCompleted, StartedAt: time.Unix(3, 0)},
+			{JobID: "job_shell", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusCompleted, StartedAt: time.Unix(2, 0)},
+			{JobID: "job_early", Type: jobstore.JobDelegate, DelegateID: "dlg_1", OwnerSessionID: "root", Status: jobstore.StatusRunning, StartedAt: time.Unix(1, 0)},
+		},
+		Delegates: map[string]*jobstore.DelegateRecord{"dlg_1": {DelegateID: "dlg_1", ChildSessionID: "child", TranscriptRef: "local:child"}},
+	}
+	got := projectActivitySession(snap, newActivityBudget())
+	if len(got.Entries) != 2 || got.Entries[0].Job == nil || got.Entries[1].Delegate == nil {
+		t.Fatalf("entries=%+v, want shell then delegate at earliest turn's retained position", got.Entries)
+	}
+	turns := got.Entries[1].Delegate.Turns
+	if len(turns) != 2 || turns[0].JobID != "job_early" || turns[1].JobID != "job_late" {
+		t.Fatalf("turns=%+v, want earliest-to-latest order", turns)
+	}
+}
+
 func TestActivityOutcome(t *testing.T) {
 	tests := []struct {
 		name     string
