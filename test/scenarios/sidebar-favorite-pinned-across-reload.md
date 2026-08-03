@@ -33,6 +33,8 @@ api() {
 
 ```bash
 EXPECTED_PORT="$PORT"
+STATE="$HOME/.serf"
+INDEX_DB="$STATE/index.db"
 ```
 
 ## Scenario
@@ -135,12 +137,80 @@ Every browser `eval` below must return `location.port` and the check must assert
 
 ### 9. Create a dormant remote assignment through the API fixture, verify delete confirmation counts it, then cancel
 
-1. Seed a dormant durable assignment for the renamed client section through a raw API/database fixture appropriate to this scenario's harness, so the section has one durable member that is not currently renderable in `/api/tree`.
-2. Open the heading overflow menu for **Client renamed** and choose **Delete**.
-3. Assert the confirmation text counts **all durable members**, including the dormant hidden one.
+1. Because `POST /api/session-pin` validates `session_ref` against a real top-level session, it cannot create a deliberately dormant/non-authoritative assignment. For this step, seed the durable assignment directly in the scenario hub's SQLite store. The schema stores canonical session IDs in `session_pin.session_id`, not host-qualified refs, so use a syntactically valid 22-character session ID that does not exist in this hub's current authority snapshot:
+
+```bash
+CLIENT_SECTION_ID="$({
+  api "$HUB/api/pin-sections" |
+    python3 -c 'import json, sys
+name = "Client renamed"
+for section in json.load(sys.stdin):
+    if section["name"] == name:
+        print(section["id"])
+        break
+else:
+    raise SystemExit(f"section {name!r} not found")'
+})"
+
+DORMANT_SESSION_ID='02wMz5Txv1C3Hut0M8GCeB'
+
+CLIENT_SECTION_ID="$CLIENT_SECTION_ID" \
+DORMANT_SESSION_ID="$DORMANT_SESSION_ID" \
+INDEX_DB="$INDEX_DB" \
+python3 - <<'PY'
+import os
+import sqlite3
+import time
+
+db_path = os.environ["INDEX_DB"]
+section_id = os.environ["CLIENT_SECTION_ID"]
+session_id = os.environ["DORMANT_SESSION_ID"]
+
+con = sqlite3.connect(db_path)
+try:
+    con.execute("PRAGMA foreign_keys = ON")
+    enabled = con.execute("PRAGMA foreign_keys").fetchone()[0]
+    if enabled != 1:
+        raise SystemExit(f"foreign_keys pragma disabled: {enabled}")
+    if con.execute("SELECT 1 FROM pin_section WHERE id = ?", (section_id,)).fetchone() is None:
+        raise SystemExit(f"missing pin_section {section_id}")
+    now = int(time.time())
+    con.execute(
+        """
+        INSERT INTO session_pin(session_id, section_id, assigned_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE
+        SET section_id = excluded.section_id,
+            assigned_at = excluded.assigned_at
+        WHERE session_pin.section_id <> excluded.section_id
+        """,
+        (session_id, section_id, now),
+    )
+    con.commit()
+finally:
+    con.close()
+PY
+```
+
+2. Cross-check that the durable count increased even though the new member will stay hidden from `/api/tree`:
+
+```bash
+CLIENT_SECTION_ID="$CLIENT_SECTION_ID" \
+api "$HUB/api/pin-sections" |
+  python3 -c 'import json, os, sys
+target = os.environ["CLIENT_SECTION_ID"]
+for section in json.load(sys.stdin):
+    if section["id"] == target:
+        print(section)
+        raise SystemExit(0 if section["member_count"] >= 2 else 1)
+raise SystemExit("seeded section missing from /api/pin-sections")'
+```
+
+3. Hard reload the browser at `/auth?token=$TOKEN&next=/`, then open the heading overflow menu for **Client renamed** and choose **Delete**.
+4. Assert the confirmation text counts **all durable members**, including the dormant hidden one.
    - Example: if only one visible row is under the section but the dormant seeded assignment makes two durable members, the dialog must say it will unpin `2 sessions`.
-4. Cancel the dialog.
-5. Assert no delete request was sent and the section remains visible.
+5. Cancel the dialog.
+6. Assert no delete request was sent and the section remains visible.
 
 ### 10. Delete the visible section, confirm all members unpin, hard reload, and verify it stays gone
 
