@@ -223,7 +223,7 @@ git diff -- Makefile .github/workflows/ci.yml docs/testing.md
 
 Confirm that only the five scoped implementation files and this plan are changed in the worktree, and that the parent checkout's intentional deletion was not imported or modified.
 
-- [ ] **Step 5: Commit the implementation.**
+- [x] **Step 5: Commit the implementation.**
 
 ```sh
 git add Makefile .github/workflows/ci.yml docs/testing.md
