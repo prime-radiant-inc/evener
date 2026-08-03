@@ -163,14 +163,13 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       </span>
       {hasContext && (
-        <span
+        <meter
           className={CLASS.context}
           data-testid="status-row-context"
-          role="meter"
           aria-label={contextLabel}
-          aria-valuemin={0}
-          aria-valuenow={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
-          aria-valuemax={model.contextWindow}
+          min={0}
+          value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
+          max={model.contextWindow}
           title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
         >
           <span className={CLASS.contextMeter} data-testid="status-row-context-meter" aria-hidden="true">
@@ -181,10 +180,14 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
               tone={contextTone(model.contextPressure)}
             />
           </span>
-          <span className={`${CLASS.contextPercent} ${CLASS.mono}`} data-testid="status-row-context-percent" aria-hidden="true">
+          <span
+            className={`${CLASS.contextPercent} ${CLASS.mono}`}
+            data-testid="status-row-context-percent"
+            aria-hidden="true"
+          >
             {`${contextPercent}%`}
           </span>
-        </span>
+        </meter>
       )}
       {/* An unmeasured zero renders NOTHING, never formatWorkDuration's "1s":
           that clamp exists so a real sub-second duration doesn't read "0s", so
@@ -203,6 +206,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
         <span
           className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`}
           data-testid="status-row-queue"
+          role="status"
           aria-label={`${queueDepth} queued`}
           title={`${queueDepth} queued`}
         >

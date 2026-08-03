@@ -138,13 +138,16 @@ test.each([
     workMillis: 90_000,
     usage: { inputTokens: 1_500, outputTokens: 320 },
   },
-])("omits failure count, cost, and raw token counts from the footer in representative lifecycle states", (overrides) => {
-  render(<StatusRow sessionRef="ref_a" model={testModel(overrides)} now={1_000_000} />);
-  expect(screen.queryByTestId("status-row-failures")).toBeNull();
-  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
-  expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
-  expect(screen.getByTestId("status-row").textContent).not.toContain("↓");
-});
+])(
+  "omits failure count, cost, and raw token counts from the footer in representative lifecycle states",
+  (overrides) => {
+    render(<StatusRow sessionRef="ref_a" model={testModel(overrides)} now={1_000_000} />);
+    expect(screen.queryByTestId("status-row-failures")).toBeNull();
+    expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
+    expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
+    expect(screen.getByTestId("status-row").textContent).not.toContain("↓");
+  },
+);
 
 test("groups model and effort visually while retaining two independent controls", () => {
   render(
@@ -543,8 +546,9 @@ test("renders the context gauge with the used/window counts in its accessible la
     />,
   );
   const meter = screen.getByRole("meter");
-  expect(meter.getAttribute("aria-valuenow")).toBe("12000");
-  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
+  expect(meter.tagName).toBe("METER");
+  expect(meter.getAttribute("value")).toBe("12000");
+  expect(meter.getAttribute("max")).toBe("128000");
   expect(meter.getAttribute("aria-label")).toContain("12k of 128k");
 });
 
@@ -587,8 +591,9 @@ test("context has one meter semantic with wide and compact visual variants", () 
     />,
   );
   const meter = screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i });
-  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
-  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
+  expect(meter.tagName).toBe("METER");
+  expect(meter.getAttribute("value")).toBe("64000");
+  expect(meter.getAttribute("max")).toBe("128000");
   expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBe("true");
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
   expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
@@ -633,6 +638,7 @@ test.each(["ended", "closed", "notLoaded"] as const)(
 test("a queued count supplies full and compact visuals through one accessible item", () => {
   render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { revision: 0, depth: 3 } })} now={1_000_000} />);
   const queue = screen.getByTestId("status-row-queue");
+  expect(screen.getByRole("status", { name: "3 queued" })).toBe(queue);
   expect(queue.getAttribute("aria-label")).toBe("3 queued");
   expect(queue.getAttribute("title")).toBe("3 queued");
   expect(screen.getByTestId("status-row-queue-full").textContent).toBe("3 queued");
@@ -650,4 +656,3 @@ test("shows no queue readout when the wire carries no queue at all", () => {
   render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: null })} now={1_000_000} />);
   expect(screen.queryByTestId("status-row-queue")).toBeNull();
 });
-
