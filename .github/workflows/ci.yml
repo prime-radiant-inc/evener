@@ -39,8 +39,8 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
 
-      - name: Build runtime pair and all Go packages
-        run: make build && go build ./...
+      - name: Build runtime pair and all Go workspace packages
+        run: make build && make build-go
 
       - name: Vet (all go.work modules)
         run: make vet

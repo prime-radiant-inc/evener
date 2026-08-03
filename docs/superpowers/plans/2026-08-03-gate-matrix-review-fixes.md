@@ -31,7 +31,7 @@
 - Consumes: the existing `GO_MODULES := . agent llm auth envvars invariant identifier` list.
 - Produces: `make build-go`, which runs `go build ./...` once inside every non-fuzz workspace module and returns nonzero on the first module failure.
 
-- [ ] **Step 1: Establish the RED wiring case.**
+- [x] **Step 1: Establish the RED wiring case.**
 
 Run:
 
@@ -41,7 +41,7 @@ make -n build-go
 
 Expected: Make exits nonzero because `build-go` does not yet exist.
 
-- [ ] **Step 2: Add the minimal target and CI wiring.**
+- [x] **Step 2: Add the minimal target and CI wiring.**
 
 Add:
 
@@ -57,11 +57,11 @@ Change the CI build command to:
         run: make build && make build-go
 ```
 
-- [ ] **Step 3: Update the matrix.**
+- [x] **Step 3: Update the matrix.**
 
 Add a `make build-go` row stating that it compiles every non-fuzz workspace module, is deterministic, is required in the CI build job, and fails on any module compilation error. Change the `make build` CI reference from `make build && go build ./...` to `make build && make build-go`.
 
-- [ ] **Step 4: Verify the target.**
+- [x] **Step 4: Verify the target.**
 
 Run `make build-go`, `git diff --check`, and `rg -n "build-go|Build runtime pair" Makefile .github/workflows/ci.yml docs/testing.md`. Expected: all seven non-fuzz modules compile and every command reference names the new target.
 
