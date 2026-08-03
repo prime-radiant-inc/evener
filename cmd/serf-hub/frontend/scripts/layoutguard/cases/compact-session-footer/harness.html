@@ -175,6 +175,33 @@
       <div class="right"><button class="standIn" type="button">Details</button><button class="standIn" type="button">Tasks</button><button class="standIn" type="button">Jobs</button><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
     </div>
   </section>
+  <!-- Short label at a wide body: the ONLY geometry where shrink-to-fit is
+       falsifiable. Every fixture above uses a label longer than its row ever
+       affords, so the value ellipsizes to fill the trigger and a grow-to-fill
+       trigger is indistinguishable from a hugging one (measured: trigger =
+       value + ~20px under BOTH contracts). Here the label fits with room to
+       spare, so a grow-to-fill trigger runs hundreds of px past the value
+       while a shrink-to-fit trigger hugs it - this is the fixture the
+       assert.mjs shrink-to-fit assertion fails on. -->
+  <section class="fixture" data-width="900">
+    <div class="fixtureLabel">900px body, short model label</div>
+    <div class="chrome">
+      <div class="body" style="width: 900px; flex: none">
+        <span class="cadenceSlot" aria-hidden="true">●</span>
+        <div class="row" data-status>
+          <span class="identity">
+            <span class="model"><button class="trigger" type="button"><span class="value">gpt-5.2</span><span class="chevron">⌄</span></button></span>
+            <span class="effortTrigger" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
+          </span>
+          <meter class="srOnly" aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill neutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
+          <span class="item mono workTime" data-work>12m 34s</span>
+          <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
+        </div>
+        <div class="anchor" data-goal><button class="chipButton" type="button"><span class="chip">Goal: awaiting stakeholder approval for compact session footer geometry</span></button></div>
+      </div>
+      <div class="right"><button class="standIn" type="button">Details</button><button class="standIn" type="button">Tasks</button><button class="standIn" type="button">Jobs</button><button class="standIn" data-actions type="button" aria-label="Session actions">⋯</button></div>
+    </div>
+  </section>
 </main>
 <script>
 function box(el) {
