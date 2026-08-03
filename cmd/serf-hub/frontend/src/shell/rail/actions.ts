@@ -5,6 +5,8 @@
 // each function's own comment for exactly which handler it targets. No
 // optimistic UI: every caller is expected to refetch (treeStore.refresh())
 // on success and toast on rejection, per this task's scope.
+import type { PinSectionSummary } from "../../stores/tree";
+
 export interface ProjectDeleteResult {
   deleted: string[];
   skipped: { id: string; reason: string }[];
@@ -20,6 +22,26 @@ async function parseErrorBody(res: Response): Promise<string> {
   return `${res.status} ${res.statusText}`;
 }
 
+export class RailRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RailRequestError";
+    this.status = status;
+  }
+}
+
+export function isRailRequestStatus(error: unknown, status: number): boolean {
+  return error instanceof RailRequestError && error.status === status;
+}
+
+async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
+  const res = await fetch(url, { credentials: "same-origin", ...init });
+  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
+  return (await res.json()) as T;
+}
+
 // postJSON POSTs `body` as JSON and returns the parsed JSON response - except
 // for a 204 No Content (handleAPIRename's success path), which resolves to
 // undefined rather than attempting to parse an empty body as JSON.
@@ -30,14 +52,63 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     credentials: "same-origin",
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseErrorBody(res));
+  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
-/** POST /api/favorite. Body: {kind, id, favorited}. */
-export async function setFavorite(kind: "session" | "project", id: string, favorited: boolean): Promise<void> {
+/** POST /api/favorite for project rows only. Body: {kind:"project", id, favorited}. */
+export async function setFavorite(kind: "project", id: string, favorited: boolean): Promise<void> {
   await postJSON("/api/favorite", { kind, id, favorited });
+}
+
+export interface SessionPinAssignment {
+  session_ref: string;
+  section: PinSectionSummary;
+}
+
+export interface SessionPinMutationResponse {
+  ok: true;
+  changed: boolean;
+  assignment: SessionPinAssignment;
+}
+
+export async function listPinSections(): Promise<PinSectionSummary[]> {
+  return requestJSON<PinSectionSummary[]>("/api/pin-sections", {});
+}
+
+export async function assignSessionPin(
+  ref: string,
+  target: { section_id: string } | { section_name: string },
+): Promise<SessionPinMutationResponse> {
+  return requestJSON<SessionPinMutationResponse>("/api/session-pin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_ref: ref, ...target }),
+  });
+}
+
+export async function unpinSession(ref: string): Promise<{ ok: true; changed: boolean }> {
+  const response = await requestJSON<SessionPinMutationResponse>(`/api/session-pin?ref=${encodeURIComponent(ref)}`, {
+    method: "DELETE",
+  });
+  return { ok: response.ok, changed: response.changed };
+}
+
+export async function renamePinSection(id: string, name: string): Promise<PinSectionSummary> {
+  const response = await requestJSON<{ ok: true; changed: boolean; section: PinSectionSummary }>(
+    `/api/pin-sections/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    },
+  );
+  return response.section;
+}
+
+export async function deletePinSection(id: string): Promise<{ ok: true; changed: boolean; member_count: number }> {
+  return requestJSON(`/api/pin-sections/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** POST /api/sessions/{ref}/rename. Body: {name}. ref is URL-escaped - the

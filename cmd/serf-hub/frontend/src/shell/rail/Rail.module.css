@@ -178,6 +178,23 @@
   letter-spacing: 0.04em;
 }
 
+.sectionHeadingRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.sectionHeadingRow .sectionTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+}
+
+.sectionHeadingAction {
+  flex: none;
+  padding-right: var(--space-3);
+}
+
 .sectionDisclosure {
   display: flex;
   align-items: center;
@@ -246,6 +263,50 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.pickerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pickerItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font: inherit;
+  text-align: left;
+}
+
+.pickerItem:not(:disabled):hover {
+  background: var(--surface-2);
+}
+
+.pickerItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pickerCurrent {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.pickerError {
+  margin: var(--space-2) 0 0;
+  color: var(--danger);
+  font-size: var(--font-size-caption);
 }
 
 /* --- row content (RailRow.tsx) ------------------------------------------

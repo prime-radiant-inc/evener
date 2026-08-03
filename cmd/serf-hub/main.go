@@ -186,6 +186,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
+	pinSections := hubcore.NewPinSectionStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := deps.newToken()
@@ -338,6 +339,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Past:                past,
 		Archive:             archive,
 		Favorite:            favorite,
+		PinSections:         pinSections,
 		Spawner:             spawner,
 		DeletionStore:       deletionStore,
 		Models:              models,

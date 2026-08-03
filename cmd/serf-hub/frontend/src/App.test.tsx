@@ -45,7 +45,7 @@ const EMPTY_TREE_RESPONSE = {
   sources: [],
   live: [],
   needs_you: [],
-  favorites: [],
+  pin_sections: [],
   projects: [],
   archived_projects: [],
   test_runs: [],

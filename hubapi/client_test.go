@@ -35,6 +35,35 @@ func TestClientURLPreservesQueryString(t *testing.T) {
 	}
 }
 
+func TestPinSectionRESTTypesJSONRoundTrip(t *testing.T) {
+	want := hubapi.SessionPinMutationResponse{
+		OK:      true,
+		Changed: true,
+		Assignment: hubapi.SessionPinAssignment{
+			SessionRef: "local:session-a",
+			Section: hubapi.PinSection{
+				ID:          "section-1",
+				Name:        "Research",
+				MemberCount: 2,
+			},
+		},
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); got != `{"ok":true,"changed":true,"assignment":{"session_ref":"local:session-a","section":{"id":"section-1","name":"Research","member_count":2}}}` {
+		t.Fatalf("JSON = %s", got)
+	}
+	var got hubapi.SessionPinMutationResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
 func TestClientHealth(t *testing.T) {
 	want := hubapi.HealthResponse{
 		Version:   "1.0.0",

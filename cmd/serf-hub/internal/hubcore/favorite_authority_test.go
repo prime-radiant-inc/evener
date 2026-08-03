@@ -3,6 +3,7 @@ package hubcore
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -240,6 +241,28 @@ func TestClassifyFavoriteDecisions_ProjectUsesCanonicalIdentity(t *testing.T) {
 	legacyKey := ArchiveKey{Kind: "project", ID: "alpha"}
 	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{legacyKey: true}, authority)
 	assertFavoriteClassification(t, got, legacyKey, FavoriteDecisionDormant)
+}
+
+func TestLocalSessionDecisionAliasesUsesAuthorityAndExcludesRemoteRefs(t *testing.T) {
+	const sessionID = "canonical-session"
+	authority := FavoriteAuthority{Sessions: []FavoriteSessionAuthority{{
+		ID:      sessionID,
+		Aliases: []string{sessionID, "local:" + sessionID, "codex:" + sessionID, "local:other"},
+	}}}
+	got := LocalSessionDecisionAliases(sessionID, authority)
+	want := []string{sessionID, "local:" + sessionID}
+	if !slices.Equal(got, want) {
+		t.Fatalf("aliases = %q, want %q", got, want)
+	}
+}
+
+func TestLocalSessionDecisionAliasesIncludesCanonicalLocalRefWithoutAuthority(t *testing.T) {
+	const sessionID = "canonical-session"
+	got := LocalSessionDecisionAliases(sessionID, FavoriteAuthority{})
+	want := []string{sessionID, "local:" + sessionID}
+	if !slices.Equal(got, want) {
+		t.Fatalf("aliases = %q, want %q", got, want)
+	}
 }
 
 func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t *testing.T) {

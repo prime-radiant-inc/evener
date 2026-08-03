@@ -39,6 +39,7 @@ export interface TreeNode {
   branch?: string;
   cluster_count?: number;
   favorite?: boolean;
+  pin_section_id?: string;
   rename?: boolean;
   live: boolean;
   ask_pending?: boolean;
@@ -85,6 +86,18 @@ export interface TreeProject {
   sessions: TreeNode[];
 }
 
+export interface PinSectionSummary {
+  id: string;
+  name: string;
+  member_count: number;
+}
+
+export interface PinSectionTree {
+  id: string;
+  name: string;
+  sessions: TreeNode[];
+}
+
 export type TreeTier = "current" | "recent" | "archived";
 
 export interface TreeProjectPage {
@@ -106,7 +119,7 @@ export interface TreeResponse {
   sources: Source[];
   live: TreeNode[];
   needs_you: TreeNode[];
-  favorites: TreeNode[];
+  pin_sections: PinSectionTree[];
   projects: TreeProject[];
   archived_projects: TreeProject[];
   test_runs: TreeProject[];
@@ -123,18 +136,21 @@ interface WireTreeNode extends Omit<TreeNode, "children"> {
 interface WireTreeProject extends Omit<TreeProject, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
+interface WirePinSectionTree extends Omit<PinSectionTree, "sessions"> {
+  sessions: WireTreeNode[] | null;
+}
 interface WireTreeProjectPage extends Omit<TreeProjectPage, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
 interface WireTreeResponse
   extends Omit<
     TreeResponse,
-    "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"
+    "sources" | "live" | "needs_you" | "pin_sections" | "projects" | "archived_projects" | "test_runs"
   > {
   sources: Source[] | null;
   live: WireTreeNode[] | null;
   needs_you: WireTreeNode[] | null;
-  favorites: WireTreeNode[] | null;
+  pin_sections: WirePinSectionTree[] | null;
   projects: WireTreeProject[] | null;
   archived_projects: WireTreeProject[] | null;
   test_runs: WireTreeProject[] | null;
@@ -148,6 +164,10 @@ function normalizeProject(p: WireTreeProject): TreeProject {
   return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
 }
 
+function normalizePinSection(section: WirePinSectionTree): PinSectionTree {
+  return { ...section, sessions: (section.sessions ?? []).map(normalizeNode) };
+}
+
 function normalizeProjectPage(p: WireTreeProjectPage): TreeProjectPage {
   return { ...p, sessions: (p.sessions ?? []).map(normalizeNode) };
 }
@@ -158,7 +178,7 @@ function normalizeResponse(r: WireTreeResponse): TreeResponse {
     sources: r.sources ?? [],
     live: (r.live ?? []).map(normalizeNode),
     needs_you: (r.needs_you ?? []).map(normalizeNode),
-    favorites: (r.favorites ?? []).map(normalizeNode),
+    pin_sections: (r.pin_sections ?? []).map(normalizePinSection),
     projects: (r.projects ?? []).map(normalizeProject),
     archived_projects: (r.archived_projects ?? []).map(normalizeProject),
     test_runs: (r.test_runs ?? []).map(normalizeProject),
@@ -259,6 +279,11 @@ export interface TreeStoreState {
   // was last successfully loaded in place rather than blanking it (a
   // transient fetch error must not flash the whole sidebar to empty).
   tree: TreeResponse | null;
+  // Identity of the last authoritative tree accepted by refresh(). Cached
+  // project detail is tagged with this generation so a later refresh cannot
+  // make an old detail row look currently rendered merely because its project
+  // key still exists.
+  treeGeneration: number;
   loading: boolean;
   error: string | null;
   // Lazily-hydrated archived-project detail (real `sessions`, not the
@@ -266,6 +291,7 @@ export interface TreeStoreState {
   // Never cleared on refresh() - a project's key is stable identity, and a
   // fresh /api/tree stub is worse than what's already loaded, not better.
   projectDetails: Map<string, TreeProject>;
+  projectDetailGenerations: Map<string, number>;
   // true means this call's response became authoritative; false means the
   // request failed or was superseded by a newer refresh. ALWAYS issues its
   // own request - see inflightRefresh below for why it never joins one.
@@ -288,6 +314,7 @@ export interface TreeStoreState {
 
 let refreshGeneration = 0;
 const projectMutationGenerations = new Map<string, number>();
+const projectDetailsInFlight = new Map<string, Promise<void>>();
 
 // The refresh() currently in flight, if any - what ensureLoaded() joins
 // instead of issuing a second identical GET. refresh() itself deliberately
@@ -353,9 +380,11 @@ function reconcileProjectList(
 
 export const treeStore = createStore<TreeStoreState>((set, get) => ({
   tree: null,
+  treeGeneration: 0,
   loading: false,
   error: null,
   projectDetails: new Map(),
+  projectDetailGenerations: new Map(),
 
   refresh() {
     const run = (async (): Promise<boolean> => {
@@ -364,7 +393,7 @@ export const treeStore = createStore<TreeStoreState>((set, get) => ({
       try {
         const tree = await fetchTree();
         if (generation !== refreshGeneration) return false;
-        set({ tree, loading: false, error: null });
+        set({ tree, treeGeneration: generation, loading: false, error: null });
         return true;
       } catch (err) {
         if (generation !== refreshGeneration) return false;
@@ -389,34 +418,60 @@ export const treeStore = createStore<TreeStoreState>((set, get) => ({
     return inflightRefresh ?? get().refresh();
   },
 
-  async loadProjectDetail(key) {
-    const generation = projectMutationGenerations.get(key) ?? 0;
-    try {
-      const detail = await fetchProjectDetail(key);
-      set((s) => {
-        if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
-        const next = new Map(s.projectDetails);
-        next.set(key, detail);
-        return { projectDetails: next };
-      });
-    } catch {
-      // Best-effort: projectDetails simply doesn't gain an entry, so the
-      // rail's disclosure stays retriable (collapse + re-expand tries
-      // again) instead of getting stuck showing a hard failure state.
-    }
+  loadProjectDetail(key) {
+    const mutationGeneration = projectMutationGenerations.get(key) ?? 0;
+    const treeGeneration = get().treeGeneration;
+    const requestKey = `${treeGeneration}:${key}`;
+    const existing = projectDetailsInFlight.get(requestKey);
+    if (existing) return existing;
+    const request = (async () => {
+      try {
+        const detail = await fetchProjectDetail(key);
+        set((s) => {
+          if (
+            (projectMutationGenerations.get(key) ?? 0) !== mutationGeneration ||
+            s.treeGeneration !== treeGeneration
+          ) {
+            return s;
+          }
+          const next = new Map(s.projectDetails);
+          const nextGenerations = new Map(s.projectDetailGenerations);
+          next.set(key, detail);
+          nextGenerations.set(key, treeGeneration);
+          return { projectDetails: next, projectDetailGenerations: nextGenerations };
+        });
+      } catch {
+        // Best-effort: projectDetails simply doesn't gain an entry, so the
+        // rail's disclosure stays retriable (collapse + re-expand tries
+        // again) instead of getting stuck showing a hard failure state.
+      }
+    })();
+    projectDetailsInFlight.set(requestKey, request);
+    const clear = () => {
+      if (projectDetailsInFlight.get(requestKey) === request) projectDetailsInFlight.delete(requestKey);
+    };
+    void request.then(clear, clear);
+    return request;
   },
 
   async loadProjectPage(key, tier, offset, limit) {
-    const generation = projectMutationGenerations.get(key) ?? 0;
+    const mutationGeneration = projectMutationGenerations.get(key) ?? 0;
+    const treeGeneration = get().treeGeneration;
     const page = await fetchProjectPage(key, tier, offset, limit);
     set((s) => {
-      if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
+      if ((projectMutationGenerations.get(key) ?? 0) !== mutationGeneration || s.treeGeneration !== treeGeneration) {
+        return s;
+      }
       const nextDetails = new Map(s.projectDetails);
+      const nextDetailGenerations = new Map(s.projectDetailGenerations);
       const detail = nextDetails.get(key);
-      if (detail) nextDetails.set(key, mergeProjectPage(detail, page));
-      if (!s.tree) return { projectDetails: nextDetails };
+      if (detail && nextDetailGenerations.get(key) === s.treeGeneration) {
+        nextDetails.set(key, mergeProjectPage(detail, page));
+      }
+      if (!s.tree) return { projectDetails: nextDetails, projectDetailGenerations: nextDetailGenerations };
       return {
         projectDetails: nextDetails,
+        projectDetailGenerations: nextDetailGenerations,
         tree: {
           ...s.tree,
           projects: mergeProjectInList(s.tree.projects, page),
@@ -432,17 +487,23 @@ export const treeStore = createStore<TreeStoreState>((set, get) => ({
     projectMutationGenerations.set(key, (projectMutationGenerations.get(key) ?? 0) + 1);
     set((s) => {
       const nextDetails = new Map(s.projectDetails);
+      const nextDetailGenerations = new Map(s.projectDetailGenerations);
       const detail = nextDetails.get(key);
       let hydratedDetailIsEmpty = false;
       if (detail) {
         const sessions = reconcileNodes(detail.sessions, deletedIDs);
         hydratedDetailIsEmpty = sessions.length === 0 && skippedIDs.length === 0 && !projectHasOverflow(detail);
-        if (hydratedDetailIsEmpty) nextDetails.delete(key);
-        else nextDetails.set(key, { ...detail, sessions });
+        if (hydratedDetailIsEmpty) {
+          nextDetails.delete(key);
+          nextDetailGenerations.delete(key);
+        } else nextDetails.set(key, { ...detail, sessions });
       }
-      if (!s.tree) return { projectDetails: nextDetails, loading: false };
+      if (!s.tree) {
+        return { projectDetails: nextDetails, projectDetailGenerations: nextDetailGenerations, loading: false };
+      }
       return {
         projectDetails: nextDetails,
+        projectDetailGenerations: nextDetailGenerations,
         loading: false,
         tree: {
           ...s.tree,
@@ -538,7 +599,15 @@ export function resetTreeStoreForTests(): void {
   refreshGeneration = 0;
   inflightRefresh = null;
   projectMutationGenerations.clear();
+  projectDetailsInFlight.clear();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  treeStore.setState({ tree: null, loading: false, error: null, projectDetails: new Map() });
+  treeStore.setState({
+    tree: null,
+    treeGeneration: 0,
+    loading: false,
+    error: null,
+    projectDetails: new Map(),
+    projectDetailGenerations: new Map(),
+  });
 }

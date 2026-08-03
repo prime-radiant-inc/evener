@@ -1,6 +1,11 @@
 package hubcore
 
-import "slices"
+import (
+	"slices"
+
+	"primeradiant.com/serf/hubapi"
+	"primeradiant.com/serf/identifier"
+)
 
 // FavoriteAuthorityQuality records whether an authority fact is complete and
 // unambiguous enough to support a presentation decision. The zero value is
@@ -134,6 +139,28 @@ func ClassifyFavoriteDecisions(decisions map[ArchiveKey]bool, authority Favorite
 	return result
 }
 
+// LocalSessionDecisionAliases returns the canonical bare session ID and every
+// established local-ref spelling from authority that resolves to it. Remote
+// refs are never included.
+func LocalSessionDecisionAliases(sessionID string, authority FavoriteAuthority) []string {
+	aliases := []string{sessionID, hubapi.LocalRef(sessionID).String()}
+	sessions := indexFavoriteSessions(authority.Sessions)
+	authorities := sessions.byID[sessionID]
+	if len(authorities) != 1 || sessions.ambiguousIDs[sessionID] {
+		return aliases
+	}
+	for _, alias := range append([]string(nil), authorities[0].Aliases...) {
+		if alias == sessionID {
+			continue
+		}
+		ref, err := hubapi.ParseRef(alias)
+		if err == nil && ref.HostID == "local" && ref.SessionID == sessionID {
+			aliases = appendUniqueString(aliases, alias)
+		}
+	}
+	return aliases
+}
+
 func indexFavoriteSessions(authorities []FavoriteSessionAuthority) favoriteSessionIndex {
 	index := favoriteSessionIndex{
 		byID:           make(map[string][]FavoriteSessionAuthority, len(authorities)),
@@ -264,6 +291,16 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
 	ids := sessions.byAlias[key.ID]
+	if len(ids) == 0 {
+		ref, err := hubapi.ParseRef(key.ID)
+		if err == nil && ref.HostID == "local" && identifier.ValidateSessionID(ref.SessionID) == nil {
+			return FavoriteDecisionClassification{
+				State:        FavoriteDecisionDormant,
+				CanonicalKey: ArchiveKey{Kind: "session", ID: ref.SessionID},
+			}
+		}
+		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
+	}
 	if len(ids) != 1 || sessions.ambiguousIDs[ids[0]] {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}

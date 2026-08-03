@@ -27,7 +27,7 @@ const EMPTY_WIRE_TREE = {
   sources: null,
   live: null,
   needs_you: null,
-  favorites: null,
+  pin_sections: null,
   projects: null,
   archived_projects: null,
   test_runs: null,
@@ -39,7 +39,7 @@ const NORMALIZED_EMPTY_TREE = {
   sources: [],
   live: [],
   needs_you: [],
-  favorites: [],
+  pin_sections: [],
   projects: [],
   archived_projects: [],
   test_runs: [],
@@ -83,10 +83,46 @@ describe("refresh", () => {
     expect(tree).toEqual(NORMALIZED_EMPTY_TREE);
   });
 
-  test("normalizes nested nullable arrays: TreeProject.sessions and TreeNode.children", async () => {
+  test("normalizes pin sections and nested nullable arrays while preserving recursive pin section IDs", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         ...EMPTY_WIRE_TREE,
+        pin_sections: [
+          { id: "opaque-section", name: "Research", sessions: null },
+          {
+            id: "nested-section",
+            name: "Nested",
+            sessions: [
+              {
+                row_id: "pin:nested-section:local:parent",
+                ref: "local:parent",
+                host_id: "local",
+                session_id: "parent",
+                title: "Parent",
+                project: "Proj",
+                state: "idle",
+                kind: "session",
+                live: true,
+                pin_section_id: "nested-section",
+                children: [
+                  {
+                    row_id: "pin:nested-section:local:child",
+                    ref: "local:child",
+                    host_id: "local",
+                    session_id: "child",
+                    title: "Child",
+                    project: "Proj",
+                    state: "idle",
+                    kind: "session",
+                    live: false,
+                    pin_section_id: "nested-section",
+                    children: null,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
         projects: [
           {
             key: "p1",
@@ -112,6 +148,12 @@ describe("refresh", () => {
     );
     await treeStore.getState().refresh();
     const { tree } = treeStore.getState();
+    expect(tree?.pin_sections[0]).toEqual({ id: "opaque-section", name: "Research", sessions: [] });
+    expect(tree?.pin_sections[1]?.sessions[0]?.pin_section_id).toBe("nested-section");
+    expect(tree?.pin_sections[1]?.sessions[0]?.children[0]).toMatchObject({
+      pin_section_id: "nested-section",
+      children: [],
+    });
     expect(tree?.projects[0]?.sessions[0]?.children).toEqual([]);
     expect(tree?.archived_projects[0]?.sessions).toEqual([]);
     expect(tree?.archived_projects[0]?.session_count).toBe(3);
@@ -507,6 +549,56 @@ describe("loadProjectDetail", () => {
     expect(treeStore.getState().projectDetails.get("p1")?.sessions).toEqual([]);
   });
 
+  test("tags a loaded detail with the authoritative tree generation it belongs to", async () => {
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE }, treeGeneration: 7 });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "p1", name: "Proj", sessions: null }));
+
+    await treeStore.getState().loadProjectDetail("p1");
+
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
+  test("dedupes concurrent detail loads for the same project and tree generation", async () => {
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE }, treeGeneration: 7 });
+    let resolveDetail!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    const first = treeStore.getState().loadProjectDetail("p1");
+    const second = treeStore.getState().loadProjectDetail("p1");
+
+    expect(first).toBe(second);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    resolveDetail(jsonResponse({ key: "p1", name: "Proj", sessions: null }));
+    await Promise.all([first, second]);
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
+  test("a successful refresh advances tree generation without falsely retagging retained detail", async () => {
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, archived_projects: [{ key: "p1", name: "Proj", sessions: [] }] },
+      treeGeneration: 7,
+      projectDetails: new Map([["p1", { key: "p1", name: "Proj", sessions: [] }]]),
+      projectDetailGenerations: new Map([["p1", 7]]),
+    });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        generated_at: "2026-01-02T00:00:00Z",
+        archived_projects: [{ key: "p1", name: "Proj", sessions: null, session_count: 1 }],
+      }),
+    );
+
+    await treeStore.getState().refresh();
+
+    expect(treeStore.getState().treeGeneration).not.toBe(7);
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(true);
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
   test("a failed load leaves projectDetails unchanged and never throws (retriable)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
     await expect(treeStore.getState().loadProjectDetail("missing")).resolves.toBeUndefined();
@@ -553,7 +645,7 @@ describe("loadProjectPage", () => {
       sources: [],
       live: [],
       needs_you: [],
-      favorites: [],
+      pin_sections: [],
       projects: [{ key: "p1", name: "Proj", sessions: [...current, recent], more_current: 1 }],
       archived_projects: [],
       test_runs: [],
@@ -632,6 +724,58 @@ describe("loadProjectPage", () => {
         .projectDetails.get("p1")
         ?.sessions.map((n) => n.ref),
     ).toEqual(["remote:new"]);
+  });
+
+  test("a page response started before an accepted refresh cannot merge stale rows into the new tree or detail", async () => {
+    let resolvePage!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolvePage = resolve;
+      }),
+    );
+    const stale: TreeNode = {
+      row_id: "stale-page-row",
+      ref: "local:stale",
+      host_id: "local",
+      session_id: "stale",
+      title: "Stale page row",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    };
+    const fresh = { ...stale, row_id: "fresh-row", ref: "local:fresh", session_id: "fresh", title: "Fresh" };
+    const generationAProject = { key: "p1", name: "Proj", sessions: [], more_current: 1 };
+    const generationBProject = { key: "p1", name: "Proj", sessions: [fresh], more_current: 0 };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [generationAProject] },
+      treeGeneration: 7,
+      projectDetails: new Map([["p1", generationAProject]]),
+      projectDetailGenerations: new Map([["p1", 7]]),
+    });
+    const loading = treeStore.getState().loadProjectPage("p1", "current", 50, 50);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        generated_at: "2026-01-02T00:00:00Z",
+        projects: [generationBProject],
+      }),
+    );
+    await expect(treeStore.getState().refresh()).resolves.toBe(true);
+    const acceptedGeneration = treeStore.getState().treeGeneration;
+    treeStore.setState({
+      projectDetails: new Map([["p1", generationBProject]]),
+      projectDetailGenerations: new Map([["p1", acceptedGeneration]]),
+    });
+
+    resolvePage(jsonResponse({ key: "p1", tier: "current", offset: 50, sessions: [stale], remaining: 0 }));
+    await loading;
+
+    expect(treeStore.getState().tree?.projects[0]).toEqual(generationBProject);
+    expect(treeStore.getState().projectDetails.get("p1")).toEqual(generationBProject);
   });
 });
 

@@ -10,6 +10,7 @@ export interface InputProps {
   type?: "text" | "password" | "email" | "search" | "number" | "tel" | "url";
   id?: string;
   name?: string;
+  "aria-describedby"?: string;
 }
 
 const BASE_CLASS = {
@@ -20,7 +21,16 @@ const BASE_CLASS = {
  * Button's raw-DOM-event onClick convention) - labeling is the consumer's
  * job via a standard `<label htmlFor>` wired to `id`, same as a native
  * input. */
-export function Input({ value, onChange, placeholder, disabled = false, type = "text", id, name }: InputProps) {
+export function Input({
+  value,
+  onChange,
+  placeholder,
+  disabled = false,
+  type = "text",
+  id,
+  name,
+  "aria-describedby": ariaDescribedBy,
+}: InputProps) {
   return (
     <input
       type={type}
@@ -31,6 +41,7 @@ export function Input({ value, onChange, placeholder, disabled = false, type = "
       onChange={onChange}
       placeholder={placeholder}
       disabled={disabled}
+      aria-describedby={ariaDescribedBy}
     />
   );
 }

@@ -90,6 +90,14 @@ test("an id prop passes through for external <label htmlFor> association", () =>
   expect(screen.getByRole("textbox").id).toBe("name-field");
 });
 
+test("aria-describedby passes through only when supplied", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} aria-describedby="name-error" />);
+  expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBe("name-error");
+
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBeNull();
+});
+
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "input.module.css"), "utf8");

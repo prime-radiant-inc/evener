@@ -1,6 +1,18 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deleteProject, deleteSession, renameSession, setArchived, setFavorite } from "./actions";
+import {
+  assignSessionPin,
+  deletePinSection,
+  deleteProject,
+  deleteSession,
+  isRailRequestStatus,
+  listPinSections,
+  renamePinSection,
+  renameSession,
+  setArchived,
+  setFavorite,
+  unpinSession,
+} from "./actions";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -39,16 +51,111 @@ const JSON_INIT = (body: unknown) => ({
   body: JSON.stringify(body),
 });
 
-describe("setFavorite", () => {
-  test("POSTs /api/favorite with exact kind/id/favorited body", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setFavorite("session", "local:abc", true);
+describe("named pin sections", () => {
+  test("lists all pin sections with same-origin credentials and parses the response", async () => {
+    const sections = [{ id: "section/one", name: "Research", member_count: 2 }];
+    fetchMock.mockResolvedValueOnce(jsonResponse(sections));
+
+    await expect(listPinSections()).resolves.toEqual(sections);
+    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections", { credentials: "same-origin" });
+  });
+
+  test("assigns by name with the exact POST body and parses the canonical assignment", async () => {
+    const response = {
+      ok: true,
+      changed: true,
+      assignment: {
+        session_ref: "local:s1",
+        section: { id: "canonical", name: "Research", member_count: 1 },
+      },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(response));
+
+    await expect(assignSessionPin("local:s1", { section_name: "Research" })).resolves.toEqual(response);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/favorite",
-      JSON_INIT({ kind: "session", id: "local:abc", favorited: true }),
+      "/api/session-pin",
+      JSON_INIT({ session_ref: "local:s1", section_name: "Research" }),
     );
   });
 
+  test("assigns by section ID without changing the target shape", async () => {
+    const response = {
+      ok: true,
+      changed: false,
+      assignment: { session_ref: "local:s1", section: { id: "s/1", name: "Client", member_count: 1 } },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(response));
+
+    await assignSessionPin("local:s1", { section_id: "s/1" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/session-pin",
+      JSON_INIT({ session_ref: "local:s1", section_id: "s/1" }),
+    );
+  });
+
+  test("assignment failures preserve HTTP status for structured not-found handling", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "pin section not found" }, 404));
+
+    const error = await assignSessionPin("local:s1", { section_id: "deleted" }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("pin section not found");
+    expect(isRailRequestStatus(error, 404)).toBe(true);
+    expect(isRailRequestStatus(error, 409)).toBe(false);
+  });
+
+  test("unpins with an encoded query ref, DELETE, same-origin credentials, and parses success", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ok: true, changed: true, assignment: { session_ref: "local:s/1" } }),
+    );
+
+    await expect(unpinSession("local:s/1")).resolves.toEqual({ ok: true, changed: true });
+    expect(fetchMock).toHaveBeenCalledWith("/api/session-pin?ref=local%3As%2F1", {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+  });
+
+  test("renames through an encoded section URL and returns the canonical summary", async () => {
+    const section = { id: "section/one", name: "New name", member_count: 3 };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section }));
+
+    await expect(renamePinSection("section/one", "New name")).resolves.toEqual(section);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/pin-sections/section%2Fone",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ name: "New name" }),
+      }),
+    );
+  });
+
+  test("deletes through an encoded section URL and parses the durable member count", async () => {
+    const response = { ok: true, changed: true, member_count: 4 };
+    fetchMock.mockResolvedValueOnce(jsonResponse(response));
+
+    await expect(deletePinSection("section/one")).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections/section%2Fone", {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+  });
+
+  test.each([
+    ["list", () => listPinSections()],
+    ["assign", () => assignSessionPin("local:s1", { section_id: "missing" })],
+    ["unpin", () => unpinSession("local:s1")],
+    ["rename", () => renamePinSection("conflict", "Research")],
+    ["delete", () => deletePinSection("missing")],
+  ])("propagates JSON error messages for %s", async (_label, request) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "named pin failure" }, 409));
+    await expect(request()).rejects.toThrow("named pin failure");
+  });
+});
+
+describe("setFavorite", () => {
   test("works for kind=project", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await setFavorite("project", "proj-key", false);
@@ -60,7 +167,7 @@ describe("setFavorite", () => {
 
   test("rejects with the server's error message on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "favorite store error: boom" }, 500));
-    await expect(setFavorite("session", "x", true)).rejects.toThrow("favorite store error: boom");
+    await expect(setFavorite("project", "x", true)).rejects.toThrow("favorite store error: boom");
   });
 });
 

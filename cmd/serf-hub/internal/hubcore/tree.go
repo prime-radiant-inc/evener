@@ -75,6 +75,53 @@ func (t Tree) FavoriteCandidates() []TreeNode {
 	return out
 }
 
+// PinCandidates returns every uncapped, authoritative top-level session that
+// may populate a named pin section. Unlike FavoriteCandidates, named pins stay
+// reachable when their session or whole project is archived. Synthetic cluster
+// rows and fork rows are excluded, while real session children grouped beneath
+// a synthetic cluster remain candidates under their canonical identities.
+func (t Tree) PinCandidates() []TreeNode {
+	var out []TreeNode
+	seen := make(map[string]struct{})
+	appendNode := func(node TreeNode) {
+		if node.ID == "" || node.Kind != "session" {
+			return
+		}
+		if _, ok := seen[node.ID]; ok {
+			return
+		}
+		seen[node.ID] = struct{}{}
+		out = append(out, node)
+	}
+	appendRows := func(rows []TreeNode) {
+		for _, node := range rows {
+			switch node.Kind {
+			case "session":
+				appendNode(node)
+			case "cluster":
+				for _, child := range node.Children {
+					appendNode(child)
+				}
+			}
+		}
+	}
+	for _, node := range t.favoriteLive {
+		appendNode(node)
+	}
+	appendProject := func(project TreeProject) {
+		appendRows(project.allCurrent)
+		appendRows(project.allRecent)
+		appendRows(project.allArchived)
+	}
+	for _, project := range t.Projects {
+		appendProject(project)
+	}
+	for _, project := range t.ArchivedProjects {
+		appendProject(project)
+	}
+	return out
+}
+
 // FavoriteNodeAuthorities exposes node kinds from the uncapped tree rows so
 // read-time favorite classification can recognize current synthetic clusters.
 // The caller supplies source and lineage completeness for session identities;

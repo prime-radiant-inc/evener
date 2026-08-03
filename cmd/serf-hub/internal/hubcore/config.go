@@ -55,8 +55,9 @@ type WebConfig struct {
 	CodexLaunches       []codexlaunch.CodexLaunchConfig
 	CodexLauncher       *codexlaunch.CodexLauncher
 
-	Archive  *ArchiveStore  // archive decision store; nil when not configured (tree uses empty decisions)
-	Favorite *FavoriteStore // favorite decision store; nil when not configured
+	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
+	PinSections *PinSectionStore // named pin-section store; nil when not configured
 
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 

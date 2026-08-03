@@ -54,6 +54,10 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 	}
 	pe, ok := s.cfg.Past.Find(threadID)
 	if !ok {
+		if decisionErrors := s.scrubSessionDecisions(threadID); len(decisionErrors) > 0 {
+			writeAPIError(w, http.StatusInternalServerError, strings.Join(decisionErrors, "; "))
+			return
+		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": []projectDeleteSkip{}})
 		return
 	}

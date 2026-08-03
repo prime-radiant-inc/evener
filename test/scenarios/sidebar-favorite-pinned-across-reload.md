@@ -1,137 +1,260 @@
-# sidebar-favorite-pinned-across-reload: favoriting a session is server truth and survives a hard reload
+# sidebar-favorite-pinned-across-reload: named pinned session sections survive reloads, reuse hidden empties, and leave project favorites unchanged
 
-**What this covers**: `POST /api/favorite` (`cmd/serf-hub/web.go:169`,
-handler `web_api_favorite.go:16-56`) plus the `/api/tree` `favorites[]`
-projection at tier `"pinned"` (`web_api_tree.go:230-245`), and that the rail's
-Pinned rows are driven entirely by server data — never by `localStorage`. The
-rail persists exactly two things client-side (row expand state and the
-sidebar's hidden/width chrome); nothing favorite-related is cached locally, so
-a row that survives a cold page load can only have come from the server.
+**What this covers**: the named-section replacement for session favorites: `POST /api/session-pin`, `DELETE /api/session-pin`, `GET /api/pin-sections`, `PATCH /api/pin-sections/<id>`, `DELETE /api/pin-sections/<id>`, and `/api/tree`'s `pin_sections[]` plus per-row `pin_section_id`. It proves the sidebar is driven by durable server state, not optimistic client state, across raw API mutations and hard reloads.
 
-**Surface**: see `docs/agentic-testing.md`, "Driving the web UI" — the selector
-map there is the single place these hooks are maintained. A session row is
-`[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`), not
-`.sb-row[data-row-id=…]`; the star is `[data-testid="favorite-star"]`
-(`RailRow.tsx:540-544`). `row_id` is still on the wire and is still
-`pinned:local:<SID>` (`web_api_tree.go:1315-1319`) — it is just no longer a DOM
-attribute, so assert it over REST and assert the ref in the browser.
+**Surface**: see `docs/agentic-testing.md`, especially the setup checklist and the reminder that every `eval` must assert the scenario hub's own `location.port`. Use a **fresh Hub state directory** and a **dedicated Chrome profile** for this scenario only. Never reuse Jesse's real hub, real `$HOME`, or any fixed host port from another run.
+
+A session row is addressed by `[data-session-ref="local:<SID>"]`. Section headings are top-level disclosure buttons named by the section title. The row menu exposes **Pin this session…** or **Move pinned session…** depending on `pin_section_id`. The picker lists durable sections from `GET /api/pin-sections`, including hidden empties.
 
 ## Pre-state
 
-- A freshly built `serf-hub` on an isolated `$HOME` and a kernel-assigned port
-  — the Setup checklist in `docs/agentic-testing.md`. Never a real hub. Build
-  the frontend (`make build-web`) before the hub for the browser half.
-- One top-level session whose state is **not** attention-worthy — an `ended`
-  session is the simplest (see Sharp edges on the NeedsYou exclusion). Note its
-  ref, `local:<SID>`.
-- Browser authenticated to the test hub, on its own Chrome profile.
+1. Follow `docs/agentic-testing.md`'s isolated setup exactly:
+   - `run=$(mktemp -d -t serf-e2e-XXXXXX)`
+   - `make build-web`
+   - build fresh `serf-hub` and `serf` binaries into `$run`
+   - `export HOME="$run/home"; unset XDG_STATE_HOME`
+   - start `"$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &`
+   - derive `PORT` from the hub log, set `HUB=http://127.0.0.1:$PORT`, read `TOKEN`
+2. Create a **dedicated Chrome profile** under the same run dir, for example `PROFILE="$run/chrome-profile"`.
+3. Prepare at least three top-level local sessions plus one project row:
+   - `local:<SID_A>` and `local:<SID_B>`: ordinary ended or idle top-level sessions that can be pinned.
+   - `local:<SID_C>`: another top-level session used to reopen the picker after a section becomes hidden.
+   - one visible project row whose favorite star/menu behavior can still be toggled.
+4. Browser-auth to the test hub with a fresh top-level navigation to `/auth?token=$TOKEN&next=/` using that dedicated profile.
+5. Keep this shell helper for authenticated raw API calls:
 
-## Steps
+```bash
+api() {
+  curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"
+}
+```
 
-Steps 1-2 and 5 are **browser-free** and carry the exact assertions. Steps 3-4
-need a browser and assert only that the rendered row follows the server.
+6. Record the expected hub port once for later `eval` checks:
 
-1. `POST /api/favorite` with body
-   `{"kind":"session","id":"local:<SID>","favorited":true}`.
-2. `GET /api/tree`; inspect `favorites[]`.
-3. In the browser, perform a **hard reload** — a fresh top-level navigation to
-   `/auth?token=$TOKEN&next=/`, not a client-side refetch. The point is to
-   destroy every scrap of in-page state before asserting.
-4. Read the Pinned section and the row:
-   ```javascript
-   (() => {
-     const heads = Array.from(document.querySelectorAll("h3"), (h) => h.textContent);
-     const row = document.querySelector('[data-session-ref="local:<SID>"]');
-     return {
-       port: location.port,
-       headings: heads,                                  // must contain "Pinned"
-       rowPresent: !!row,
-       star: !!row?.querySelector('[data-testid="favorite-star"]'),
-       localFavoriteKeys: Object.keys(localStorage).filter((k) => /favorit|pin/i.test(k)),
-     };
-   })()
-   ```
-5. `POST /api/favorite` with `"favorited":false`, then `GET /api/tree` again.
+```bash
+EXPECTED_PORT="$PORT"
+STATE="$HOME/.serf"
+INDEX_DB="$STATE/index.db"
+```
+
+## Scenario
+
+Every browser `eval` below must return `location.port` and the check must assert it equals `$EXPECTED_PORT`.
+
+### 1. Create **Client work** via **Pin this session… → New section…**
+
+1. In the browser, open the row menu for `local:<SID_A>`.
+2. Choose **Pin this session…**.
+3. In the picker, choose **New section…**, enter `Client work`, and confirm.
+4. Assert in the browser that:
+
+```javascript
+(() => ({
+  port: location.port,
+  clientHeading: !!document.querySelector('[aria-label="Client work"], button[aria-label="Client work"], button[aria-expanded][name="Client work"]'),
+  rowPresent: !!document.querySelector('[data-session-ref="local:<SID_A>"]'),
+}))()
+```
+
+5. Raw API cross-check:
+   - `GET /api/pin-sections` contains one `Client work` section with `member_count: 1`.
+   - `GET /api/tree` contains one `pin_sections[]` entry named `Client work`, and the pinned row carries its `pin_section_id`.
+
+### 2. Pin a second session into existing **Client work**
+
+1. In the browser, open the row menu for `local:<SID_B>`.
+2. Choose **Pin this session…**.
+3. In the picker, choose the existing **Client work** section, not **New section…**.
+4. Assert in the browser that both sessions render under **Client work** and return the correct port.
+5. Raw API cross-check: `GET /api/pin-sections` now reports `Client work` with `member_count: 2`.
+
+### 3. Create **Research**, hard reload, and verify alphabetical top-level headings plus durable assignments
+
+1. Pin `local:<SID_C>` into a new section named **Research** through **Pin this session… → New section…**.
+2. Hard reload with a fresh top-level navigation to `/auth?token=$TOKEN&next=/`.
+3. Browser `eval`:
+
+```javascript
+(() => {
+  const headings = Array.from(document.querySelectorAll('h3,[role="heading"]'), (el) => el.getAttribute('aria-label') || el.textContent || '');
+  return {
+    port: location.port,
+    headings,
+    clientRows: Array.from(document.querySelectorAll('[data-session-ref]')).filter((el) =>
+      ['local:<SID_A>', 'local:<SID_B>'].includes(el.getAttribute('data-session-ref') || ''),
+    ).length,
+    researchRow: !!document.querySelector('[data-session-ref="local:<SID_C>"]'),
+  };
+})()
+```
+
+4. Assert the visible top-level order is **Live**, **Client work**, **Research**, **Projects** (with any other standard headings preserving their normal positions around them) and that the hard reload still shows the assignments.
+5. Raw API cross-check after reload: `/api/tree` still reports `pin_sections` for **Client work** and **Research**.
+
+### 4. Collapse **Research**, reload, and verify disclosure state stays collapsed
+
+1. In the browser collapse **Research**.
+2. Confirm `aria-expanded="false"` on the **Research** disclosure.
+3. Hard reload again via `/auth?token=$TOKEN&next=/`.
+4. Browser `eval` returns `port`, the **Research** disclosure's `aria-expanded`, and whether `local:<SID_C>` is visible.
+5. Assert the port matches, **Research** remains collapsed, and `local:<SID_C>` is hidden until re-expanded.
+
+### 5. Move one session from **Client work** to **Research** via **Move pinned session…**
+
+1. Re-expand **Research** if needed.
+2. Open the row menu for `local:<SID_B>`.
+3. Choose **Move pinned session…** and select **Research**.
+4. Browser assertion: `local:<SID_B>` disappears from **Client work** and appears under **Research**.
+5. Raw API cross-check: `/api/pin-sections` shows **Client work** `member_count: 1`, **Research** `member_count: 2`.
+
+### 6. Unpin the last **Client work** member and verify the empty section disappears
+
+1. Open the row menu for `local:<SID_A>`.
+2. Choose **Move pinned session… → Unpin**.
+3. Assert in the browser that the **Client work** heading disappears entirely.
+4. Raw API cross-check:
+   - `GET /api/pin-sections` still includes **Client work** with `member_count: 0`.
+   - `GET /api/tree` no longer renders **Client work** in `pin_sections[]`.
+
+### 7. Open another session’s picker and verify hidden **Client work** remains selectable
+
+1. Open the row menu for an unpinned top-level session.
+2. Choose **Pin this session…**.
+3. Assert the picker lists **Client work** even though it is hidden from the sidebar, and return `location.port` from the same `eval`.
+4. Cancel out without changing assignments.
+
+### 8. Reuse **Client work**, rename it, and verify disclosure identity/state survives
+
+1. Reopen the picker for that unpinned session and choose the hidden existing **Client work** entry, not **New section…**.
+2. Assert the **Client work** section reappears.
+3. Collapse or expand it to a known state.
+4. Use the section heading overflow menu to rename **Client work** to a new visible name, for example **Client renamed**.
+5. Assert after rename that:
+   - the section heading shows **Client renamed**;
+   - the same session membership remains;
+   - the disclosure state survives the rename instead of resetting.
+6. Raw API cross-check: `GET /api/pin-sections` shows the same section ID with the new display name.
+
+### 9. Create a dormant remote assignment through the API fixture, verify delete confirmation counts it, then cancel
+
+1. Because `POST /api/session-pin` validates `session_ref` against a real top-level session, it cannot create a deliberately dormant/non-authoritative assignment. For this step, seed the durable assignment directly in the scenario hub's SQLite store. The schema stores canonical session IDs in `session_pin.session_id`, not host-qualified refs, so use a syntactically valid 22-character session ID that does not exist in this hub's current authority snapshot:
+
+```bash
+CLIENT_SECTION_ID="$({
+  api "$HUB/api/pin-sections" |
+    python3 -c 'import json, sys
+name = "Client renamed"
+for section in json.load(sys.stdin):
+    if section["name"] == name:
+        print(section["id"])
+        break
+else:
+    raise SystemExit(f"section {name!r} not found")'
+})"
+
+DORMANT_SESSION_ID='02wMz5Txv1C3Hut0M8GCeB'
+
+CLIENT_SECTION_ID="$CLIENT_SECTION_ID" \
+DORMANT_SESSION_ID="$DORMANT_SESSION_ID" \
+INDEX_DB="$INDEX_DB" \
+python3 - <<'PY'
+import os
+import sqlite3
+import time
+
+db_path = os.environ["INDEX_DB"]
+section_id = os.environ["CLIENT_SECTION_ID"]
+session_id = os.environ["DORMANT_SESSION_ID"]
+
+con = sqlite3.connect(db_path)
+try:
+    con.execute("PRAGMA foreign_keys = ON")
+    enabled = con.execute("PRAGMA foreign_keys").fetchone()[0]
+    if enabled != 1:
+        raise SystemExit(f"foreign_keys pragma disabled: {enabled}")
+    if con.execute("SELECT 1 FROM pin_section WHERE id = ?", (section_id,)).fetchone() is None:
+        raise SystemExit(f"missing pin_section {section_id}")
+    now = int(time.time())
+    con.execute(
+        """
+        INSERT INTO session_pin(session_id, section_id, assigned_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE
+        SET section_id = excluded.section_id,
+            assigned_at = excluded.assigned_at
+        WHERE session_pin.section_id <> excluded.section_id
+        """,
+        (session_id, section_id, now),
+    )
+    con.commit()
+finally:
+    con.close()
+PY
+```
+
+2. Cross-check that the durable count increased even though the new member will stay hidden from `/api/tree`:
+
+```bash
+api "$HUB/api/pin-sections" |
+  CLIENT_SECTION_ID="$CLIENT_SECTION_ID" python3 -c 'import json, os, sys
+target = os.environ["CLIENT_SECTION_ID"]
+for section in json.load(sys.stdin):
+    if section["id"] == target:
+        print(section)
+        raise SystemExit(0 if section["member_count"] >= 2 else 1)
+raise SystemExit("seeded section missing from /api/pin-sections")'
+```
+
+3. Hard reload the browser at `/auth?token=$TOKEN&next=/`, then open the heading overflow menu for **Client renamed** and choose **Delete**.
+4. Assert the confirmation text counts **all durable members**, including the dormant hidden one.
+   - Example: if only one visible row is under the section but the dormant seeded assignment makes two durable members, the dialog must say it will unpin `2 sessions`.
+5. Cancel the dialog.
+6. Assert no delete request was sent and the section remains visible.
+
+### 10. Delete the visible section, confirm all members unpin, hard reload, and verify it stays gone
+
+1. Reopen the delete dialog for **Client renamed**.
+2. Confirm deletion.
+3. Raw API cross-check immediately after success:
+   - `GET /api/pin-sections` no longer lists that section.
+   - affected sessions no longer carry its `pin_section_id` in `/api/tree`.
+4. Hard reload via `/auth?token=$TOKEN&next=/`.
+5. Browser `eval` must confirm the same port and that the deleted section heading is still absent.
+
+### 11. Favorite and unfavorite a project; verify project behavior is unchanged
+
+1. Pick a visible project row.
+2. Use the ordinary project favorite control/menu to favorite it.
+3. Raw API cross-check that project favorite behavior still uses `/api/favorite` project semantics, not `/api/session-pin`.
+4. Browser assertion: the project's favorite state changes as before.
+5. Unfavorite it and verify the project row returns to its original state.
+
+### 12. Assert every `eval` targeted this scenario hub's expected port
+
+For every browser `eval` above, assert `location.port === "$EXPECTED_PORT"`. A passing visual assertion from the wrong port is invalid and must fail the scenario.
 
 ## Expected
 
-- **Step 1 (exact)**: `200 {"ok":true}` (`web_api_favorite.go:55`). Falsify: a
-  `400 {"error":"session id must name a real top-level session"}` — the id
-  didn't resolve. `POST /api/favorite` now validates that the id names a real
-  top-level session before writing (`topLevelFavoriteSessionID`,
-  `web_api_favorite.go:37-44,58-96`), and it accepts the bare `<SID>`, the
-  `local:<SID>` ref, or the internal id interchangeably
-  (`favoriteSessionIDMatches`, `:87-95`).
-- **Step 2 (exact)**: exactly one entry in `favorites[]` with
-  `"session_id":"<SID>"`, `"tier":"pinned"`, `"favorite":true`, and
-  `"row_id":"pinned:local:<SID>"`. Falsify: any other tier or row-id prefix
-  (`needsyou:` means the session was attention-worthy — see Sharp edges), or an
-  empty `favorites[]` despite the `200`.
-- **Step 4**: `headings` contains `Pinned`; the row exists at
-  `[data-session-ref="local:<SID>"]`; it carries `[data-testid="favorite-star"]`;
-  and `localFavoriteKeys` is **empty**. All of that holds immediately after the
-  reload — no click, no project expand — because the Pinned section is rendered
-  unconditionally from `tree.favorites`, ahead of Projects
-  (`Rail.tsx:581-587`), and a Pinned row is a depth-0 flat entry
-  (`sessionNodes`, `railNodes.ts:178-180`), not something nested under a
-  collapsed project. Falsify: the row is missing after a reload, or requires
-  expanding its parent project to appear — either would mean the client derived
-  "pinned" from local or optimistic state instead of `/api/tree`'s
-  `favorites[]`.
-- **Step 5 (exact)**: `200 {"ok":true}` and `favorites[]` no longer contains
-  the session. Falsify: the decision doesn't clear — the store write is
-  one-way.
-- **Cross-check**: no localStorage key the frontend writes is favorite-related.
-  Every `localStorage.setItem` call site in `cmd/serf-hub/frontend/src` writes
-  into one of: `serf.prefs.<name>` (`stores/prefs.ts:110,125`),
-  `serf.rail.expanded.v1` (`railExpansion.ts:19`),
-  `serf.workspace.layout.v2` (`shell/DockHost.tsx:34,115`),
-  `serf.search.recentCommands` (`shell/palette/recentCommands.ts:9,26`),
-  `serf-hub.spawn-defaults.*` (`panes/spawn/spawnDefaults.ts:13,54`), or a
-  per-session composer draft / seen watermark
-  (`panes/session/composer/draft.ts:18,40`,
-  `panes/session/transcript/flow/seenWatermark.ts:12,29`). Re-run that grep if
-  step 4's `localFavoriteKeys` ever comes back non-empty. If the star renders,
-  it is because `/api/tree` said so, full stop.
+- Session pins are section-based and durable across hard reloads.
+- Non-empty named sections render alphabetically between **Live** and **Projects**.
+- Empty sections become hidden in the sidebar but remain selectable through the picker.
+- Re-entering an existing section name or choosing an existing hidden section reuses the durable section instead of creating a duplicate.
+- Renaming preserves disclosure identity/state because disclosure storage is keyed by section ID, not the mutable display name.
+- Delete confirmation uses durable `member_count`, not visible rows.
+- Deleting a section atomically unpins all of its members and the section stays gone after hard reload.
+- Project favorites continue to behave exactly as before.
+- Every browser assertion is tied to the correct test hub by the explicit `location.port` check.
 
 ## Cleanup
 
-- Step 5 already unfavorites. Otherwise discard the scratch session/project
-  with the run directory — the favorite decision lives in the isolated state
-  root's index DB and goes away with it.
-- Kill the hub by the PID you captured (Cleanup recipe in
-  `docs/agentic-testing.md`).
+- Delete any seeded dormant assignment fixture if the section delete step did not already remove it.
+- Kill the hub with `kill "$(cat "$run/hub.pid")"`.
+- Remove the whole run dir, including the dedicated Chrome profile.
 
 ## Sharp edges
 
-- **Two localStorage keys exist for *unrelated* rail state and are easy to
-  mistake for a favorite cache**: `serf.rail.expanded.v1`, one JSON blob of
-  per-row expand overrides (`railExpansion.ts:19`, replacing the old
-  key-per-row `serf-hub.sidebar.expanded.<projectKey>` scheme), and the
-  chrome prefs `serf.prefs.sidebarHidden` / `serf.prefs.sidebarWidth`
-  (`stores/prefs.ts:366-367`, replacing `serf-hub.sidebar.rail`; the old
-  `sidebarMode` key is dead and never read, `prefs.ts:56-61`). Expand and
-  chrome are client-cached; favorite / rename / archive / delete are not.
-- **The Pinned tier excludes anything already surfaced in NeedsYou**
-  (`needsYouIDs` filter, `web_api_tree.go:230-241`). A session in `awaiting`,
-  `warning`, or `errored` lands in `needs_you[]` with a `needsyou:` row-id
-  instead, and step 2's assertion fails for a reason that has nothing to do
-  with favoriting. Use an `ended` (or plain `active`) session.
-- **The rail does not render a NeedsYou section at all** (`Rail.tsx:563-573`),
-  so a session filtered out of Pinned by the rule above does not visibly move —
-  it just quietly stops being in the Pinned list. That is why step 2's REST
-  assertion is the authoritative one and step 4 is only corroboration.
-- **The star is gated on top-level-ness as well as the flag**:
-  `session.favorite === true && isTopLevelSession(session)`
-  (`RailRow.tsx:540`, `isTopLevelSession` at `:338-342` excludes `subagent`,
-  `fork`, `cluster`). Favoriting a nested row writes a decision that never
-  surfaces — the row menu correctly doesn't offer it (`:355-361`), and neither
-  should this card.
-- **This card deliberately drives the favorite over REST, not by clicking the
-  star's menu item.** The rail applies an optimistic overlay from before the
-  POST until the follow-up refetch settles (`railPending.ts:78-79`,
-  `Rail.tsx:318-338`), so a UI-driven check risks reading the optimistic echo
-  rather than server truth. A raw POST plus a hard reload rules that out by
-  construction.
-- Use a dedicated Chrome profile; the auth cookie is not port-scoped. Keep the
-  `location.port` assertion inside every `eval`.
+- Use raw API calls plus hard reloads for durability checks; an optimistic overlay is not sufficient evidence.
+- Empty sections are intentionally absent from `/api/tree`; only `GET /api/pin-sections` proves they still exist.
+- Hidden or dormant durable members must count toward delete confirmation even when the sidebar cannot currently render them.
+- The auth cookie is not port-scoped. A dedicated Chrome profile plus explicit `location.port` assertions are mandatory.
+- Do not introduce or look for a standalone **Add pinned section** sidebar control; creation is only through **Pin this session…** or **Move pinned session…**.

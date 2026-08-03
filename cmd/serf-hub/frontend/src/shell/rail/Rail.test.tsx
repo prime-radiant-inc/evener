@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetTreeStoreForTests } from "../../stores/tree";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { Rail } from "./Rail";
+import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 
 // See shell/DockHost.test.tsx's identical comment: Node 26 shadows jsdom's
 // real window.localStorage with its own (non-functional under vitest)
@@ -119,11 +120,66 @@ const SAMPLE_WIRE_TREE = {
   sources: [],
   live: [LIVE_NODE],
   needs_you: [NEEDS_YOU_NODE],
-  favorites: [PINNED_NODE],
+  pin_sections: [{ id: "pinned", name: "Pinned", sessions: [PINNED_NODE] }],
   projects: [PROJECT],
   archived_projects: [ARCHIVED_PROJECT],
   test_runs: [TESTRUN_PROJECT],
   attentionSummary: { needsYou: 1, error: 0, working: 0 },
+};
+
+const NAMED_PIN_TREE = {
+  ...SAMPLE_WIRE_TREE,
+  live: [
+    wireNode({
+      row_id: "live:local:shared-pin",
+      ref: "local:shared-pin",
+      session_id: "shared-pin",
+      title: "Live pinned session",
+      pin_section_id: "research",
+      state: "active",
+    }),
+  ],
+  pin_sections: [
+    {
+      id: "research",
+      name: "research",
+      sessions: [
+        wireNode({
+          row_id: "pin:research:local:shared-pin",
+          ref: "local:shared-pin",
+          session_id: "shared-pin",
+          title: "Live pinned session",
+          pin_section_id: "research",
+        }),
+      ],
+    },
+    {
+      id: "personal",
+      name: "Personal",
+      sessions: [
+        wireNode({
+          row_id: "pin:personal:local:personal-pin",
+          ref: "local:personal-pin",
+          session_id: "personal-pin",
+          title: "Personal pinned session",
+          pin_section_id: "personal",
+        }),
+      ],
+    },
+    {
+      id: "client",
+      name: "Client",
+      sessions: [
+        wireNode({
+          row_id: "pin:client:local:client-pin",
+          ref: "local:client-pin",
+          session_id: "client-pin",
+          title: "Client pinned session",
+          pin_section_id: "client",
+        }),
+      ],
+    },
+  ],
 };
 
 // An ACTIVE project carrying one archived-tier session. The wire ships every
@@ -170,7 +226,7 @@ const EMPTY_WIRE_TREE = {
   sources: [],
   live: [],
   needs_you: [],
-  favorites: [],
+  pin_sections: [],
   projects: [],
   archived_projects: [],
   test_runs: [],
@@ -202,6 +258,9 @@ let projectPageResponses: Record<string, unknown>;
 let pendingProjectPageResponses: Record<string, Promise<Response>>;
 let treeRefreshResponses: Response[];
 let pendingTreeRefresh: Promise<Response> | null;
+let pinSectionSummaries: { id: string; name: string; member_count: number }[];
+let pinSectionListResponse: Response | null;
+let mutationCalls: { method: string; path: string; body?: unknown }[];
 
 // Both delete endpoints report BARE thread ids in `deleted` and in
 // `skipped[].id`: web_api_project_delete.go carries target.ThreadID into both
@@ -217,6 +276,17 @@ let pendingTreeRefresh: Promise<Response> | null;
 function defaultPostResponses(): Record<string, { status: number; body: unknown }> {
   return {
     "/api/favorite": { status: 200, body: { ok: true } },
+    "/api/session-pin": {
+      status: 200,
+      body: {
+        ok: true,
+        changed: true,
+        assignment: {
+          session_ref: "local:s1",
+          section: { id: "client", name: "Client", member_count: 1 },
+        },
+      },
+    },
     "/api/archive": { status: 200, body: { ok: true } },
     "/api/project/delete": { status: 200, body: { deleted: ["old1"], skipped: [] } },
     rename: { status: 204, body: undefined },
@@ -237,6 +307,14 @@ beforeEach(() => {
   pendingProjectPageResponses = {};
   treeRefreshResponses = [];
   pendingTreeRefresh = null;
+  pinSectionSummaries = [
+    { id: "client", name: "Client", member_count: 3 },
+    { id: "empty", name: "Hidden empty", member_count: 0 },
+    { id: "personal", name: "Personal", member_count: 1 },
+    { id: "research", name: "research", member_count: 1 },
+  ];
+  pinSectionListResponse = null;
+  mutationCalls = [];
 
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -261,9 +339,13 @@ beforeEach(() => {
       const body = projectDetailResponses[key];
       return body ? jsonResponse(body) : jsonResponse({ error: "not found" }, 404);
     }
+    if (method === "GET" && url === "/api/pin-sections") {
+      return pinSectionListResponse ?? jsonResponse(pinSectionSummaries);
+    }
     if (method === "POST") {
       const body = JSON.parse(init!.body as string) as unknown;
       postCalls.push({ path: url, body });
+      mutationCalls.push({ method, path: url, body });
       if (url.startsWith("/api/sessions/") && url.endsWith("/rename")) {
         const scripted = postResponses.rename!;
         return jsonResponse(scripted.body, scripted.status);
@@ -275,6 +357,36 @@ beforeEach(() => {
       const scripted = postResponses[url];
       if (!scripted) throw new Error(`unscripted POST ${url}`);
       return jsonResponse(scripted.body, scripted.status);
+    }
+    if (method === "PATCH" && url.startsWith("/api/pin-sections/")) {
+      const body = JSON.parse(init!.body as string) as unknown;
+      mutationCalls.push({ method, path: url, body });
+      const id = decodeURIComponent(url.slice("/api/pin-sections/".length));
+      const summary = pinSectionSummaries.find((section) => section.id === id);
+      if (summary && typeof (body as { name?: unknown }).name === "string") {
+        treeResponseBody = {
+          ...(treeResponseBody as typeof NAMED_PIN_TREE),
+          pin_sections: (treeResponseBody as typeof NAMED_PIN_TREE).pin_sections.map((section) =>
+            section.id === id ? { ...section, name: (body as { name: string }).name } : section,
+          ),
+        };
+      }
+      return summary
+        ? jsonResponse({ ok: true, changed: true, section: { ...summary, ...(body as { name: string }) } })
+        : jsonResponse({ error: "pin section not found" }, 404);
+    }
+    if (method === "DELETE" && url.startsWith("/api/pin-sections/")) {
+      mutationCalls.push({ method, path: url });
+      const id = decodeURIComponent(url.slice("/api/pin-sections/".length));
+      treeResponseBody = {
+        ...(treeResponseBody as typeof NAMED_PIN_TREE),
+        pin_sections: (treeResponseBody as typeof NAMED_PIN_TREE).pin_sections.filter((section) => section.id !== id),
+      };
+      return jsonResponse({ ok: true, changed: true, member_count: 3 });
+    }
+    if (method === "DELETE" && url.startsWith("/api/session-pin?")) {
+      mutationCalls.push({ method, path: url });
+      return jsonResponse({ ok: true, changed: true });
     }
     throw new Error(`unhandled fetch: ${method} ${url}`);
   });
@@ -364,14 +476,300 @@ describe("initial load", () => {
 });
 
 describe("sections", () => {
-  test("renders each non-empty tier as its own heading, in tier order", async () => {
+  test("renders named sections alphabetically between Live and Projects without an implicit Pinned heading", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
     renderRail();
-    await screen.findByText("Live session");
-    const headingNames = screen.getAllByRole("heading").map((h) => h.textContent);
-    const order = ["Live", "Pinned", "Projects", "Test runs"];
+    await screen.findByText("Client pinned session");
+    const headingNames = screen
+      .getAllByRole("heading")
+      .map((heading) => heading.getAttribute("aria-label") ?? heading.textContent);
+    const order = ["Live", "Client", "Personal", "research", "Projects", "Test runs"];
     const positions = order.map((name) => headingNames.indexOf(name));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Pinned" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add pinned section" })).toBeNull();
+  });
+
+  test("named sections collapse independently and persist disclosure state by stable section ID", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    const client = screen.getByRole("button", { name: "Client" });
+    const personal = screen.getByRole("button", { name: "Personal" });
+    expect(client.getAttribute("aria-expanded")).toBe("true");
+    expect(personal.getAttribute("aria-expanded")).toBe("true");
+
+    await user.click(client);
+    expect(client.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Client pinned session")).toBeNull();
+    expect(screen.getByText("Personal pinned session")).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}")).toEqual({ "pinsection:client": false });
+  });
+
+  test("a live assigned session appears in both Live and its named section", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    expect(screen.getAllByText("Live pinned session")).toHaveLength(2);
+  });
+
+  test("heading menus expose Rename and Delete", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeTruthy();
+  });
+
+  test("rename keeps the disclosure ID, refreshes, and reorders headings", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Client" }));
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.type(input, "Zebra");
+    await user.click(screen.getByRole("button", { name: "Rename section" }));
+
+    const renamed = await screen.findByRole("button", { name: "Zebra" });
+    expect(renamed.getAttribute("aria-expanded")).toBe("false");
+    const headings = screen
+      .getAllByRole("heading")
+      .map((heading) => heading.getAttribute("aria-label") ?? heading.textContent);
+    expect(headings.indexOf("Zebra")).toBeGreaterThan(headings.indexOf("research"));
+    expect(mutationCalls).toContainEqual({
+      method: "PATCH",
+      path: "/api/pin-sections/client",
+      body: { name: "Zebra" },
+    });
+    expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "{}")).toEqual({ "pinsection:client": false });
+  });
+
+  test("rename validation error is the input's accessible description", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.click(screen.getByRole("button", { name: "Rename section" }));
+
+    const error = screen.getByRole("alert");
+    const descriptionID = input.getAttribute("aria-describedby");
+    expect(descriptionID).toBe(error.id);
+    expect(screen.getByRole("textbox", { name: "Section name", description: "Section name is required" })).toBe(input);
+  });
+
+  test("rename admits one in-flight submit and restores editable controls with the server error", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let releasePatch!: (response: Response) => void;
+    const heldPatch = new Promise<Response>((resolve) => {
+      releasePatch = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH" && url === "/api/pin-sections/client") {
+        const body = JSON.parse(init?.body as string) as unknown;
+        mutationCalls.push({ method: "PATCH", path: url, body });
+        return heldPatch;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.type(input, "Still editable");
+    const submit = screen.getByRole("button", { name: "Rename section" });
+
+    submit.focus();
+    await user.keyboard("{Enter}");
+    fireEvent.click(submit);
+    await user.keyboard("{Enter}");
+
+    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+
+    releasePatch(jsonResponse({ error: "rename conflict" }, 409));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("rename conflict");
+    expect(input.hasAttribute("disabled")).toBe(false);
+    expect(submit.hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(false);
+    expect(input.getAttribute("value")).toBe("Still editable");
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).getAllByText(/rename conflict/i)).toHaveLength(
+      1,
+    );
+  });
+
+  test("rename stays locked through its one authoritative refresh and closes only after refresh settles", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let releasePatch!: (response: Response) => void;
+    const heldPatch = new Promise<Response>((resolve) => {
+      releasePatch = resolve;
+    });
+    let releaseRefresh!: (response: Response) => void;
+    const heldRefresh = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH" && url === "/api/pin-sections/client") {
+        const body = JSON.parse(init?.body as string) as unknown;
+        mutationCalls.push({ method: "PATCH", path: url, body });
+        return heldPatch;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const dialog = screen.getByRole("dialog", { name: "Rename pin section" });
+    const input = within(dialog).getByRole("textbox", { name: "Section name" });
+    await user.clear(input);
+    await user.type(input, "Canonical client");
+    const submit = within(dialog).getByRole("button", { name: "Rename section" });
+
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(1);
+    expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
+
+    pendingTreeRefresh = heldRefresh;
+    releasePatch(
+      jsonResponse({
+        ok: true,
+        changed: true,
+        section: { id: "client", name: "Canonical client", member_count: 3 },
+      }),
+    );
+
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(input.hasAttribute("disabled")).toBe(true);
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);
+
+    releaseRefresh(jsonResponse(NAMED_PIN_TREE));
+
+    await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Rename pin section" })).toBeNull());
+    expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(treeGetCallCount()).toBe(2);
+    expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const reopenedInput = screen.getByRole("textbox", { name: "Section name" });
+    expect(reopenedInput.hasAttribute("disabled")).toBe(false);
+    expect(reopenedInput.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  test("delete refreshes summaries before confirmation and uses durable member_count", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const before = fetchMock.mock.calls.length;
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+    expect((await screen.findByRole("dialog", { name: "Delete pin section?" })).textContent).toContain(
+      "Delete “Client”? This will unpin 3 sessions.",
+    );
+    const calls = fetchMock.mock.calls.slice(before);
+    expect(calls.some(([url, init]) => url === "/api/pin-sections" && (init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  test("confirmed delete applies the section projection and awaits authoritative refresh", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await screen.findByRole("dialog", { name: "Delete pin section?" });
+    await user.click(screen.getByRole("button", { name: "Delete section" }));
+
+    await vi.waitFor(() => expect(screen.queryByRole("heading", { name: "Client" })).toBeNull());
+    expect(mutationCalls).toContainEqual({ method: "DELETE", path: "/api/pin-sections/client" });
+    expect(treeGetCallCount()).toBe(2);
+  });
+
+  test("delete-summary failure toasts and does not open a misleading confirmation", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    pinSectionListResponse = jsonResponse({ error: "summary store unavailable" }, 500);
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+
+    await screen.findByText(/summary store unavailable/i);
+    expect(screen.queryByRole("dialog", { name: "Delete pin section?" })).toBeNull();
+  });
+
+  test("an older delete-summary response cannot replace a newer section confirmation", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let resolveClient!: (response: Response) => void;
+    let resolvePersonal!: (response: Response) => void;
+    const clientSummary = new Promise<Response>((resolve) => {
+      resolveClient = resolve;
+    });
+    const personalSummary = new Promise<Response>((resolve) => {
+      resolvePersonal = resolve;
+    });
+    let summaryRequest = 0;
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET" && url === "/api/pin-sections") {
+        summaryRequest += 1;
+        return summaryRequest === 1 ? clientSummary : personalSummary;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await vi.waitFor(() => expect(summaryRequest).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Actions for Personal" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await vi.waitFor(() => expect(summaryRequest).toBe(2));
+
+    resolvePersonal(jsonResponse(pinSectionSummaries));
+    expect((await screen.findByRole("dialog", { name: "Delete pin section?" })).textContent).toContain(
+      "Delete “Personal”?",
+    );
+
+    await act(async () => resolveClient(jsonResponse(pinSectionSummaries)));
+    expect(screen.getByRole("dialog", { name: "Delete pin section?" }).textContent).toContain("Delete “Personal”?");
   });
 
   test("omits a tier's heading entirely when it has no rows", async () => {
@@ -489,7 +887,7 @@ describe("sections", () => {
       jsonResponse({
         ...EMPTY_WIRE_TREE,
         needs_you: [sharedInNeedsYou],
-        favorites: [PINNED_NODE],
+        pin_sections: [{ id: "pinned", name: "Pinned", sessions: [PINNED_NODE] }],
         projects: [sharedProject],
         attentionSummary: { needsYou: 1, error: 0, working: 0 },
       }),
@@ -885,6 +1283,28 @@ describe("project expansion", () => {
     await screen.findByText("Old session");
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/tree/project?key=archproj")).toBe(true);
   });
+
+  test("an expanded archived project refetches detail after a successful tree generation change", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived/i }));
+    await user.click(within(rowFor("old-project")).getByTestId("rail-chevron"));
+    await screen.findByText("Old session");
+    const detailCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([url, init]) => url === "/api/tree/project?key=archproj" && (init?.method ?? "GET") === "GET",
+      ).length;
+    expect(detailCalls()).toBe(1);
+
+    await act(async () => {
+      await treeStore.getState().refresh();
+    });
+
+    expect(rowFor("old-project").getAttribute("aria-expanded")).toBe("true");
+    await screen.findByText("Old session");
+    expect(detailCalls()).toBe(2);
+  });
 });
 
 // --- the rail's width is independent of its tree's content ---------------
@@ -993,17 +1413,18 @@ describe("optimistic feedback", () => {
     release();
   });
 
-  test("pinning a session shows its star immediately", async () => {
+  test("assigning a session projects the selected named section while the request is in flight", async () => {
     renderRail();
     await screen.findByText("Session one");
-    expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeNull();
-    const { release } = heldPost("/api/favorite");
+    const { release } = heldPost("/api/session-pin");
 
     const user = userEvent.setup();
     await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "Client" }));
 
-    await vi.waitFor(() => expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeTruthy());
+    expect(await screen.findByRole("heading", { name: "Client" })).toBeTruthy();
+    expect(screen.getAllByText("Session one")).toHaveLength(2);
     release();
   });
 
@@ -1064,8 +1485,8 @@ describe("optimistic feedback", () => {
   });
 });
 
-describe("favorite action", () => {
-  test("toggling favorite on a session POSTs /api/favorite with the exact body and refetches the tree on success", async () => {
+describe("pin section actions", () => {
+  test("pinning to an existing section POSTs the selected eligible row ref and refetches", async () => {
     renderRail();
     await screen.findByText("Session one");
     expect(treeGetCallCount()).toBe(1);
@@ -1073,27 +1494,137 @@ describe("favorite action", () => {
     const user = userEvent.setup();
     const row = rowFor("Session one");
     await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "Client" }));
 
     expect(postCalls).toContainEqual({
-      path: "/api/favorite",
-      body: { kind: "session", id: "local:s1", favorited: true },
+      path: "/api/session-pin",
+      body: { session_ref: "local:s1", section_id: "client" },
     });
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
   });
 
-  test("a failed favorite toggle shows an error toast and does not refetch", async () => {
-    postResponses["/api/favorite"] = { status: 500, body: { error: "favorite store error: boom" } };
+  test("create-or-reuse trusts the API's canonical section for its optimistic projection", async () => {
+    postResponses["/api/session-pin"] = {
+      status: 200,
+      body: {
+        ok: true,
+        changed: true,
+        assignment: {
+          session_ref: "local:s1",
+          section: { id: "canonical", name: "Existing canonical", member_count: 2 },
+        },
+      },
+    };
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "New section…" }));
+    await user.type(screen.getByRole("textbox", { name: "Section name" }), "existing canonical");
+    await user.click(screen.getByRole("button", { name: "Create and pin" }));
+
+    expect(postCalls).toContainEqual({
+      path: "/api/session-pin",
+      body: { session_ref: "local:s1", section_name: "existing canonical" },
+    });
+    expect(screen.queryByRole("heading", { name: "existing canonical" })).toBeNull();
+  });
+
+  test("a failed assignment rolls back the section projection and emits the error toast", async () => {
+    postResponses["/api/session-pin"] = { status: 500, body: { error: "pin section store error: boom" } };
     renderRail();
     await screen.findByText("Session one");
 
     const user = userEvent.setup();
     const row = rowFor("Session one");
     await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "Client" }));
 
-    await screen.findByText(/favorite store error: boom/i);
+    expect(await screen.findAllByText(/pin section store error: boom/i)).toHaveLength(2);
+    expect(screen.queryByRole("heading", { name: "Client" })).toBeNull();
+    expect(screen.getAllByText("Session one")).toHaveLength(1);
     expect(treeGetCallCount()).toBe(1); // no refetch on failure
+  });
+
+  test("an old assignment completion cannot close a different picker opened later", async () => {
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [{ ...PROJECT, sessions: [PROJECT_SESSION, OTHER_PROJECT_SESSION] }],
+    };
+    let releaseAssignment!: (response: Response) => void;
+    const heldAssignment = new Promise<Response>((resolve) => {
+      releaseAssignment = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST" && url === "/api/session-pin") return heldAssignment;
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "Client" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    await user.click(within(rowFor("Session two")).getByRole("button", { name: /actions for session two/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    expect(await screen.findByRole("dialog", { name: "Pin Session two" })).toBeTruthy();
+
+    releaseAssignment(jsonResponse(postResponses["/api/session-pin"]!.body));
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Pin Session two" })).toBeTruthy();
+  });
+
+  test("unpinning the last visible row hides its section while a later picker refetches and lists the hidden section", async () => {
+    const assigned = wireNode({
+      row_id: "pin:client:local:s1",
+      ref: "local:s1",
+      session_id: "s1",
+      title: "Session one",
+      pin_section_id: "client",
+    });
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      live: [{ ...assigned, row_id: "live:local:s1" }],
+      pin_sections: [{ id: "client", name: "Client", sessions: [assigned] }],
+      projects: [{ ...PROJECT, sessions: [{ ...PROJECT_SESSION, pin_section_id: "client" }, OTHER_PROJECT_SESSION] }],
+    };
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "DELETE" && url.startsWith("/api/session-pin?")) {
+        treeResponseBody = {
+          ...(treeResponseBody as typeof SAMPLE_WIRE_TREE),
+          live: [],
+          pin_sections: [],
+          projects: [{ ...PROJECT, sessions: [OTHER_PROJECT_SESSION] }],
+        };
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+
+    renderRail();
+    await screen.findByRole("heading", { name: "Client" });
+    const user = userEvent.setup();
+    const projectsSection = screen.getByRole("heading", { name: "Projects" }).closest("section");
+    if (!projectsSection) throw new Error("Projects heading has no section");
+    const projectRow = within(projectsSection).getByText("Session one").closest('[role="treeitem"]');
+    if (!(projectRow instanceof HTMLElement)) throw new Error("Session one has no project treeitem");
+    await user.click(within(projectRow).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Move pinned session…" }));
+    await user.click(await screen.findByRole("button", { name: "Unpin" }));
+
+    await vi.waitFor(() => expect(screen.queryByRole("heading", { name: "Client" })).toBeNull());
+    const remaining = rowFor("Session two");
+    await user.click(within(remaining).getByRole("button", { name: /actions for session two/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    expect(await screen.findByRole("button", { name: "Client" })).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/pin-sections")).toHaveLength(2);
   });
 
   // Project rows gain pin/unpin the same way session rows already have -
