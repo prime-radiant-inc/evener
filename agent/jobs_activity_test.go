@@ -150,7 +150,7 @@ func TestProjectActivitySession_ProjectsOwnerRefsAndChildren(t *testing.T) {
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root",
 		Jobs: []*jobstore.JobRecord{
-			{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning},
+			{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning, TranscriptRef: "job:job_activity"},
 			{JobID: "job_delegate", Type: jobstore.JobDelegate, DelegateID: "dlg_1", OwnerSessionID: "root", Status: jobstore.StatusCompleted, Task: "inspect child"},
 		},
 		Delegates: map[string]*jobstore.DelegateRecord{"dlg_1": {DelegateID: "dlg_1", ChildSessionID: "child", TranscriptRef: "local:child"}},
@@ -162,6 +162,16 @@ func TestProjectActivitySession_ProjectsOwnerRefsAndChildren(t *testing.T) {
 	}
 	if got.Entries[0].Job.OwnerSessionID != "root" || got.Entries[0].Job.OwnerRef != "local:root" {
 		t.Fatalf("root owner=%+v", got.Entries[0].Job)
+	}
+	if transcriptRef := got.Entries[0].Job.TranscriptRef; transcriptRef != "job:job_activity" {
+		t.Fatalf("TranscriptRef = %q, want %q", transcriptRef, "job:job_activity")
+	}
+	raw, err := json.Marshal(got.Entries[0].Job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"transcriptRef":"job:job_activity"`) {
+		t.Fatalf("encoded activity job omitted transcriptRef: %s", raw)
 	}
 	delegate := got.Entries[1].Delegate
 	if delegate.ChildSessionID != "child" || delegate.ChildRef != "local:child" || delegate.Mandate != "inspect child" || delegate.Child == nil {
