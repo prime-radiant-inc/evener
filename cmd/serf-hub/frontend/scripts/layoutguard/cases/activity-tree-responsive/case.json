@@ -14,6 +14,8 @@
     "widgets/sheet/sheet.module.css",
     "panes/session/chrome/activitypanel.module.css",
     "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/codeblock/codeblock.module.css",
     "widgets/statusdot/statusdot.module.css"
   ]
 }

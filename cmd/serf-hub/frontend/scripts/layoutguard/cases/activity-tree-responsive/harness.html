@@ -35,7 +35,7 @@
 <main class="fixtures" data-role="fixtures"></main>
 <script>
 const LONG_COMMAND = "SERF_SESSION_MODE=retained /usr/bin/env bash -lc 'python3 tools/trace_activity.py --session 02wMz5Txv1C3Hut0M8GCeB --delegate 8 --emit jsonl --follow --with-ancestor-chain --full-command-width --explain-overflow-contract'";
-const LONG_OUTPUT = "TRACE 2026-08-03T18:44:21Z delegate-8 retained-output path=/Users/jesse/.local/state/serf/projects/activity-tree-sidebar/logs/delegate-8/output tail=<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< END";
+const LONG_OUTPUT = "TRACE 2026-08-03T18:44:21Z delegate-8 retained-output path=/Users/jesse/.local/state/serf/projects/activity-tree-sidebar/logs/delegate-8/output tail=retained bytes wrap through CodeBlock exactly as production does, so this output line is intentionally long enough to wrap across multiple visual lines without ever creating a horizontal scroller in the inspector pane.";
 
 function chevron(direction) {
   const pathByDirection = {
@@ -47,6 +47,14 @@ function chevron(direction) {
   return `
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block">
       <path d="${pathByDirection[direction]}" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path>
+    </svg>`;
+}
+
+function copyIcon() {
+  return `
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true" focusable="false" style="display:block">
+      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" stroke-width="1.2"></path>
     </svg>`;
 }
 
@@ -88,7 +96,7 @@ function rowMarkup({
       ${continuation ? `
         <div class="rowActions">
           <span class="rowContinuation">${escapeHtml(continuation)}</span>
-          <button type="button" tabIndex="-1" class="button quiet xs">${escapeHtml(continuationLabel)}</button>
+          <button type="button" tabIndex="-1" class="button quiet buttonSizeXsHarness">${escapeHtml(continuationLabel)}</button>
         </div>` : ""}
     </div>`;
 }
@@ -138,6 +146,22 @@ function deepTreeMarkup(kind) {
   return markup;
 }
 
+function codeBlockMarkup() {
+  return `
+    <div class="codeBlockRootHarness" data-role="output-codeblock">
+      <div class="codeBlockAreaHarness">
+        <div class="codeBlockHeaderHarness">
+          <span class="codeBlockCopyHarness">
+            <button type="button" class="button quiet codeBlockIconButtonHarness" aria-label="Copy output">
+              <span class="icon">${copyIcon()}</span>
+            </button>
+          </span>
+        </div>
+        <pre class="codeBlockPreHarness" data-role="output-code-pre"><code class="codeBlockCodeHarness"><span>${escapeHtml(LONG_OUTPUT)}</span></code></pre>
+      </div>
+    </div>`;
+}
+
 function desktopInspectorMarkup() {
   return `
     <div class="inspector" data-testid="activity-inspector">
@@ -169,10 +193,10 @@ function desktopInspectorMarkup() {
       </div>
       <div class="inspectorSection outputSection">
         <div class="toolbar">
-          <button type="button" class="button quiet sm">Refresh output</button>
+          <button type="button" class="button quiet buttonSizeSmHarness">Refresh output</button>
         </div>
         <p class="muted">Showing last 8192 of 16384 bytes</p>
-        <pre class="outputPre" data-role="output-pre">${escapeHtml(LONG_OUTPUT)}</pre>
+        ${codeBlockMarkup()}
       </div>
     </div>`;
 }
@@ -181,7 +205,7 @@ function mobileInspectorMarkup() {
   return `
     <div class="mobilePane" data-role="mobile-pane">
       <div class="mobileBack">
-        <button type="button" class="button quiet sm" data-role="back-control">Back to activity</button>
+        <button type="button" class="button quiet buttonSizeSmHarness" data-role="back-control">Back to activity</button>
       </div>
       <div class="panelColumn" data-role="inspector-pane">
         <div class="inspector" data-testid="activity-inspector">
@@ -205,17 +229,17 @@ function mobileInspectorMarkup() {
           </div>
           <div class="inspectorSection outputSection">
             <div class="toolbar">
-              <button type="button" class="button quiet sm">Refresh output</button>
+              <button type="button" class="button quiet buttonSizeSmHarness">Refresh output</button>
             </div>
             <p class="muted">Showing last 8192 of 16384 bytes</p>
-            <pre class="outputPre" data-role="output-pre">${escapeHtml(LONG_OUTPUT)}</pre>
+            ${codeBlockMarkup()}
           </div>
         </div>
       </div>
     </div>`;
 }
 
-function frameDocument({ name, mode, width, height, bodyMarkup }) {
+function frameDocument({ bodyMarkup, width }) {
   return `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
@@ -234,12 +258,11 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
     font-size: var(--font-size-body);
     line-height: var(--line-height-body);
   }
-  /* layoutguard flattens all loaded module CSS into one resolved.css file,
-     so dialog.module.css's .panel and activitypanel.module.css's .panel would
-     collide if the harness used their raw class name on both elements. Keep
-     the real loaded CSS for every non-colliding class, then alias the two
-     collided .panel contracts separately here so the sheet chassis and inner
-     Activity wrapper both measure the production geometry they own. */
+  /* layoutguard flattens module CSS into one resolved.css file, so several
+     cross-module class names collide here. Keep the real loaded CSS files and
+     alias only the collided contracts the harness must distinguish: sheet
+     chassis/body/activity wrapper and CodeBlock's root/header/pre/code/copy
+     layout. */
   .sheetPanelHarness {
     position: relative;
     display: flex;
@@ -249,10 +272,43 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
     overflow-x: hidden;
     overflow-y: auto;
   }
+  .sheetHeaderHarness {
+    padding: var(--space-4) var(--space-7) var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--edge);
+  }
+  .sheetTitleHarness {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--font-size-pane-title);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: var(--tracking-display);
+    line-height: var(--line-height-title);
+    color: var(--ink-hi);
+  }
   .sheetBodyHarness {
+    padding: var(--space-4);
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+    color: var(--ink-hi);
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+  .sheetCloseButtonHarness {
+    position: absolute;
+    top: var(--space-3);
+    right: var(--space-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-control);
+    background: transparent;
+    color: var(--ink-mid);
+    cursor: pointer;
   }
   .activityPanelHarness {
     display: flex;
@@ -263,110 +319,77 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
     overflow-x: hidden;
   }
   .outputSection { min-width: 0; }
-  .outputPre {
-    display: block;
-    max-width: 100%;
-    margin: 0;
-    padding: var(--space-2) var(--space-3);
+  .buttonSizeXsHarness {
+    height: 24px;
+    padding: 0 var(--space-2);
+    font-size: var(--font-size-ui);
+  }
+  .buttonSizeSmHarness {
+    height: 28px;
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-ui);
+  }
+  .codeBlockRootHarness {
+    position: relative;
     border: 1px solid var(--edge);
     border-radius: var(--radius-pane);
     background: var(--surface-1);
+    overflow-x: hidden;
+  }
+  .codeBlockAreaHarness {
+    position: relative;
+  }
+  .codeBlockHeaderHarness {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .codeBlockCopyHarness {
+    flex: none;
+    opacity: 0.35;
+  }
+  .codeBlockRootHarness:hover .codeBlockCopyHarness,
+  .codeBlockCopyHarness:focus-within {
+    opacity: 1;
+  }
+  .codeBlockIconButtonHarness {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+  }
+  .codeBlockPreHarness {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    padding-right: var(--space-6);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .codeBlockCodeHarness {
     color: var(--ink-hi);
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
     line-height: var(--line-height-body);
-    white-space: pre;
-    overflow-x: auto;
-    overflow-y: hidden;
   }
 </style>
 </head>
 <body data-font-size="m">
   <div class="scrim">
     <div class="sheetPanelHarness right" data-role="sheet">
-      <header class="header">
-        <h2 class="title">Activity</h2>
+      <header class="sheetHeaderHarness">
+        <h2 class="sheetTitleHarness">Activity</h2>
       </header>
-      <div class="body sheetBodyHarness" data-role="sheet-body">
+      <div class="sheetBodyHarness" data-role="sheet-body">
         <div class="activityPanelHarness" data-role="activity-panel">
           ${bodyMarkup}
         </div>
       </div>
-      <button type="button" class="closeButton" aria-label="Close">×</button>
+      <button type="button" class="sheetCloseButtonHarness" aria-label="Close">×</button>
     </div>
   </div>
-  <script>
-    const FIXTURE_NAME = ${JSON.stringify(name)};
-    const FIXTURE_MODE = ${JSON.stringify(mode)};
-    function rect(el) {
-      const r = el.getBoundingClientRect();
-      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
-    }
-    function metrics(el) {
-      if (!el) return null;
-      const style = getComputedStyle(el);
-      return {
-        ...rect(el),
-        clientWidth: el.clientWidth,
-        clientHeight: el.clientHeight,
-        scrollWidth: el.scrollWidth,
-        scrollHeight: el.scrollHeight,
-        overflowX: style.overflowX,
-        overflowY: style.overflowY,
-        display: style.display,
-        whiteSpace: style.whiteSpace,
-        textOverflow: style.textOverflow,
-      };
-    }
-    function isVisible(el) {
-      const style = getComputedStyle(el);
-      const r = el.getBoundingClientRect();
-      return style.display !== "none" && r.width > 1 && r.height > 1;
-    }
-    window.__ready = new Promise((resolve) => {
-      addEventListener("load", () => requestAnimationFrame(() => requestAnimationFrame(resolve)), { once: true });
-    });
-    window.measureFrame = function () {
-      const sheet = document.querySelector('[data-role="sheet"]');
-      const sheetBody = document.querySelector('[data-role="sheet-body"]');
-      const activityPanel = document.querySelector('[data-role="activity-panel"]');
-      const masterDetail = document.querySelector('[data-role="master-detail"]');
-      const mobilePane = document.querySelector('[data-role="mobile-pane"]');
-      const treePane = document.querySelector('[data-role="tree-pane"]');
-      const inspectorPane = document.querySelector('[data-role="inspector-pane"]');
-      const outputPre = document.querySelector('[data-role="output-pre"]');
-      const deepLabel = document.querySelector('[data-role$="deep-label"]');
-      const deepDetail = document.querySelector('[data-role$="deep-detail"]');
-      const backControl = document.querySelector('[data-role="back-control"]');
-      const visiblePanes = [...document.querySelectorAll('[data-role="tree-pane"], [data-role="inspector-pane"]')].filter(isVisible);
-      return {
-        fixture: FIXTURE_NAME,
-        mode: FIXTURE_MODE,
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        structure: {
-          sheetPresent: Boolean(sheet),
-          sheetBodyPresent: Boolean(sheetBody),
-          activityPanelPresent: Boolean(activityPanel),
-          primaryLayoutPresent: Boolean(masterDetail || mobilePane),
-          sheetContainsBody: Boolean(sheet && sheetBody && sheet.contains(sheetBody)),
-          bodyContainsActivity: Boolean(sheetBody && activityPanel && sheetBody.contains(activityPanel)),
-          activityContainsPrimaryLayout: Boolean(activityPanel && (masterDetail || mobilePane) && activityPanel.contains(masterDetail || mobilePane)),
-        },
-        visiblePaneCount: visiblePanes.length,
-        visiblePaneRoles: visiblePanes.map((pane) => pane.getAttribute("data-role")),
-        sheet: metrics(sheet),
-        sheetBody: metrics(sheetBody),
-        activityPanel: metrics(activityPanel),
-        primaryLayout: metrics(masterDetail || mobilePane),
-        treePane: metrics(treePane),
-        inspectorPane: metrics(inspectorPane),
-        outputPre: metrics(outputPre),
-        deepLabel: metrics(deepLabel),
-        deepDetail: metrics(deepDetail),
-        mobileBack: metrics(backControl),
-      };
-    };
-  </script>
 </body>
 </html>`;
 }
@@ -426,9 +449,11 @@ for (const fixture of fixtures) {
   const section = document.createElement("section");
   section.className = "fixture";
   section.setAttribute("data-fixture", fixture.name);
+
   const label = document.createElement("div");
   label.className = "fixtureLabel";
   label.textContent = fixture.label;
+
   const frame = document.createElement("iframe");
   frame.className = "fixtureFrame";
   frame.width = String(fixture.width);
@@ -436,19 +461,182 @@ for (const fixture of fixtures) {
   frame.style.width = `${fixture.width}px`;
   frame.style.height = `${fixture.height}px`;
   frame.srcdoc = frameDocument(fixture);
+
   section.append(label, frame);
   fixtureRoot.append(section);
   frames.push({ fixture, frame });
 }
 
+function waitForFrameReady(frame, fixture) {
+  return new Promise((resolve, reject) => {
+    const start = performance.now();
+    const deadlineMs = 1500;
+    const finish = () => {
+      const win = frame.contentWindow;
+      const doc = frame.contentDocument;
+      if (!win || !doc) {
+        reject(new Error("fixture frame missing contentWindow"));
+        return;
+      }
+      const checkReady = () => {
+        const primaryLayout = doc.querySelector('[data-role="master-detail"], [data-role="mobile-pane"]');
+        const treePane = doc.querySelector('[data-role="tree-pane"]');
+        const inspectorPane = doc.querySelector('[data-role="inspector-pane"]');
+        const display = primaryLayout ? win.getComputedStyle(primaryLayout).display : null;
+        const primaryWidth = primaryLayout?.getBoundingClientRect().width ?? 0;
+        const treeWidth = treePane?.clientWidth ?? 0;
+        const inspectorWidth = inspectorPane?.clientWidth ?? 0;
+        const ready =
+          fixture.mode === "desktop"
+            ? display === "grid" && primaryWidth > 0 && treeWidth > 0 && inspectorWidth > 0
+            : fixture.mode === "mobile-tree"
+              ? display === "flex" && primaryWidth > 0 && treeWidth > 0
+              : primaryWidth > 0 && inspectorWidth > 0;
+        if (ready || performance.now() - start > deadlineMs) {
+          resolve();
+          return;
+        }
+        win.requestAnimationFrame(checkReady);
+      };
+      win.requestAnimationFrame(() => win.requestAnimationFrame(checkReady));
+    };
+    if (frame.contentDocument?.readyState === "complete") {
+      finish();
+      return;
+    }
+    frame.addEventListener("load", finish, { once: true });
+  });
+}
+
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+function metrics(doc, el) {
+  if (!el) return null;
+  const style = doc.defaultView.getComputedStyle(el);
+  return {
+    ...rect(el),
+    clientWidth: el.clientWidth,
+    clientHeight: el.clientHeight,
+    scrollWidth: el.scrollWidth,
+    scrollHeight: el.scrollHeight,
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    display: style.display,
+    whiteSpace: style.whiteSpace,
+    textOverflow: style.textOverflow,
+  };
+}
+
+function isVisible(doc, el) {
+  const style = doc.defaultView.getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  return style.display !== "none" && r.width > 1 && r.height > 1;
+}
+
+function elementHint(el) {
+  if (!el) return null;
+  const parts = [el.tagName.toLowerCase()];
+  const role = el.getAttribute("data-role");
+  if (role) parts.push(`[data-role="${role}"]`);
+  const className = typeof el.className === "string" ? el.className.trim().replace(/\s+/g, ".") : "";
+  if (className) parts.push(`.${className}`);
+  return parts.join("");
+}
+
+function widestDescendant(doc, container) {
+  if (!container) return null;
+  const containerRect = container.getBoundingClientRect();
+  let best = null;
+  for (const el of [container, ...container.querySelectorAll('*')]) {
+    const m = metrics(doc, el);
+    const overflowRight = m.right - containerRect.left;
+    const score = Math.max(overflowRight, m.scrollWidth, m.clientWidth);
+    if (!best || score > best.score) {
+      best = {
+        score,
+        hint: elementHint(el),
+        clientWidth: m.clientWidth,
+        scrollWidth: m.scrollWidth,
+        width: m.width,
+        rightFromContainerLeft: overflowRight,
+      };
+    }
+  }
+  return best;
+}
+
+function measureFrame({ fixture, frame }) {
+  const win = frame.contentWindow;
+  const doc = frame.contentDocument;
+  if (!win || !doc) throw new Error(`fixture ${fixture.name} missing frame document`);
+
+  const sheet = doc.querySelector('[data-role="sheet"]');
+  const sheetBody = doc.querySelector('[data-role="sheet-body"]');
+  const activityPanel = doc.querySelector('[data-role="activity-panel"]');
+  const masterDetail = doc.querySelector('[data-role="master-detail"]');
+  const mobilePane = doc.querySelector('[data-role="mobile-pane"]');
+  const treePane = doc.querySelector('[data-role="tree-pane"]');
+  const inspectorPane = doc.querySelector('[data-role="inspector-pane"]');
+  const outputCodeBlock = doc.querySelector('[data-role="output-codeblock"]');
+  const outputCodePre = doc.querySelector('[data-role="output-code-pre"]');
+  const deepLabel = doc.querySelector('[data-role$="deep-label"]');
+  const deepDetail = doc.querySelector('[data-role$="deep-detail"]');
+  const backControl = doc.querySelector('[data-role="back-control"]');
+  const visiblePanes = [...doc.querySelectorAll('[data-role="tree-pane"], [data-role="inspector-pane"]')].filter((pane) => isVisible(doc, pane));
+  const primaryLayout = masterDetail || mobilePane;
+
+  return {
+    fixture: fixture.name,
+    mode: fixture.mode,
+    viewport: { width: win.innerWidth, height: win.innerHeight },
+    structure: {
+      sheetPresent: Boolean(sheet),
+      sheetBodyPresent: Boolean(sheetBody),
+      activityPanelPresent: Boolean(activityPanel),
+      primaryLayoutPresent: Boolean(primaryLayout),
+      sheetContainsBody: Boolean(sheet && sheetBody && sheet.contains(sheetBody)),
+      bodyContainsActivity: Boolean(sheetBody && activityPanel && sheetBody.contains(activityPanel)),
+      activityContainsPrimaryLayout: Boolean(activityPanel && primaryLayout && activityPanel.contains(primaryLayout)),
+      outputCodeBlockPresent: Boolean(outputCodeBlock),
+      outputCodePrePresent: Boolean(outputCodePre),
+    },
+    visiblePaneCount: visiblePanes.length,
+    visiblePaneRoles: visiblePanes.map((pane) => pane.getAttribute("data-role")),
+    sheet: metrics(doc, sheet),
+    sheetBody: metrics(doc, sheetBody),
+    activityPanel: metrics(doc, activityPanel),
+    primaryLayout: metrics(doc, primaryLayout),
+    treePane: metrics(doc, treePane),
+    inspectorPane: metrics(doc, inspectorPane),
+    sizing: {
+      sheetPanelWidth: sheet ? rect(sheet).width : null,
+      sheetBodyWidth: sheetBody ? rect(sheetBody).width : null,
+      activityPanelWidth: activityPanel ? rect(activityPanel).width : null,
+      primaryLayoutWidth: primaryLayout ? rect(primaryLayout).width : null,
+      treePaneWidth: treePane ? rect(treePane).width : null,
+      inspectorPaneWidth: inspectorPane ? rect(inspectorPane).width : null,
+      masterDetailDisplay: primaryLayout ? win.getComputedStyle(primaryLayout).display : null,
+      masterDetailGridColumns: primaryLayout ? win.getComputedStyle(primaryLayout).gridTemplateColumns : null,
+      treePaneMinWidth: treePane ? win.getComputedStyle(treePane).minWidth : null,
+      treePaneFlexBasis: treePane ? win.getComputedStyle(treePane).flexBasis : null,
+      firstGroupPaddingLeft: doc.querySelector('.group') ? win.getComputedStyle(doc.querySelector('.group')).paddingLeft : null,
+      rowActionsFlexWrap: doc.querySelector('.rowActions') ? win.getComputedStyle(doc.querySelector('.rowActions')).flexWrap : null,
+      treeWidestDescendant: widestDescendant(doc, treePane),
+    },
+    outputCodeBlock: metrics(doc, outputCodeBlock),
+    outputCodePre: metrics(doc, outputCodePre),
+    deepLabel: metrics(doc, deepLabel),
+    deepDetail: metrics(doc, deepDetail),
+    mobileBack: metrics(doc, backControl),
+  };
+}
+
 window.measure = async function () {
-  await Promise.all(
-    frames.map(async ({ frame }) => {
-      if (!frame.contentWindow) throw new Error("fixture frame missing contentWindow");
-      await frame.contentWindow.__ready;
-    }),
-  );
-  return frames.map(({ frame }) => frame.contentWindow.measureFrame());
+  await Promise.all(frames.map(({ frame, fixture }) => waitForFrameReady(frame, fixture)));
+  return frames.map((frameInfo) => measureFrame(frameInfo));
 };
 </script>
 </body>
