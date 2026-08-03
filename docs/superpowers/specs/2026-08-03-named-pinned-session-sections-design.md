@@ -98,9 +98,9 @@ Introduce two first-class concepts in the Hub's existing SQLite `index.db`:
 - primary key on `session_id`, enforcing one section per session;
 - foreign-key deletion cascades assignments when a section is deleted.
 
-The store performs create-and-assign, move, rename, unpin, and delete-with-members in transactions. It invokes the existing tree-change callback only after a successful commit.
+The store performs create-and-assign, move, rename, unpin, and delete-with-members in transactions. Every connection enables SQLite foreign-key enforcement before mutation or query work. Tests must prove that deleting a section cannot leave orphaned assignments.
 
-Section names use the same practical text limits as other user-entered sidebar names. The implementation plan must choose one explicit maximum and enforce it in both the API and UI. Normalization trims surrounding Unicode whitespace and compares names case-insensitively. It does not otherwise rewrite the user's display spelling.
+Section names contain at most 80 Unicode code points after trimming. The API and UI enforce the same limit. Normalization trims surrounding Unicode whitespace and computes a Unicode case-folded comparison key. It does not otherwise rewrite the user's display spelling. SQLite enforces uniqueness on the comparison key, so names such as `Research` and `research` identify one section.
 
 ## Existing Favorite Compatibility
 
@@ -112,11 +112,14 @@ On first use of the new pin-section store, Serf performs an idempotent internal 
 2. if any legacy `favorited=true`, `kind="session"` rows exist, create or reuse a section named **Pinned**;
 3. assign each valid legacy top-level session favorite to that section unless it already has an assignment;
 4. leave project favorite rows unchanged;
-5. mark or remove migrated session-favorite decisions in the same transaction so future startup cannot recreate removed assignments.
+5. delete every `kind="session"` favorite decision, including false decisions, in the same transaction;
+6. record the completed migration in the schema version so later startup cannot recreate an assignment that a user removed.
 
 This migration has no user-facing prompt. It preserves the current **Pinned** name as an ordinary section: users may rename it, delete it, or let it become hidden when empty. No permanent fallback section exists.
 
 Existing favorite authority and revalidation rules still determine which top-level sessions are valid candidates. Invalid subagent, fork, malformed, missing-authority, or ambiguous identities must not become assignments. Temporarily unavailable remote assignments remain durable but appear only when the authoritative session is available, matching current dormant-favorite behavior.
+
+Deleting one session also deletes its assignment. Project deletion deletes assignments only for sessions actually removed; assignments for skipped live sessions survive. These cleanup paths report pin-store failures through the deletion result's existing decision-error mechanism and do not remove a section that becomes empty.
 
 ## API and Wire Contract
 
@@ -136,26 +139,25 @@ Replace the session-oriented `favorites` projection with a first-class collectio
 }
 ```
 
-`pin_sections` includes only non-empty sections with at least one currently renderable authoritative session. A separate lightweight section-list endpoint supplies all sections, including hidden empty ones, for menus. This keeps `/api/tree` focused on rendered navigation and avoids shipping empty sidebar groups.
+`pin_sections` includes only sections with at least one currently renderable authoritative session. A section whose durable members are all temporarily unavailable is hidden until one becomes renderable again; its assignments remain intact. A separate lightweight section-list endpoint supplies all sections, including hidden empty or temporarily unrenderable ones, for menus. This keeps `/api/tree` focused on rendered navigation and avoids shipping empty sidebar groups.
 
-Each returned pinned `TreeNode` carries its section identifier so row menus can identify the current assignment without searching every group. The existing `favorite` boolean remains meaningful for project rows only; session UI code migrates to explicit section membership.
+Each `TreeNode` for an assigned session carries `pin_section_id`, including duplicate appearances under **Live** or a project. This lets every copy of the row expose the same move/unpin state without searching groups. The existing `favorite` boolean remains meaningful for project rows only; session UI code migrates to explicit section membership.
 
 ### Mutations
 
-Add session-pin endpoints with explicit operations:
+Add these contracts:
 
-- list all sections;
-- create-or-reuse a section and assign a session;
-- assign or move a session to an existing section;
-- unpin a session;
-- rename a section;
-- delete a section and its assignments.
+- `GET /api/pin-sections` returns every section, sorted alphabetically, as `{id, name, member_count}`. `member_count` counts durable assignments, including temporarily unrenderable sessions.
+- `POST /api/session-pin` accepts `session_ref` and exactly one of `section_id` or `section_name`. An ID assigns or moves to an existing section. A name atomically creates-or-reuses a section and assigns or moves the session. It returns the canonical section and assignment.
+- `DELETE /api/session-pin?ref=<session-ref>` unpins one session and returns whether an assignment existed.
+- `PATCH /api/pin-sections/<id>` accepts `name`, renames one section, and returns the canonical section.
+- `DELETE /api/pin-sections/<id>` deletes the section and every assignment and returns the deleted durable member count.
 
-Mutation requests use stable section IDs. Create-or-reuse accepts a name and returns the canonical section. Every session mutation validates that the requested identity names a real top-level session using the existing favorite validation path.
+Mutation requests use stable section IDs except for the explicit create-or-reuse name path. Every session mutation validates that the requested identity names a real top-level session using the existing favorite validation path. Invalid input returns `400`, an unknown section returns `404`, a rename conflict returns `409`, and a store failure returns `500`.
 
-Successful mutations emit the existing tree-changed notification and return the resulting section or assignment needed to reconcile optimistic UI. The client still refreshes the tree after success, preserving the rail's current authoritative refresh pattern.
+After a successful commit, the API handler calls `notifyMutation` exactly once. Failed requests and true no-ops emit no notification. The pin store itself does not broadcast, which preserves the current favorite/archive mutation ownership and prevents double notifications. The client still refreshes the tree after success, preserving the rail's current authoritative refresh pattern.
 
-The old session form of `POST /api/favorite` remains temporarily readable only as needed for compatibility during rollout, but the WebUI stops calling it. Project requests continue unchanged. The implementation plan must identify and update every in-repository caller before removing session support.
+This is a flag-day replacement for session callers: `POST /api/favorite` rejects `kind="session"` with `400` and directs clients to `/api/session-pin`. Project requests continue unchanged. Implementation updates every in-repository session caller and test in the same change.
 
 ## Frontend Components and State
 
@@ -168,7 +170,7 @@ Keep the current rail architecture and extend its boundaries rather than introdu
 - `actions.ts` owns typed section and assignment requests.
 - `railPending.ts` projects pin, move, unpin, rename, and delete operations while requests are in flight.
 
-The section picker loads all sections from the durable section-list API, not from visible tree groups, because empty sections are intentionally absent from the tree. The client may cache that list, but it refreshes after every section mutation and when opening a picker if no current list exists.
+The section picker loads all sections from the durable section-list API, not from visible tree groups, because empty sections are intentionally absent from the tree. The client caches that list for an open picker only: it fetches on every picker open and refreshes after a section mutation. This avoids stale cross-client category choices without adding another long-lived store.
 
 ## Data Flow
 
@@ -209,7 +211,7 @@ These operations use the same optimistic-mutation pattern. Server transactions p
 - Pin, move, rename, delete, and unpin actions are keyboard reachable through existing row and overflow menu primitives.
 - Section headings expose disclosure state with `aria-expanded` and use buttons for collapse/expand.
 - Menus mark the current section semantically, not by color alone.
-- The delete confirmation names the section and states the number of sessions that will be unpinned.
+- The delete confirmation names the section and uses the section-list API's durable `member_count`, so temporarily unavailable members are included in the number that will be unpinned.
 - Name prompts associate validation errors with the input and preserve entered text after a rejected request.
 
 ## Testing
