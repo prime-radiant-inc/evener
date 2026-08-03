@@ -549,6 +549,37 @@ describe("loadProjectDetail", () => {
     expect(treeStore.getState().projectDetails.get("p1")?.sessions).toEqual([]);
   });
 
+  test("tags a loaded detail with the authoritative tree generation it belongs to", async () => {
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE }, treeGeneration: 7 });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ key: "p1", name: "Proj", sessions: null }));
+
+    await treeStore.getState().loadProjectDetail("p1");
+
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
+  test("a successful refresh advances tree generation without falsely retagging retained detail", async () => {
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, archived_projects: [{ key: "p1", name: "Proj", sessions: [] }] },
+      treeGeneration: 7,
+      projectDetails: new Map([["p1", { key: "p1", name: "Proj", sessions: [] }]]),
+      projectDetailGenerations: new Map([["p1", 7]]),
+    });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        generated_at: "2026-01-02T00:00:00Z",
+        archived_projects: [{ key: "p1", name: "Proj", sessions: null, session_count: 1 }],
+      }),
+    );
+
+    await treeStore.getState().refresh();
+
+    expect(treeStore.getState().treeGeneration).not.toBe(7);
+    expect(treeStore.getState().projectDetails.has("p1")).toBe(true);
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
   test("a failed load leaves projectDetails unchanged and never throws (retriable)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "not found" }, 404));
     await expect(treeStore.getState().loadProjectDetail("missing")).resolves.toBeUndefined();

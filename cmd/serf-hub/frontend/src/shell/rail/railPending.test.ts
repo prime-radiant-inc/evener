@@ -7,7 +7,7 @@ import type {
   PinSectionTree,
   TreeResponse,
 } from "../../stores/tree";
-import { applyPending, type PendingOp } from "./railPending";
+import { applyPending, buildPinSourceIndex, type PendingOp } from "./railPending";
 
 function node(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   return {
@@ -199,7 +199,7 @@ describe("applyPending", () => {
       return ids;
     }
 
-    test("sessionPin uses the explicitly selected authoritative row rather than the first duplicate in search order", () => {
+    test("sessionPin uses one explicitly selected row when duplicate current rows share a ref", () => {
       const source = duplicateFixture();
       const selected = source.projects[0]!.sessions[0]!;
       const got = applyPending(source, [
@@ -215,6 +215,7 @@ describe("applyPending", () => {
       expect(allCopies(got, "local:a").every((copy) => copy.pin_section_id === "target")).toBe(true);
       expect(section(got, "old")?.sessions.map((session) => session.ref)).toEqual(["local:first"]);
       expect(section(got, "target")?.sessions.map((session) => session.ref)).toEqual(["local:keep", "local:a"]);
+      expect(section(got, "target")?.sessions.filter((candidate) => candidate.ref === "local:a")).toHaveLength(1);
       expect(section(got, "target")?.sessions[1]).toMatchObject({
         row_id: "project:a",
         title: "Selected authoritative A",
@@ -346,7 +347,12 @@ describe("applyPending", () => {
             section: { id: "target", name: "Target", member_count: 1 },
           },
         ],
-        [hydrated],
+        {
+          pinSources: buildPinSourceIndex(source, {
+            treeGeneration: 7,
+            projectDetails: [{ projectKey: "archived", treeGeneration: 7, rows: [hydrated] }],
+          }),
+        },
       );
 
       expect(section(got, "target")?.sessions).toHaveLength(1);
@@ -357,9 +363,29 @@ describe("applyPending", () => {
       });
     });
 
-    test("sessionPin accepts an explicitly selected paged top-level row outside the capped TreeResponse", () => {
+    test("sessionPin accepts an explicitly selected currently rendered paged row merged into TreeResponse", () => {
       const paged = node({ row_id: "page:51:a", ref: "local:a", title: "Paged row", tier: "recent" });
-      const source = tree({ projects: [project({ key: "paged", sessions: [], more_recent: 1 })] });
+      const source = tree({ projects: [project({ key: "paged", sessions: [paged], more_recent: 0 })] });
+
+      const got = applyPending(source, [
+        {
+          kind: "sessionPin",
+          ref: "local:a",
+          source: paged,
+          section: { id: "target", name: "Target", member_count: 1 },
+        },
+      ]);
+
+      expect(section(got, "target")?.sessions.map((candidate) => candidate.row_id)).toEqual(["page:51:a"]);
+    });
+
+    test("sessionPin rejects a cached detail whose project disappeared from the current tree", () => {
+      const cached = node({ row_id: "cached:gone:a", ref: "local:a", title: "Stale disappeared project" });
+      const source = tree();
+      const pinSources = buildPinSourceIndex(source, {
+        treeGeneration: 8,
+        projectDetails: [{ projectKey: "gone", treeGeneration: 8, rows: [cached] }],
+      });
 
       const got = applyPending(
         source,
@@ -367,14 +393,63 @@ describe("applyPending", () => {
           {
             kind: "sessionPin",
             ref: "local:a",
-            source: paged,
+            source: cached,
             section: { id: "target", name: "Target", member_count: 1 },
           },
         ],
-        [paged],
+        { pinSources },
       );
 
-      expect(section(got, "target")?.sessions.map((candidate) => candidate.row_id)).toEqual(["page:51:a"]);
+      expect(got.pin_sections).toEqual([]);
+    });
+
+    test("sessionPin rejects a cached row removed while its project remains in the current tree", () => {
+      const cached = node({ row_id: "cached:removed:a", ref: "local:a", title: "Stale removed row" });
+      const source = tree({
+        archived_projects: [project({ key: "archived", is_archived: true, sessions: [], session_count: 1 })],
+      });
+      const pinSources = buildPinSourceIndex(source, {
+        treeGeneration: 9,
+        projectDetails: [{ projectKey: "archived", treeGeneration: 8, rows: [cached] }],
+      });
+
+      const got = applyPending(
+        source,
+        [
+          {
+            kind: "sessionPin",
+            ref: "local:a",
+            source: cached,
+            section: { id: "target", name: "Target", member_count: 1 },
+          },
+        ],
+        { pinSources },
+      );
+
+      expect(got.pin_sections).toEqual([]);
+    });
+
+    test("sessionPin rejects a selected archived row when current detail is missing", () => {
+      const missing = node({ row_id: "missing-detail:a", ref: "local:a", title: "No current detail" });
+      const source = tree({
+        archived_projects: [project({ key: "archived", is_archived: true, sessions: [], session_count: 1 })],
+      });
+      const pinSources = buildPinSourceIndex(source, { treeGeneration: 10, projectDetails: [] });
+
+      const got = applyPending(
+        source,
+        [
+          {
+            kind: "sessionPin",
+            ref: "local:a",
+            source: missing,
+            section: { id: "target", name: "Target", member_count: 1 },
+          },
+        ],
+        { pinSources },
+      );
+
+      expect(got.pin_sections).toEqual([]);
     });
 
     test("sessionPin does not promote a nested-only ordinary session row", () => {

@@ -993,7 +993,7 @@ describe("optimistic feedback", () => {
     release();
   });
 
-  test("pinning a session shows its star immediately", async () => {
+  test("pinning a session does not guess an optimistic favorite state", async () => {
     renderRail();
     await screen.findByText("Session one");
     expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeNull();
@@ -1003,7 +1003,7 @@ describe("optimistic feedback", () => {
     await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
     await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
 
-    await vi.waitFor(() => expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeTruthy());
+    expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeNull();
     release();
   });
 

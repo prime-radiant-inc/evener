@@ -50,7 +50,7 @@ import {
   type RailNode,
   sessionNodes,
 } from "./railNodes";
-import { applyPending, type PendingOp } from "./railPending";
+import { applyPending, buildPinSourceIndex, type PendingOp } from "./railPending";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -199,7 +199,9 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const fetchedTree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
+  const treeGeneration = useTreeStore((s) => s.treeGeneration);
   const projectDetails = useTreeStore((s) => s.projectDetails);
+  const projectDetailGenerations = useTreeStore((s) => s.projectDetailGenerations);
   // Footer identity: the connected daemon's own name (never a fabricated user
   // handle). Falls back to the "serf" brand string before a handshake has
   // populated serverInfo.
@@ -224,14 +226,22 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
 
   // applyPending returns the same object when nothing is pending, so the
   // common case allocates nothing and every downstream memo stays stable.
+  const currentProjectDetails = new Map(
+    Array.from(projectDetails).filter(([key]) => projectDetailGenerations.get(key) === treeGeneration),
+  );
   const tree =
     fetchedTree === null
       ? null
-      : applyPending(
-          fetchedTree,
-          pending,
-          Array.from(projectDetails.values()).flatMap((detail) => detail.sessions),
-        );
+      : applyPending(fetchedTree, pending, {
+          pinSources: buildPinSourceIndex(fetchedTree, {
+            treeGeneration,
+            projectDetails: Array.from(currentProjectDetails, ([projectKey, detail]) => ({
+              projectKey,
+              treeGeneration,
+              rows: detail.sessions,
+            })),
+          }),
+        });
 
   // ensureLoaded, not refresh: the duty here is "the rail has data", and the
   // tree it renders is kept current by serf/tree/changed pushes, so a mount
@@ -304,13 +314,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     // Archived projects ship as session_count-only stubs (see
     // cmd/serf-hub/web_api_tree.go's apiTreeProject doc comment); the first
     // expand is what triggers the lazy load. Already-loaded / already
-    // in-flight is naturally deduped by projectDetails already having the
-    // key, so a second expand never re-fetches.
+    // in-flight/current-generation detail is naturally deduped by its
+    // provenance marker. A retained cache entry from an older tree generation
+    // is deliberately re-fetched: it is neither rendered nor pin-eligible.
     if (
       willExpand &&
       node.kind === "project" &&
       node.project.is_archived === true &&
-      !projectDetails.has(node.project.key)
+      projectDetailGenerations.get(node.project.key) !== treeGeneration
     ) {
       void treeStore.getState().loadProjectDetail(node.project.key);
     }
@@ -535,7 +546,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const unarchivedProjects = tree ? [...tree.projects, ...tree.test_runs] : [];
   const archivedNodes = tree
     ? [
-        ...archivedProjectNodes(tree.archived_projects, projectDetails, isExpanded),
+        ...archivedProjectNodes(tree.archived_projects, currentProjectDetails, isExpanded),
         ...archivedSessionGroups(unarchivedProjects, isExpanded),
       ]
     : [];
