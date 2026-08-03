@@ -144,15 +144,6 @@ describe("named pin sections", () => {
 });
 
 describe("setFavorite", () => {
-  test("POSTs /api/favorite with exact kind/id/favorited body", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
-    await setFavorite("session", "local:abc", true);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/favorite",
-      JSON_INIT({ kind: "session", id: "local:abc", favorited: true }),
-    );
-  });
-
   test("works for kind=project", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await setFavorite("project", "proj-key", false);
@@ -164,7 +155,7 @@ describe("setFavorite", () => {
 
   test("rejects with the server's error message on failure", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: "favorite store error: boom" }, 500));
-    await expect(setFavorite("session", "x", true)).rejects.toThrow("favorite store error: boom");
+    await expect(setFavorite("project", "x", true)).rejects.toThrow("favorite store error: boom");
   });
 });
 

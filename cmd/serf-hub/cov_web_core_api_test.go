@@ -180,7 +180,7 @@ func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 	}
 	bad := NewWebServer(hubcore.WebConfig{Archive: hubcore.NewArchiveStore(badPath), Favorite: hubcore.NewFavoriteStore(badPath)})
 	_ = covWebRequest(t, bad, http.MethodPost, "/api/archive", `{"kind":"session","id":"x","archived":true}`)
-	_ = covWebRequest(t, bad, http.MethodPost, "/api/favorite", `{"kind":"session","id":"x","favorited":true}`)
+	_ = covWebRequest(t, bad, http.MethodPost, "/api/favorite", `{"kind":"project","id":"x","favorited":true}`)
 }
 
 func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {

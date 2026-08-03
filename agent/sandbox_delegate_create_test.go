@@ -360,12 +360,11 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 					// worktree and the real read-only file tool must reject it.
 					chosenPath = "dumb-report.md"
 				} else {
-					start := strings.Index(promptText, scratchMarker)
-					if start < 0 {
+					_, scratch, found := strings.Cut(promptText, scratchMarker)
+					if !found {
 						modelError = "prompt had the write-boundary sentence but no scratch path"
 						chosenPath = "dumb-report.md"
 					} else {
-						scratch := promptText[start+len(scratchMarker):]
 						if end := strings.Index(scratch, ". "+guidance); end >= 0 {
 							scratch = scratch[:end]
 						}

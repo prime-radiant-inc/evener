@@ -560,10 +560,10 @@ describe("applyPending", () => {
     });
   });
 
-  test("PendingOp excludes the removed sessionFavorite overlay", () => {
-    // @ts-expect-error session favorites were replaced by named sessionPin/sessionUnpin operations.
-    const stale: PendingOp = { kind: "sessionFavorite", ref: "local:a", value: true };
-    expect(stale.kind).toBe("sessionFavorite");
+  test("PendingOp excludes the removed binary session pin overlay", () => {
+    // @ts-expect-error legacy binary pin overlays were replaced by named sessionPin/sessionUnpin operations.
+    const stale: PendingOp = { kind: "legacySessionPin", ref: "local:a", value: true };
+    expect(stale.kind).toBe("legacySessionPin");
   });
 
   test("applies several ops in order", () => {

@@ -52,6 +52,18 @@ func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.
 	}
 }
 
+func TestPinSectionStoreCreateReusesUnicodeCaseFoldedName(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	first, changed, err := store.CreateOrReuseAndAssign("Straße", "session-a", time.Unix(1, 0))
+	if err != nil || !changed || first.MemberCount != 1 {
+		t.Fatalf("first = %+v, %v, %v", first, changed, err)
+	}
+	reused, changed, err := store.CreateOrReuseAndAssign("STRASSE", "session-b", time.Unix(2, 0))
+	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Straße" || reused.MemberCount != 2 {
+		t.Fatalf("reuse = %+v, %v, %v", reused, changed, err)
+	}
+}
+
 func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
 	first, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
@@ -429,6 +441,6 @@ func favoriteRowsSnapshotForTest(store *PinSectionStore) ([]favoriteRow, error) 
 	return out, rows.Err()
 }
 
-func errorsIsPinSectionNotFound(err error) bool { return err == ErrPinSectionNotFound }
+func errorsIsPinSectionNotFound(err error) bool { return errors.Is(err, ErrPinSectionNotFound) }
 
-func errorsIsPinSectionConflict(err error) bool { return err == ErrPinSectionConflict }
+func errorsIsPinSectionConflict(err error) bool { return errors.Is(err, ErrPinSectionConflict) }

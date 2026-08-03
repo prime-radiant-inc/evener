@@ -120,25 +120,26 @@ func (s *PinSectionStore) open() (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil { //nolint:noctx // local file DB
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	var enabled int
-	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&enabled); err != nil { //nolint:noctx // local file DB
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&enabled); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if enabled != 1 {
 		_ = db.Close()
-		return nil, fmt.Errorf("foreign_keys pragma not enabled")
+		return nil, errors.New("foreign_keys pragma not enabled")
 	}
-	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil { //nolint:noctx // local file DB
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	for _, stmt := range []string{createPinSectionTable, createSessionPinTable, createHubSchemaMigrationTable, createFavoriteTable} {
-		if _, err := db.Exec(stmt); err != nil { //nolint:noctx // local file DB
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -157,12 +158,12 @@ func (s *PinSectionStore) Sections() ([]PinSection, error) {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(context.Background(), `
 SELECT s.id, s.name, s.created_at, s.updated_at, COUNT(p.session_id)
 FROM pin_section AS s
 LEFT JOIN session_pin AS p ON p.section_id = s.id
 GROUP BY s.id, s.name, s.name_key, s.created_at, s.updated_at
-ORDER BY s.name_key, s.name, s.id`) //nolint:noctx // local file DB
+	ORDER BY s.name_key, s.name, s.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +189,7 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			return PinSection{}, false, err
@@ -260,7 +261,7 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			return PinSection{}, false, err
@@ -331,7 +332,7 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			return PinSection{}, false, err
@@ -386,7 +387,7 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 			_ = db.Close()
 			return PinSection{}, false, ErrPinSectionConflict
 		}
-		if _, err := tx.Exec(`UPDATE pin_section SET name = ?, name_key = ?, updated_at = ? WHERE id = ?`, display, key, now.Unix(), sectionID); err != nil { //nolint:noctx // local file DB
+		if _, err := tx.ExecContext(context.Background(), `UPDATE pin_section SET name = ?, name_key = ?, updated_at = ? WHERE id = ?`, display, key, now.Unix(), sectionID); err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
 			if isSQLiteRetryable(err) {
@@ -431,7 +432,7 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 	if s == nil || s.dbPath == "" {
 		return 0, false, nil
 	}
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			return 0, false, err
@@ -467,7 +468,7 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 			}
 			return 0, false, err
 		}
-		if _, err := tx.Exec(`DELETE FROM pin_section WHERE id = ?`, section.ID); err != nil { //nolint:noctx // local file DB
+		if _, err := tx.ExecContext(context.Background(), `DELETE FROM pin_section WHERE id = ?`, section.ID); err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
 			if isSQLiteRetryable(err) {
@@ -494,7 +495,7 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			return false, err
@@ -507,7 +508,7 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 			}
 			return false, err
 		}
-		res, err := tx.Exec(`DELETE FROM session_pin WHERE session_id = ?`, sessionID) //nolint:noctx // local file DB
+		res, err := tx.ExecContext(context.Background(), `DELETE FROM session_pin WHERE session_id = ?`, sessionID)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
@@ -550,7 +551,7 @@ func (s *PinSectionStore) Assignments() (map[string]SessionPin, error) {
 		return out, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`SELECT session_id, section_id, assigned_at FROM session_pin ORDER BY session_id`) //nolint:noctx // local file DB
+	rows, err := db.QueryContext(context.Background(), `SELECT session_id, section_id, assigned_at FROM session_pin ORDER BY session_id`)
 	if err != nil {
 		return out, err
 	}
@@ -583,7 +584,7 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 		return false, err
 	}
 	var applied int
-	if err := tx.QueryRow(`SELECT 1 FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&applied); err == nil {
+	if err := tx.QueryRowContext(context.Background(), `SELECT 1 FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&applied); err == nil {
 		_ = tx.Rollback()
 		return false, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -594,7 +595,7 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	for _, decision := range decisions {
 		classificationByID[decision.StoredID] = decision
 	}
-	rows, err := tx.Query(`SELECT id, favorited FROM favorite WHERE kind = 'session'`) //nolint:noctx // local file DB
+	rows, err := tx.QueryContext(context.Background(), `SELECT id, favorited FROM favorite WHERE kind = 'session'`)
 	if err != nil {
 		_ = tx.Rollback()
 		return false, err
@@ -652,11 +653,11 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 			}
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM favorite WHERE kind = 'session'`); err != nil { //nolint:noctx // local file DB
+	if _, err := tx.ExecContext(context.Background(), `DELETE FROM favorite WHERE kind = 'session'`); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
-	if _, err := tx.Exec(`INSERT INTO hub_schema_migration(name, applied_at) VALUES (?, ?)`, "named-pin-sections-v1", now.Unix()); err != nil { //nolint:noctx // local file DB
+	if _, err := tx.ExecContext(context.Background(), `INSERT INTO hub_schema_migration(name, applied_at) VALUES (?, ?)`, "named-pin-sections-v1", now.Unix()); err != nil {
 		_ = tx.Rollback()
 		return false, err
 	}
@@ -683,7 +684,7 @@ func ensureSectionTx(tx *sql.Tx, display, key string, now time.Time) (PinSection
 		return PinSection{}, false, err
 	}
 	section = PinSection{ID: id, Name: display, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
-	if _, err := tx.Exec(`INSERT INTO pin_section(id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, section.ID, display, key, now.Unix(), now.Unix()); err != nil { //nolint:noctx // local file DB
+	if _, err := tx.ExecContext(context.Background(), `INSERT INTO pin_section(id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, section.ID, display, key, now.Unix(), now.Unix()); err != nil {
 		return PinSection{}, false, err
 	}
 	return section, true, nil
@@ -692,7 +693,7 @@ func ensureSectionTx(tx *sql.Tx, display, key string, now time.Time) (PinSection
 func sectionByIDTx(tx *sql.Tx, id string) (PinSection, bool, error) {
 	var section PinSection
 	var createdAt, updatedAt int64
-	if err := tx.QueryRow(`SELECT id, name, created_at, updated_at FROM pin_section WHERE id = ?`, id).Scan(&section.ID, &section.Name, &createdAt, &updatedAt); err != nil {
+	if err := tx.QueryRowContext(context.Background(), `SELECT id, name, created_at, updated_at FROM pin_section WHERE id = ?`, id).Scan(&section.ID, &section.Name, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PinSection{}, false, nil
 		}
@@ -706,7 +707,7 @@ func sectionByIDTx(tx *sql.Tx, id string) (PinSection, bool, error) {
 func sectionByKeyTx(tx *sql.Tx, key string) (PinSection, bool, error) {
 	var section PinSection
 	var createdAt, updatedAt int64
-	if err := tx.QueryRow(`SELECT id, name, created_at, updated_at FROM pin_section WHERE name_key = ?`, key).Scan(&section.ID, &section.Name, &createdAt, &updatedAt); err != nil {
+	if err := tx.QueryRowContext(context.Background(), `SELECT id, name, created_at, updated_at FROM pin_section WHERE name_key = ?`, key).Scan(&section.ID, &section.Name, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PinSection{}, false, nil
 		}
@@ -719,7 +720,7 @@ func sectionByKeyTx(tx *sql.Tx, key string) (PinSection, bool, error) {
 
 func sectionIDByKeyTx(tx *sql.Tx, key string) (string, bool, error) {
 	var id string
-	if err := tx.QueryRow(`SELECT id FROM pin_section WHERE name_key = ?`, key).Scan(&id); err != nil {
+	if err := tx.QueryRowContext(context.Background(), `SELECT id FROM pin_section WHERE name_key = ?`, key).Scan(&id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil
 		}
@@ -730,19 +731,19 @@ func sectionIDByKeyTx(tx *sql.Tx, key string) (string, bool, error) {
 
 func sessionPinCountTx(tx *sql.Tx, sectionID string) (int, error) {
 	var count int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM session_pin WHERE section_id = ?`, sectionID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM session_pin WHERE section_id = ?`, sectionID).Scan(&count); err != nil {
 		return 0, err
 	}
 	return count, nil
 }
 
 func upsertSessionPinTx(tx *sql.Tx, sessionID, sectionID string, now time.Time) (bool, error) {
-	res, err := tx.Exec(`
+	res, err := tx.ExecContext(context.Background(), `
 INSERT INTO session_pin(session_id, section_id, assigned_at)
 VALUES (?, ?, ?)
 ON CONFLICT(session_id) DO UPDATE
 SET section_id = excluded.section_id, assigned_at = excluded.assigned_at
-WHERE session_pin.section_id <> excluded.section_id`, sessionID, sectionID, now.Unix()) //nolint:noctx // local file DB
+	WHERE session_pin.section_id <> excluded.section_id`, sessionID, sectionID, now.Unix())
 	if err != nil {
 		return false, err
 	}

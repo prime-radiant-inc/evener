@@ -43,8 +43,8 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** POST /api/favorite. Body: {kind, id, favorited}. */
-export async function setFavorite(kind: "session" | "project", id: string, favorited: boolean): Promise<void> {
+/** POST /api/favorite for project rows only. Body: {kind:"project", id, favorited}. */
+export async function setFavorite(kind: "project", id: string, favorited: boolean): Promise<void> {
   await postJSON("/api/favorite", { kind, id, favorited });
 }
 
