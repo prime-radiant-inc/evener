@@ -195,8 +195,8 @@ func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) 
 		t.Fatalf("expected orient turn to be appended, got %d turns", len(history))
 	}
 	orientText := history[len(history)-1].Message.Text()
-	if !strings.Contains(orientText, "read_session_transcript") {
-		t.Errorf("expected read_session_transcript in orient text, got: %s", orientText)
+	if !strings.Contains(orientText, "read_transcript") {
+		t.Errorf("expected read_transcript in orient text, got: %s", orientText)
 	}
 	if strings.Contains(orientText, "recall") {
 		t.Errorf("expected no 'recall' reference in orient text, got: %s", orientText)
@@ -254,8 +254,8 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	if !strings.Contains(orientText, "session log truncated") {
 		t.Errorf("expected truncation notice in orient message, got: %s", orientText[:min(500, len(orientText))])
 	}
-	if !strings.Contains(orientText, "read_session_transcript") {
-		t.Errorf("expected read_session_transcript in truncation notice, got: %s", orientText[:min(500, len(orientText))])
+	if !strings.Contains(orientText, "read_transcript") {
+		t.Errorf("expected read_transcript in truncation notice, got: %s", orientText[:min(500, len(orientText))])
 	}
 	if strings.Contains(orientText, "recall") {
 		t.Errorf("expected no 'recall' reference in truncation notice, got: %s", orientText[:min(500, len(orientText))])

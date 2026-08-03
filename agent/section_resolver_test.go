@@ -663,7 +663,7 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 	section := resolver.Section("transcripts", data)
 
 	// Must name both tools.
-	for _, want := range []string{"read_session_transcript", "find_session_transcripts"} {
+	for _, want := range []string{"read_transcript", "find_session_transcripts"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("transcripts section missing tool name %q", want)
 		}

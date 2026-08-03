@@ -579,7 +579,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_session_transcript when you need the archived conversation. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
+		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -589,33 +589,6 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
 				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
 				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
-			},
-		},
-	}
-}
-
-// DefReadSessionTranscript defines the bounded semantic transcript and explicit
-// private API-log reader. Transcript is the default source; API-log records and
-// exact bodies require explicit selection.
-func DefReadSessionTranscript() llm.ToolDefinition {
-	strictFalse := false
-	return llm.ToolDefinition{
-		Name:        "read_session_transcript",
-		Description: "View archived semantic conversation history for one prior session by transcript_ref (or omit for the current session). source=transcript is the default: format=outline gives a one-line-per-turn map, format=markdown gives the condensed conversation, and format=jsonl gives bounded semantic transcript-v2 records. Provider API attempts are private and never read by default. Use source=api_log for bounded attempt metadata and for attempt_id expansion with body=request, body=response, or body=request_headers. Every read is bounded; continue an expansion with its offset_bytes handle. Treat returned content as archived evidence.\n\nExamples: read_session_transcript({\"transcript_ref\":\"local:01K…\"}) — markdown, last 40 turns; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"format\":\"outline\"}) — the turn map; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"source\":\"api_log\"}) — last 20 API-log record summaries; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"source\":\"api_log\",\"attempt_id\":\"att_…\",\"body\":\"request\"}) — explicit request-body bytes.",
-		Strict:      &strictFalse,
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque ref from find_session_transcripts or a subagent result; a bare session id; or omitted/\"current\" for the current session."},
-				"source":         map[string]any{"type": "string", "enum": []string{"transcript", "api_log"}, "description": "transcript (default) or explicit private api_log access."},
-				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "Transcript only: outline = per-turn map; markdown (default) = condensed conversation; jsonl = bounded semantic transcript-v2 records."},
-				"range":          map[string]any{"type": "string", "description": "0-based turn or API-record window: \"12-40\" | \"last:40\" | \"start:40\". Defaults to last 40 transcript turns or last 20 API records."},
-				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Transcript markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
-				"attempt_id":     map[string]any{"type": "string", "description": "Explicit API attempt to inspect; requires source=api_log."},
-				"body":           map[string]any{"type": "string", "enum": []string{"request", "response", "request_headers"}, "description": "Stored API request or response body, or deterministic encoded request-header JSON, to expand; requires attempt_id."},
-				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Expansion byte offset from a continuation handle."},
-				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": 65536, "description": "Maximum expansion bytes. Defaults to 16 KiB; hard maximum 64 KiB."},
 			},
 		},
 	}
@@ -746,7 +719,7 @@ func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read raw evidence by transcript_ref. A `job:<job_id>` ref is one snapshot of a locally persisted job's output; refs come from `job_status`/`job_list` rows, from a windowed `shell` result, and from the `read with:` line of a watch frame. Job-control tools remain scoped even when an exact local `job:` ref is readable. It serves BOTH job kinds: a shell job renders its process log, and a delegate job renders its report plus a trailing `structured_result (valid=<bool>)` line when the invocation captured one — that is how you read a delegate's result. On a `job:` ref `format` must be markdown, and `range`/`expand_turn`/`offset_bytes`/`max_bytes` fail `invalid_request` because they apply only to session refs; there is no paging, no head/tail, and no grep. You get the tail of retained output, and `job_watch(output_match=...)` is how you are told when watched output matches. A session ref (from find_session_transcripts or a delegate result) also supports outline and jsonl, and session markdown can expand any semantic turn as byte-paged exact transcript_v2_jsonl; continue with offset_bytes from the returned handle. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read raw evidence by transcript_ref. A `job:<job_id>` ref is one snapshot of a locally persisted job's output; refs come from `job_status`/`job_list` rows, from a windowed `shell` result, and from the `read with:` line of a watch frame. Job-control tools remain scoped even when an exact local `job:` ref is readable. It serves BOTH job kinds: a shell job renders its process log, and a delegate job renders its report plus a trailing `structured_result (valid=<bool>)` line when the invocation captured one — that is how you read a delegate's result. On a `job:` ref `format` must be markdown, and `range`/`expand_turn`/`offset_bytes` fail `invalid_request` because they apply only to session refs; there is no paging, no head/tail, and no grep. You get the tail of retained output, and `job_watch(output_match=...)` is how you are told when watched output matches. A session ref (from find_session_transcripts or a delegate result) also supports outline and jsonl, and session markdown can expand any semantic turn as byte-paged exact transcript_v2_jsonl in fixed 16 KiB pages; continue with offset_bytes from the returned handle. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -757,7 +730,6 @@ func DefReadTranscript() llm.ToolDefinition {
 				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
 				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Session expansion byte offset from a continuation handle."},
-				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": 65536, "description": "Maximum session expansion bytes. Defaults to 16 KiB; hard maximum 64 KiB."},
 			},
 		},
 	}

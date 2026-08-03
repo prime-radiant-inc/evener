@@ -667,7 +667,7 @@ func renderRangeWithTailMarker(header transcript.Header, entries []transcript.En
 		return body
 	}
 	dropped := requestedEnd - renderedEnd
-	marker := fmt.Sprintf("\n_… showing turns %d–%d of your requested %d–%d; %d later turns elided. Continue with read_session_transcript(transcript_ref, range=\"%d-%d\"). …_\n",
+	marker := fmt.Sprintf("\n_… showing turns %d–%d of your requested %d–%d; %d later turns elided. Continue with read_transcript(transcript_ref, range=\"%d-%d\"). …_\n",
 		renderedStart, renderedEnd, renderedStart, requestedEnd, dropped, renderedEnd+1, requestedEnd)
 	return body + marker
 }
@@ -700,7 +700,7 @@ func renderRangeWithMarker(header transcript.Header, entries []transcript.Entry,
 	if firstRendered <= 0 {
 		return body
 	}
-	marker := fmt.Sprintf("\n_… %d earlier turns elided. Use read_session_transcript(transcript_ref, format=\"outline\") for a turn map, then range=\"A-B\" for the parts you need. …_\n", firstRendered)
+	marker := fmt.Sprintf("\n_… %d earlier turns elided. Use read_transcript(transcript_ref, format=\"outline\") for a turn map, then range=\"A-B\" for the parts you need. …_\n", firstRendered)
 	return spliceAfterHeader(body, marker)
 }
 

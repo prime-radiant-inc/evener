@@ -136,7 +136,6 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefTaskList(effortLevels),
 		DefUseSkill(),
 		DefFindSessionTranscripts(),
-		DefReadSessionTranscript(),
 		DefManageWorktree(),
 		DefReadTranscript(),
 		DefAskUser(),

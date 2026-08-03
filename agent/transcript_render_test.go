@@ -1387,7 +1387,7 @@ func TestRenderTranscript_LastDefault(t *testing.T) {
 	}
 
 	// Top marker reports exactly 44 earlier turns elided, with the spec wording.
-	wantMarker := `_… 44 earlier turns elided. Use read_session_transcript(transcript_ref, format="outline") for a turn map, then range="A-B" for the parts you need. …_`
+	wantMarker := `_… 44 earlier turns elided. Use read_transcript(transcript_ref, format="outline") for a turn map, then range="A-B" for the parts you need. …_`
 	if !strings.Contains(content, wantMarker) {
 		t.Errorf("expected top marker %q in content, got:\n%s", wantMarker, content)
 	}
@@ -1470,7 +1470,7 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 	// The marker count must equal the number of dropped front turns == ElidedTurns
 	// here (range elided none; all elision is from the budget at the front).
 	firstRendered := m.ElidedTurns
-	wantMarker := fmt.Sprintf(`_… %d earlier turns elided. Use read_session_transcript(transcript_ref, format="outline") for a turn map, then range="A-B" for the parts you need. …_`, firstRendered)
+	wantMarker := fmt.Sprintf(`_… %d earlier turns elided. Use read_transcript(transcript_ref, format="outline") for a turn map, then range="A-B" for the parts you need. …_`, firstRendered)
 	if !strings.Contains(content, wantMarker) {
 		t.Errorf("marker count must match dropped front turns (%d), got:\n%s", firstRendered, firstLines(content, 8))
 	}

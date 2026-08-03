@@ -2340,8 +2340,8 @@ func TestCheckpoint_TranscriptPointer_WithSessionID(t *testing.T) {
 	if !strings.Contains(text, "01ABC") {
 		t.Errorf("checkpoint missing session id: %q", text)
 	}
-	if !strings.Contains(text, "read_session_transcript") {
-		t.Errorf("checkpoint missing read_session_transcript tool reference: %q", text)
+	if !strings.Contains(text, "read_transcript") {
+		t.Errorf("checkpoint missing read_transcript tool reference: %q", text)
 	}
 	if !strings.Contains(text, "find_session_transcripts") {
 		t.Errorf("checkpoint missing find_session_transcripts tool reference: %q", text)
@@ -2360,8 +2360,8 @@ func TestCheckpoint_TranscriptPointer_EmptySessionID(t *testing.T) {
 	result := checkpoint(history, 1, meta, "communicate")
 	text := result[0].Message.Text()
 
-	if strings.Contains(text, "read_session_transcript") {
-		t.Errorf("non-persistent checkpoint should not reference read_session_transcript: %q", text)
+	if strings.Contains(text, "read_transcript") {
+		t.Errorf("non-persistent checkpoint should not reference read_transcript: %q", text)
 	}
 	if strings.Contains(text, "read_file") {
 		t.Errorf("non-persistent checkpoint should not reference read_file: %q", text)

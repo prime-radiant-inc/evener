@@ -14,7 +14,7 @@ type selector struct {
 	sid       string
 }
 
-// parseSelector parses a session selector in the dialect read_session_transcript
+// parseSelector parses a session selector in the dialect read_transcript
 // accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty selector
 // and "current" are rejected: a standalone forensic tool has no current session,
 // so the caller must name one. All tokens are validated to be bare identifiers

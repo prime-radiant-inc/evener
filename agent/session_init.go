@@ -55,7 +55,7 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 	case "recall":
 		// "recall" is retained as an alias for "compact" so existing configs
 		// keep working; the recall tool itself was superseded by the
-		// read_session_transcript / find_session_transcripts tools.
+		// read_transcript / find_session_transcripts tools.
 		return contextmgr.NewCompactStrategy(cm), nil
 	case "session-log":
 		return contextmgr.NewSessionLogStrategy(cm, host)

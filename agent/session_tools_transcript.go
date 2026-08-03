@@ -32,7 +32,6 @@ func transcriptTools(deps *toolDeps) []tool.RegisteredTool {
 	}
 	if deps != nil && deps.stateDir != "" {
 		tools = append(tools,
-			readSessionTranscriptTool(deps),
 			findSessionTranscriptsTool(deps),
 		)
 	}
@@ -220,14 +219,7 @@ func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	}
 }
 
-func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
-	return tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefReadSessionTranscript(), ReadOnly: true},
-		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return execReadSessionTranscriptWithContext(ctx, deps, args)
-		},
-	}
-}
+var readTranscriptPublicRejectedParams = []string{"source", "attempt_id", "body", "max_bytes"}
 
 // jobRefRejectedParams are read_transcript parameters that shape a SESSION
 // transcript read and have no meaning for a job: ref: a job read is one
@@ -236,9 +228,17 @@ func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 // model that guesses learns the shape instead of getting an unexplained
 // result. DefReadTranscript's description must name every entry — that is what
 // keeps the model from guessing in the first place.
-var jobRefRejectedParams = []string{"range", "expand_turn", "offset_bytes", "max_bytes"}
+var jobRefRejectedParams = []string{"range", "expand_turn", "offset_bytes"}
 
 func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
+	for _, name := range readTranscriptPublicRejectedParams {
+		if _, present := args[name]; present {
+			if name == "source" || name == "attempt_id" || name == "body" {
+				return nil, fmt.Errorf("invalid_request: %s is not supported by read_transcript; API-log inspection is available through serf-doctor apilog", name)
+			}
+			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
+		}
+	}
 	selector := strings.TrimSpace(stringArg(args, "transcript_ref"))
 	rangeArg := strings.TrimSpace(stringArg(args, "range"))
 	format := strings.TrimSpace(stringArg(args, "format"))

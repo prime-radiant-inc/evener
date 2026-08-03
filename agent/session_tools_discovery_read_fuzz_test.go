@@ -89,7 +89,7 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 	r := &tdrpReader{data: program}
 	deps, reg, env, currentRef, siblingRef, parentRef, contentNeedle := tdrpFixture(t, r)
 
-	for _, name := range []string{"read_transcript", "read_session_transcript", "find_session_transcripts"} {
+	for _, name := range []string{"read_transcript", "find_session_transcripts"} {
 		if registered := reg.Get(name); registered == nil || registered.Exec == nil {
 			t.Fatalf("transcript tool %q was not registered", name)
 		}
@@ -118,7 +118,7 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 	childrenText := tdrpExecute(t, reg, env, "find_session_transcripts", childrenArgs)
 	tdrpAssertTextResult(t, childrenText)
 
-	markdown := tdrpExecute(t, reg, env, "read_session_transcript", map[string]any{
+	markdown := tdrpExecute(t, reg, env, "read_transcript", map[string]any{
 		"transcript_ref": currentRef,
 		"format":         formatMarkdown,
 		"range":          r.readRange(),
@@ -126,7 +126,7 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 	})
 	tdrpAssertReadJSON(t, markdown, currentRef, formatMarkdown)
 
-	outline := tdrpExecute(t, reg, env, "read_session_transcript", map[string]any{
+	outline := tdrpExecute(t, reg, env, "read_transcript", map[string]any{
 		"transcript_ref": siblingRef,
 		"format":         formatOutline,
 		"range":          r.readRange(),
@@ -140,7 +140,7 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 	})
 	tdrpAssertReadJSON(t, raw, siblingRef, formatJSONL)
 
-	bad := tdrpExecute(t, reg, env, "read_session_transcript", map[string]any{
+	bad := tdrpExecute(t, reg, env, "read_transcript", map[string]any{
 		"transcript_ref": "../outside",
 		"format":         formatMarkdown,
 	})
