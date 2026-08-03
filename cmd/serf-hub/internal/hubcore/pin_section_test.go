@@ -253,7 +253,7 @@ func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnecti
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sections) != 1 || sections[0].Name != "Research" || sections[0].MemberCount != 2 {
+	if len(sections) != 1 || !strings.EqualFold(sections[0].Name, "research") || sections[0].MemberCount != 2 {
 		t.Fatalf("sections = %+v", sections)
 	}
 	pins, err := storeA.Assignments()
@@ -390,6 +390,110 @@ func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	}
 }
 
+func TestPinSectionStoreMigrateLegacyConcurrentFirstUseConvergesAcrossConnections(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	seed := NewPinSectionStore(dbPath)
+	now := time.Unix(10, 0)
+	beforeRows := seedLegacyFavoriteRows(t, seed)
+	decisions := []LegacyPinDecision{
+		{StoredID: "valid", Classification: FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: ArchiveKey{Kind: "session", ID: "canonical-valid"}}},
+		{StoredID: "remote-missing", Classification: FavoriteDecisionClassification{State: FavoriteDecisionDormant}},
+		{StoredID: "subagent", Classification: FavoriteDecisionClassification{State: FavoriteDecisionConfirmedInvalid}},
+	}
+	storeA := NewPinSectionStore(dbPath)
+	storeB := NewPinSectionStore(dbPath)
+	oldHook := pinSectionBeforeSectionInsertHook
+	defer func() { pinSectionBeforeSectionInsertHook = oldHook }()
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var hookCount int32
+	pinSectionBeforeSectionInsertHook = func() {
+		if atomic.AddInt32(&hookCount, 1) <= 2 {
+			entered <- struct{}{}
+			<-release
+		}
+	}
+	type result struct {
+		changed bool
+		err     error
+	}
+	results := make(chan result, 2)
+	go func() {
+		changed, err := storeA.MigrateLegacy(decisions, now)
+		results <- result{changed: changed, err: err}
+	}()
+	go func() {
+		changed, err := storeB.MigrateLegacy(decisions, now)
+		results <- result{changed: changed, err: err}
+	}()
+	<-entered
+	<-entered
+	close(release)
+	first := <-results
+	second := <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent migrate errors = %v / %v", first.err, second.err)
+	}
+	changedCount := 0
+	if first.changed {
+		changedCount++
+	}
+	if second.changed {
+		changedCount++
+	}
+	if changedCount != 1 {
+		t.Fatalf("concurrent migrate changed count = %d, results = %+v %+v", changedCount, first, second)
+	}
+	if count, err := migrationMarkerCountForTest(seed); err != nil || count != 1 {
+		t.Fatalf("migration marker count = %d, %v", count, err)
+	}
+	sections, err := seed.Sections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections) != 1 || sections[0].Name != "Pinned" || sections[0].MemberCount != 2 {
+		t.Fatalf("sections = %+v", sections)
+	}
+	pins, err := seed.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins["canonical-valid"]; !ok {
+		t.Fatalf("canonical-valid missing: %+v", pins)
+	}
+	if _, ok := pins["remote-missing"]; !ok {
+		t.Fatalf("remote-missing missing: %+v", pins)
+	}
+	if _, ok := pins["subagent"]; ok {
+		t.Fatalf("subagent should be absent: %+v", pins)
+	}
+	afterRows, err := favoriteRowsSnapshotForTest(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterRows, []favoriteRow{{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5}}) {
+		t.Fatalf("favorite rows = %+v", afterRows)
+	}
+	if !reflect.DeepEqual(beforeRows, []favoriteRow{{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5}}) {
+		t.Fatalf("seed project rows = %+v", beforeRows)
+	}
+	if ok, err := seed.Unpin("canonical-valid"); err != nil || !ok {
+		t.Fatalf("unpin after migrate = %v, %v", ok, err)
+	}
+	reopened := NewPinSectionStore(dbPath)
+	changed, err := reopened.MigrateLegacy(decisions, now.Add(time.Minute))
+	if err != nil || changed {
+		t.Fatalf("reopened migrate = %v, %v", changed, err)
+	}
+	pins, err = reopened.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins["canonical-valid"]; ok {
+		t.Fatalf("canonical-valid restored after reopen path: %+v", pins)
+	}
+}
+
 type favoriteRow struct {
 	Kind      string
 	ID        string
@@ -439,6 +543,19 @@ func favoriteRowsSnapshotForTest(store *PinSectionStore) ([]favoriteRow, error) 
 		out = append(out, row)
 	}
 	return out, rows.Err()
+}
+
+func migrationMarkerCountForTest(store *PinSectionStore) (int, error) {
+	db, err := store.open()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = db.Close() }()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func errorsIsPinSectionNotFound(err error) bool { return errors.Is(err, ErrPinSectionNotFound) }

@@ -20,9 +20,10 @@ import (
 const PinSectionNameMaxRunes = 80
 
 var (
-	ErrPinSectionName     = errors.New("invalid pin section name")
-	ErrPinSectionNotFound = errors.New("pin section not found")
-	ErrPinSectionConflict = errors.New("pin section name already exists")
+	ErrPinSectionName             = errors.New("invalid pin section name")
+	ErrPinSectionNotFound         = errors.New("pin section not found")
+	ErrPinSectionConflict         = errors.New("pin section name already exists")
+	errPinSectionMigrationApplied = errors.New("pin section migration already applied")
 
 	pinSectionRandRead                   = rand.Read
 	pinSectionBeforeSectionInsertHook    func()
@@ -574,21 +575,53 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	db, err := s.open()
-	if err != nil {
-		return false, err
+	for range 8 {
+		db, err := s.open()
+		if err != nil {
+			return false, err
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		changed, err := migrateLegacyTx(tx, decisions, now)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			switch {
+			case errors.Is(err, errPinSectionMigrationApplied):
+				return false, nil
+			case isSQLiteUniqueMigrationConflict(err):
+				return false, nil
+			case isSQLiteUniqueNameConflict(err) || isSQLiteRetryable(err):
+				continue
+			default:
+				return false, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		_ = db.Close()
+		return changed, nil
 	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return false, err
-	}
+	return false, errors.New("migrate legacy pin sections: retry limit reached")
+}
+
+func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (bool, error) {
 	var applied int
 	if err := tx.QueryRowContext(context.Background(), `SELECT 1 FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&applied); err == nil {
-		_ = tx.Rollback()
-		return false, nil
+		return false, errPinSectionMigrationApplied
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		_ = tx.Rollback()
 		return false, err
 	}
 	classificationByID := make(map[string]LegacyPinDecision, len(decisions))
@@ -597,7 +630,6 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	}
 	rows, err := tx.QueryContext(context.Background(), `SELECT id, favorited FROM favorite WHERE kind = 'session'`)
 	if err != nil {
-		_ = tx.Rollback()
 		return false, err
 	}
 	defer func() { _ = rows.Close() }()
@@ -609,7 +641,6 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 		var sessionID string
 		var favorited int
 		if err := rows.Scan(&sessionID, &favorited); err != nil {
-			_ = tx.Rollback()
 			return false, err
 		}
 		if favorited != 1 {
@@ -637,32 +668,23 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 		}
 	}
 	if err := rows.Err(); err != nil {
-		_ = tx.Rollback()
 		return false, err
 	}
 	if len(assignments) > 0 {
 		section, _, err := ensureSectionTx(tx, "Pinned", cases.Fold().String("Pinned"), now)
 		if err != nil {
-			_ = tx.Rollback()
 			return false, err
 		}
 		for _, assignment := range assignments {
 			if _, err := upsertSessionPinTx(tx, assignment.sessionID, section.ID, now); err != nil {
-				_ = tx.Rollback()
 				return false, err
 			}
 		}
 	}
 	if _, err := tx.ExecContext(context.Background(), `DELETE FROM favorite WHERE kind = 'session'`); err != nil {
-		_ = tx.Rollback()
 		return false, err
 	}
 	if _, err := tx.ExecContext(context.Background(), `INSERT INTO hub_schema_migration(name, applied_at) VALUES (?, ?)`, "named-pin-sections-v1", now.Unix()); err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		_ = tx.Rollback()
 		return false, err
 	}
 	return true, nil
@@ -776,4 +798,12 @@ func isSQLiteUniqueNameConflict(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "unique constraint failed") && strings.Contains(s, "pin_section.name_key")
+}
+
+func isSQLiteUniqueMigrationConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unique constraint failed") && strings.Contains(s, "hub_schema_migration.name")
 }
