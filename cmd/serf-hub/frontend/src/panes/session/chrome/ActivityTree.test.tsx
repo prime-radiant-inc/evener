@@ -76,7 +76,7 @@ const TREE: ActivityTreeData = {
                   background: false,
                   hasOutput: false,
                   description: "child shell",
-                transcriptRef: "job:job_child_shell",
+                  transcriptRef: "job:job_child_shell",
                   startedAt: "2026-08-03T00:03:00Z",
                   outputBytes: 0,
                 },

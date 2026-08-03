@@ -40,7 +40,7 @@ describe("ActivityTranscriptAction", () => {
     const user = userEvent.setup();
     const onRowClick = vi.fn();
     render(
-      <div onClick={onRowClick}>
+      <div role="treeitem" tabIndex={0} onClick={onRowClick} onKeyDown={() => {}}>
         <ActivityTranscriptAction transcriptRef="job:job_activity" parentRef="local:session" />
       </div>,
     );

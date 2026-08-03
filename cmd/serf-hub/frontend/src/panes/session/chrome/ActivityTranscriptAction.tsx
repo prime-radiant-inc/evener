@@ -12,10 +12,11 @@ export function ActivityTranscriptAction({
 }) {
   const trimmedTranscriptRef = transcriptRef?.trim();
   if (!trimmedTranscriptRef) return null;
+  const resolvedTranscriptRef = trimmedTranscriptRef;
 
   function handleClick(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    openTranscript(trimmedTranscriptRef, parentRef);
+    openTranscript(resolvedTranscriptRef, parentRef);
   }
 
   return (

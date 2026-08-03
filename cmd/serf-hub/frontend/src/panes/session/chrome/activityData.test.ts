@@ -47,7 +47,9 @@ function getMalformedSiblingWire(tree: typeof VALID_TREE_WIRE) {
 function getRootShellWire(tree: typeof VALID_TREE_WIRE) {
   const entry = assertDefined(tree.root.entries[0], "expected root shell wire entry");
   if (entry.kind !== "shell") throw new Error("expected root shell wire entry");
-  return assertDefined(entry.job, "expected root shell payload");
+  return assertDefined(entry.job, "expected root shell payload") as typeof entry.job & {
+    transcriptRef?: string;
+  };
 }
 
 function getDelegateEntry(tree: ActivityTree, ...path: number[]) {
@@ -380,7 +382,9 @@ describe("parseActivityTree", () => {
       kind: "shell",
       job: { jobId: "job_root_1" },
     });
-    expect(tree.root.entries[0] && "job" in tree.root.entries[0] ? tree.root.entries[0].job.transcriptRef : undefined).toBeUndefined();
+    expect(
+      tree.root.entries[0] && "job" in tree.root.entries[0] ? tree.root.entries[0].job.transcriptRef : undefined,
+    ).toBeUndefined();
   });
 
   it("rejects a non-string transcriptRef as an incomplete shell job", () => {

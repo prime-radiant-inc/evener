@@ -12,6 +12,7 @@ import {
 } from "react";
 import { Button, Chevron, StatusDot } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { ActivityTranscriptAction } from "./ActivityTranscriptAction";
 import {
   type ActivityDelegate,
   type ActivityJob,
@@ -19,7 +20,6 @@ import {
   type ActivityTree as ActivityTreeData,
   activityNodeID,
 } from "./activityData";
-import { ActivityTranscriptAction } from "./ActivityTranscriptAction";
 import styles from "./activitypanel.module.css";
 
 export type ActivitySelectionNode =
@@ -384,6 +384,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
               <button
                 type="button"
                 tabIndex={-1}
+                aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.label}`}
                 className={CLASS.rowToggle}
                 onClick={(event: MouseEvent<HTMLButtonElement>) => {
                   event.stopPropagation();
