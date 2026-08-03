@@ -263,6 +263,28 @@ async function main() {
           `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
         );
       }
+      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer facts missing: ` +
+            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+        );
+      }
+      if (result.footer.queueLabel !== "12 queued") {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`);
+      }
+      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - footer status facts are internally clipped: ` +
+            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+        );
+      }
+      if (result.footer.modelClientWidth <= 0) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - pressured footer model has zero visible width`);
+      }
       for (const disclosure of result.disclosures) {
         if (!disclosure.openDuringOverflowScan) {
           widthFailed = true;

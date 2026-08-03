@@ -70,20 +70,27 @@ const snapshot: ThreadReadResponse = {
     modelProvider: "openai/gpt-5.6-luna",
     createdAt: 1000,
     updatedAt: 1000,
-    status: { type: "idle" },
+    status: { type: "active" },
     cwd: "/Users/jesse/prime-radiant/toil-suite/serf",
     cliVersion: "1.0.0",
     source: "serf",
     serf: {
       ref: REF,
       capabilities: CAPABILITIES,
-      queue: { revision: 0 },
-      // Representative live context data, using SerfThread's actual wire
-      // fields. This keeps the real-browser overflow sweep exercising the
-      // footer's semantic meter and both visual container-query variants.
-      contextUsed: 64_000,
-      contextWindow: 128_000,
-      contextPressure: 0.5,
+      queue: { revision: 0, depth: 12 },
+      // Deliberately pressured live footer state, using SerfThread's actual
+      // wire fields. At the narrowest requested pane this keeps supported
+      // effort, measured context, and a nonzero queue in the real React tree;
+      // at the full-row threshold it also exercises work and goal sizing.
+      contextUsed: 67_345,
+      contextWindow: 100_001,
+      contextPressure: 0.673,
+      workMillis: 754_000,
+      activeTurnStartedAt: 1,
+      goal: { status: "awaiting stakeholder approval for compact session footer geometry", iterations: 12 },
+      reasoningEffort: "high",
+      reasoningEffortLevels: ["low", "medium", "high"],
+      supportsReasoning: true,
       cost: "~$0.06",
     },
     turns: [
@@ -287,7 +294,23 @@ function disclosureContract(target: DisclosureTarget): DisclosureContract | null
   return result;
 }
 
-function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; disclosures: DisclosureContract[] } {
+interface FooterContract {
+  effortVisible: boolean;
+  contextVisible: boolean;
+  queueVisible: boolean;
+  queueLabel: string | null;
+  statusClientWidth: number;
+  statusScrollWidth: number;
+  modelClientWidth: number;
+}
+
+function measure(): {
+  width: number;
+  scrollers: Scroller[];
+  ignored: string[];
+  disclosures: DisclosureContract[];
+  footer: FooterContract;
+} {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
@@ -370,7 +393,27 @@ function measure(): { width: number; scrollers: Scroller[]; ignored: string[]; d
       disclosure.restoredOpen = target?.details.open ?? false;
     }
   }
-  return { width, scrollers, ignored, disclosures };
+  const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
+  const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');
+  const context = pane.querySelector<HTMLElement>('[data-testid="status-row-context"]');
+  const queue = pane.querySelector<HTMLElement>('[data-testid="status-row-queue"]');
+  const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
+  const visible = (el: HTMLElement | null) => el !== null && getComputedStyle(el).display !== "none";
+  return {
+    width,
+    scrollers,
+    ignored,
+    disclosures,
+    footer: {
+      effortVisible: visible(effort),
+      contextVisible: visible(context),
+      queueVisible: visible(queue),
+      queueLabel: queue?.getAttribute("aria-label") ?? null,
+      statusClientWidth: status?.clientWidth ?? 0,
+      statusScrollWidth: status?.scrollWidth ?? 0,
+      modelClientWidth: model?.clientWidth ?? 0,
+    },
+  };
 }
 
 // Direct-children geometry for one selector: which flex line each item landed

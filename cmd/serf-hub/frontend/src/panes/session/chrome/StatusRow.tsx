@@ -19,7 +19,6 @@ import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
@@ -154,7 +153,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
   const contextPercent = Math.round(model.contextPressure * 100);
-  const contextLabel = `Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${contextPercent} percent`;
+  const contextLabel = `Context: ${model.contextUsed} of ${model.contextWindow} tokens used, ${contextPercent} percent`;
 
   return (
     <div className={CLASS.row} data-testid="status-row">
@@ -171,12 +170,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
             value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
             max={model.contextWindow}
           />
-          <span
-            className={CLASS.context}
-            data-testid="status-row-context"
-            aria-hidden="true"
-            title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
-          >
+          <span className={CLASS.context} data-testid="status-row-context" aria-hidden="true" title={contextLabel}>
             <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
               <Meter
                 label={contextLabel}

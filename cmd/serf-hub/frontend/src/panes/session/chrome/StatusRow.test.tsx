@@ -144,7 +144,9 @@ test.each([
   (overrides) => {
     render(<StatusRow sessionRef="ref_a" model={testModel(overrides)} now={1_000_000} />);
     expect(screen.queryByTestId("status-row-failures")).toBeNull();
+    expect(screen.queryByTestId("status-row-cost")).toBeNull();
     expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
+    expect(screen.getByTestId("status-row").textContent).not.toContain("~$1.23");
     expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
     expect(screen.getByTestId("status-row").textContent).not.toContain("↓");
   },
@@ -538,19 +540,22 @@ test("renders no context gauge when the thread has no context window data", () =
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-test("renders the context gauge with the used/window counts in its accessible label", () => {
+test("renders exact context counts and percentage in its accessible label and hover tooltip", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={runningModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
+      model={runningModel({ contextUsed: 12_345, contextWindow: 128_001, contextPressure: 0.096 })}
       now={1_000_000}
     />,
   );
   const meter = screen.getByRole("meter");
   expect(meter.tagName).toBe("METER");
-  expect(meter.getAttribute("value")).toBe("12000");
-  expect(meter.getAttribute("max")).toBe("128000");
-  expect(meter.getAttribute("aria-label")).toContain("12k of 128k");
+  expect(meter.getAttribute("value")).toBe("12345");
+  expect(meter.getAttribute("max")).toBe("128001");
+  expect(meter.getAttribute("aria-label")).toBe("Context: 12345 of 128001 tokens used, 10 percent");
+  expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe(
+    "Context: 12345 of 128001 tokens used, 10 percent",
+  );
 });
 
 // The gauge's severity comes from the shared contextTone ladder (see
@@ -591,7 +596,7 @@ test("context has one meter semantic with wide and compact visual variants", () 
       now={1_000_000}
     />,
   );
-  const meter = screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i });
+  const meter = screen.getByRole("meter", { name: /64000 of 128000 tokens used, 50 percent/i });
   expect(meter.tagName).toBe("METER");
   expect(meter.classList.contains(requireClass(rawStatusStyles.srOnly, "statusrow.module.css", "srOnly"))).toBe(true);
   expect(meter.getAttribute("value")).toBe("64000");
@@ -631,7 +636,7 @@ test.each(["ended", "closed", "notLoaded"] as const)(
     );
     expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
     expect(screen.getByRole("combobox", { name: /reasoning effort/i })).toBeTruthy();
-    expect(screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i })).toBeTruthy();
+    expect(screen.getByRole("meter", { name: /64000 of 128000 tokens used, 50 percent/i })).toBeTruthy();
     expect(screen.queryByTestId("status-row-work-time")).toBeNull();
     expect(screen.queryByTestId("status-row-cost")).toBeNull();
   },

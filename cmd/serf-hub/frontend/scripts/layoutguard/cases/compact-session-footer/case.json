@@ -7,6 +7,7 @@
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/modelswitch.module.css",
     "panes/session/chrome/goalcontrol.module.css",
+    "widgets/chip/chip.module.css",
     "widgets/meter/meter.module.css"
   ],
   "viewport": {
@@ -16,6 +17,8 @@
     "mobile": false
   },
   "forcePseudoStates": [
-    { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] }
+    { "selector": ".focusModel", "pseudoClasses": ["focus-visible"] },
+    { "selector": ".focusGoal", "pseudoClasses": ["focus-visible"] },
+    { "selector": ".focusActions", "pseudoClasses": ["focus-visible"] }
   ]
 }

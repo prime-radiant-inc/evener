@@ -1,6 +1,9 @@
 .anchor {
   position: relative;
   display: inline-flex;
+  flex: 0 1 30%;
+  min-width: 0;
+  max-width: 240px;
 }
 
 /* Quiet trigger, same recipe as ModelSwitch's own .trigger - the chip reads
@@ -8,6 +11,9 @@
 .chipButton {
   display: inline-flex;
   align-items: center;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-1);
   border: none;
   border-radius: var(--radius-control);
@@ -20,8 +26,16 @@
 }
 
 .chipButton:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.chipButton > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Floating popover - zero layout shift when opened. Recipe matches

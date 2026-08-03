@@ -1,6 +1,6 @@
 // SessionChrome: the session pane's chrome surface - ONE quiet status-bar
-// row (status dot, model switch, work time, location, tokens/cost, the
-// goal chip when a goal is set) with Details, Tasks, Jobs and the session "⋯"
+// row (cadence where needed, model · effort, context, live work, queue depth,
+// and the goal chip when a goal is set) with Details, Tasks, Jobs and the session "⋯"
 // menu pinned to the trailing edge - mounted by Session.tsx at PaneScaffold's
 // footer
 // slot. The locked contract stays exactly `{ ref: string }` - every real

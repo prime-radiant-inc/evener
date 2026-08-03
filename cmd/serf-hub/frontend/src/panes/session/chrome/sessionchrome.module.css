@@ -43,6 +43,15 @@
   flex: none;
 }
 
+/* Every trailing trigger lives inside .chrome's final overflow boundary. An
+ * outside outline would be cut off when the actions menu sits flush with that
+ * boundary, so the complete trailing group uses the same inset focus recipe as
+ * the model and effort controls. */
+.right button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 /* The relocated header cadence (2026-07-30-mobile-session-layout-design.md,
  * decision 3): desktop shows liveness in the pane header, which is hidden
  * below the breakpoint - so this slot is desktop-hidden and mobile-shown. */
