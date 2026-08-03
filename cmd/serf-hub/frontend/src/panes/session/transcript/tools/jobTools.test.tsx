@@ -203,6 +203,34 @@ test("delegate_send: canonical raw output preserves the delegate response when f
   expect(screen.queryByText(/structured_result/)).toBeNull();
 });
 
+test("delegate_send: malformed raw output falls back to the formatted response", () => {
+  renderDelegateSendBody({
+    output: "formatted response\n[delegate_id dlg_abc123 · delivered · completed]",
+    raw: { output: "raw response" },
+  });
+
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("formatted response");
+});
+
+test("delegate_send: whitespace-only canonical output is treated as absent", () => {
+  renderDelegateSendBody({
+    output: "formatted response\n[delegate_id dlg_abc123 · delivered · completed]",
+    raw: { action: "delivered", running_in_background: false, output: " \n\t" },
+  });
+
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("formatted response");
+});
+
+test("delegate_send: raw whitespace-only output is omitted when there is no formatted response", () => {
+  renderDelegateSendBody({
+    output: "",
+    raw: { action: "delivered", running_in_background: false, output: " \n\t" },
+  });
+
+  expect(screen.queryByText("Response")).toBeNull();
+  expect(screen.queryByTestId("delegate-send-response")).toBeNull();
+});
+
 test("delegate_send: footer-only and in-flight calls omit the Response section", () => {
   const Body = toolRendererFor("delegate_send").body!;
 
@@ -236,6 +264,16 @@ test("delegate_send: unrecognized output remains visible as the response", () =>
   expect(screen.getByTestId("delegate-send-response").textContent).toBe(
     "historical result without a recognized footer",
   );
+});
+
+test("delegate_send: footer-like response content without separator-delimited fields is preserved", () => {
+  renderDelegateSendBody({ output: "[delegate_id this is response text]" });
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("[delegate_id this is response text]");
+});
+
+test("delegate_send: a complete delegate footer is stripped from the response text", () => {
+  renderDelegateSendBody({ output: "reply from historical data\n[delegate_id dlg_abc123 · delivered · completed]" });
+  expect(screen.getByTestId("delegate-send-response").textContent).toBe("reply from historical data");
 });
 
 test("delegate_send: malformed or missing message arguments omit Message without hiding a response", () => {
