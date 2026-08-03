@@ -203,6 +203,34 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	}
 }
 
+// TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure: a
+// per-delegate sandbox that reaches the post-NewSession grant validation must
+// dispose its scratch when the child cannot adopt a parent-only tool.
+func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnGrantFailure(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	s.RegisterTool("parent_only_tool", "parent-only test tool", nil, func(context.Context, any) (any, error) {
+		return "ok", nil
+	})
+	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
+		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
+	}
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: boolPtr(true)})
+	_, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, []string{"parent_only_tool"})
+	if err == nil || !strings.Contains(err.Error(), "cannot grant tool(s)") {
+		t.Fatalf("prepareSubagentRun error = %v, want missing child grant", err)
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("per-delegate sandbox scratch leaked on grant failure: %v", left)
+	}
+}
+
 // TestParentClose_RetainsPerDelegateSandboxScratch: a completed+retained
 // per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
 // scratch dir. At PARENT close, retained children are torn down via close(false),

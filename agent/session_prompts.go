@@ -234,10 +234,10 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
 			line += ". Scratch directory (read-write even in this sandbox; also $" +
 				envvars.TmpDir.Name + " / $" + envvars.SERFScratchDir.Name + " for shell commands): " + scratch
-			line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 			if le.Sandbox.Mode == sandbox.ModeReadOnly {
 				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
 			}
+			line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 		}
 	}
 	return line

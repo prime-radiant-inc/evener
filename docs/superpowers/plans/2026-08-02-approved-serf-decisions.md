@@ -104,4 +104,3 @@ handed-off scratch directory available until explicitly cleaned.
 5. Request a read-only `gpt-5.6-sol` reviewer at maximum reasoning effort. The
    reviewer must inspect the spec first, then this plan, then the code/tests,
    report findings with exact paths/lines, and give an explicit verdict.
-

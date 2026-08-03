@@ -920,7 +920,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 			LinesReturned:       lines,
 			Truncated:           truncated,
 			SkippedCorruptLines: skipped,
-			Hint:                "semantic transcript-v2 NDJSON; system-prompt and provider API data are excluded. For provider attempts use source=api_log; for comprehension use format=markdown.",
+			Hint:                "semantic transcript-v2 NDJSON; system-prompt and provider API data are excluded. For comprehension use format=markdown.",
 			RangeWarning:        rangeWarning,
 		},
 	}, nil

@@ -77,4 +77,3 @@ The following remain outside this implementation and must not enter Serf:
 - Kata installation, context/quickstart behavior, and the issue ledger;
 - local launch-agent/launch-daemon configuration and tool installation;
 - automatic ownership enforcement, retry/resume policy, or artifact materialization.
-

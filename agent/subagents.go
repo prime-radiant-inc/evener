@@ -628,6 +628,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		}
 		subEnv = le
 	}
+	ownsFreshEnv := workingDir != "" || reqSandbox != nil
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
 		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
@@ -648,18 +649,23 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		subSess, err = NewSession(childClient, subProfile, subEnv, subCfg)
 	}
 	if err != nil {
-		// A per-delegate sandbox EnableSandbox'd a FRESH env (re-rooted or cloned) and
-		// provisioned a scratch dir it owns; this failed spawn never hands subEnv to a
-		// session that would Cleanup it, so dispose that scratch here. Guarded on
-		// reqSandbox: only that path builds a fresh, sandbox-provisioned env — the
-		// reqSandbox==nil / workingDir=="" path may leave subEnv == the shared parent
-		// env, which must never be disposed here.
-		if reqSandbox != nil {
+		// A fresh environment that failed before session adoption never reaches the
+		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
+		// re-root has no owned scratch, making this safe when reqSandbox is nil.
+		if ownsFreshEnv {
 			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
 				le.DisposeSandboxScratch()
 			}
 		}
 		return nil, err
+	}
+	disposeUnadopted := func() {
+		subSess.Close()
+		if ownsFreshEnv {
+			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
+				le.DisposeSandboxScratch()
+			}
+		}
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -669,7 +675,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 			}
 		}
 		if len(missing) > 0 {
-			subSess.Close()
+			disposeUnadopted()
 			return nil, fmt.Errorf("cannot grant tool(s) to spawned subagent: %s", strings.Join(missing, ", "))
 		}
 	}
@@ -693,8 +699,8 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 
 	// Enforce the retained-terminal cap before tracking. Done AFTER NewSession so
-	// the child is fully built, but a failure must not leak it: close the created
-	// session (mirroring the created-but-not-tracked cleanup above) before returning.
+	// the child is fully built, but a failure must not leak it: dispose the created
+	// session and any unadopted fresh environment before returning.
 	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
 	var evicted []*subagent
 	if reserve := s.cfg.testOnly.subagentReserveSlot; reserve != nil {
@@ -703,7 +709,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		evicted, err = s.subagents.reserveSlot()
 	}
 	if err != nil {
-		subSess.Close()
+		disposeUnadopted()
 		return nil, err
 	}
 	for _, ev := range evicted {
@@ -711,9 +717,9 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 	}
 
 	// Reserve a tree-counter slot for this spawn's running delegate turn (spec §4).
-	// At capacity the spawn does not launch: close the freshly built child (the
-	// same created-but-not-tracked cleanup as the retained-cap path) and surface
-	// the tree_at_capacity error to the tool call. Ownership of the reservation
+	// At capacity the spawn does not launch: dispose the freshly built child and
+	// any unadopted environment (the same cleanup as the retained-cap path), then
+	// surface the tree_at_capacity error to the tool call. Ownership of the reservation
 	// transfers to the delegate runningJob at attach; an unattached prepared run
 	// releases it (releasePreparedTreeSlot).
 	var treeSlot *treeReservation
@@ -724,7 +730,7 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
 	}
 	if !ok {
-		subSess.Close()
+		disposeUnadopted()
 		return nil, s.treeCapacityErrorFor()
 	}
 

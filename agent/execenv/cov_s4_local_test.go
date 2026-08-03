@@ -797,4 +797,9 @@ func TestShellEscape(t *testing.T) {
 	if got := shellEscape("it's"); got != `'it'"'"'s'` {
 		t.Fatalf("single-quote = %q, want %q", got, `'it'"'"'s'`)
 	}
+	for _, pattern := range []string{"file?name", "file[name]", "file{one,two}", "~user", "#comment"} {
+		if got := shellEscape(pattern); got == pattern {
+			t.Fatalf("shell glob/comment syntax was left unquoted: %q", pattern)
+		}
+	}
 }

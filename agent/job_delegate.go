@@ -2628,7 +2628,7 @@ func (s *Session) isolatedDelegateWorktreeReport(desc *jobstore.DelegateRestoreD
 	if err != nil {
 		return nil
 	}
-	aheadOut, err := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD")
+	aheadOut, err := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+".."+headSHA)
 	if err != nil {
 		return nil
 	}

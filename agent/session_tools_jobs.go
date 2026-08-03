@@ -1127,6 +1127,11 @@ func formatDelegateSend(out delegateSendResult) string {
 			fmt.Fprintf(&b, "\n- %s → %s (%s)", w.ID, w.Source, w.Condition)
 		}
 	}
+	if out.Worktree != nil {
+		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
+			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA,
+			out.Worktree.Ahead, out.Worktree.Dirty)
+	}
 	if out.StructuredResult != nil {
 		if sr, err := json.Marshal(out.StructuredResult); err == nil {
 			valid := out.StructuredResultValid != nil && *out.StructuredResultValid

@@ -71,7 +71,7 @@ func TestRenderMarkdown_DocumentHeader(t *testing.T) {
 
 	t.Run("system prompt omission line is always present", func(t *testing.T) {
 		out := renderMarkdown(transcript.Header{}, nil, 0, renderOpts{})
-		if !strings.Contains(out, "System prompt and provider API logs are not shown; use source=api_log for explicit provider-attempt evidence.") {
+		if !strings.Contains(out, "System prompt and provider API logs are not shown in this transcript.") {
 			t.Errorf("system-prompt omission line missing, got:\n%s", out)
 		}
 	})
