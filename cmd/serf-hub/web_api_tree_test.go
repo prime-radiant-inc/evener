@@ -415,6 +415,55 @@ func TestAPITreeProjectLazyResponseAnnotatesPinSection(t *testing.T) {
 	}
 }
 
+func TestAPITreeProjectLazyResponseRecursivelyAnnotatesPinnedClusterMember(t *testing.T) {
+	useFavoriteRevalidationTreeClock(t)
+	projectDir := filepath.Join(t.TempDir(), "lazy-cluster-pinned")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{
+		"02wMz5Txv1C3Hut0M8GCeB",
+		"02wMz5Txv47YP64RR3B9YJ",
+		"02wMz5Txv7t1QjsT0Z2tAo",
+	}
+	metas := make([]schema.SessionMeta, 0, len(ids))
+	for i, id := range ids {
+		metas = append(metas, schema.SessionMeta{
+			ID: id, Name: "same ended task",
+			UpdatedAt: favoriteRevalidationTreeTime.Add(-time.Duration(i) * time.Minute),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		})
+	}
+	pins := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	section, _, err := pins.CreateOrReuseAndAssign("Research", ids[1], time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: pins})
+	web.injectMetasForTest(metas)
+
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+project.ID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeProject
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].Kind != "cluster" || len(got.Sessions[0].Children) != 3 {
+		t.Fatalf("lazy project did not form expected cluster: %+v", got.Sessions)
+	}
+	nested := findTreeNodeBySessionID(t, got.Sessions[0].Children, ids[1])
+	if nested.PinSectionID != section.ID {
+		t.Fatalf("nested pinned cluster member = %+v, want section %q", nested, section.ID)
+	}
+}
+
 func TestAPITreeProjectPageServesCappedAwayTierRows(t *testing.T) {
 	now := time.Now()
 	projectDir := filepath.Join(t.TempDir(), "paged")
