@@ -1,54 +1,46 @@
 # Task 1 implementation report
 
-## Summary
-Implemented the desktop question replacement layout contract for the session composer pane by:
-- keeping the composer region in the pane flex chain with `flex: 1 1 auto` and `min-height: 0`;
-- bottom-aligning the composer/replacement slot with pane-local flex layout, not viewport-fixed positioning;
-- adding focused regression coverage for the pending-question replacement state and the replacement-slot CSS contract.
+## Final fix wave report
 
-## Files changed
+### Findings addressed
+- **Important 1 — AskDock remained top-aligned:** `.dock` had `flex: 1 1 auto`, so it consumed the composer region's free space and prevented the parent `.composer` `justify-content: flex-end` from bottom-anchoring the active question surface. Changed AskDock to `flex: 0 1 auto`; the filled parent remains responsible for available-space allocation and bottom alignment. Existing `min-height: 0`, `max-height: 100%`, and `overflow-y: auto` were preserved for tall question content.
+- **Important 2 — no rendered geometry coverage:** Added the `composer-desktop-question-replacement` layoutguard case. It runs the real CSS in fresh headless Chrome and asserts geometry relationships rather than pixel snapshots: the short question dock has free slot space and its bottom equals the replacement slot bottom; a tall question exceeds its dock and remains internally scrollable; the dock does not overlap the status footer; the transcript retains usable height; and the outer document does not scroll.
 
-### `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`
-- Added `justify-content: flex-end` to `.composer` so the active composer / AskDock replacement slot sits at the bottom of the filled pane region.
-- Preserved the existing `flex: 1 1 auto` and `min-height: 0` contract.
+### Files changed in the final fix
+- `cmd/serf-hub/frontend/src/panes/session/composer/askDock/askdock.module.css`
+  - Changed `.dock` from `flex: 1 1 auto` to `flex: 0 1 auto`.
+- `cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx`
+  - Updated the focused CSS contract to assert the intentional shrink-only dock behavior.
+- `cmd/serf-hub/frontend/scripts/layoutguard/cases/composer-desktop-question-replacement/{case.json,harness.html,assert.mjs}`
+  - Added deterministic real-browser replacement-slot geometry coverage.
 
-### `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-- Added imports for reading the local CSS source contract in the focused test.
-- Added a regression test that mounts the pending-ask state and verifies:
-  - the AskDock replacement surface renders (`Answer the agent’s questions.`);
-  - the pending question content is visible (`Ship now?`);
-  - the normal message textbox is not rendered while ask-pending is active.
-- Added a CSS-source contract test asserting the composer region still declares `flex: 1 1 auto`, `min-height: 0`, and `justify-content: flex-end`.
-
-## Tests and commands
-
-### Read-only inspection
-- `sed -n '1,180p' docs/testing.md`
-- `grep -n -C 5 "AskDock\|askPending\|composer" cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx`
-- Reviewed:
-  - `cmd/serf-hub/frontend/src/panes/session/composer/Composer.tsx`
-  - `cmd/serf-hub/frontend/src/panes/session/composer/composer.module.css`
-  - `cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.tsx`
-  - `cmd/serf-hub/frontend/src/panes/session/composer/Composer.test.tsx`
-  - `cmd/serf-hub/frontend/src/panes/session/composer/askDock/AskDock.test.tsx`
-
-### Verification
-- Initial attempt: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx`
-  - failed because `npx` was not available in the environment.
-- Successful focused test run:
-  - `/opt/homebrew/bin/node ./node_modules/.bin/vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx`
-  - Result: 2 test files passed, 114 tests passed.
+### Verification commands and outputs
+- Focused Vitest:
+  - `cd cmd/serf-hub/frontend && /opt/homebrew/bin/node ./node_modules/.bin/vitest run src/panes/session/composer/Composer.test.tsx src/panes/session/composer/askDock/AskDock.test.tsx`
+  - **PASS — 2 files, 114 tests.**
+- Typecheck:
+  - `cd cmd/serf-hub/frontend && /opt/homebrew/bin/node ./node_modules/.bin/tsc --noEmit --incremental false`
+  - **PASS.**
+- Desktop geometry contract:
+  - `cd cmd/serf-hub/frontend && /opt/homebrew/bin/node scripts/layoutguard/run.mjs composer-desktop-question-replacement`
+  - **PASS — desktop replacement slot fills, bottom-anchors, and internally scrolls.**
+- Responsive geometry contracts:
+  - `cd cmd/serf-hub/frontend && /opt/homebrew/bin/node scripts/layoutguard/run.mjs askdock-mobile-tall-crush`
+  - **PASS — ask dock geometry holds at phone width.**
+  - `cd cmd/serf-hub/frontend && /opt/homebrew/bin/node scripts/layoutguard/run.mjs session-ask-pane-allocation`
+  - **PASS — pane allocates usable transcript and question scroll regions without outer scrolling.**
 - `git diff --check`
-  - passed.
+  - **PASS.**
 
-## Self-review
-- Change scope stayed minimal: only the composer layout CSS and focused composer/AskDock regression tests changed.
-- The implementation follows the approved spec by using pane-local flex layout only; it does not introduce fixed positioning or alter question state/control logic.
-- The new test coverage is at the DOM/state boundary, with CSS source checks kept local and focused.
+### Self-review
+- The fix is pane-local flex layout only; no viewport-fixed positioning was introduced.
+- Composer conditional rendering, question state, controls, card structure, submission behavior, and mobile viewport/overscroll rules were not changed.
+- The geometry contract uses relationships and measured overflow behavior, not hardcoded rendered coordinates or screenshots, avoiding font/platform brittleness while catching the exact flex-growth regression.
+- Existing unrelated workspace modifications/untracked files were left untouched.
 
-## Commit
-- Pending at the time of writing this report; the final commit hash will be recorded after `git commit`.
+### Commit
+- Pending until the focused final-fix commit is created.
 
-## Concerns
-- The environment did not provide `npx`, so verification had to use the local Node binary at `/opt/homebrew/bin/node` with the repo’s checked-in Vitest binary.
-- The CSS-source assertion proves the contract in the stylesheet, but it does not measure rendered box geometry; that remains covered indirectly by the existing frontend layout behavior and the AskDock contract tests.
+### Concerns
+- `npx` is unavailable in this environment; commands used the checked-in local Node/Vitest/TypeScript binaries at `/opt/homebrew/bin/node`.
+- The repository has unrelated pre-existing modifications and untracked files; only the final-fix files listed above should be staged.

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desktop question replacement layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--surface-0); color: var(--ink-hi); font-family: var(--font-sans); }
+  .fixture { width: 100%; height: 100vh; padding: 16px; }
+  .bodyContent { height: 1800px; }
+  .footerContent { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+  .questionContent { height: 180px; }
+  .statusFooter { flex: none; height: 42px; border-top: 1px solid var(--edge); }
+</style>
+</head>
+<body>
+<main class="fixture">
+  <section class="pane" data-pane>
+    <header class="header">Active session</header>
+    <div class="body" data-pane-body><div class="bodyContent">Long transcript</div></div>
+    <footer class="footer" data-pane-footer>
+      <div class="footerContent">
+        <div class="composer" data-composer>
+          <div class="dock" data-ask-response-dock>
+            <div class="batch"><div class="questionContent">Questions and choices</div></div>
+          </div>
+        </div>
+        <div class="statusFooter" data-status-footer>Session status</div>
+      </div>
+    </footer>
+  </section>
+</main>
+<script>
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, height: r.height };
+}
+function snapshot() {
+  const pane = document.querySelector("[data-pane]");
+  const body = document.querySelector("[data-pane-body]");
+  const footer = document.querySelector("[data-pane-footer]");
+  const composer = document.querySelector("[data-composer]");
+  const dock = document.querySelector("[data-ask-response-dock]");
+  const status = document.querySelector("[data-status-footer]");
+  return {
+    pane: rect(pane),
+    body: { ...rect(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, overflowY: getComputedStyle(body).overflowY },
+    footer: rect(footer),
+    composer: rect(composer),
+    dock: { ...rect(dock), clientHeight: dock.clientHeight, scrollHeight: dock.scrollHeight, overflowY: getComputedStyle(dock).overflowY },
+    status: rect(status),
+  };
+}
+window.measure = function () {
+  const content = document.querySelector(".questionContent");
+  const short = snapshot();
+  content.style.height = "1200px";
+  const tall = snapshot();
+  return {
+    viewportHeight: window.innerHeight,
+    documentHeight: document.documentElement.scrollHeight,
+    short,
+    tall,
+  };
+};
+</script>
+</body>
+</html>

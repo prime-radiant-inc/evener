@@ -127,7 +127,7 @@ test("renders nothing when there is no pending ask for this ref", async () => {
 
 test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  expect(css).toContain("flex: 1 1 auto");
+  expect(css).toContain("flex: 0 1 auto");
   expect(css).toContain("min-height: 0");
   expect(css).toContain("max-height: 100%");
   expect(css).toContain("overflow-y: auto");

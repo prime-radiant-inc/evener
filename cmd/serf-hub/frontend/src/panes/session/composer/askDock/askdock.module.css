@@ -7,7 +7,11 @@
    * percentage sizing keeps this dock tied to that pane instead of the
    * viewport. The dock owns scrolling so the transcript and fixed footer
    * chrome keep their allocations when a batch is tall. */
-  flex: 1 1 auto;
+  /* The composer owns the filled replacement slot and bottom-aligns its
+   * active child. Growing here would consume that free space and leave the
+   * question surface top-aligned instead. Shrink only when a tall batch needs
+   * the dock's existing internal scroll boundary. */
+  flex: 0 1 auto;
   min-height: 0;
   max-height: 100%;
   overflow-y: auto;
