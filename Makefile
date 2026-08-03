@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub web-preflight build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub web-preflight build-web test-web test-web-browser build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install selftest test test-short test-race merge-approval-gate vet lint lint-naming lint-gofmt lint-serffuzz lint-eval lint-internal lint-docs lint-golangci clean fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -77,6 +77,24 @@ test-web: web-preflight
 	done; \
 	rm -rf "$$dir"; \
 	exit $$fail
+
+# test-web-browser runs the real browser-only frontend guards. They stay out
+# of test-web because jsdom cannot evaluate the CSS cascade or browser geometry.
+# Run every guard so one missing browser or failing case does not hide the
+# remaining guard's verdict; return the first nonzero status.
+test-web-browser: web-preflight
+	@set -u; cd cmd/serf-hub/frontend && \
+	status=0; \
+	for guard in layoutguard overflowguard spawnguard; do \
+		if npm run $$guard; then \
+			printf 'PASS  web-%s\n' "$$guard"; \
+		else \
+			guard_status=$$?; \
+			printf 'FAIL  web-%s (exit %s)\n' "$$guard" "$$guard_status" >&2; \
+			[ "$$status" -ne 0 ] || status="$$guard_status"; \
+		fi; \
+	done; \
+	exit "$$status"
 
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/

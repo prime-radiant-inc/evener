@@ -33,8 +33,9 @@
 //   npm run overflowguard              # the default width sweep
 //   node scripts/overflowguard/run.mjs 390 1400
 //
-// STATUS: a manual pre-merge check, like layoutguard - not wired into `make
-// lint` or CI, because it costs a Vite boot and a Chrome launch (~10s).
+// STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
+// not wired into `make lint`, because it costs a Vite boot and a Chrome
+// launch (~10s).
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
