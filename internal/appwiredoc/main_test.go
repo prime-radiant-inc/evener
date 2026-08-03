@@ -103,3 +103,16 @@ func TestBuild(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildIncludesJobActivityTypes(t *testing.T) {
+	d := build()
+	got := map[string]bool{}
+	for _, tv := range d.Types {
+		got[tv.Name] = true
+	}
+	for _, name := range []string{"JobActivityTree", "JobActivitySession", "JobActivityEntry", "JobActivityJob", "JobActivityDelegate", "JobActivityCounts", "JobActivityBranchState"} {
+		if !got[name] {
+			t.Fatalf("build() missing %s", name)
+		}
+	}
+}

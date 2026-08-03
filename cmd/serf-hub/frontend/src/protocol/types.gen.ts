@@ -285,6 +285,70 @@ export interface ItemLifecycleParams {
   failedToolCalls?: number;
 }
 
+export interface JobActivityBranchState {
+  error?: string;
+  truncated?: boolean;
+  continuation?: string;
+}
+
+export interface JobActivityCounts {
+  active: number;
+  failed: number;
+  completed: number;
+  complete: boolean;
+}
+
+export interface JobActivityDelegate {
+  delegateId: string;
+  childSessionId: string;
+  childRef: string;
+  mandate?: string;
+  turns: JobActivityJob[];
+  child?: JobActivitySession;
+  branch: JobActivityBranchState;
+}
+
+export interface JobActivityEntry {
+  kind: string;
+  job?: JobActivityJob;
+  delegate?: JobActivityDelegate;
+}
+
+export interface JobActivityJob {
+  jobId: string;
+  ownerSessionId: string;
+  ownerRef: string;
+  type: string;
+  status: string;
+  outcome?: string;
+  terminal: boolean;
+  background: boolean;
+  hasOutput: boolean;
+  description: string;
+  command?: string;
+  task?: string;
+  reason?: string;
+  startedAt: string;
+  endedAt?: string;
+  exitCode?: number;
+  outputBytes: number;
+}
+
+export interface JobActivitySession {
+  sessionId: string;
+  ref: string;
+  label: string;
+  aggregate: string;
+  counts: JobActivityCounts;
+  entries: JobActivityEntry[];
+  branch: JobActivityBranchState;
+}
+
+export interface JobActivityTree {
+  revision: number;
+  root: JobActivitySession;
+}
+
 export interface JobsListParams {
   ref?: string;
   continuation?: string;

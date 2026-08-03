@@ -1256,6 +1256,20 @@ type JobActivityTree struct {
 	Root     JobActivitySession `json:"root"`
 }
 
+// AllJobActivityTypes is the explicit reachability root for the replacement
+// jobs activity-tree contract. The AppWire generators walk this list in
+// addition to Methods and Notifications so the JobActivity* wire types stay
+// emitted even though serf/jobs/list itself keeps JobsListResponse.Data as any.
+var AllJobActivityTypes = []any{
+	JobActivityTree{},
+	JobActivitySession{},
+	JobActivityEntry{},
+	JobActivityJob{},
+	JobActivityDelegate{},
+	JobActivityCounts{},
+	JobActivityBranchState{},
+}
+
 // JobSummary is the UI wire projection of one job record — the shape
 // serf/jobs/list returns and the webui jobs panel renders. Internal fields
 // (provenance, restore descriptors, transcript refs, working dir, notify

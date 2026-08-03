@@ -109,7 +109,7 @@ no router (reserved).
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
-| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Lists the session's jobs (shell and delegate). Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
+| `serf/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `serf/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
@@ -483,6 +483,91 @@ _(no fields)_
 | `turnId` | `string` |  |  |
 | `item` | `appwire.ThreadItem` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
+
+
+### `JobActivityBranchState`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `error` | `string` | yes |  |
+| `truncated` | `bool` | yes |  |
+| `continuation` | `string` | yes |  |
+
+
+### `JobActivityCounts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `active` | `int` |  |  |
+| `failed` | `int` |  |  |
+| `completed` | `int` |  |  |
+| `complete` | `bool` |  |  |
+
+
+### `JobActivityDelegate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `delegateId` | `string` |  |  |
+| `childSessionId` | `string` |  |  |
+| `childRef` | `string` |  |  |
+| `mandate` | `string` | yes |  |
+| `turns` | `[]appwire.JobActivityJob` |  |  |
+| `child` | `*appwire.JobActivitySession` | yes |  |
+| `branch` | `appwire.JobActivityBranchState` |  |  |
+
+
+### `JobActivityEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | `string` |  |  |
+| `job` | `*appwire.JobActivityJob` | yes |  |
+| `delegate` | `*appwire.JobActivityDelegate` | yes |  |
+
+
+### `JobActivityJob`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `jobId` | `string` |  |  |
+| `ownerSessionId` | `string` |  |  |
+| `ownerRef` | `string` |  |  |
+| `type` | `string` |  |  |
+| `status` | `string` |  |  |
+| `outcome` | `string` | yes |  |
+| `terminal` | `bool` |  |  |
+| `background` | `bool` |  |  |
+| `hasOutput` | `bool` |  |  |
+| `description` | `string` |  |  |
+| `command` | `string` | yes |  |
+| `task` | `string` | yes |  |
+| `reason` | `string` | yes |  |
+| `startedAt` | `string` |  |  |
+| `endedAt` | `string` | yes |  |
+| `exitCode` | `*int` | yes |  |
+| `outputBytes` | `int64` |  |  |
+
+
+### `JobActivitySession`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessionId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `label` | `string` |  |  |
+| `aggregate` | `string` |  |  |
+| `counts` | `appwire.JobActivityCounts` |  |  |
+| `entries` | `[]appwire.JobActivityEntry` |  |  |
+| `branch` | `appwire.JobActivityBranchState` |  |  |
+
+
+### `JobActivityTree`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `revision` | `uint64` |  |  |
+| `root` | `appwire.JobActivitySession` |  |  |
 
 
 ### `JobsListParams`

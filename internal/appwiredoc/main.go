@@ -110,6 +110,9 @@ func build() docData {
 	register := func(v any) string {
 		return registerType(typeNames, v)
 	}
+	for _, v := range appwire.AllJobActivityTypes {
+		register(v)
+	}
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
