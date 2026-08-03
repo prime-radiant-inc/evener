@@ -1,8 +1,12 @@
 package hubcore
 
 import (
+	"database/sql"
+	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,7 +36,7 @@ func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
 	}
 	reused, changed, err := store.CreateOrReuseAndAssign("research", "session-b", time.Unix(2, 0))
-	if err != nil || !changed || reused.ID != first.ID {
+	if err != nil || !changed || reused.ID != first.ID || reused.Name != "Research" {
 		t.Fatalf("reuse = %+v, %v, %v", reused, changed, err)
 	}
 	other, _, err := store.CreateOrReuseAndAssign("Client", "session-a", time.Unix(3, 0))
@@ -44,6 +48,32 @@ func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.
 		t.Fatal(err)
 	}
 	if len(pins) != 2 || pins["session-a"].SectionID != other.ID {
+		t.Fatalf("pins = %+v", pins)
+	}
+}
+
+func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	first, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	if err != nil || !changed {
+		t.Fatalf("first = %+v, %v, %v", first, changed, err)
+	}
+	second, changed, err := store.CreateOrReuseAndAssign("research", "session-a", time.Unix(2, 0))
+	if err != nil || changed || second.ID != first.ID || second.Name != "Research" {
+		t.Fatalf("reuse noop = %+v, %v, %v", second, changed, err)
+	}
+	sections, err := store.Sections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections) != 1 || sections[0].Name != "Research" {
+		t.Fatalf("sections = %+v", sections)
+	}
+	pins, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pins) != 1 || pins["session-a"].AssignedAt != time.Unix(1, 0).UTC() {
 		t.Fatalf("pins = %+v", pins)
 	}
 }
@@ -155,59 +185,144 @@ func TestPinSectionStoreForeignKeysEnabled(t *testing.T) {
 	}
 }
 
-func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConverges(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, changed, err := store.CreateOrReuseAndAssign("Pinned", "session-a", time.Unix(1, 0))
-	if err != nil || !changed {
-		t.Fatalf("seed = %+v, %v, %v", section, changed, err)
-	}
-	results := make(chan PinSection, 8)
-	errs := make(chan error, 8)
-	for i := 0; i < 8; i++ {
-		go func(i int) {
-			got, _, err := store.CreateOrReuseAndAssign("pinned", "session-x", time.Unix(int64(2+i), 0))
-			if err != nil {
-				errs <- err
-				return
+func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnections(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	storeA := NewPinSectionStore(dbPath)
+	storeB := NewPinSectionStore(dbPath)
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	firstInserted := make(chan struct{})
+	oldHook := pinSectionBeforeSectionInsertHook
+	defer func() { pinSectionBeforeSectionInsertHook = oldHook }()
+	var enteredCount int32
+	pinSectionBeforeSectionInsertHook = func() {
+		if atomic.AddInt32(&enteredCount, 1) <= 2 {
+			if atomic.LoadInt32(&enteredCount) == 1 {
+				close(firstInserted)
 			}
-			results <- got
-		}(i)
-	}
-	for i := 0; i < 8; i++ {
-		select {
-		case err := <-errs:
-			t.Fatal(err)
-		case got := <-results:
-			if got.ID != section.ID {
-				t.Fatalf("concurrent section = %+v, want %s", got, section.ID)
-			}
+			entered <- struct{}{}
+			<-release
 		}
+	}
+	oldOpen := storeB.openDB
+	storeB.openDB = func(driverName, dataSourceName string) (*sql.DB, error) {
+		<-firstInserted
+		return oldOpen(driverName, dataSourceName)
+	}
+	type result struct {
+		section PinSection
+		changed bool
+		err     error
+	}
+	results := make(chan result, 2)
+	go func() {
+		section, changed, err := storeA.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+		results <- result{section: section, changed: changed, err: err}
+	}()
+	go func() {
+		section, changed, err := storeB.CreateOrReuseAndAssign("research", "session-b", time.Unix(2, 0))
+		results <- result{section: section, changed: changed, err: err}
+	}()
+	<-entered
+	<-entered
+	close(release)
+	first := <-results
+	second := <-results
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if first.section.ID != second.section.ID || !first.changed || !second.changed {
+		t.Fatalf("results = %+v %+v", first, second)
+	}
+	sections, err := storeA.Sections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sections) != 1 || sections[0].Name != "Research" || sections[0].MemberCount != 2 {
+		t.Fatalf("sections = %+v", sections)
+	}
+	pins, err := storeA.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pins) != 2 || pins["session-a"].SectionID != first.section.ID || pins["session-b"].SectionID != first.section.ID {
+		t.Fatalf("pins = %+v", pins)
 	}
 }
 
 func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	first, changed, err := store.CreateOrReuseAndAssign("One", "session-a", time.Unix(1, 0))
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	storeA := NewPinSectionStore(dbPath)
+	storeB := NewPinSectionStore(dbPath)
+	firstSection, changed, err := storeA.CreateOrReuseAndAssign("One", "seed-a", time.Unix(1, 0))
 	if err != nil || !changed {
-		t.Fatalf("first = %+v, %v, %v", first, changed, err)
+		t.Fatalf("seed first = %+v, %v, %v", firstSection, changed, err)
 	}
-	second, changed, err := store.CreateOrReuseAndAssign("Two", "session-a", time.Unix(2, 0))
+	secondSection, changed, err := storeA.CreateOrReuseAndAssign("Two", "seed-b", time.Unix(2, 0))
 	if err != nil || !changed {
-		t.Fatalf("second = %+v, %v, %v", second, changed, err)
+		t.Fatalf("seed second = %+v, %v, %v", secondSection, changed, err)
 	}
-	pins, err := store.Assignments()
+	if ok, err := storeA.Unpin("seed-a"); err != nil || !ok {
+		t.Fatalf("unpin seed-a = %v, %v", ok, err)
+	}
+	if ok, err := storeA.Unpin("seed-b"); err != nil || !ok {
+		t.Fatalf("unpin seed-b = %v, %v", ok, err)
+	}
+	oldHook := pinSectionBeforeAssignmentCommitHook
+	defer func() { pinSectionBeforeAssignmentCommitHook = oldHook }()
+	releaseFirst := make(chan struct{})
+	firstEntered := make(chan struct{})
+	var hookCount int32
+	pinSectionBeforeAssignmentCommitHook = func() {
+		if atomic.AddInt32(&hookCount, 1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+	}
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		_, _, err := storeA.Assign(firstSection.ID, "session-x", time.Unix(3, 0))
+		firstDone <- err
+	}()
+	<-firstEntered
+	go func() {
+		_, _, err := storeB.Assign(secondSection.ID, "session-x", time.Unix(4, 0))
+		secondDone <- err
+	}()
+	close(releaseFirst)
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	pins, err := storeA.Assignments()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pins) != 1 || pins["session-a"].SectionID != second.ID {
+	if len(pins) != 1 || pins["session-x"].SectionID != secondSection.ID {
 		t.Fatalf("pins = %+v", pins)
+	}
+}
+
+func TestPinSectionStoreEntropyFailureReturnsError(t *testing.T) {
+	oldRead := pinSectionRandRead
+	defer func() { pinSectionRandRead = oldRead }()
+	pinSectionRandRead = func([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
+	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	if _, _, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0)); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
+		t.Fatalf("CreateOrReuseAndAssign error = %v", err)
 	}
 }
 
 func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
 	now := time.Unix(10, 0)
-	seedLegacyFavoriteRows(t, store)
+	beforeRows := seedLegacyFavoriteRows(t, store)
 	changed, err := store.MigrateLegacy([]LegacyPinDecision{
 		{StoredID: "valid", Classification: FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: ArchiveKey{Kind: "session", ID: "canonical-valid"}}},
 		{StoredID: "remote-missing", Classification: FavoriteDecisionClassification{State: FavoriteDecisionDormant}},
@@ -236,12 +351,15 @@ func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	if _, ok := pins["subagent"]; ok {
 		t.Fatalf("subagent should be absent: %+v", pins)
 	}
-	favs, err := favoriteRowsForTest(store)
+	afterRows, err := favoriteRowsSnapshotForTest(store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(favs) != 1 || favs[ArchiveKey{Kind: "project", ID: "project-a"}] != true {
-		t.Fatalf("favorite rows = %+v", favs)
+	if !reflect.DeepEqual(afterRows, []favoriteRow{{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5}}) {
+		t.Fatalf("favorite rows = %+v", afterRows)
+	}
+	if !reflect.DeepEqual(beforeRows, []favoriteRow{{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5}}) {
+		t.Fatalf("seed project rows = %+v", beforeRows)
 	}
 	changed, err = store.MigrateLegacy([]LegacyPinDecision{{StoredID: "valid", Classification: FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: ArchiveKey{Kind: "session", ID: "canonical-valid"}}}}, now.Add(time.Minute))
 	if err != nil || changed {
@@ -260,46 +378,53 @@ func TestPinSectionStoreMigrateLegacy(t *testing.T) {
 	}
 }
 
-func seedLegacyFavoriteRows(t *testing.T, store *PinSectionStore) {
+type favoriteRow struct {
+	Kind      string
+	ID        string
+	Favorited int
+	DecidedAt int64
+}
+
+func seedLegacyFavoriteRows(t *testing.T, store *PinSectionStore) []favoriteRow {
 	t.Helper()
 	db, err := store.open()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	stmts := []string{
-		`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'valid', 1, 1)`,
-		`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'remote-missing', 1, 1)`,
-		`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'subagent', 1, 1)`,
-		`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('session', 'false-row', 0, 1)`,
-		`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES('project', 'project-a', 1, 1)`,
+	rows := []favoriteRow{
+		{Kind: "session", ID: "valid", Favorited: 1, DecidedAt: 1},
+		{Kind: "session", ID: "remote-missing", Favorited: 1, DecidedAt: 2},
+		{Kind: "session", ID: "subagent", Favorited: 1, DecidedAt: 3},
+		{Kind: "session", ID: "false-row", Favorited: 0, DecidedAt: 4},
+		{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5},
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	for _, row := range rows {
+		if _, err := db.Exec(`INSERT INTO favorite(kind, id, favorited, decided_at) VALUES(?, ?, ?, ?)`, row.Kind, row.ID, row.Favorited, row.DecidedAt); err != nil { //nolint:noctx // local file DB
 			t.Fatal(err)
 		}
 	}
+	return []favoriteRow{{Kind: "project", ID: "project-a", Favorited: 1, DecidedAt: 5}}
 }
 
-func favoriteRowsForTest(store *PinSectionStore) (map[ArchiveKey]bool, error) {
+func favoriteRowsSnapshotForTest(store *PinSectionStore) ([]favoriteRow, error) {
 	db, err := store.open()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`SELECT kind, id, favorited FROM favorite`) //nolint:noctx // local file DB
+	rows, err := db.Query(`SELECT kind, id, favorited, decided_at FROM favorite ORDER BY kind, id`) //nolint:noctx // local file DB
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	out := make(map[ArchiveKey]bool)
+	out := make([]favoriteRow, 0)
 	for rows.Next() {
-		var kind, id string
-		var favorited int
-		if err := rows.Scan(&kind, &id, &favorited); err != nil {
+		var row favoriteRow
+		if err := rows.Scan(&row.Kind, &row.ID, &row.Favorited, &row.DecidedAt); err != nil {
 			return nil, err
 		}
-		out[ArchiveKey{Kind: kind, ID: id}] = favorited == 1
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -24,6 +23,10 @@ var (
 	ErrPinSectionName     = errors.New("invalid pin section name")
 	ErrPinSectionNotFound = errors.New("pin section not found")
 	ErrPinSectionConflict = errors.New("pin section name already exists")
+
+	pinSectionRandRead                   = rand.Read
+	pinSectionBeforeSectionInsertHook    func()
+	pinSectionBeforeAssignmentCommitHook func()
 )
 
 // PinSection groups pinned sessions under a durable user-defined name.
@@ -53,7 +56,6 @@ type LegacyPinDecision struct {
 // the same SQLite index DB as archive/favorite decisions.
 type PinSectionStore struct {
 	dbPath string
-	mu     sync.Mutex
 	fs     afero.Fs
 	openDB func(driverName, dataSourceName string) (*sql.DB, error)
 }
@@ -131,6 +133,10 @@ func (s *PinSectionStore) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("foreign_keys pragma not enabled")
 	}
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil { //nolint:noctx // local file DB
+		_ = db.Close()
+		return nil, err
+	}
 	for _, stmt := range []string{createPinSectionTable, createSessionPinTable, createHubSchemaMigrationTable, createFavoriteTable} {
 		if _, err := db.Exec(stmt); err != nil { //nolint:noctx // local file DB
 			_ = db.Close()
@@ -182,35 +188,57 @@ func (s *PinSectionStore) Assign(sectionID, sessionID string, now time.Time) (Pi
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	db, err := s.open()
-	if err != nil {
-		return PinSection{}, false, err
+	for attempt := 0; attempt < 8; attempt++ {
+		db, err := s.open()
+		if err != nil {
+			return PinSection{}, false, err
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		section, ok, err := sectionByIDTx(tx, sectionID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		if !ok {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return PinSection{}, false, ErrPinSectionNotFound
+		}
+		changed, err := upsertSessionPinTx(tx, sessionID, sectionID, now)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		if pinSectionBeforeAssignmentCommitHook != nil {
+			pinSectionBeforeAssignmentCommitHook()
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		_ = db.Close()
+		return section, changed, nil
 	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return PinSection{}, false, err
-	}
-	section, ok, err := sectionByIDTx(tx, sectionID)
-	if err != nil {
-		_ = tx.Rollback()
-		return PinSection{}, false, err
-	}
-	if !ok {
-		_ = tx.Rollback()
-		return PinSection{}, false, ErrPinSectionNotFound
-	}
-	changed, err := upsertSessionPinTx(tx, sessionID, sectionID, now)
-	if err != nil {
-		_ = tx.Rollback()
-		return PinSection{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return PinSection{}, false, err
-	}
-	return section, changed, nil
+	return PinSection{}, false, fmt.Errorf("assign %s: retry limit reached", sessionID)
 }
 
 // CreateOrReuseAndAssign creates a section when needed, reuses an existing
@@ -219,13 +247,11 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	display, key, err := NormalizePinSectionName(name)
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	for range 4 {
+	for attempt := 0; attempt < 8; attempt++ {
 		db, err := s.open()
 		if err != nil {
 			return PinSection{}, false, err
@@ -233,13 +259,16 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 		tx, err := db.BeginTx(context.Background(), nil)
 		if err != nil {
 			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
 			return PinSection{}, false, err
 		}
 		section, created, err := ensureSectionTx(tx, display, key, now)
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
-			if isPinSectionNameKeyConflict(err) {
+			if isSQLiteUniqueNameConflict(err) || isSQLiteRetryable(err) {
 				continue
 			}
 			return PinSection{}, false, err
@@ -248,19 +277,26 @@ func (s *PinSectionStore) CreateOrReuseAndAssign(name, sessionID string, now tim
 		if err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
-			if isPinSectionNameKeyConflict(err) {
+			if isSQLiteRetryable(err) {
 				continue
 			}
 			return PinSection{}, false, err
 		}
+		if pinSectionBeforeAssignmentCommitHook != nil {
+			pinSectionBeforeAssignmentCommitHook()
+		}
 		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
 			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
 			return PinSection{}, false, err
 		}
 		_ = db.Close()
 		return section, created || changed, nil
 	}
-	return PinSection{}, false, ErrPinSectionConflict
+	return PinSection{}, false, fmt.Errorf("create or reuse pin section %q: retry limit reached", display)
 }
 
 // Unpin removes one session assignment while leaving its section intact.
@@ -273,68 +309,93 @@ func (s *PinSectionStore) Rename(sectionID, name string, now time.Time) (PinSect
 	if s == nil || s.dbPath == "" {
 		return PinSection{}, false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	display, key, err := NormalizePinSectionName(name)
 	if err != nil {
 		return PinSection{}, false, err
 	}
-	db, err := s.open()
-	if err != nil {
-		return PinSection{}, false, err
-	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return PinSection{}, false, err
-	}
-	section, ok, err := sectionByIDTx(tx, sectionID)
-	if err != nil {
-		_ = tx.Rollback()
-		return PinSection{}, false, err
-	}
-	if !ok {
-		_ = tx.Rollback()
-		return PinSection{}, false, ErrPinSectionNotFound
-	}
-	if section.Name == display {
-		_ = tx.Rollback()
-		return section, false, nil
-	}
-	if sectionKey, err := sectionKeyByIDTx(tx, sectionID); err != nil {
-		_ = tx.Rollback()
-		return PinSection{}, false, err
-	} else if sectionKey != key {
+	for attempt := 0; attempt < 8; attempt++ {
+		db, err := s.open()
+		if err != nil {
+			return PinSection{}, false, err
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		section, ok, err := sectionByIDTx(tx, sectionID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		if !ok {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return PinSection{}, false, ErrPinSectionNotFound
+		}
+		if section.Name == display {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return section, false, nil
+		}
 		otherID, found, err := sectionIDByKeyTx(tx, key)
 		if err != nil {
 			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
 			return PinSection{}, false, err
 		}
 		if found && otherID != sectionID {
 			_ = tx.Rollback()
+			_ = db.Close()
 			return PinSection{}, false, ErrPinSectionConflict
 		}
-	}
-	if _, err := tx.Exec(`UPDATE pin_section SET name = ?, name_key = ?, updated_at = ? WHERE id = ?`, display, key, now.Unix(), sectionID); err != nil { //nolint:noctx // local file DB
-		_ = tx.Rollback()
-		if isPinSectionNameKeyConflict(err) {
-			return PinSection{}, false, ErrPinSectionConflict
+		if _, err := tx.Exec(`UPDATE pin_section SET name = ?, name_key = ?, updated_at = ? WHERE id = ?`, display, key, now.Unix(), sectionID); err != nil { //nolint:noctx // local file DB
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			if isSQLiteUniqueNameConflict(err) {
+				return PinSection{}, false, ErrPinSectionConflict
+			}
+			return PinSection{}, false, err
 		}
-		return PinSection{}, false, err
+		updated, ok, err := sectionByIDTx(tx, sectionID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		if !ok {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return PinSection{}, false, ErrPinSectionNotFound
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return PinSection{}, false, err
+		}
+		_ = db.Close()
+		return updated, true, nil
 	}
-	updated, ok, err := sectionByIDTx(tx, sectionID)
-	if err != nil {
-		_ = tx.Rollback()
-		return PinSection{}, false, err
-	}
-	if !ok {
-		_ = tx.Rollback()
-		return PinSection{}, false, ErrPinSectionNotFound
-	}
-	if err := tx.Commit(); err != nil {
-		return PinSection{}, false, err
-	}
-	return updated, true, nil
+	return PinSection{}, false, fmt.Errorf("rename pin section %s: retry limit reached", sectionID)
 }
 
 // DeleteSection removes a section and cascades all of its assignments.
@@ -342,39 +403,62 @@ func (s *PinSectionStore) DeleteSection(sectionID string) (memberCount int, chan
 	if s == nil || s.dbPath == "" {
 		return 0, false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	db, err := s.open()
-	if err != nil {
-		return 0, false, err
+	for attempt := 0; attempt < 8; attempt++ {
+		db, err := s.open()
+		if err != nil {
+			return 0, false, err
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return 0, false, err
+		}
+		section, ok, err := sectionByIDTx(tx, sectionID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return 0, false, err
+		}
+		if !ok {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return 0, false, ErrPinSectionNotFound
+		}
+		memberCount, err = sessionPinCountTx(tx, sectionID)
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return 0, false, err
+		}
+		if _, err := tx.Exec(`DELETE FROM pin_section WHERE id = ?`, section.ID); err != nil { //nolint:noctx // local file DB
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return 0, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return 0, false, err
+		}
+		_ = db.Close()
+		return memberCount, true, nil
 	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return 0, false, err
-	}
-	section, ok, err := sectionByIDTx(tx, sectionID)
-	if err != nil {
-		_ = tx.Rollback()
-		return 0, false, err
-	}
-	if !ok {
-		_ = tx.Rollback()
-		return 0, false, ErrPinSectionNotFound
-	}
-	memberCount, err = sessionPinCountTx(tx, sectionID)
-	if err != nil {
-		_ = tx.Rollback()
-		return 0, false, err
-	}
-	if _, err := tx.Exec(`DELETE FROM pin_section WHERE id = ?`, section.ID); err != nil { //nolint:noctx // local file DB
-		_ = tx.Rollback()
-		return 0, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, false, err
-	}
-	return memberCount, true, nil
+	return 0, false, fmt.Errorf("delete pin section %s: retry limit reached", sectionID)
 }
 
 // DeleteSession removes a single assignment by session ID.
@@ -382,31 +466,49 @@ func (s *PinSectionStore) DeleteSession(sessionID string) (bool, error) {
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	db, err := s.open()
-	if err != nil {
-		return false, err
+	for attempt := 0; attempt < 8; attempt++ {
+		db, err := s.open()
+		if err != nil {
+			return false, err
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		res, err := tx.Exec(`DELETE FROM session_pin WHERE session_id = ?`, sessionID) //nolint:noctx // local file DB
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return false, err
+		}
+		_ = db.Close()
+		return rows > 0, nil
 	}
-	defer func() { _ = db.Close() }()
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return false, err
-	}
-	res, err := tx.Exec(`DELETE FROM session_pin WHERE session_id = ?`, sessionID) //nolint:noctx // local file DB
-	if err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return rows > 0, nil
+	return false, fmt.Errorf("delete session pin %s: retry limit reached", sessionID)
 }
 
 // Assignments returns every durable session-to-section mapping.
@@ -443,8 +545,6 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	db, err := s.open()
 	if err != nil {
 		return false, err
@@ -454,22 +554,12 @@ func (s *PinSectionStore) MigrateLegacy(decisions []LegacyPinDecision, now time.
 	if err != nil {
 		return false, err
 	}
-	var migrated bool
-	if migrated, err = migrateLegacyTx(tx, decisions, now); err != nil {
-		_ = tx.Rollback()
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return migrated, nil
-}
-
-func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (bool, error) {
 	var applied int
 	if err := tx.QueryRow(`SELECT 1 FROM hub_schema_migration WHERE name = ?`, "named-pin-sections-v1").Scan(&applied); err == nil {
+		_ = tx.Rollback()
 		return false, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
 		return false, err
 	}
 	classificationByID := make(map[string]LegacyPinDecision, len(decisions))
@@ -478,6 +568,7 @@ func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (
 	}
 	rows, err := tx.Query(`SELECT id, favorited FROM favorite WHERE kind = 'session'`) //nolint:noctx // local file DB
 	if err != nil {
+		_ = tx.Rollback()
 		return false, err
 	}
 	defer func() { _ = rows.Close() }()
@@ -489,6 +580,7 @@ func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (
 		var sessionID string
 		var favorited int
 		if err := rows.Scan(&sessionID, &favorited); err != nil {
+			_ = tx.Rollback()
 			return false, err
 		}
 		if favorited != 1 {
@@ -516,23 +608,32 @@ func migrateLegacyTx(tx *sql.Tx, decisions []LegacyPinDecision, now time.Time) (
 		}
 	}
 	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
 		return false, err
 	}
 	if len(assignments) > 0 {
 		section, _, err := ensureSectionTx(tx, "Pinned", cases.Fold().String("Pinned"), now)
 		if err != nil {
+			_ = tx.Rollback()
 			return false, err
 		}
 		for _, assignment := range assignments {
 			if _, err := upsertSessionPinTx(tx, assignment.sessionID, section.ID, now); err != nil {
+				_ = tx.Rollback()
 				return false, err
 			}
 		}
 	}
 	if _, err := tx.Exec(`DELETE FROM favorite WHERE kind = 'session'`); err != nil { //nolint:noctx // local file DB
+		_ = tx.Rollback()
 		return false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO hub_schema_migration(name, applied_at) VALUES (?, ?)`, "named-pin-sections-v1", now.Unix()); err != nil { //nolint:noctx // local file DB
+		_ = tx.Rollback()
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
 		return false, err
 	}
 	return true, nil
@@ -544,24 +645,17 @@ func ensureSectionTx(tx *sql.Tx, display, key string, now time.Time) (PinSection
 		return PinSection{}, false, err
 	}
 	if ok {
-		if section.Name == display {
-			return section, false, nil
-		}
-		if _, err := tx.Exec(`UPDATE pin_section SET name = ?, updated_at = ? WHERE id = ?`, display, now.Unix(), section.ID); err != nil { //nolint:noctx // local file DB
-			if isPinSectionNameKeyConflict(err) {
-				return PinSection{}, false, ErrPinSectionConflict
-			}
-			return PinSection{}, false, err
-		}
-		section.Name = display
-		section.UpdatedAt = now.UTC()
-		return section, true, nil
+		return section, false, nil
 	}
-	section = PinSection{ID: newPinSectionID(), Name: display, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	if pinSectionBeforeSectionInsertHook != nil {
+		pinSectionBeforeSectionInsertHook()
+	}
+	id, err := newPinSectionID()
+	if err != nil {
+		return PinSection{}, false, err
+	}
+	section = PinSection{ID: id, Name: display, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	if _, err := tx.Exec(`INSERT INTO pin_section(id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, section.ID, display, key, now.Unix(), now.Unix()); err != nil { //nolint:noctx // local file DB
-		if isPinSectionNameKeyConflict(err) {
-			return PinSection{}, false, ErrPinSectionConflict
-		}
 		return PinSection{}, false, err
 	}
 	return section, true, nil
@@ -606,14 +700,6 @@ func sectionIDByKeyTx(tx *sql.Tx, key string) (string, bool, error) {
 	return id, true, nil
 }
 
-func sectionKeyByIDTx(tx *sql.Tx, id string) (string, error) {
-	var key string
-	if err := tx.QueryRow(`SELECT name_key FROM pin_section WHERE id = ?`, id).Scan(&key); err != nil {
-		return "", err
-	}
-	return key, nil
-}
-
 func sessionPinCountTx(tx *sql.Tx, sectionID string) (int, error) {
 	var count int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM session_pin WHERE section_id = ?`, sectionID).Scan(&count); err != nil {
@@ -639,14 +725,26 @@ WHERE session_pin.section_id <> excluded.section_id`, sessionID, sectionID, now.
 	return rows > 0, nil
 }
 
-func newPinSectionID() string {
+func newPinSectionID() (string, error) {
 	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		panic(fmt.Errorf("generate pin section id: %w", err))
+	if _, err := pinSectionRandRead(raw[:]); err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(raw[:])
+	return hex.EncodeToString(raw[:]), nil
 }
 
-func isPinSectionNameKeyConflict(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "pin_section.name_key") && strings.Contains(strings.ToLower(err.Error()), "constraint")
+func isSQLiteRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "database is locked") || strings.Contains(s, "sqlite_busy") || strings.Contains(s, "sqlite_locked") || strings.Contains(s, "busy")
+}
+
+func isSQLiteUniqueNameConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unique constraint failed") && strings.Contains(s, "pin_section.name_key")
 }
