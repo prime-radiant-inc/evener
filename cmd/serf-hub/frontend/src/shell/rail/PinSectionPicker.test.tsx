@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PinSectionSummary, TreeNode } from "../../stores/tree";
-import { listPinSections } from "./actions";
+import { listPinSections, RailRequestError } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
 vi.mock("./actions", async (importOriginal) => {
@@ -100,6 +100,20 @@ describe("PinSectionPicker", () => {
 
     await userEvent.setup().click(await screen.findByRole("button", { name: "Client" }));
     expect(onAssign).toHaveBeenCalledWith({ section_id: "client" }, CLIENT);
+  });
+
+  test("refreshes stale section choices when assigning a concurrently deleted section returns not-found", async () => {
+    mockedListPinSections.mockResolvedValueOnce([CLIENT, PERSONAL]).mockResolvedValueOnce([PERSONAL]);
+    const notFound = new RailRequestError("pin section not found", 404);
+    const onAssign = vi.fn().mockRejectedValue(notFound);
+    render(<PinSectionPicker {...props({ onAssign })} />);
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Client" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("pin section not found");
+    await waitFor(() => expect(mockedListPinSections).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: "Client" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Personal" })).toBeTruthy();
   });
 
   test("opens the new-section step, trims the name, and assigns by name", async () => {

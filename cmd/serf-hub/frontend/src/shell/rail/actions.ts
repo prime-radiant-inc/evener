@@ -22,9 +22,23 @@ async function parseErrorBody(res: Response): Promise<string> {
   return `${res.status} ${res.statusText}`;
 }
 
+export class RailRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RailRequestError";
+    this.status = status;
+  }
+}
+
+export function isRailRequestStatus(error: unknown, status: number): boolean {
+  return error instanceof RailRequestError && error.status === status;
+}
+
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
   const res = await fetch(url, { credentials: "same-origin", ...init });
-  if (!res.ok) throw new Error(await parseErrorBody(res));
+  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
   return (await res.json()) as T;
 }
 
@@ -38,7 +52,7 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     credentials: "same-origin",
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await parseErrorBody(res));
+  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

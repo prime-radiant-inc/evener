@@ -558,6 +558,25 @@ describe("loadProjectDetail", () => {
     expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
   });
 
+  test("dedupes concurrent detail loads for the same project and tree generation", async () => {
+    treeStore.setState({ tree: { ...NORMALIZED_EMPTY_TREE }, treeGeneration: 7 });
+    let resolveDetail!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    const first = treeStore.getState().loadProjectDetail("p1");
+    const second = treeStore.getState().loadProjectDetail("p1");
+
+    expect(first).toBe(second);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    resolveDetail(jsonResponse({ key: "p1", name: "Proj", sessions: null }));
+    await Promise.all([first, second]);
+    expect(treeStore.getState().projectDetailGenerations.get("p1")).toBe(7);
+  });
+
   test("a successful refresh advances tree generation without falsely retagging retained detail", async () => {
     treeStore.setState({
       tree: { ...NORMALIZED_EMPTY_TREE, archived_projects: [{ key: "p1", name: "Proj", sessions: [] }] },

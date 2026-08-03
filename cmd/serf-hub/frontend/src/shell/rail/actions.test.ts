@@ -5,6 +5,7 @@ import {
   deletePinSection,
   deleteProject,
   deleteSession,
+  isRailRequestStatus,
   listPinSections,
   renamePinSection,
   renameSession,
@@ -90,6 +91,17 @@ describe("named pin sections", () => {
       "/api/session-pin",
       JSON_INIT({ session_ref: "local:s1", section_id: "s/1" }),
     );
+  });
+
+  test("assignment failures preserve HTTP status for structured not-found handling", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "pin section not found" }, 404));
+
+    const error = await assignSessionPin("local:s1", { section_id: "deleted" }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("pin section not found");
+    expect(isRailRequestStatus(error, 404)).toBe(true);
+    expect(isRailRequestStatus(error, 409)).toBe(false);
   });
 
   test("unpins with an encoded query ref, DELETE, same-origin credentials, and parses success", async () => {

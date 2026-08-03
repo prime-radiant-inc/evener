@@ -290,7 +290,12 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [pickerTarget, setPickerTarget] = useState<{ session: ApiTreeNode; mode: "pin" | "move" } | null>(null);
+  const [pickerTarget, setPickerTarget] = useState<{
+    session: ApiTreeNode;
+    mode: "pin" | "move";
+    token: number;
+  } | null>(null);
+  const pickerToken = useRef(0);
   const [sectionRenameTarget, setSectionRenameTarget] = useState<PinSectionTree | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
   const [sectionRenameError, setSectionRenameError] = useState("");
@@ -302,6 +307,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // also prevents an obsolete async completion from changing a later dialog.
   const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
   const sectionRenameToken = useRef(0);
+  const sectionDeleteRequestToken = useRef(0);
   const [sectionDeleteTarget, setSectionDeleteTarget] = useState<{
     section: PinSectionTree;
     memberCount: number;
@@ -351,6 +357,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     () => () => {
       sectionRenameToken.current += 1;
       sectionRenameSubmission.current = null;
+      pickerToken.current += 1;
+      sectionDeleteRequestToken.current += 1;
     },
     [],
   );
@@ -376,6 +384,22 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     },
     [expandedOverrides],
   );
+
+  // A successful tree refresh invalidates every archived detail's generation.
+  // Rehydrate projects which are still visibly expanded without requiring a
+  // collapse/re-expand gesture. loadProjectDetail dedupes by project+generation
+  // and rejects stale responses at the store authority boundary.
+  useEffect(() => {
+    if (!fetchedTree || expandedOverrides.get(ARCHIVED_SECTION_KEY) !== true) return;
+    for (const project of fetchedTree.archived_projects) {
+      if (
+        expandedOverrides.get(`projectnode:${project.key}`) === true &&
+        projectDetailGenerations.get(project.key) !== treeGeneration
+      ) {
+        void treeStore.getState().loadProjectDetail(project.key);
+      }
+    }
+  }, [fetchedTree, treeGeneration, projectDetailGenerations, expandedOverrides]);
 
   // Reveal a session's row for the palette's /project command (railController).
   // If the row is already rendered, scroll it into view (block:"center"). If
@@ -518,10 +542,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
 
   const rowActions: RailRowActions = {
     onPinSectionRequest: (session) => {
-      setPickerTarget({ session, mode: "pin" });
+      const token = pickerToken.current + 1;
+      pickerToken.current = token;
+      setPickerTarget({ session, mode: "pin", token });
     },
     onMovePinSectionRequest: (session) => {
-      setPickerTarget({ session, mode: "move" });
+      const token = pickerToken.current + 1;
+      pickerToken.current = token;
+      setPickerTarget({ session, mode: "move", token });
     },
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
@@ -668,7 +696,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       optimistic,
       true,
     );
-    setPickerTarget(null);
+    if (pickerToken.current === picker.token) setPickerTarget(null);
   }
 
   async function unpinPickerTarget(): Promise<void> {
@@ -680,7 +708,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       { kind: "sessionUnpin", ref: picker.session.ref },
       true,
     );
-    setPickerTarget(null);
+    if (pickerToken.current === picker.token) setPickerTarget(null);
   }
 
   function openSectionRename(section: PinSectionTree): void {
@@ -742,12 +770,16 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   async function requestSectionDelete(section: PinSectionTree): Promise<void> {
+    const requestToken = sectionDeleteRequestToken.current + 1;
+    sectionDeleteRequestToken.current = requestToken;
     try {
       const summaries = await listPinSections();
+      if (sectionDeleteRequestToken.current !== requestToken) return;
       const durable = summaries.find((summary) => summary.id === section.id);
       if (!durable) throw new Error("pin section not found");
       setSectionDeleteTarget({ section, memberCount: durable.member_count });
     } catch (err) {
+      if (sectionDeleteRequestToken.current !== requestToken) return;
       toasts.push("error", `Couldn't load pin section details: ${errorText(err)}`);
     }
   }
@@ -969,7 +1001,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           mode={pickerTarget.mode}
           onAssign={assignPickerTarget}
           onUnpin={pickerTarget.mode === "move" ? unpinPickerTarget : undefined}
-          onClose={() => setPickerTarget(null)}
+          onClose={() => {
+            pickerToken.current += 1;
+            setPickerTarget(null);
+          }}
         />
       )}
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetTreeStoreForTests } from "../../stores/tree";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -733,6 +733,45 @@ describe("sections", () => {
     expect(screen.queryByRole("dialog", { name: "Delete pin section?" })).toBeNull();
   });
 
+  test("an older delete-summary response cannot replace a newer section confirmation", async () => {
+    treeResponseBody = NAMED_PIN_TREE;
+    let resolveClient!: (response: Response) => void;
+    let resolvePersonal!: (response: Response) => void;
+    const clientSummary = new Promise<Response>((resolve) => {
+      resolveClient = resolve;
+    });
+    const personalSummary = new Promise<Response>((resolve) => {
+      resolvePersonal = resolve;
+    });
+    let summaryRequest = 0;
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET" && url === "/api/pin-sections") {
+        summaryRequest += 1;
+        return summaryRequest === 1 ? clientSummary : personalSummary;
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Client pinned session");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Actions for Client" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await vi.waitFor(() => expect(summaryRequest).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Actions for Personal" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await vi.waitFor(() => expect(summaryRequest).toBe(2));
+
+    resolvePersonal(jsonResponse(pinSectionSummaries));
+    expect((await screen.findByRole("dialog", { name: "Delete pin section?" })).textContent).toContain(
+      "Delete “Personal”?",
+    );
+
+    await act(async () => resolveClient(jsonResponse(pinSectionSummaries)));
+    expect(screen.getByRole("dialog", { name: "Delete pin section?" }).textContent).toContain("Delete “Personal”?");
+  });
+
   test("omits a tier's heading entirely when it has no rows", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ...SAMPLE_WIRE_TREE, live: [], test_runs: [] }));
     renderRail();
@@ -1244,6 +1283,28 @@ describe("project expansion", () => {
     await screen.findByText("Old session");
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/tree/project?key=archproj")).toBe(true);
   });
+
+  test("an expanded archived project refetches detail after a successful tree generation change", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived/i }));
+    await user.click(within(rowFor("old-project")).getByTestId("rail-chevron"));
+    await screen.findByText("Old session");
+    const detailCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([url, init]) => url === "/api/tree/project?key=archproj" && (init?.method ?? "GET") === "GET",
+      ).length;
+    expect(detailCalls()).toBe(1);
+
+    await act(async () => {
+      await treeStore.getState().refresh();
+    });
+
+    expect(rowFor("old-project").getAttribute("aria-expanded")).toBe("true");
+    await screen.findByText("Old session");
+    expect(detailCalls()).toBe(2);
+  });
 });
 
 // --- the rail's width is independent of its tree's content ---------------
@@ -1486,6 +1547,38 @@ describe("pin section actions", () => {
     expect(screen.queryByRole("heading", { name: "Client" })).toBeNull();
     expect(screen.getAllByText("Session one")).toHaveLength(1);
     expect(treeGetCallCount()).toBe(1); // no refetch on failure
+  });
+
+  test("an old assignment completion cannot close a different picker opened later", async () => {
+    treeResponseBody = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [{ ...PROJECT, sessions: [PROJECT_SESSION, OTHER_PROJECT_SESSION] }],
+    };
+    let releaseAssignment!: (response: Response) => void;
+    const heldAssignment = new Promise<Response>((resolve) => {
+      releaseAssignment = resolve;
+    });
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST" && url === "/api/session-pin") return heldAssignment;
+      return prior?.(url, init) as Promise<Response>;
+    });
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    await user.click(await screen.findByRole("button", { name: "Client" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    await user.click(within(rowFor("Session two")).getByRole("button", { name: /actions for session two/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+    expect(await screen.findByRole("dialog", { name: "Pin Session two" })).toBeTruthy();
+
+    releaseAssignment(jsonResponse(postResponses["/api/session-pin"]!.body));
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Pin Session two" })).toBeTruthy();
   });
 
   test("unpinning the last visible row hides its section while a later picker refetches and lists the hidden section", async () => {

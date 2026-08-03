@@ -3,7 +3,7 @@ import { errorText } from "../../protocol/errors";
 import type { PinSectionSummary, TreeNode } from "../../stores/tree";
 import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { listPinSections } from "./actions";
+import { isRailRequestStatus, listPinSections } from "./actions";
 import styles from "./Rail.module.css";
 
 export interface PinSectionPickerProps {
@@ -69,6 +69,15 @@ export function PinSectionPicker({
       await onAssign({ section_id: section.id }, section);
     } catch (err) {
       setError(errorText(err));
+      if (isRailRequestStatus(err, 404)) {
+        try {
+          const summaries = await listPinSections();
+          setSections([...summaries].sort(compareSections));
+        } catch {
+          // Keep the assignment's useful not-found error visible. A later
+          // picker mount will retry the summary request normally.
+        }
+      }
     } finally {
       setSubmitting(false);
     }

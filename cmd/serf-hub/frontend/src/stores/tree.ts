@@ -314,6 +314,7 @@ export interface TreeStoreState {
 
 let refreshGeneration = 0;
 const projectMutationGenerations = new Map<string, number>();
+const projectDetailsInFlight = new Map<string, Promise<void>>();
 
 // The refresh() currently in flight, if any - what ensureLoaded() joins
 // instead of issuing a second identical GET. refresh() itself deliberately
@@ -417,26 +418,40 @@ export const treeStore = createStore<TreeStoreState>((set, get) => ({
     return inflightRefresh ?? get().refresh();
   },
 
-  async loadProjectDetail(key) {
+  loadProjectDetail(key) {
     const mutationGeneration = projectMutationGenerations.get(key) ?? 0;
     const treeGeneration = get().treeGeneration;
-    try {
-      const detail = await fetchProjectDetail(key);
-      set((s) => {
-        if ((projectMutationGenerations.get(key) ?? 0) !== mutationGeneration || s.treeGeneration !== treeGeneration) {
-          return s;
-        }
-        const next = new Map(s.projectDetails);
-        const nextGenerations = new Map(s.projectDetailGenerations);
-        next.set(key, detail);
-        nextGenerations.set(key, treeGeneration);
-        return { projectDetails: next, projectDetailGenerations: nextGenerations };
-      });
-    } catch {
-      // Best-effort: projectDetails simply doesn't gain an entry, so the
-      // rail's disclosure stays retriable (collapse + re-expand tries
-      // again) instead of getting stuck showing a hard failure state.
-    }
+    const requestKey = `${treeGeneration}:${key}`;
+    const existing = projectDetailsInFlight.get(requestKey);
+    if (existing) return existing;
+    const request = (async () => {
+      try {
+        const detail = await fetchProjectDetail(key);
+        set((s) => {
+          if (
+            (projectMutationGenerations.get(key) ?? 0) !== mutationGeneration ||
+            s.treeGeneration !== treeGeneration
+          ) {
+            return s;
+          }
+          const next = new Map(s.projectDetails);
+          const nextGenerations = new Map(s.projectDetailGenerations);
+          next.set(key, detail);
+          nextGenerations.set(key, treeGeneration);
+          return { projectDetails: next, projectDetailGenerations: nextGenerations };
+        });
+      } catch {
+        // Best-effort: projectDetails simply doesn't gain an entry, so the
+        // rail's disclosure stays retriable (collapse + re-expand tries
+        // again) instead of getting stuck showing a hard failure state.
+      }
+    })();
+    projectDetailsInFlight.set(requestKey, request);
+    const clear = () => {
+      if (projectDetailsInFlight.get(requestKey) === request) projectDetailsInFlight.delete(requestKey);
+    };
+    void request.then(clear, clear);
+    return request;
   },
 
   async loadProjectPage(key, tier, offset, limit) {
@@ -584,6 +599,7 @@ export function resetTreeStoreForTests(): void {
   refreshGeneration = 0;
   inflightRefresh = null;
   projectMutationGenerations.clear();
+  projectDetailsInFlight.clear();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
   treeStore.setState({
