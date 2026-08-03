@@ -378,7 +378,7 @@ function frameDocument({ bodyMarkup, width }) {
 </head>
 <body data-font-size="m">
   <div class="scrim">
-    <div class="sheetPanelHarness right" data-role="sheet">
+    <div class="sheetPanelHarness right wide" data-role="sheet">
       <header class="sheetHeaderHarness">
         <h2 class="sheetTitleHarness">Activity</h2>
       </header>
@@ -594,6 +594,7 @@ function measureFrame({ fixture, frame }) {
     viewport: { width: win.innerWidth, height: win.innerHeight },
     structure: {
       sheetPresent: Boolean(sheet),
+      sheetWideClassPresent: Boolean(sheet?.classList.contains('wide')),
       sheetBodyPresent: Boolean(sheetBody),
       activityPanelPresent: Boolean(activityPanel),
       primaryLayoutPresent: Boolean(primaryLayout),
@@ -613,6 +614,7 @@ function measureFrame({ fixture, frame }) {
     inspectorPane: metrics(doc, inspectorPane),
     sizing: {
       sheetPanelWidth: sheet ? rect(sheet).width : null,
+      sheetInlineSizeVar: sheet ? win.getComputedStyle(sheet).getPropertyValue('--sheet-inline-size').trim() : null,
       sheetBodyWidth: sheetBody ? rect(sheetBody).width : null,
       activityPanelWidth: activityPanel ? rect(activityPanel).width : null,
       primaryLayoutWidth: primaryLayout ? rect(primaryLayout).width : null,

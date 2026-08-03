@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-responsive",
-  "description": "deep Activity trees must not create a sheet-level horizontal scroller; desktop keeps tree and inspector visible together while mobile shows exactly one readable pane and confines horizontal scrolling to output only",
+  "description": "deep Activity trees keep desktop tree+inspector and mobile single-pane behavior while all sheet, pane, and production CodeBlock owners stay horizontally contained and output wraps instead of scrolling sideways",
   "viewport": {
     "width": 1600,
     "height": 5200,

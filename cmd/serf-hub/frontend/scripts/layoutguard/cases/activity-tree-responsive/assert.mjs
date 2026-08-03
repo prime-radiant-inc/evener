@@ -3,6 +3,12 @@ export default function assert(measurements) {
   const tolerance = 1;
   const treeModes = new Set(["desktop", "mobile-tree"]);
 
+  function isWideSheetInlineSize(value) {
+    if (typeof value !== "string") return false;
+    const normalized = value.replace(/\s+/g, "");
+    return /^calc\(\(24rem\*2\)\+(?:var\(--space-3\)|12px)\+\((?:var\(--space-3\)|12px)\*2\)\)$/.test(normalized);
+  }
+
   function measurementSizingForFailure(measurement) {
     const sizing = measurement?.sizing;
     if (!sizing) return "";
@@ -50,6 +56,9 @@ export default function assert(measurements) {
     const diagnostics = measurementSizingForFailure(measurement);
 
     if (!measurement.structure?.sheetPresent) failures.push(`${fixture}: missing sheet wrapper`);
+    if (measurement.mode === "desktop" && !measurement.structure?.sheetWideClassPresent) {
+      failures.push(`${fixture}: sheet wrapper is missing the real wide class`);
+    }
     if (!measurement.structure?.sheetBodyPresent) failures.push(`${fixture}: missing sheet body wrapper`);
     if (!measurement.structure?.activityPanelPresent) failures.push(`${fixture}: missing inner Activity panel wrapper`);
     if (!measurement.structure?.primaryLayoutPresent) failures.push(`${fixture}: missing primary layout wrapper (master-detail or mobile pane)`);
@@ -62,6 +71,11 @@ export default function assert(measurements) {
     if (measurement.structure?.sheetContainsBody === false) failures.push(`${fixture}: sheet wrapper does not contain the sheet body wrapper`);
     if (measurement.structure?.bodyContainsActivity === false) failures.push(`${fixture}: sheet body wrapper does not contain the inner Activity panel wrapper`);
     if (measurement.structure?.activityContainsPrimaryLayout === false) failures.push(`${fixture}: inner Activity panel wrapper does not contain the primary layout wrapper`);
+    if (measurement.mode === "desktop" && !isWideSheetInlineSize(measurement.sizing?.sheetInlineSizeVar)) {
+      failures.push(
+        `${fixture}: sheet wrapper --sheet-inline-size is ${JSON.stringify(measurement.sizing?.sheetInlineSizeVar ?? null)}, expected the real wide Sheet value`,
+      );
+    }
 
     for (const [ownerName, box] of [
       ["sheet wrapper", measurement.sheet],
