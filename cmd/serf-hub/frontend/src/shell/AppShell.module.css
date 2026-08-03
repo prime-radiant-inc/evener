@@ -23,7 +23,6 @@
   flex-direction: row;
   min-height: 0;
   min-width: 0;
-  padding: var(--space-4);
   gap: var(--space-3);
 }
 
