@@ -61,6 +61,24 @@ type Source struct {
 	Online bool   `json:"online"`
 }
 
+// PinSection is one named group returned by GET /api/pin-sections.
+type PinSection struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MemberCount int    `json:"member_count"`
+}
+
+type SessionPinAssignment struct {
+	SessionRef string     `json:"session_ref"`
+	Section    PinSection `json:"section"`
+}
+
+type SessionPinMutationResponse struct {
+	OK         bool                 `json:"ok"`
+	Changed    bool                 `json:"changed"`
+	Assignment SessionPinAssignment `json:"assignment"`
+}
+
 type TreeProject struct {
 	Key             string `json:"key"`
 	Name            string `json:"name"`

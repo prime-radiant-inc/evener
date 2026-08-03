@@ -12,7 +12,7 @@ import (
 )
 
 // handleAPIFavorite handles POST /api/favorite.
-// Body: {"kind":"session","id":"...","favorited":true|false}
+// Body: {"kind":"project","id":"...","favorited":true|false}
 func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
@@ -27,21 +27,17 @@ func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if body.Kind != "session" && body.Kind != "project" {
-		writeAPIError(w, http.StatusBadRequest, `kind must be "session" or "project"`)
+	if body.Kind == "session" {
+		writeAPIError(w, http.StatusBadRequest, "session favorites moved to /api/session-pin")
+		return
+	}
+	if body.Kind != "project" {
+		writeAPIError(w, http.StatusBadRequest, `kind must be "project"`)
 		return
 	}
 	if body.ID == "" {
 		writeAPIError(w, http.StatusBadRequest, "id is required")
 		return
-	}
-	if body.Kind == "session" {
-		resolved, ok := s.topLevelFavoriteSessionID(r.Context(), body.ID)
-		if !ok {
-			writeAPIError(w, http.StatusBadRequest, "session id must name a real top-level session")
-			return
-		}
-		body.ID = resolved
 	}
 	if s.cfg.Favorite == nil {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store not configured")
