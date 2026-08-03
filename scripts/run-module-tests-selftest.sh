@@ -325,6 +325,44 @@ wait_for_process_exit() {
 	return 1
 }
 
+start_fixture_watchdog() {
+	local target_pid="$1" delay="$2" marker="$3" event_fifo="$4" event="$5"
+	(
+		watchdog_sleep_pid=""
+		stop_watchdog_sleep() {
+			if [ -n "$watchdog_sleep_pid" ]; then
+				kill -TERM "$watchdog_sleep_pid" 2>/dev/null || :
+				wait "$watchdog_sleep_pid" 2>/dev/null || :
+				watchdog_sleep_pid=""
+			fi
+		}
+		watchdog_interrupted() {
+			stop_watchdog_sleep
+			exit 143
+		}
+		trap watchdog_interrupted HUP INT TERM
+		trap stop_watchdog_sleep EXIT
+		sleep "$delay" &
+		watchdog_sleep_pid="$!"
+		wait "$watchdog_sleep_pid" || exit 0
+		watchdog_sleep_pid=""
+		if kill -0 "$target_pid" 2>/dev/null; then
+			[ -n "$marker" ] && : >"$marker"
+			kill -TERM "$target_pid" 2>/dev/null || :
+		fi
+		[ -n "$event_fifo" ] && printf '%s\n' "$event" >"$event_fifo"
+	) &
+	fixture_watchdog_pid="$!"
+}
+
+stop_fixture_watchdog() {
+	local pid="$1"
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -TERM "$pid" 2>/dev/null || :
+	fi
+	wait "$pid" 2>/dev/null || :
+}
+
 full_logs_path() {
 	awk '/^full logs: / { print substr($0, 12); exit }' "$1"
 }
@@ -485,21 +523,13 @@ ready_fifo="$state/root-list.ready"
 mkfifo "$ready_fifo"
 (
 	exec 8>"$ready_fifo"
-	sleep 10
+	exec sleep 20
 ) &
 ready_keeper_pid="$!"
 exec 9<"$ready_fifo"
-run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1 FAKE_READY_FIFO="$ready_fifo"
-
-(
-	sleep 5
-	if kill -0 "$runner_pid" 2>/dev/null; then
-		: >"$state/root-list.watchdog"
-		kill -TERM "$runner_pid" 2>/dev/null || :
-	fi
-	printf 'startup-watchdog\n' >"$ready_fifo"
-) &
-startup_watchdog_pid="$!"
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=5 FAKE_READY_FIFO="$ready_fifo"
+start_fixture_watchdog "$runner_pid" 10 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
+startup_watchdog_pid="$fixture_watchdog_pid"
 ready_signal=""
 startup_ready=0
 if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "runner-started" ]; then
@@ -508,21 +538,14 @@ if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "runner-started" ]; the
 	fi
 fi
 if [ "$startup_ready" -eq 1 ]; then
-	kill "$startup_watchdog_pid" 2>/dev/null || :
-	wait "$startup_watchdog_pid" 2>/dev/null || :
+	stop_fixture_watchdog "$startup_watchdog_pid"
 	exec 9<&-
 	kill "$ready_keeper_pid" 2>/dev/null || :
 	wait "$ready_keeper_pid" 2>/dev/null || :
-	(
-		sleep 3
-		if kill -0 "$runner_pid" 2>/dev/null; then
-			: >"$state/root-list.watchdog"
-			kill -TERM "$runner_pid" 2>/dev/null || :
-		fi
-	) &
-	watchdog_pid="$!"
+	start_fixture_watchdog "$runner_pid" 8 "$state/root-list.watchdog" "" ""
+	watchdog_pid="$fixture_watchdog_pid"
 	if wait "$runner_pid"; then rc=0; else rc=$?; fi
-	wait "$watchdog_pid" || :
+	stop_fixture_watchdog "$watchdog_pid"
 	assert_eq "$rc" "1" "a root package-discovery timeout exits nonzero"
 	if [ -f "$state/root-list.watchdog" ]; then
 		bad "root package discovery required the watchdog despite its configured timeout"
@@ -554,8 +577,7 @@ else
 	bad "the root package-discovery timeout fixture did not reach held go list (last event '$ready_signal')"
 	if kill -0 "$runner_pid" 2>/dev/null; then kill -TERM "$runner_pid" 2>/dev/null || :; fi
 	wait "$runner_pid" 2>/dev/null || :
-	kill "$startup_watchdog_pid" 2>/dev/null || :
-	wait "$startup_watchdog_pid" 2>/dev/null || :
+	stop_fixture_watchdog "$startup_watchdog_pid"
 	exec 9<&-
 	kill "$ready_keeper_pid" 2>/dev/null || :
 	wait "$ready_keeper_pid" 2>/dev/null || :
