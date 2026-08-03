@@ -456,12 +456,13 @@ func fuzzScenarioLocalDaemonSourceJobsOverAppWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}
-	tree, ok := list.Data.(appwire.JobActivityTree)
+	tree, ok := list.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("ListJobs data = %#v, want activity tree payload", list.Data)
 	}
-	if tree.Root.SessionID != "sess_1" || tree.Root.Ref != "local:sess_1" {
-		t.Fatalf("tree = %+v", tree)
+	root, ok := tree["root"].(map[string]any)
+	if !ok || root["sessionId"] != "sess_1" || root["ref"] != "local:sess_1" {
+		t.Fatalf("tree root = %#v", tree["root"])
 	}
 	if listParams.Ref != "local:th_1" || listParams.Continuation != "next-page" {
 		t.Fatalf("list params forwarded = %+v", listParams)

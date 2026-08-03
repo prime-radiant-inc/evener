@@ -708,7 +708,11 @@ FAKE_GO
 cat >"$bin/git" <<'FAKE_GIT'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$FAKE_STATE/families"
-printf 'git-success-chatter\n'
+if [ "${1:-}" = "ls-files" ] && [ "${2:-}" = "-z" ]; then
+	printf 'git-success-chatter\0'
+else
+	printf 'git-success-chatter\n'
+fi
 FAKE_GIT
 cat >"$bin/gofmt" <<'FAKE_GOFMT'
 #!/usr/bin/env bash
@@ -762,7 +766,8 @@ assert_eq "$(cut -f1 "$state/vetmodules.serffuzz" | sort | tr '\n' ' ' | sed 's/
 assert_eq "$(cut -f1 "$state/vetmodules.eval" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars fuzz identifier invariant llm" "Makefile vets every module under the eval tag"
 cat >"$state/want-families" <<'WANT_FAMILIES'
 go run ./cmd/serf-namingcheck
-gofmt -l .
+git ls-files -z -- *.go
+gofmt -l git-success-chatter
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
 go vet -tags serffuzz ./...
