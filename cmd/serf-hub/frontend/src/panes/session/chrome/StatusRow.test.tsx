@@ -112,14 +112,26 @@ test("no location cluster: cwd, branch and project belong to the details sheet",
 
 // Raw token counts and cost are not part of the footer anymore.
 test.each([
-  { status: { type: "active" as const }, activeTurnId: "turn_1", failedToolCalls: 4, cost: "~$1.23" },
-  { status: { type: "notLoaded" as const }, failedToolCalls: 4, cost: "~$1.23", workMillis: 90_000 },
-])("omits failure count and cost from the footer in every lifecycle state", (overrides) => {
+  {
+    status: { type: "active" as const },
+    activeTurnId: "turn_1",
+    failedToolCalls: 4,
+    cost: "~$1.23",
+    usage: { inputTokens: 1_500, outputTokens: 320 },
+  },
+  {
+    status: { type: "notLoaded" as const },
+    failedToolCalls: 4,
+    cost: "~$1.23",
+    workMillis: 90_000,
+    usage: { inputTokens: 1_500, outputTokens: 320 },
+  },
+])("omits failure count, cost, and raw token counts from the footer in representative lifecycle states", (overrides) => {
   render(<StatusRow sessionRef="ref_a" model={testModel(overrides)} now={1_000_000} />);
   expect(screen.queryByTestId("status-row-failures")).toBeNull();
-  expect(screen.queryByTestId("status-row-cost")).toBeNull();
   expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
-  expect(screen.getByTestId("status-row").textContent).not.toContain("~$1.23");
+  expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
+  expect(screen.getByTestId("status-row").textContent).not.toContain("↓");
 });
 
 test("groups model and effort visually while retaining two independent controls", () => {
@@ -570,6 +582,36 @@ test("context has one meter semantic with wide and compact visual variants", () 
   expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
   expect(screen.getAllByRole("meter")).toHaveLength(1);
 });
+
+test.each(["ended", "closed", "notLoaded"] as const)(
+  "a %s session keeps model, effort, and context while omitting settled work and cost",
+  (type) => {
+    render(
+      <StatusRow
+        sessionRef="ref_a"
+        model={testModel({
+          status: { type },
+          modelProvider: "anthropic",
+          model: "claude-opus-5",
+          supportsReasoning: true,
+          reasoningEffortLevels: ["low", "high"],
+          reasoningEffort: "high",
+          contextUsed: 64_000,
+          contextWindow: 128_000,
+          contextPressure: 0.5,
+          workMillis: 840_000,
+          cost: "~$1.83",
+        })}
+        now={1_000_000}
+      />,
+    );
+    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: /reasoning effort/i })).toBeTruthy();
+    expect(screen.getByRole("meter", { name: /64k of 128k tokens used, 50 percent/i })).toBeTruthy();
+    expect(screen.queryByTestId("status-row-work-time")).toBeNull();
+    expect(screen.queryByTestId("status-row-cost")).toBeNull();
+  },
+);
 
 // --- queue depth -------------------------------------------------------------
 //
