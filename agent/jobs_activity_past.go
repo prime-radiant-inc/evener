@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+// LoadSessionJobActivityTree loads and projects a session's persisted job activity tree.
 func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsListParams) (appwire.JobActivityTree, error) {
 	if err := validateActivityRootRef(params.Ref, sessionID); err != nil {
 		return appwire.JobActivityTree{}, err
