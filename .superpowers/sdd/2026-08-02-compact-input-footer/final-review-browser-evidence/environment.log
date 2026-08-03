@@ -1,0 +1,30 @@
+DATE_UTC=2026-08-03T02:07:04Z
+ROOT=/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell
+FRONTEND=/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell/cmd/serf-hub/frontend
+EVIDENCE=/Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/webui-workspace-shell/.superpowers/sdd/2026-08-02-compact-input-footer/task-4-browser-evidence
+OUTPUT_DIR=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/final-review-green-evidence-3
+RUN_LABEL=final-review-green-3
+RUN_ROOT=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3
+CHROME=/Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell
+WIDTHS=320 360 400 479 480 559 560 900
+NODE=v26.0.0
+NPM=11.12.1
+CHROME_VERSION=Google Chrome for Testing 147.0.7727.15
+HEAD=965b35905a2cf67c6c3875f90799eed5a3ade5ff
+WORKTREE_STATUS_BEFORE_BEGIN
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html
+ M cmd/serf-hub/frontend/scripts/overflowguard/run.mjs
+ M cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/goalcontrol.module.css
+ M cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css
+ M cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css
+WORKTREE_STATUS_BEFORE_END
+PIPE_DRIVER_SHA256=747c0da3ed4160256ccee27718201c64c83e0c69b5d3302cc6c3186d636d16f5
+OVERFLOW_ADAPTER_SHA256=04f90a7d1ffbe648d847d992a7af3a6148d9e647a5b2184844529fa14db4c7ad
+INTERPOSER_SOURCE_SHA256=d83afa3e607268e5b14408404b938d4474597b8bfc65114bb79e298b9c6c78a8
+VITE_CONFIG_SHA256=5d756f8a41e3902cf6af42bdf9a20d31c122068b491e5224cdbddb9bc8820346

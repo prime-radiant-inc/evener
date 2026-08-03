@@ -1,0 +1,22 @@
+vite v8.1.5 building client environment for production...
+[2Ktransforming...✓ 303 modules transformed.
+rendering chunks...
+computing gzip size...
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/overflowharness.html                                 0.35 kB │ gzip:   0.23 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/IBMPlexMono-Regular-Latin1-DYPusg7z.woff2    17.54 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/IBMPlexMono-Medium-Latin1-CfBEoGIJ.woff2     17.86 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/IBMPlexSans-Regular-Latin1-BUjEsRx4.woff2    20.98 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/IBMPlexSans-Medium-Latin1-B2CuUu4P.woff2     21.96 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/IBMPlexSans-SemiBold-Latin1-CIhZjzyK.woff2   22.26 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/Transcript-L2f0xXHg.css                       0.23 kB │ gzip:   0.19 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/overflowharness-Ca4L50lU.css                 73.03 kB │ gzip:  12.30 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/Transcript-sQtf0UhN.js                        1.99 kB │ gzip:   1.04 kB
+../../../../../../../../../../../private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/overflow-dist/assets/overflowharness-zccEQ2Zh.js                 576.64 kB │ gzip: 178.27 kB
+
+✓ built in 134ms
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+OVERFLOW_BUILD_EXIT=0

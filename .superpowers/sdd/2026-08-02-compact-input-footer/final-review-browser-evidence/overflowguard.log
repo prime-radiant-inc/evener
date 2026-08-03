@@ -1,0 +1,74 @@
+320px ... context PASS - one native meter + aria-hidden sibling; 213px body shows compact percentage
+320px ... ignored 7 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    summary._scaffoldSummary_1mf6h_68 (overflow-x: hidden, clipped not scrollable)
+    span._value_rkzzf_20 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+320px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+360px ... context PASS - one native meter + aria-hidden sibling; 253px body shows compact percentage
+360px ... ignored 7 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    summary._scaffoldSummary_1mf6h_68 (overflow-x: hidden, clipped not scrollable)
+    span._value_rkzzf_20 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+360px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+400px ... context PASS - one native meter + aria-hidden sibling; 293px body shows compact percentage
+400px ... ignored 7 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    summary._scaffoldSummary_1mf6h_68 (overflow-x: hidden, clipped not scrollable)
+    span._value_rkzzf_20 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+400px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+479px ... context PASS - one native meter + aria-hidden sibling; 372px body shows compact percentage
+479px ... ignored 6 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    summary._scaffoldSummary_1mf6h_68 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+479px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+480px ... context PASS - one native meter + aria-hidden sibling; 373px body shows compact percentage
+480px ... ignored 6 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    summary._scaffoldSummary_1mf6h_68 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+480px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+559px ... context PASS - one native meter + aria-hidden sibling; 452px body shows wide meter
+559px ... ignored 5 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+559px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+560px ... context PASS - one native meter + aria-hidden sibling; 453px body shows wide meter
+560px ... ignored 5 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._clampedTail_4m11g_191 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._srOnly_epe92_3 (1px clip box)
+560px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+900px ... context PASS - one native meter + aria-hidden sibling; 587px body shows wide meter
+900px ... ignored 6 clipped/non-scroll box(es):
+    span._clampedHead_4m11g_183 (overflow-x: hidden, clipped not scrollable)
+    span._value_rkzzf_20 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_rkzzf_54 (1px clip box)
+    label._srOnly_i04ur_164 (1px clip box)
+    span._chip_k0uuk_1 _neutral_k0uuk_40 (overflow-x: hidden, clipped not scrollable)
+    span._srOnly_epe92_3 (1px clip box)
+900px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally
+OVERFLOWGUARD_EXIT=0

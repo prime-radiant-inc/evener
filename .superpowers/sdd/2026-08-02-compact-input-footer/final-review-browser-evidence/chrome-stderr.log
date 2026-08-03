@@ -1,0 +1,228 @@
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-3ZeBEe ===
+[0802/190704.915807:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190704.917137:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190704.917188:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190704.917491:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190704.919590:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:04.928 chrome-headless-shell[47471:33082977] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:04.938 chrome-headless-shell[47471:33082983] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:04.938 chrome-headless-shell[47471:33082977] Error received in message reply handler: Connection invalid
+[0802/190704.942774:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190704.945346:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-OSIHOg ===
+[0802/190704.985875:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190704.986808:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190704.986842:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190704.987150:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190704.988509:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:04.995 chrome-headless-shell[47472:33083021] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.003 chrome-headless-shell[47472:33083022] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:05.003 chrome-headless-shell[47472:33083021] Error received in message reply handler: Connection invalid
+[0802/190705.007177:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.009646:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-ggAziI ===
+[0802/190705.056448:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190705.057322:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190705.057424:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190705.057698:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190705.059125:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:05.066 chrome-headless-shell[47473:33083061] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.074 chrome-headless-shell[47473:33083061] Error received in message reply handler: Connection invalid
+2026-08-02 19:07:05.074 chrome-headless-shell[47473:33083083] Connection Invalid error for service com.apple.hiservices-xpcservice.
+[0802/190705.077996:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.080768:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-cb1pM7 ===
+[0802/190705.137824:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190705.138728:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190705.138787:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190705.139010:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190705.140418:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:05.147 chrome-headless-shell[47474:33083103] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.155 chrome-headless-shell[47474:33083103] Error received in message reply handler: Connection invalid
+2026-08-02 19:07:05.155 chrome-headless-shell[47474:33083105] Connection Invalid error for service com.apple.hiservices-xpcservice.
+[0802/190705.159140:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.161675:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-RTGX4a ===
+[0802/190705.202702:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190705.203649:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190705.203676:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190705.203934:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190705.205396:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:05.212 chrome-headless-shell[47475:33083139] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.220 chrome-headless-shell[47475:33083140] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:05.220 chrome-headless-shell[47475:33083139] Error received in message reply handler: Connection invalid
+[0802/190705.224262:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.226799:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-itLLyr ===
+[0802/190705.268806:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190705.269705:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190705.269748:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190705.269977:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190705.271388:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:05.278 chrome-headless-shell[47476:33083177] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.286 chrome-headless-shell[47476:33083178] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:05.286 chrome-headless-shell[47476:33083177] Error received in message reply handler: Connection invalid
+[0802/190705.290463:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.293041:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-wu16Hl ===
+[0802/190705.930856:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190705.931891:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190705.931943:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190705.932229:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190705.933922:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:05.941 chrome-headless-shell[47477:33083223] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:05.950 chrome-headless-shell[47477:33083225] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:05.950 chrome-headless-shell[47477:33083223] Error received in message reply handler: Connection invalid
+[0802/190705.954376:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190705.956859:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-53qKaU ===
+[0802/190705.999481:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.000357:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.000451:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.000635:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.002010:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.009 chrome-headless-shell[47478:33083261] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.018 chrome-headless-shell[47478:33083263] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.018 chrome-headless-shell[47478:33083261] Error received in message reply handler: Connection invalid
+[0802/190706.021900:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.024541:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-rQ3vam ===
+[0802/190706.068345:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.069246:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.069300:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.069511:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.071006:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.077 chrome-headless-shell[47479:33083300] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.086 chrome-headless-shell[47479:33083321] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.086 chrome-headless-shell[47479:33083300] Error received in message reply handler: Connection invalid
+[0802/190706.089680:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.092228:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-qUy7Qq ===
+[0802/190706.128731:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.129659:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.129702:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.129942:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.131347:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.138 chrome-headless-shell[47480:33083339] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.146 chrome-headless-shell[47480:33083340] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.146 chrome-headless-shell[47480:33083339] Error received in message reply handler: Connection invalid
+[0802/190706.149977:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.152175:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-PqVhUG ===
+[0802/190706.192393:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.193295:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.193322:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.193635:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.195003:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.201 chrome-headless-shell[47481:33083379] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.210 chrome-headless-shell[47481:33083380] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.210 chrome-headless-shell[47481:33083379] Error received in message reply handler: Connection invalid
+[0802/190706.213951:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.216426:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-3jfSRi ===
+[0802/190706.575176:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.576098:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.576190:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.576385:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.577819:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.584 chrome-headless-shell[47492:33083480] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.593 chrome-headless-shell[47492:33083481] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.593 chrome-headless-shell[47492:33083480] Error received in message reply handler: Connection invalid
+[0802/190706.596699:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.599668:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-XnIAOU ===
+[0802/190706.941077:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190706.942090:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190706.942148:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190706.942458:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190706.944059:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:06.951 chrome-headless-shell[47493:33083519] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:06.960 chrome-headless-shell[47493:33083521] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:06.960 chrome-headless-shell[47493:33083519] Error received in message reply handler: Connection invalid
+[0802/190706.964220:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190706.966735:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-mFArJz ===
+[0802/190707.423467:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190707.424568:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190707.424628:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190707.424914:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190707.426694:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:07.434 chrome-headless-shell[47494:33083557] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:07.443 chrome-headless-shell[47494:33083559] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:07.443 chrome-headless-shell[47494:33083557] Error received in message reply handler: Connection invalid
+[0802/190707.447657:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190707.450083:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-a4GUM1 ===
+[0802/190707.948380:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190707.949477:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190707.949513:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190707.949858:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190707.951534:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:07.959 chrome-headless-shell[47495:33083595] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:07.968 chrome-headless-shell[47495:33083597] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:07.968 chrome-headless-shell[47495:33083595] Error received in message reply handler: Connection invalid
+[0802/190707.972053:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190707.974321:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-AnoTUN ===
+[0802/190708.369573:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190708.370649:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190708.370689:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190708.371034:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190708.372638:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:08.380 chrome-headless-shell[47496:33083633] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:08.389 chrome-headless-shell[47496:33083635] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:08.389 chrome-headless-shell[47496:33083633] Error received in message reply handler: Connection invalid
+[0802/190708.393434:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190708.395849:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-TwXuYT ===
+[0802/190708.798879:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190708.799959:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190708.800123:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190708.800338:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190708.801986:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:08.809 chrome-headless-shell[47497:33083676] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:08.818 chrome-headless-shell[47497:33083678] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:08.818 chrome-headless-shell[47497:33083676] Error received in message reply handler: Connection invalid
+[0802/190708.822581:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190708.824981:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-yS9SJR ===
+[0802/190709.304277:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190709.305386:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190709.305438:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190709.305701:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190709.307490:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:09.315 chrome-headless-shell[47498:33083713] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:09.324 chrome-headless-shell[47498:33083714] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:09.324 chrome-headless-shell[47498:33083713] Error received in message reply handler: Connection invalid
+[0802/190709.328165:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190709.330513:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+
+=== launch /Users/jesse/Library/Caches/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-mac-arm64/chrome-headless-shell profile=/private/var/folders/g6/_sjng8h14gs3xt6c7t72w0180000gn/T/serf-sandbox-3920027337/task-4-browser-run-final-review-green-3/layoutguard-chrome-profile-3v03RQ ===
+[0802/190709.809289:ERROR:base/power_monitor/thermal_state_observer_mac.mm:140] ThermalStateObserverMac unable to register to power notifications. Result: 9
+[0802/190709.810505:ERROR:net/dns/dns_config_service_posix.cc:138] DNS config watch failed to start.
+[0802/190709.810629:ERROR:net/base/network_interfaces_getifaddrs.cc:266] getifaddrs: Operation not permitted (1)
+[0802/190709.810869:WARNING:net/dns/dns_config_service_posix.cc:197] Failed to read DnsConfig.
+[0802/190709.812581:WARNING:net/dns/address_sorter_posix.cc:426] getifaddrs failed -1
+2026-08-02 19:07:09.820 chrome-headless-shell[47499:33083753] Failure on line 688 in function id scheduleApplicationNotification(LSNotificationCode, NSWorkspaceNotificationCenter *): noErr == _LSModifyNotification(notificationID, 1, &code, 0, NULL, NULL, NULL)
+2026-08-02 19:07:09.829 chrome-headless-shell[47499:33083755] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-08-02 19:07:09.829 chrome-headless-shell[47499:33083753] Error received in message reply handler: Connection invalid
+[0802/190709.833402:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670
+[0802/190709.835889:ERROR:ui/display/mac/cv_display_link_mac.mm:168] CVDisplayLinkCreateWithCGDisplay failed. CVReturn: -6670

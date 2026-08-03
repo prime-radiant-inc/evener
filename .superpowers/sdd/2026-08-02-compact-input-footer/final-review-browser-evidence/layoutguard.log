@@ -1,0 +1,16 @@
+
+> serf-hub-frontend@1.0.0 layoutguard
+> node scripts/layoutguard/run.mjs
+
+491q-dockoverlay-escape ... PASS - popover clears the middle panel by 365.0px horizontally
+askdock-mobile-tall-crush ... PASS - ask dock geometry holds at phone width
+compact-session-footer ... PASS - footer stays on one line and follows every compression threshold
+edhz-attachment-tile-single-image ... PASS - one image fills the 80x80 tile exactly in both states, nothing inside it is clipped, and pending and settled are the same box
+hk8v-remove-button-focus-visible ... PASS - remove button is opacity 0 at rest, 1 on tile hover, and 1 under :focus-visible with a 2px solid rgb(129, 180, 232) ring
+mobile-shell-viewport-height ... PASS - session and non-session mobile shell fixtures stay within the visible viewport and .shell keeps its 100vh base fallback plus @supports(100dvh) override contract
+p6g8-formrow-overlap ... PASS - trigger fits inside .cfgDir with 0.0px to spare
+rdry-toolrow-contrast ... PASS - demoted line clears AA in both themes (dark 6.50:1, light 7.05:1)
+session-ask-pane-allocation ... PASS - pane allocates usable transcript and question scroll regions without outer scrolling
+xak9-diffline-overflow ... PASS - content fits inside .root with 9.0px to spare and truncates with a visible ellipsis
+zscn-theme-flip-dark-surface ... PASS - nested dark and light panes resolve their own surface tokens under a light root
+LAYOUTGUARD_EXIT=0

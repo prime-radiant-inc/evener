@@ -1,0 +1,20 @@
+WORKTREE_STATUS_BEFORE_CLEANUP_BEGIN
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/assert.mjs
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/case.json
+ M cmd/serf-hub/frontend/scripts/layoutguard/cases/compact-session-footer/harness.html
+ M cmd/serf-hub/frontend/scripts/layoutguard/cdp.mjs
+ M cmd/serf-hub/frontend/scripts/overflowguard/run.mjs
+ M cmd/serf-hub/frontend/src/dev/overflowharness-entry.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/SessionChrome.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.test.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/StatusRow.tsx
+ M cmd/serf-hub/frontend/src/panes/session/chrome/goalcontrol.module.css
+ M cmd/serf-hub/frontend/src/panes/session/chrome/sessionchrome.module.css
+ M cmd/serf-hub/frontend/src/panes/session/chrome/statusrow.module.css
+?? cmd/serf-hub/frontend/.task-4-overflow-vite.config.mjs
+WORKTREE_STATUS_BEFORE_CLEANUP_END
+SCRIPT_EXIT=0
+REPOSITORY_CDP_SHA256=5346804a01f9189a46408225f41ae6573629bc1b3c0417b951a3dce743d4bd05
+SAVED_ORIGINAL_CDP_SHA256=removed-after-restore
+TRANSIENT_VITE_CONFIG_REMOVED=1
+TRANSIENT_RUN_ROOT_REMOVED=1
