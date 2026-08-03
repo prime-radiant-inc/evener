@@ -13,6 +13,43 @@ function branch(overrides: Partial<ActivityBranchState> = {}): ActivityBranchSta
   return { ...overrides };
 }
 
+function cloneWire<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function assertDefined<T>(value: T | null | undefined, message: string): T {
+  if (value == null) throw new Error(message);
+  return value;
+}
+
+function getRootDelegateWire(tree: typeof VALID_TREE_WIRE) {
+  const entry = assertDefined(tree.root.entries[1], "expected root delegate wire entry");
+  if (entry.kind !== "delegate") throw new Error("expected root delegate wire entry");
+  return assertDefined(entry.delegate, "expected root delegate payload");
+}
+
+function getChildSessionWire(tree: typeof VALID_TREE_WIRE) {
+  return assertDefined(getRootDelegateWire(tree).child, "expected child session wire");
+}
+
+function getNestedDelegateWire(tree: typeof VALID_TREE_WIRE) {
+  const entry = assertDefined(getChildSessionWire(tree).entries[1], "expected nested delegate wire entry");
+  if (entry.kind !== "delegate") throw new Error("expected nested delegate wire entry");
+  return assertDefined(entry.delegate, "expected nested delegate payload");
+}
+
+function getMalformedSiblingWire(tree: typeof VALID_TREE_WIRE) {
+  const entry = assertDefined(getChildSessionWire(tree).entries[4], "expected malformed sibling wire entry");
+  if (entry.kind !== "delegate") throw new Error("expected malformed sibling wire entry");
+  return assertDefined(entry.delegate, "expected malformed sibling delegate payload");
+}
+
+function getRootShellWire(tree: typeof VALID_TREE_WIRE) {
+  const entry = assertDefined(tree.root.entries[0], "expected root shell wire entry");
+  if (entry.kind !== "job") throw new Error("expected root shell wire entry");
+  return assertDefined(entry.job, "expected root shell payload");
+}
+
 function getDelegateEntry(tree: ActivityTree, ...path: number[]) {
   const firstIndex = path[0];
   if (typeof firstIndex !== "number") throw new Error("delegate path requires at least one index");
@@ -341,6 +378,85 @@ describe("parseActivityTree", () => {
       session = entry?.kind === "delegate" ? entry.delegate.child : undefined;
     }
   });
+
+  it("rejects a fractional or negative root revision", () => {
+    const fractional = cloneWire(VALID_TREE_WIRE);
+    fractional.revision = 7.5;
+    expect(parseActivityTree(fractional)).toBeNull();
+
+    const negative = cloneWire(VALID_TREE_WIRE);
+    negative.revision = -1;
+    expect(parseActivityTree(negative)).toBeNull();
+  });
+
+  it("treats fractional nested counts as a malformed branch without erasing valid siblings", () => {
+    const malformed = cloneWire(VALID_TREE_WIRE);
+    const nestedChild = assertDefined(getNestedDelegateWire(malformed).child, "expected nested child wire session");
+    nestedChild.counts.completed = 1.5;
+
+    const tree = parseActivityTree(malformed) as ActivityTree;
+    const nested = getDelegateEntry(tree, 1, 1);
+    expect(nested?.delegate.child).toBeUndefined();
+    expect(nested?.delegate.branch.error).toBe("incomplete");
+    expect(getDelegateEntry(tree, 1, 2)?.delegate.branch.error).toBe("child unavailable");
+  });
+
+  it("drops a sibling whose required integer field is fractional or negative", () => {
+    const fractional = cloneWire(VALID_TREE_WIRE);
+    const fractionalTurn = assertDefined(
+      getMalformedSiblingWire(fractional).turns[0],
+      "expected malformed sibling turn",
+    );
+    fractionalTurn.outputBytes = 1.5;
+    const fractionalTree = parseActivityTree(fractional) as ActivityTree;
+    const fractionalChild = getDelegateEntry(fractionalTree, 1)?.delegate.child;
+    expect(fractionalChild?.entries.map((entry: (typeof fractionalChild.entries)[number]) => entry.kind)).toEqual([
+      "shell",
+      "delegate",
+      "delegate",
+      "delegate",
+    ]);
+    expect(fractionalChild?.branch.error).toBe("incomplete");
+
+    const negative = cloneWire(VALID_TREE_WIRE);
+    const negativeTurn = assertDefined(getMalformedSiblingWire(negative).turns[0], "expected malformed sibling turn");
+    negativeTurn.outputBytes = -1;
+    const negativeTree = parseActivityTree(negative) as ActivityTree;
+    const negativeChild = getDelegateEntry(negativeTree, 1)?.delegate.child;
+    expect(negativeChild?.entries.map((entry: (typeof negativeChild.entries)[number]) => entry.kind)).toEqual([
+      "shell",
+      "delegate",
+      "delegate",
+      "delegate",
+    ]);
+    expect(negativeChild?.branch.error).toBe("incomplete");
+  });
+
+  it("accepts a signed integer exitCode but rejects a fractional one", () => {
+    const signed = cloneWire(VALID_TREE_WIRE);
+    getRootShellWire(signed).exitCode = -9;
+    expect(parseActivityTree(signed)?.root.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { exitCode: -9 },
+    });
+
+    const malformed = cloneWire(VALID_TREE_WIRE);
+    const malformedTurn = assertDefined(
+      getMalformedSiblingWire(malformed).turns[0],
+      "expected malformed sibling turn",
+    ) as {
+      exitCode?: number;
+    };
+    malformedTurn.exitCode = 1.5;
+    const tree = parseActivityTree(malformed) as ActivityTree;
+    const child = getDelegateEntry(tree, 1)?.delegate.child;
+    expect(child?.entries.map((entry: (typeof child.entries)[number]) => entry.kind)).toEqual([
+      "shell",
+      "delegate",
+      "delegate",
+      "delegate",
+    ]);
+  });
 });
 
 describe("activityNodeID", () => {
@@ -359,6 +475,64 @@ describe("defaultExpandedIDs", () => {
 });
 
 describe("reconcileActivityState", () => {
+  it("preserves an explicit collapse when an already-active branch stays active", () => {
+    const previous = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
+    const next = parseActivityTree({ ...cloneWire(VALID_TREE_WIRE), revision: 8 }) as ActivityTree;
+
+    expect(
+      reconcileActivityState(
+        {
+          expandedIDs: ["session:sess_root"],
+          selectedID: undefined,
+          selectionPruned: false,
+          tree: previous,
+        },
+        next,
+      ),
+    ).toEqual({
+      expandedIDs: ["session:sess_root"],
+      selectedID: undefined,
+      selectionPruned: false,
+    });
+  });
+
+  it("auto-opens only a branch that transitions from inactive to active", () => {
+    const previousWire = cloneWire(VALID_TREE_WIRE);
+    previousWire.root.aggregate = "completed";
+    previousWire.root.counts = { active: 0, failed: 0, completed: 5, complete: true };
+    const previousRootDelegate = getRootDelegateWire(previousWire);
+    const previousTurn = assertDefined(previousRootDelegate.turns[0], "expected previous active delegate turn");
+    previousTurn.status = "completed";
+    previousTurn.terminal = true;
+    const previousChild = getChildSessionWire(previousWire);
+    previousChild.aggregate = "completed";
+    previousChild.counts = { active: 0, failed: 0, completed: 4, complete: true };
+    const childEntry = assertDefined(previousChild.entries[0], "expected child shell wire entry");
+    if (childEntry.kind !== "job") throw new Error("expected child shell wire entry");
+    const childJob = assertDefined(childEntry.job, "expected child shell job payload");
+    childJob.status = "completed";
+    childJob.terminal = true;
+
+    const previous = parseActivityTree(previousWire) as ActivityTree;
+    const next = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
+
+    expect(
+      reconcileActivityState(
+        {
+          expandedIDs: ["session:sess_root"],
+          selectedID: undefined,
+          selectionPruned: false,
+          tree: previous,
+        },
+        next,
+      ),
+    ).toEqual({
+      expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
+      selectedID: undefined,
+      selectionPruned: false,
+    });
+  });
+
   it("preserves surviving explicit disclosure choices, auto-opens newly active ancestors, and preserves surviving selection", () => {
     const previous = parseActivityTree({
       revision: 1,

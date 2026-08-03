@@ -117,9 +117,14 @@ function readBoolean(object: Record<string, unknown>, key: string): boolean | nu
   return typeof value === "boolean" ? value : null;
 }
 
-function readNumber(object: Record<string, unknown>, key: string): number | null {
+function readInteger(object: Record<string, unknown>, key: string): number | null {
   const value = object[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function readNonNegativeInteger(object: Record<string, unknown>, key: string): number | null {
+  const value = readInteger(object, key);
+  return value !== null && value >= 0 ? value : null;
 }
 
 function readOptionalString(object: Record<string, unknown>, key: string): string | undefined {
@@ -144,9 +149,9 @@ function parseBranchState(raw: unknown): ActivityBranchState | null {
 
 function parseCounts(raw: unknown): ActivityCounts | null {
   if (!isPlainObject(raw)) return null;
-  const active = readNumber(raw, "active");
-  const failed = readNumber(raw, "failed");
-  const completed = readNumber(raw, "completed");
+  const active = readNonNegativeInteger(raw, "active");
+  const failed = readNonNegativeInteger(raw, "failed");
+  const completed = readNonNegativeInteger(raw, "completed");
   const complete = readBoolean(raw, "complete");
   if (active === null || failed === null || completed === null || complete === null) return null;
   return { active, failed, completed, complete };
@@ -164,7 +169,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   const hasOutput = readBoolean(raw, "hasOutput");
   const description = readString(raw, "description");
   const startedAt = readString(raw, "startedAt");
-  const outputBytes = readNumber(raw, "outputBytes");
+  const outputBytes = readNonNegativeInteger(raw, "outputBytes");
   if (
     jobId === null ||
     ownerSessionId === null ||
@@ -204,7 +209,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof raw.task !== "undefined" && typeof raw.task !== "string") return null;
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
-  if (typeof exitCode !== "undefined" && (typeof exitCode !== "number" || !Number.isFinite(exitCode))) return null;
+  if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (command) job.command = command;
   if (task) job.task = task;
@@ -338,7 +343,7 @@ function parseSession(raw: unknown, depth: number): ParseResult<ActivitySessionN
 
 export function parseActivityTree(data: unknown): ActivityTree | null {
   if (!isPlainObject(data)) return null;
-  const revision = readNumber(data, "revision");
+  const revision = readNonNegativeInteger(data, "revision");
   if (revision === null) return null;
   const root = parseSession(data.root, 1);
   if (!root.value) return null;
@@ -447,9 +452,13 @@ function nearestSurvivingOwner(
 export function reconcileActivityState(previous: ActivityDisclosureState, next: ActivityTree): ActivityDisclosureState {
   const nextIndex = indexTree(next);
   const explicit = previous.expandedIDs.filter((id) => nextIndex.ids.has(id));
-  const auto = defaultExpandedIDs(next);
+  const nextActive = defaultExpandedIDs(next);
+  const previousActive = previous.tree ? new Set(defaultExpandedIDs(previous.tree)) : null;
   const expandedIDs = [...explicit];
-  for (const id of auto) pushUnique(expandedIDs, id);
+  for (const id of nextActive) {
+    if (previousActive?.has(id)) continue;
+    pushUnique(expandedIDs, id);
+  }
 
   let selectedID = previous.selectedID;
   let selectionPruned = false;
