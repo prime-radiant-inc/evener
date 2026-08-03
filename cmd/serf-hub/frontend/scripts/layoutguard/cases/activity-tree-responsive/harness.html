@@ -179,7 +179,7 @@ function desktopInspectorMarkup() {
 
 function mobileInspectorMarkup() {
   return `
-    <div class="mobilePane">
+    <div class="mobilePane" data-role="mobile-pane">
       <div class="mobileBack">
         <button type="button" class="button quiet sm" data-role="back-control">Back to activity</button>
       </div>
@@ -234,7 +234,34 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
     font-size: var(--font-size-body);
     line-height: var(--line-height-body);
   }
-  .body { min-height: 0; }
+  /* layoutguard flattens all loaded module CSS into one resolved.css file,
+     so dialog.module.css's .panel and activitypanel.module.css's .panel would
+     collide if the harness used their raw class name on both elements. Keep
+     the real loaded CSS for every non-colliding class, then alias the two
+     collided .panel contracts separately here so the sheet chassis and inner
+     Activity wrapper both measure the production geometry they own. */
+  .sheetPanelHarness {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--edge);
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .sheetBodyHarness {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .activityPanelHarness {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+  }
   .outputSection { min-width: 0; }
   .outputPre {
     display: block;
@@ -256,12 +283,14 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
 </head>
 <body data-font-size="m">
   <div class="scrim">
-    <div class="panel right" data-role="sheet">
+    <div class="sheetPanelHarness right" data-role="sheet">
       <header class="header">
         <h2 class="title">Activity</h2>
       </header>
-      <div class="body">
-        ${bodyMarkup}
+      <div class="body sheetBodyHarness" data-role="sheet-body">
+        <div class="activityPanelHarness" data-role="activity-panel">
+          ${bodyMarkup}
+        </div>
       </div>
       <button type="button" class="closeButton" aria-label="Close">×</button>
     </div>
@@ -298,6 +327,11 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
       addEventListener("load", () => requestAnimationFrame(() => requestAnimationFrame(resolve)), { once: true });
     });
     window.measureFrame = function () {
+      const sheet = document.querySelector('[data-role="sheet"]');
+      const sheetBody = document.querySelector('[data-role="sheet-body"]');
+      const activityPanel = document.querySelector('[data-role="activity-panel"]');
+      const masterDetail = document.querySelector('[data-role="master-detail"]');
+      const mobilePane = document.querySelector('[data-role="mobile-pane"]');
       const treePane = document.querySelector('[data-role="tree-pane"]');
       const inspectorPane = document.querySelector('[data-role="inspector-pane"]');
       const outputPre = document.querySelector('[data-role="output-pre"]');
@@ -309,8 +343,21 @@ function frameDocument({ name, mode, width, height, bodyMarkup }) {
         fixture: FIXTURE_NAME,
         mode: FIXTURE_MODE,
         viewport: { width: window.innerWidth, height: window.innerHeight },
+        structure: {
+          sheetPresent: Boolean(sheet),
+          sheetBodyPresent: Boolean(sheetBody),
+          activityPanelPresent: Boolean(activityPanel),
+          primaryLayoutPresent: Boolean(masterDetail || mobilePane),
+          sheetContainsBody: Boolean(sheet && sheetBody && sheet.contains(sheetBody)),
+          bodyContainsActivity: Boolean(sheetBody && activityPanel && sheetBody.contains(activityPanel)),
+          activityContainsPrimaryLayout: Boolean(activityPanel && (masterDetail || mobilePane) && activityPanel.contains(masterDetail || mobilePane)),
+        },
         visiblePaneCount: visiblePanes.length,
         visiblePaneRoles: visiblePanes.map((pane) => pane.getAttribute("data-role")),
+        sheet: metrics(sheet),
+        sheetBody: metrics(sheetBody),
+        activityPanel: metrics(activityPanel),
+        primaryLayout: metrics(masterDetail || mobilePane),
         treePane: metrics(treePane),
         inspectorPane: metrics(inspectorPane),
         outputPre: metrics(outputPre),
@@ -341,7 +388,7 @@ const fixtures = [
     height: 900,
     label: "desktop 1440×900 — tree + inspector",
     bodyMarkup: `
-      <div class="masterDetail">
+      <div class="masterDetail" data-role="master-detail">
         <div class="panelColumn" data-role="tree-pane">
           <div class="tree" role="tree">${deepTreeMarkup("desktop")}</div>
         </div>
@@ -357,7 +404,7 @@ const fixtures = [
     height: 844,
     label: "mobile 390×844 — tree only",
     bodyMarkup: `
-      <div class="masterDetail">
+      <div class="masterDetail" data-role="master-detail">
         <div class="panelColumn" data-role="tree-pane">
           <div class="tree" role="tree">${deepTreeMarkup("mobile-tree")}</div>
         </div>

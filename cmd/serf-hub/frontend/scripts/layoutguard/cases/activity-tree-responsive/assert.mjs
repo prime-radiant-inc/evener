@@ -2,9 +2,46 @@ export default function assert(measurements) {
   const failures = [];
   const tolerance = 1;
 
+  function assertNoHorizontalOverflow(fixture, ownerName, box, { expectedOverflowX, allowAutoWhenNotScrollable = false } = {}) {
+    if (!box) {
+      failures.push(`${fixture}: missing ${ownerName}`);
+      return;
+    }
+    if (expectedOverflowX !== undefined && box.overflowX !== expectedOverflowX) {
+      failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)}, expected ${JSON.stringify(expectedOverflowX)}`);
+    }
+    if (!allowAutoWhenNotScrollable && /auto|scroll/.test(box.overflowX)) {
+      failures.push(`${fixture}: ${ownerName} overflow-x is ${JSON.stringify(box.overflowX)} - non-output owners must not be horizontal scrollers`);
+    }
+    if (box.scrollWidth > box.clientWidth + tolerance) {
+      failures.push(
+        `${fixture}: ${ownerName} scrollWidth ${box.scrollWidth}px exceeds clientWidth ${box.clientWidth}px - ${ownerName} must not scroll sideways`,
+      );
+    }
+  }
+
   for (const measurement of measurements) {
     const fixture = measurement.fixture;
     const paneRoles = measurement.visiblePaneRoles.join(", ") || "none";
+
+    if (!measurement.structure?.sheetPresent) failures.push(`${fixture}: missing sheet wrapper`);
+    if (!measurement.structure?.sheetBodyPresent) failures.push(`${fixture}: missing sheet body wrapper`);
+    if (!measurement.structure?.activityPanelPresent) failures.push(`${fixture}: missing inner Activity panel wrapper`);
+    if (!measurement.structure?.primaryLayoutPresent) failures.push(`${fixture}: missing primary layout wrapper (master-detail or mobile pane)`);
+    if (measurement.structure?.sheetContainsBody === false) failures.push(`${fixture}: sheet wrapper does not contain the sheet body wrapper`);
+    if (measurement.structure?.bodyContainsActivity === false) failures.push(`${fixture}: sheet body wrapper does not contain the inner Activity panel wrapper`);
+    if (measurement.structure?.activityContainsPrimaryLayout === false) failures.push(`${fixture}: inner Activity panel wrapper does not contain the primary layout wrapper`);
+
+    for (const [ownerName, box] of [
+      ["sheet wrapper", measurement.sheet],
+      ["sheet body", measurement.sheetBody],
+      ["Activity panel wrapper", measurement.activityPanel],
+      ["primary layout wrapper", measurement.primaryLayout],
+      ["inspector pane", measurement.inspectorPane],
+    ]) {
+      if (ownerName === "inspector pane" && !box) continue;
+      assertNoHorizontalOverflow(fixture, ownerName, box);
+    }
 
     if (measurement.mode === "desktop") {
       if (measurement.visiblePaneCount !== 2) {
@@ -20,16 +57,7 @@ export default function assert(measurements) {
       }
     }
 
-    if (measurement.treePane) {
-      if (measurement.treePane.overflowX !== "hidden") {
-        failures.push(`${fixture}: tree pane overflow-x is ${JSON.stringify(measurement.treePane.overflowX)}, expected "hidden"`);
-      }
-      if (measurement.treePane.scrollWidth > measurement.treePane.clientWidth + tolerance) {
-        failures.push(
-          `${fixture}: tree pane scrollWidth ${measurement.treePane.scrollWidth}px exceeds clientWidth ${measurement.treePane.clientWidth}px - tree pane must not scroll sideways`,
-        );
-      }
-    }
+    assertNoHorizontalOverflow(fixture, "tree pane", measurement.treePane, { expectedOverflowX: "hidden" });
 
     if (measurement.outputPre) {
       if (!/auto|scroll/.test(measurement.outputPre.overflowX)) {
