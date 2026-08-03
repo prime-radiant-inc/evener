@@ -88,6 +88,7 @@ Expected: all three guards execute against the current frontend; Chrome absence,
 ### Task 2: Wire the existing CI jobs to the complete matrix
 
 **Files:**
+- Modify: `.github/workflows/ci.yml:42-46` to execute the repository-owned runtime build pair and the all-package Go build.
 - Modify: `.github/workflows/ci.yml:24-25` to invoke `make test-web-browser` in the existing web job.
 - Modify: `.github/workflows/ci.yml:65-66` to add the missing full deterministic Go/module/tooling test stream with `ROOT_FULL=1 WEB=0`.
 
@@ -95,7 +96,18 @@ Expected: all three guards execute against the current frontend; Chrome absence,
 - Consumes: `make test-web-browser`, the existing web job's Node setup, and the existing `make test` runner.
 - Produces: CI coverage for all three browser guards plus the full non-browser deterministic test stream without duplicating frontend tests in the Go job.
 
-- [ ] **Step 1: Add the browser gate to the web job.**
+- [ ] **Step 1: Align the CI build step with the repository targets.**
+
+Replace the separate `make build-web` and `go build ./...` steps with one named step that runs both the artifact-producing runtime build and the all-package compilation check:
+
+```yaml
+      - name: Build runtime pair and all Go packages
+        run: make build && go build ./...
+```
+
+`make build` owns `build-runtime`, which owns `build-web` and the `serf`/`serf-hub` pair script; `go build ./...` retains the existing all-package compile check.
+
+- [ ] **Step 2: Add the browser gate to the web job.**
 
 Change the web job's command to run the existing web checks and build, then run the new browser gate:
 
@@ -104,7 +116,7 @@ Change the web job's command to run the existing web checks and build, then run 
         run: make test-web && make build-web && make test-web-browser
 ```
 
-- [ ] **Step 2: Add the missing deterministic test step.**
+- [ ] **Step 3: Add the missing deterministic test step.**
 
 After the existing race step, add:
 
@@ -115,7 +127,7 @@ After the existing race step, add:
 
 This preserves the current CI decomposition while giving the Go job the full root suite, all non-root module tests, and script self-tests. `WEB=0` avoids duplicating the web job's `test-web` stream.
 
-- [ ] **Step 3: Verify the CI command strings without executing GitHub Actions.**
+- [ ] **Step 4: Verify the CI command strings without executing GitHub Actions.**
 
 Run:
 
