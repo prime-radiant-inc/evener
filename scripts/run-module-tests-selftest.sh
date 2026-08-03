@@ -463,7 +463,7 @@ assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery 
 new_case
 out="$case_dir/root-package-discovery-timeout.out"
 root_worktree="$(cd "$repo" && pwd -P)"
-FAKE_LIST_HOLD=1 run_tests_async "." "$out" SERF_ROOT_PACKAGE_LIST_TIMEOUT=1
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=1
 if wait_for_file "$state/root-list.started" 500; then
 	(
 		sleep 3
