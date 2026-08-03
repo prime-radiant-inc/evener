@@ -419,7 +419,7 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 	stateDir := t.TempDir()
 	root := newActivityTestSession(t, stateDir)
 	current := root
-	for i := 0; i < activityMaxNewDepth+1; i++ {
+	for i := range activityMaxNewDepth + 1 {
 		child := newActivityTestSession(t, stateDir)
 		_, _ = linkActivityChild(t, current, child, fmt.Sprintf("child-%02d", i))
 		saveActivityMeta(t, stateDir, current)
@@ -441,7 +441,7 @@ func TestJobActivityTree_TruncatesAtDepth33(t *testing.T) {
 
 func TestJobActivityTree_TruncatesUnderEncodedBytePressure(t *testing.T) {
 	s := buildActivityTreeWithJobs(t, 64)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		rec := &jobstore.JobRecord{
 			JobID:          fmt.Sprintf("payload_%02d", i),
 			Type:           jobstore.JobShell,
@@ -593,7 +593,7 @@ func TestJobActivityTree_LiveChildOutsideStateDirIsUnavailable(t *testing.T) {
 	child := newActivityTestSession(t, childStateDir)
 	_, _ = linkActivityChild(t, parent, child, "cross-state child")
 	started := time.Unix(150, 0).UTC()
-	childJobID := fmt.Sprintf("job_child_outside_%s", started.Format("150405"))
+	childJobID := "job_child_outside_" + started.Format("150405")
 	if err := child.jobManager.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               started,
@@ -656,7 +656,7 @@ func TestJobActivityTree_ContinuationGraftEnvelope(t *testing.T) {
 	_, _ = linkActivityChild(t, root, child, "child")
 	saveActivityMeta(t, stateDir, root)
 	saveActivityMeta(t, stateDir, child)
-	for i := 0; i < activityMaxWorkUnits+4; i++ {
+	for i := range activityMaxWorkUnits + 4 {
 		started := time.Unix(int64(1000+i), 0).UTC()
 		jobID := fmt.Sprintf("job_child_%04d", i)
 		if err := child.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "child work", OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started}); err != nil {
@@ -703,7 +703,7 @@ func TestJobActivityTree_ContinuationResponseRetainsRootRevision(t *testing.T) {
 	}
 	saveActivityMeta(t, stateDir, root)
 	saveActivityMeta(t, stateDir, child)
-	for i := 0; i < activityMaxWorkUnits+4; i++ {
+	for i := range activityMaxWorkUnits + 4 {
 		started := time.Unix(int64(2000+i), 0).UTC()
 		jobID := fmt.Sprintf("job_child_revision_%04d", i)
 		if err := child.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "child work", OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started}); err != nil {
@@ -782,7 +782,7 @@ func buildActivityTreeWithJobs(t *testing.T, count int) *Session {
 	t.Helper()
 	stateDir := t.TempDir()
 	s := newActivityTestSession(t, stateDir)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		started := time.Unix(int64(i+1), 0).UTC()
 		jobID := fmt.Sprintf("job_tree_%04d", i)
 		if err := s.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "tree job", OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &started}); err != nil {

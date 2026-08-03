@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -154,7 +155,7 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 }
 
 func projectStableLiveActivityTree(clock *jobTreeClock, rootID string, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
-	for attempt := 0; attempt < 8; attempt++ {
+	for range 8 {
 		before := activityCurrentRootRevision(clock)
 		snapshot, startDepth, err := load()
 		if err != nil {
@@ -406,9 +407,7 @@ func sortedActivityDelegateIDs(records map[string]*jobstore.DelegateRecord) []st
 
 func cloneActivityVisited(visited map[string]bool) map[string]bool {
 	clone := make(map[string]bool, len(visited))
-	for key, value := range visited {
-		clone[key] = value
-	}
+	maps.Copy(clone, visited)
 	return clone
 }
 
@@ -459,27 +458,6 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 	root := projectActivitySessionAt(snapshot, budget, startDepth, nil)
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
 	return trimActivityTreeToFit(tree, rootID)
-}
-
-func activitySnapshotLifecycleRevision(snapshot *activitySessionSnapshot) uint64 {
-	if snapshot == nil {
-		return 0
-	}
-	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
-	var revision uint64
-	for _, rec := range records {
-		if rec == nil || rec.JobID == "" {
-			continue
-		}
-		revision++
-		if rec.Status.IsTerminal() {
-			revision++
-		}
-	}
-	for _, childID := range sortedActivityChildIDs(snapshot.Children) {
-		revision += activitySnapshotLifecycleRevision(snapshot.Children[childID])
-	}
-	return revision
 }
 
 func activitySnapshotPersistedRevision(snapshot *activitySessionSnapshot, rootID string) uint64 {
@@ -958,27 +936,25 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire
 }
 
 func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string) bool {
-	if session == nil {
+	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
-	for i := len(session.Entries) - 1; i >= 0; i-- {
-		entry := &session.Entries[i]
-		if entry.Delegate != nil && entry.Delegate.Child != nil {
-			if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID)) {
-				return true
-			}
+	i := len(session.Entries) - 1
+	entry := &session.Entries[i]
+	if entry.Delegate != nil && entry.Delegate.Child != nil {
+		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID)) {
+			return true
 		}
-		session.Entries = append(session.Entries[:i], session.Entries[i+1:]...)
-		session.Branch.Truncated = true
-		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    rootID,
-			SessionID: session.SessionID,
-			Path:      append([]string(nil), path...),
-		})
-		return true
 	}
-	return false
+	session.Entries = session.Entries[:i]
+	session.Branch.Truncated = true
+	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
+		Version:   activityContinuationV1,
+		RootID:    rootID,
+		SessionID: session.SessionID,
+		Path:      append([]string(nil), path...),
+	})
+	return true
 }
 
 func recomputeActivitySession(session *appwire.JobActivitySession) {

@@ -237,7 +237,7 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 		},
 	})
 	childEvents := make([]map[string]any, 0, childJobs*2)
-	for i := 0; i < childJobs; i++ {
+	for i := range childJobs {
 		started := now.Add(time.Duration(i+10) * time.Second)
 		ended := started.Add(500 * time.Millisecond)
 		jobID := fmt.Sprintf("job_child_%04d", i)

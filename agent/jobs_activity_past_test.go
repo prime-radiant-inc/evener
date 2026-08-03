@@ -150,7 +150,7 @@ func TestLoadSessionJobActivityTree_ContinuationFollowsDurablePath(t *testing.T)
 	)
 	s1cov_writeJobLog(t, stateDir, rootID, events...)
 	var childEvents []jobstore.Event
-	for i := 0; i < activityMaxWorkUnits+2; i++ {
+	for i := range activityMaxWorkUnits + 2 {
 		ts := started.Add(time.Duration(i+1) * time.Second)
 		childEvents = append(childEvents, jobstore.Event{Kind: jobstore.EventJobStarted, TS: ts, JobID: "job_child_" + strings.Repeat("x", 0) + time.Unix(int64(i+1), 0).UTC().Format("150405") + string(rune('a'+(i%26))), Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &ts, Description: "child"})
 	}
