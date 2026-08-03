@@ -440,10 +440,13 @@ export const treeStore = createStore<TreeStoreState>((set, get) => ({
   },
 
   async loadProjectPage(key, tier, offset, limit) {
-    const generation = projectMutationGenerations.get(key) ?? 0;
+    const mutationGeneration = projectMutationGenerations.get(key) ?? 0;
+    const treeGeneration = get().treeGeneration;
     const page = await fetchProjectPage(key, tier, offset, limit);
     set((s) => {
-      if ((projectMutationGenerations.get(key) ?? 0) !== generation) return s;
+      if ((projectMutationGenerations.get(key) ?? 0) !== mutationGeneration || s.treeGeneration !== treeGeneration) {
+        return s;
+      }
       const nextDetails = new Map(s.projectDetails);
       const nextDetailGenerations = new Map(s.projectDetailGenerations);
       const detail = nextDetails.get(key);

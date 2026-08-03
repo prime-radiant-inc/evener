@@ -706,6 +706,58 @@ describe("loadProjectPage", () => {
         ?.sessions.map((n) => n.ref),
     ).toEqual(["remote:new"]);
   });
+
+  test("a page response started before an accepted refresh cannot merge stale rows into the new tree or detail", async () => {
+    let resolvePage!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolvePage = resolve;
+      }),
+    );
+    const stale: TreeNode = {
+      row_id: "stale-page-row",
+      ref: "local:stale",
+      host_id: "local",
+      session_id: "stale",
+      title: "Stale page row",
+      project: "Proj",
+      state: "ended",
+      kind: "session",
+      tier: "current",
+      live: false,
+      children: [],
+    };
+    const fresh = { ...stale, row_id: "fresh-row", ref: "local:fresh", session_id: "fresh", title: "Fresh" };
+    const generationAProject = { key: "p1", name: "Proj", sessions: [], more_current: 1 };
+    const generationBProject = { key: "p1", name: "Proj", sessions: [fresh], more_current: 0 };
+    treeStore.setState({
+      tree: { ...NORMALIZED_EMPTY_TREE, projects: [generationAProject] },
+      treeGeneration: 7,
+      projectDetails: new Map([["p1", generationAProject]]),
+      projectDetailGenerations: new Map([["p1", 7]]),
+    });
+    const loading = treeStore.getState().loadProjectPage("p1", "current", 50, 50);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        generated_at: "2026-01-02T00:00:00Z",
+        projects: [generationBProject],
+      }),
+    );
+    await expect(treeStore.getState().refresh()).resolves.toBe(true);
+    const acceptedGeneration = treeStore.getState().treeGeneration;
+    treeStore.setState({
+      projectDetails: new Map([["p1", generationBProject]]),
+      projectDetailGenerations: new Map([["p1", acceptedGeneration]]),
+    });
+
+    resolvePage(jsonResponse({ key: "p1", tier: "current", offset: 50, sessions: [stale], remaining: 0 }));
+    await loading;
+
+    expect(treeStore.getState().tree?.projects[0]).toEqual(generationBProject);
+    expect(treeStore.getState().projectDetails.get("p1")).toEqual(generationBProject);
+  });
 });
 
 describe("REFRESH_NOTIFICATIONS", () => {
