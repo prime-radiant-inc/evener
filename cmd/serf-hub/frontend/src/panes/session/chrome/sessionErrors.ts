@@ -1,13 +1,12 @@
 // Shared wire-rejection classifiers for the session-chrome panels
-// (TasksPanel, JobsPanel). Both panels fetch their row lists through the
+// (TasksPanel, ActivityPanel). Both panels fetch their row lists through the
 // same hub resume-and-forward path and so classify the same two EXPECTED
 // rejections identically: a source that cannot answer the call at all
 // (actionUnavailable - an expected capability gap, not a bug, so it earns an
 // honest inline "not available" state and no toast) and a thread the hub
 // never tracked at all (isThreadNotFound - terminal, no retry). Extracted
-// from TasksPanel.tsx when JobsPanel.tsx needed the same two checks - one
-// definition, so both panels can never drift apart on what counts as
-// recoverable.
+// from TasksPanel.tsx so both panels can share the same two checks - one
+// definition, so they can never drift apart on what counts as recoverable.
 import { WireError } from "../../../protocol/errors";
 
 export function isActionUnavailable(err: unknown): boolean {
