@@ -361,6 +361,43 @@ describe("parseActivityTree", () => {
     });
   });
 
+  it("retains a valid transcriptRef on shell jobs", () => {
+    const tree = cloneWire(VALID_TREE_WIRE);
+    getRootShellWire(tree).transcriptRef = "job:job_activity";
+
+    expect(parseActivityTree(tree)?.root.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { transcriptRef: "job:job_activity" },
+    });
+  });
+
+  it("rejects an empty transcriptRef as an incomplete shell job", () => {
+    const malformed = cloneWire(VALID_TREE_WIRE);
+    getRootShellWire(malformed).transcriptRef = "";
+
+    const tree = parseActivityTree(malformed) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { jobId: "job_root_1" },
+    });
+    expect(tree.root.entries[0] && "job" in tree.root.entries[0] ? tree.root.entries[0].job.transcriptRef : undefined).toBeUndefined();
+  });
+
+  it("rejects a non-string transcriptRef as an incomplete shell job", () => {
+    const malformed = cloneWire(VALID_TREE_WIRE);
+    const rootShell = getRootShellWire(malformed) as {
+      transcriptRef?: unknown;
+    };
+    rootShell.transcriptRef = 7;
+
+    const tree = parseActivityTree(malformed) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { delegateId: "dlg_1" },
+    });
+    expect(tree.root.branch.error).toBe("incomplete");
+  });
+
   it("parses a recursive wire-true tree with delegates, unavailable children, and truncated branches", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
     const rootDelegate = getDelegateEntry(tree, 1);
