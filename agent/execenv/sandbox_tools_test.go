@@ -641,6 +641,31 @@ func TestGlobSkipsMaskedMatches(t *testing.T) {
 	}
 }
 
+func TestSandboxBrowseBraceAlternatives(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeRestricted)
+	for _, name := range []string{"one.ts", "two.css", "three.go"} {
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte("needle\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	matches, err := env.Glob("*.{ts,css}", worktree)
+	if err != nil {
+		t.Fatalf("sandbox glob brace alternatives: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("sandbox glob brace alternatives = %v, want two matches", matches)
+	}
+	out, err := env.Grep("needle", worktree, "*.{ts,css}", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("sandbox grep brace alternatives: %v", err)
+	}
+	if !strings.Contains(out, "one.ts") || !strings.Contains(out, "two.css") || strings.Contains(out, "three.go") {
+		t.Fatalf("sandbox grep brace alternatives = %q", out)
+	}
+}
+
 // TestSandboxWritePreservesMode: a sandboxed write over an existing file keeps its
 // mode (the atomic temp+rename must not silently strip an executable bit), while a
 // fresh file gets the default mode.

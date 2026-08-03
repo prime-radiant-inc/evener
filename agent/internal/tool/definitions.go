@@ -306,7 +306,7 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -330,7 +330,7 @@ func DefGrep() llm.ToolDefinition {
 func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files matching a glob pattern. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
+		Description: "Find files matching a glob pattern. Supports *, ?, [], **, and bounded nested brace alternatives such as *.{ts,tsx,css}; malformed braces are rejected. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

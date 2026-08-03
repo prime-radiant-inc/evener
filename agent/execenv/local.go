@@ -991,6 +991,10 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // not absolute. Results are sorted by modification time, newest first, with
 // ties broken by path.
 func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]string, error) {
+	patterns, err := expandSearchPattern(pattern)
+	if err != nil {
+		return nil, err
+	}
 	base := strings.TrimSpace(basePath)
 	if base == "" {
 		base = e.RootDir
@@ -1003,13 +1007,21 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob("glob", base, pattern)
 	}
-	matches, err := doublestar.Glob(os.DirFS(base), pattern)
-	if err != nil {
-		return nil, err
-	}
-	abs := make([]string, 0, len(matches))
-	for _, m := range matches {
-		abs = append(abs, filepath.Join(base, m))
+	seen := make(map[string]struct{})
+	var abs []string
+	for _, pattern := range patterns {
+		matches, err := doublestar.Glob(os.DirFS(base), pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			path := filepath.Join(base, m)
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			abs = append(abs, path)
+		}
 	}
 	sortPathsByMtimeDesc(abs)
 	return abs, nil
@@ -1040,6 +1052,14 @@ func resolveGrepDir(path, rootDir string) string {
 // one output-mode flag (files-with-matches / count / line-number), then optional
 // case-insensitivity and glob filter, then the trailing pattern and directory.
 func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string) []string {
+	filters := []string(nil)
+	if strings.TrimSpace(globFilter) != "" {
+		filters = []string{globFilter}
+	}
+	return buildRipgrepArgsWithFilters(outputMode, caseInsensitive, filters, pattern, dir)
+}
+
+func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFilters []string, pattern, dir string) []string {
 	args := []string{"--no-heading", "--color", "never"}
 	switch outputMode {
 	case "files_with_matches":
@@ -1052,14 +1072,20 @@ func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, patte
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
-	if strings.TrimSpace(globFilter) != "" {
-		args = append(args, "-g", globFilter)
+	for _, globFilter := range globFilters {
+		if strings.TrimSpace(globFilter) != "" {
+			args = append(args, "-g", globFilter)
+		}
 	}
 	args = append(args, pattern, dir)
 	return args
 }
 
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	globFilters, err := expandGrepFilter(globFilter)
+	if err != nil {
+		return "", err
+	}
 	dir := resolveGrepDir(path, e.RootDir)
 
 	if sfs := e.sandbox(); sfs != nil {
@@ -1079,7 +1105,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode)
 	}
 
-	args := buildRipgrepArgs(outputMode, caseInsensitive, globFilter, pattern, dir)
+	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir)
 
 	ctx := context.Background()
 	if maxResults <= 0 {
@@ -1102,6 +1128,10 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 }
 
 func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
+	globFilters, err := expandGrepFilter(globFilter)
+	if err != nil {
+		return "", err
+	}
 	a, err := newGrepAccum(pattern, caseInsensitive, maxResults, outputMode)
 	if err != nil {
 		return "", err
@@ -1121,8 +1151,11 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		if globFilter != "" {
-			matched, _ := filepath.Match(globFilter, filepath.Base(p))
+		if len(globFilters) > 0 {
+			matched, matchErr := matchesAnyGrepFilter(filepath.Base(p), globFilters)
+			if matchErr != nil {
+				return matchErr
+			}
 			if !matched {
 				return nil
 			}

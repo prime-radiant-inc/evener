@@ -116,6 +116,23 @@ func TestGlob_DoublestarPattern(t *testing.T) {
 	}
 }
 
+func TestGlob_BraceAlternatives(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"one.ts", "two.tsx", "three.css", "four.go"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NewLocalExecutionEnvironment(dir).Glob("*.{ts,tsx,css}", "")
+	if err != nil {
+		t.Fatalf("Glob brace alternatives: %v", err)
+	}
+	if len(got) != 3 || strings.HasSuffix(got[0], "four.go") {
+		t.Fatalf("Glob brace alternatives = %v, want exactly the three requested extensions", got)
+	}
+}
+
 func TestGlob_InvalidPattern(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
