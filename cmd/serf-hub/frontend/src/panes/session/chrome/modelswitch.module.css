@@ -4,6 +4,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-1);
   border: none;
   border-radius: var(--radius-control);
@@ -15,6 +18,10 @@
  * identifier - the same face the strip gives its figures and timings
  * (statusrow.module.css's .mono). */
 .value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
@@ -25,8 +32,8 @@
 }
 
 .trigger:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .trigger:disabled {
@@ -37,6 +44,7 @@
 .chevron {
   display: inline-flex;
   align-items: center;
+  flex: none;
   color: var(--ink-mid);
 }
 

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -11,6 +14,15 @@ import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { StatusRow } from "./StatusRow";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+test("status CSS declares the approved 560, 480, and 400px compression thresholds", () => {
+  const css = readFileSync(join(here, "statusrow.module.css"), "utf8");
+  expect(css).toContain("@container (max-width: 559px)");
+  expect(css).toContain("@container (max-width: 479px)");
+  expect(css).toContain("@container (max-width: 399px)");
+});
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,

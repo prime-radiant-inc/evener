@@ -3,14 +3,28 @@
 .row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  /* Tight enough that the whole strip reads as one line of status rather than
-   * widely-spaced islands; each item's own internal gap is smaller still, so
-   * the grouping still reads. */
+  flex-wrap: nowrap;
   gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
+}
+
+.identity {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.identity > span:first-child {
+  flex: 1 1 72px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .item {
@@ -19,32 +33,61 @@
   gap: var(--space-1);
 }
 
+.item,
+.context,
+.effortTrigger {
+  flex: none;
+}
+
 /* Figures, identifiers and timings - the faces mono is for. Chrome labels never
  * take it. */
 .mono {
   font-family: var(--font-mono);
 }
 
-.meter {
+.contextMeter {
+  display: block;
   width: 64px;
 }
 
-/* Queue depth is the one thing on this row that belongs at the far edge: it
- * reports the consequence of a Send rather than a property of the session, so
- * it sits apart from the run of facts instead of joining it. */
-.queue {
-  margin-left: auto;
-  color: var(--ink-low);
+.contextPercent,
+.queueCompact {
+  display: none;
 }
 
-/* A finished session's strip: one dimmer line of what it was and what it spent.
- * Nothing on it can change again, so it steps back from the live row's voice. */
-.summary {
-  color: var(--ink-mid);
+.queue {
+  margin-left: 0;
+  color: var(--ink-low);
 }
 
 .separator {
   color: var(--ink-low);
+}
+
+@container (max-width: 559px) {
+  .workTime {
+    display: none;
+  }
+}
+
+@container (max-width: 479px) {
+  .queueFull {
+    display: none;
+  }
+
+  .queueCompact {
+    display: inline;
+  }
+}
+
+@container (max-width: 399px) {
+  .contextMeter {
+    display: none;
+  }
+
+  .contextPercent {
+    display: inline;
+  }
 }
 
 /* Quiet effort trigger, matching ModelSwitch's own (modelswitch.module.css):
@@ -67,8 +110,7 @@
  * on the transparent <select> inside it - :focus-within is what carries it
  * across. */
 .effortTrigger:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .effortValue {

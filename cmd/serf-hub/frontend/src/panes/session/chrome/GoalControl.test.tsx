@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -11,6 +14,13 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { GoalControl, resetGoalOverridesForTests } from "./GoalControl";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+test("goal CSS hides only the inline anchor below the full-row threshold", () => {
+  const css = readFileSync(join(here, "goalcontrol.module.css"), "utf8");
+  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.anchor\s*\{[^}]*display:\s*none/);
+});
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,

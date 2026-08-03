@@ -1,8 +1,7 @@
 /* One quiet status-bar row with exactly two direct children:
  *
- *   .body  - cadence slot + StatusRow + GoalControl's chip. Owns ALL
- *            wrapping: when the pane is narrow its items reflow onto
- *            shared extra lines in here.
+ *   .body  - cadence slot + StatusRow + GoalControl's chip. Owns compression
+ *            through inline-size container queries when the pane narrows.
  *   .right - Details/Tasks/Jobs triggers + the session "⋯" menu. A
  *            flex:none sibling of a row that never wraps.
  *
@@ -13,33 +12,34 @@
  * exceeded the chrome width - growing the footer by a full row just to
  * hold the "⋯" (and reflowing the pane every time a long model name, a
  * failure count or a queue chip crossed the threshold). Now the menu
- * always shares the one top-level line, and only the status content
- * decides whether the footer grows. */
+ * always shares the one line while the status content compresses. */
 .chrome {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: var(--space-3);
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
   flex: none;
 }
 
 .body {
+  container-type: inline-size;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-3);
   flex: 1 1 auto;
-  /* min-width:0 lets the group shrink below its content width so the wrap
-   * happens in here; without it the row would overflow sideways instead. */
   min-width: 0;
+  overflow: hidden;
 }
 
 .right {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: var(--space-2);
-  /* Never wraps (the row is nowrap), never shrinks; .body's flex-grow is
-   * what pins this group to the trailing edge. */
   flex: none;
 }
 

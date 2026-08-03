@@ -12,6 +12,13 @@ import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
+test("the trigger exposes the full model label when its visible value truncates", () => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ modelProvider: "anthropic", model: "claude-opus-5" })} />);
+  const trigger = screen.getByTestId("model-switch-trigger");
+  expect(trigger.getAttribute("title")).toBe("anthropic/claude-opus-5");
+  expect(trigger.textContent).toContain("anthropic/claude-opus-5");
+});
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,

@@ -32,15 +32,16 @@ export interface StatusRowProps {
 
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
-  identity: requireClass(styles.item, "statusrow.module.css", "item"),
+  identity: requireClass(styles.identity, "statusrow.module.css", "identity"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
   mono: requireClass(styles.mono, "statusrow.module.css", "mono"),
-  context: requireClass(styles.item, "statusrow.module.css", "item"),
-  contextMeter: requireClass(styles.meter, "statusrow.module.css", "meter"),
-  contextPercent: requireClass(styles.mono, "statusrow.module.css", "mono"),
+  context: requireClass(styles.context, "statusrow.module.css", "context"),
+  contextMeter: requireClass(styles.contextMeter, "statusrow.module.css", "contextMeter"),
+  contextPercent: requireClass(styles.contextPercent, "statusrow.module.css", "contextPercent"),
+  workTime: requireClass(styles.workTime, "statusrow.module.css", "workTime"),
   queue: requireClass(styles.queue, "statusrow.module.css", "queue"),
-  queueFull: requireClass(styles.item, "statusrow.module.css", "item"),
-  queueCompact: requireClass(styles.item, "statusrow.module.css", "item"),
+  queueFull: requireClass(styles.queueFull, "statusrow.module.css", "queueFull"),
+  queueCompact: requireClass(styles.queueCompact, "statusrow.module.css", "queueCompact"),
   separator: requireClass(styles.separator, "statusrow.module.css", "separator"),
   effortTrigger: requireClass(styles.effortTrigger, "statusrow.module.css", "effortTrigger"),
   effortValue: requireClass(styles.effortValue, "statusrow.module.css", "effortValue"),
@@ -190,7 +191,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           feeding it an absence fabricates a measurement. Same gate
           DetailsPanel's own work-time row uses. */}
       {running && workMs > 0 && (
-        <span className={`${CLASS.item} ${CLASS.mono}`} data-testid="status-row-work-time">
+        <span className={`${CLASS.item} ${CLASS.mono} ${CLASS.workTime}`} data-testid="status-row-work-time">
           {formatWorkDuration(workMs)}
         </span>
       )}

@@ -43,20 +43,12 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-// Below this measured width, Details and Tasks no longer fit beside the
-// model/cost strip and the "..." trigger without wrapping the row onto a
-// second line (kata vybn) - so they move INTO that "..." menu instead,
-// keeping the footer one row tall. Picked from live measurement in a real
-// browser (jsdom reports zero for every layout dimension, so this number
-// could never come from a unit test - see this task's report): a session
-// with a typical model name and a cost chip starts wrapping around 550px of
-// chrome width, and this leaves headroom above that so the collapse lands
-// BEFORE the wrap, not after it. A session with an unusually long model
-// name or many status-row facts at once can still wrap on its own past this
-// point - this constant targets the reported failure (Details/Tasks pushed
-// to their own row), not a general "never wrap" guarantee over arbitrary
-// status-row content, which would need real measured-overflow detection
-// rather than a fixed breakpoint.
+// Below this measured width, Details, Tasks, and Jobs move INTO the "..."
+// menu so .body has room to compress its status facts while the footer stays
+// one line tall. Picked from live measurement in a real browser (jsdom reports
+// zero for every layout dimension, so this number could never come from a
+// unit test - see this task's report). The status row's container-query
+// variants then compress progressively inside the remaining inline size.
 const NARROW_CHROME_WIDTH_PX = 640;
 
 // Measures `ref`'s own border-box width via ResizeObserver - a PANE's box,
@@ -130,10 +122,9 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
 
   return (
     <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
-      {/* .body owns ALL wrapping (sessionchrome.module.css says why): the
-          status content reflows inside this group when the pane is narrow,
-          so .right - and with it the "..." menu - can never be pushed onto
-          a line of its own and reflow the footer. */}
+      {/* .body owns compression (sessionchrome.module.css says why): its
+          inline-size container progressively simplifies status content, so
+          .right - and with it the "..." menu - always shares this one line. */}
       <div className={CLASS.body} data-testid="session-chrome-body">
         <span className={CLASS.cadenceSlot} data-testid="session-chrome-cadence">
           <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />

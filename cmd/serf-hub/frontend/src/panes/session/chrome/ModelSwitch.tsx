@@ -71,6 +71,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // a client-side turn predicate here made the client guess at an answer only
   // the daemon has, and it took the switch away from every cold session too.
   const disabled = !model.capabilities.changeModel;
+  const currentModelLabel = modelLabel(model.modelProvider, model.model);
 
   async function openPicker() {
     if (disabled) return;
@@ -127,6 +128,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
           type="button"
           className={CLASS.trigger}
           data-testid="model-switch-trigger"
+          title={currentModelLabel}
           onClick={() => (open ? closePicker() : void openPicker())}
           disabled={disabled}
         >
@@ -135,7 +137,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
               border - the same rule widgets/pathfield's and
               widgets/modelCatalog's triggers follow. */}
           <span className={CLASS.value} data-testid="model-switch-value">
-            {modelLabel(model.modelProvider, model.model)}
+            {currentModelLabel}
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
             <Chevron direction="down" />
@@ -156,7 +158,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
           loading={loading}
           error={error}
           catalog={catalog}
-          value={modelLabel(model.modelProvider, model.model)}
+          value={currentModelLabel}
           onPick={(entry) => void handlePick(entry)}
         />
       </div>
