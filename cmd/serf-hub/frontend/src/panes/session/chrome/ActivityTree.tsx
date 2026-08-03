@@ -25,7 +25,7 @@ export type ActivitySelectionNode =
   | { kind: "session"; id: string; parentID?: string; level: number; session: ActivitySessionNode }
   | { kind: "delegate"; id: string; parentID?: string; level: number; delegate: ActivityDelegate }
   | {
-      kind: "job";
+      kind: "shell";
       id: string;
       parentID?: string;
       level: number;
@@ -149,7 +149,7 @@ function buildJobNode(
     level,
     expanded: false,
     hasChildren: false,
-    selection: { kind: "job", id, parentID, level, job, source },
+    selection: { kind: "shell", id, parentID, level, job, source },
     label: job.description,
     detail: source === "delegate-turn" ? "delegate turn" : (job.command ?? job.task),
     statusText: job.status,
@@ -388,7 +388,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
             <StatusDot
               state={statusDotState(
                 node.statusText,
-                node.selection.kind === "job" ? node.selection.job.terminal : undefined,
+                node.selection.kind === "shell" ? node.selection.job.terminal : undefined,
               )}
             />
             <div className={CLASS.rowMain}>

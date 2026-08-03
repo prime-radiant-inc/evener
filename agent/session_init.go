@@ -521,8 +521,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.spawn.driveCounter = dc
 	jobClock := resolveJobTreeClock(tc)
 	if cfg.spawn.parentSessionID == "" && jobClock == nil {
-		jobClock = newJobTreeClock(meta.ID)
+			rootSessionID := strings.TrimSpace(meta.JobTreeRootSessionID)
+			if rootSessionID == "" {
+				rootSessionID = meta.ID
+			}
+			jobClock = newJobTreeClock(rootSessionID)
 	}
+		if jobClock != nil {
+			jobClock.ensureAtLeast(meta.JobTreeRevision)
+		}
 	registerJobTreeClock(tc, jobClock)
 	s := &Session{
 		id:                       meta.ID,

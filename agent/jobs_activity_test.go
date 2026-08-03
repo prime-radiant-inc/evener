@@ -344,6 +344,41 @@ func TestJobActivityTree_LiveTraversalIncludesClosedDurableGrandchildAndGroupsTu
 	}
 }
 
+func TestJobActivityTree_LiveResponseRevisionMatchesRootClock(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	child := newActivityTestSession(t, stateDir)
+	_, _ = linkActivityChild(t, root, child, "inspect child")
+	rootShell, err := root.jobManager.createShell(createShellOpts{Command: "printf root", Description: "root shell"})
+	if err != nil {
+		t.Fatalf("root createShell: %v", err)
+	}
+	if err := root.jobManager.finalize(rootShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("root finalize: %v", err)
+	}
+	childShell, err := child.jobManager.createShell(createShellOpts{Command: "printf child", Description: "child shell"})
+	if err != nil {
+		t.Fatalf("child createShell: %v", err)
+	}
+	if err := child.jobManager.finalize(childShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("child finalize: %v", err)
+	}
+	saveActivityMeta(t, stateDir, root)
+	saveActivityMeta(t, stateDir, child)
+
+	want := root.jobTreeClock.revision.Load()
+	if want == 0 {
+		t.Fatal("root tree clock did not advance")
+	}
+	got, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != want {
+		t.Fatalf("revision=%d, want %d", got.Revision, want)
+	}
+}
+
 func TestJobActivityTree_TruncatesWithScopedContinuation(t *testing.T) {
 	s := buildActivityTreeWithJobs(t, activityMaxWorkUnits+1)
 	got, err := s.JobActivityTree(appwire.JobsListParams{})
@@ -633,6 +668,52 @@ func TestJobActivityTree_ContinuationGraftEnvelope(t *testing.T) {
 	}
 }
 
+func TestJobActivityTree_ContinuationResponseRetainsRootRevision(t *testing.T) {
+	stateDir := t.TempDir()
+	root := newActivityTestSession(t, stateDir)
+	child := newActivityTestSession(t, stateDir)
+	_, _ = linkActivityChild(t, root, child, "child")
+	rootShell, err := root.jobManager.createShell(createShellOpts{Command: "printf root", Description: "root shell"})
+	if err != nil {
+		t.Fatalf("root createShell: %v", err)
+	}
+	if err := root.jobManager.finalize(rootShell.JobID, jobstore.StatusCompleted, "done", nil); err != nil {
+		t.Fatalf("root finalize: %v", err)
+	}
+	saveActivityMeta(t, stateDir, root)
+	saveActivityMeta(t, stateDir, child)
+	for i := 0; i < activityMaxWorkUnits+4; i++ {
+		started := time.Unix(int64(2000+i), 0).UTC()
+		jobID := fmt.Sprintf("job_child_revision_%04d", i)
+		if err := child.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell, Description: "child work", OwnerSessionID: child.ID(), VisibleToSession: child.ID(), StartedAt: &started}); err != nil {
+			t.Fatalf("append child job %d: %v", i, err)
+		}
+	}
+
+	want := root.jobTreeClock.revision.Load()
+	if want == 0 {
+		t.Fatal("root tree clock did not advance")
+	}
+	initial, err := root.JobActivityTree(appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childDelegate := findDelegateEntry(t, initial.Root, child.ID())
+	if childDelegate.Child == nil || !childDelegate.Child.Branch.Truncated || childDelegate.Child.Branch.Continuation == "" {
+		t.Fatalf("child branch=%+v child=%+v", childDelegate.Branch, childDelegate.Child)
+	}
+	continued, err := root.JobActivityTree(appwire.JobsListParams{Continuation: childDelegate.Child.Branch.Continuation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Revision != want {
+		t.Fatalf("initial revision=%d, want %d", initial.Revision, want)
+	}
+	if continued.Revision != want {
+		t.Fatalf("continued revision=%d, want %d", continued.Revision, want)
+	}
+}
+
 func ptrActivityJob(job appwire.JobActivityJob) *appwire.JobActivityJob { return &job }
 
 func activityRecordIDs(records []*jobstore.JobRecord) []string {
@@ -656,6 +737,9 @@ func newActivityTestSession(t *testing.T, stateDir string) *Session {
 func linkActivityChild(t *testing.T, parent, child *Session, task string) (*subagent, *runningJob) {
 	t.Helper()
 	sub := &subagent{id: child.ID(), sess: child, status: SubagentRunning, done: make(chan struct{})}
+	if parent.jobTreeClock != nil {
+		child.jobTreeClock = parent.jobTreeClock
+	}
 	parent.subagents.track(sub)
 	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), task, sub)
 	if err != nil {

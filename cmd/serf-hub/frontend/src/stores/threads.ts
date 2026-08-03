@@ -198,12 +198,11 @@ export interface ThreadsStoreState {
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.
   listTasks(ref: string): Promise<unknown>;
-  // Lists the session's jobs (serf/jobs/list) and fetches one job's output
-  // tail (serf/jobs/output). Both Data fields are `any` on the wire catalog
-  // (appwire/types.go) - these return the raw field verbatim, never wrapped,
-  // so the store stays shape-agnostic; the caller owns interpreting it (the
-  // chrome stream's parseJobListData / parseJobOutputData). Wire truth:
-  // agent/jobs_panel.go's JobSummary / JobOutputTail.
+  // Lists the session's activity tree (serf/jobs/list) and fetches one job's
+  // output tail (serf/jobs/output). Both Data fields are `any` on the wire
+  // catalog (appwire/types.go) - these return the raw field verbatim, never
+  // wrapped, so the store stays shape-agnostic; the caller owns interpreting
+  // them (the chrome stream's parseActivityTree / parseJobOutputData).
   listJobs(ref: string, continuation?: string): Promise<unknown>;
   jobOutput(ref: string, jobId: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/

@@ -234,7 +234,7 @@ function applyDepthLimit(branch: ActivityBranchState): ActivityBranchState {
 function parseEntry(raw: unknown, depth: number): ParseResult<ActivityEntry> {
   if (!isPlainObject(raw)) return { value: null, incomplete: true };
   const kind = readString(raw, "kind");
-  if (kind === "job") {
+  if (kind === "shell") {
     const job = parseJob(raw.job);
     return { value: job ? { kind: "shell", job } : null, incomplete: job === null };
   }

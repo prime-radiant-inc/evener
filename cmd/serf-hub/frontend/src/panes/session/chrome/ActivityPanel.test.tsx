@@ -74,7 +74,7 @@ function activityTree(revision = 1) {
       counts: { active: 3, failed: 1, completed: 4, complete: true },
       entries: [
         {
-          kind: "job",
+          kind: "shell",
           job: {
             jobId: "job_root_shell",
             ownerSessionId: "sess_root",
@@ -134,7 +134,7 @@ function activityTree(revision = 1) {
               counts: { active: 1, failed: 0, completed: 1, complete: true },
               entries: [
                 {
-                  kind: "job",
+                  kind: "shell",
                   job: {
                     jobId: "job_child_shell",
                     ownerSessionId: "sess_child",
@@ -271,7 +271,7 @@ function continuedPartialTree() {
               counts: { active: 1, failed: 0, completed: 2, complete: true },
               entries: [
                 {
-                  kind: "job",
+                  kind: "shell",
                   job: {
                     jobId: "job_partial_shell",
                     ownerSessionId: "sess_partial",
@@ -597,7 +597,7 @@ describe("ActivityPanel", () => {
       if (calls === 1) return { data: activityTree() };
       const next = activityTree(2);
       next.root.entries = next.root.entries.filter(
-        (entry) => !(entry.kind === "job" && entry.job && entry.job.jobId === "job_root_shell"),
+        (entry) => !(entry.kind === "shell" && entry.job && entry.job.jobId === "job_root_shell"),
       );
       return { data: next };
     });

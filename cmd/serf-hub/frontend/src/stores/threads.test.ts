@@ -3708,35 +3708,66 @@ describe("useThreadsStore.listTasks", () => {
 });
 
 describe("useThreadsStore.listJobs / jobOutput", () => {
-  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are
-  // both `any` in appwire/types.go; the real JSON is agent/jobs_panel.go's
-  // JobSummary / JobOutputTail structs. These fixtures mirror their real
-  // JSON field names verbatim.
-  const JOBS_DATA = [
-    {
-      jobId: "job_1",
-      type: "shell",
-      status: "completed",
-      description: "run tests",
-      command: "go test ./...",
-      background: true,
-      startedAt: "2026-07-31T12:00:00Z",
-      endedAt: "2026-07-31T12:01:00Z",
-      exitCode: 0,
-      outputBytes: 123,
-      hasOutput: true,
+  // Wire-true shape: JobsListResponse.Data / JobsOutputResponse.Data are both
+  // `any` in appwire/types.go. The replacement jobs-list payload is the
+  // recursive activity tree, while job output stays JobOutputTail. These
+  // fixtures mirror the current wire JSON field names verbatim.
+  const JOBS_DATA = {
+    revision: 5,
+    root: {
+      sessionId: "sess_root",
+      ref: "ref_a",
+      label: "Root",
+      aggregate: "working",
+      counts: { active: 2, failed: 0, completed: 1, complete: true },
+      entries: [
+        {
+          kind: "shell",
+          job: {
+            jobId: "job_1",
+            ownerSessionId: "sess_root",
+            ownerRef: "ref_a",
+            type: "shell",
+            status: "completed",
+            description: "run tests",
+            command: "go test ./...",
+            terminal: true,
+            background: true,
+            hasOutput: true,
+            startedAt: "2026-07-31T12:00:00Z",
+            endedAt: "2026-07-31T12:01:00Z",
+            exitCode: 0,
+            outputBytes: 123,
+          },
+        },
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_1",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            turns: [
+              {
+                jobId: "job_2",
+                ownerSessionId: "sess_root",
+                ownerRef: "ref_a",
+                type: "delegate",
+                status: "running",
+                terminal: false,
+                background: true,
+                hasOutput: false,
+                description: "scout",
+                startedAt: "2026-07-31T12:05:00Z",
+                outputBytes: 0,
+              },
+            ],
+            branch: {},
+          },
+        },
+      ],
+      branch: {},
     },
-    {
-      jobId: "job_2",
-      type: "delegate",
-      status: "running",
-      description: "scout",
-      background: true,
-      startedAt: "2026-07-31T12:05:00Z",
-      outputBytes: 0,
-      hasOutput: false,
-    },
-  ];
+  };
   const OUTPUT_DATA = { tail: "6789", totalBytes: 10, retainedStart: 6, truncated: true };
 
   test("listJobs sends serf/jobs/list with {ref} and returns the raw data field", async () => {

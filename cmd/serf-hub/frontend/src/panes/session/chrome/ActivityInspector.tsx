@@ -225,7 +225,7 @@ export function ActivityInspector({ selection, removedSelectionNotice = false, s
       {removedSelectionNotice && <p className={CLASS.branchError}>This activity is no longer retained.</p>}
       {selection.kind === "session" && <SessionInspector session={selection.session} />}
       {selection.kind === "delegate" && <DelegateInspector delegate={selection.delegate} sessionRef={sessionRef} />}
-      {selection.kind === "job" && <ShellInspector job={selection.job} />}
+      {selection.kind === "shell" && <ShellInspector job={selection.job} />}
     </div>
   );
 }

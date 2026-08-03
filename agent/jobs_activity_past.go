@@ -20,7 +20,19 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
-	return projectBoundedActivityTree(*snapshot, sessionID, startDepth)
+	rootRevisionID := strings.TrimSpace(snapshot.RootID)
+	if rootRevisionID == "" {
+		rootRevisionID = sessionID
+	}
+	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
+	if strings.TrimSpace(params.Continuation) != "" {
+		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
+	}
+	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision)
 }
 
 func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (activityLoadedBase, error) {
@@ -35,6 +47,8 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 				SessionID: sessionID,
 				Ref:       encodeRef("", sessionID),
 				Label:     activityLabelFromMeta(sessionID, meta, metaErr),
+					RootID:    activityRootIDFromMeta(sessionID, meta),
+					Revision:  activityRevisionFromMeta(meta),
 				Jobs:      []*jobstore.JobRecord{},
 				LiveJobs:  map[string]*jobstore.JobRecord{},
 				Delegates: map[string]*jobstore.DelegateRecord{},
@@ -59,10 +73,23 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		SessionID: sessionID,
 		Ref:       encodeRef("", sessionID),
 		Label:     activityLabelFromMeta(sessionID, meta, metaErr),
+		RootID:    activityRootIDFromMeta(sessionID, meta),
+		Revision:  activityRevisionFromMeta(meta),
 		Jobs:      ordered,
 		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: delegates,
 	}}, nil
+}
+
+func activityRootIDFromMeta(sessionID string, meta schema.SessionMeta) string {
+	if rootID := strings.TrimSpace(meta.JobTreeRootSessionID); rootID != "" {
+		return rootID
+	}
+	return strings.TrimSpace(sessionID)
+}
+
+func activityRevisionFromMeta(meta schema.SessionMeta) uint64 {
+	return meta.JobTreeRevision
 }
 
 func loadHistoricalActivityDelegates(path string) (map[string]*jobstore.DelegateRecord, error) {

@@ -46,7 +46,7 @@ function getMalformedSiblingWire(tree: typeof VALID_TREE_WIRE) {
 
 function getRootShellWire(tree: typeof VALID_TREE_WIRE) {
   const entry = assertDefined(tree.root.entries[0], "expected root shell wire entry");
-  if (entry.kind !== "job") throw new Error("expected root shell wire entry");
+  if (entry.kind !== "shell") throw new Error("expected root shell wire entry");
   return assertDefined(entry.job, "expected root shell payload");
 }
 
@@ -74,7 +74,7 @@ const VALID_TREE_WIRE = {
     counts: { active: 2, failed: 1, completed: 3, complete: false },
     entries: [
       {
-        kind: "job",
+        kind: "shell",
         job: {
           jobId: "job_root_1",
           ownerSessionId: "sess_root",
@@ -137,7 +137,7 @@ const VALID_TREE_WIRE = {
             counts: { active: 1, failed: 0, completed: 1, complete: false },
             entries: [
               {
-                kind: "job",
+                kind: "shell",
                 job: {
                   jobId: "job_child_active",
                   ownerSessionId: "sess_child",
@@ -183,7 +183,7 @@ const VALID_TREE_WIRE = {
                     counts: { active: 0, failed: 0, completed: 1, complete: true },
                     entries: [
                       {
-                        kind: "job",
+                        kind: "shell",
                         job: {
                           jobId: "job_leaf_done",
                           ownerSessionId: "sess_leaf",
@@ -315,6 +315,52 @@ describe("parseActivityTree", () => {
     expect(parseActivityTree([{ jobId: "old-flat-row" }])).toBeNull();
   });
 
+  it("parses authoritative shell kind rows for shell-only and nested mixed trees", () => {
+    const shellOnly = {
+      revision: 3,
+      root: {
+        sessionId: "sess_shell_only",
+        ref: "ref_shell_only",
+        label: "Shell only",
+        aggregate: "working",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "shell",
+            job: {
+              jobId: "job_shell_only",
+              ownerSessionId: "sess_shell_only",
+              ownerRef: "ref_shell_only",
+              type: "shell",
+              status: "running",
+              terminal: false,
+              background: false,
+              hasOutput: false,
+              description: "shell only",
+              startedAt: "2026-08-03T00:00:00Z",
+              outputBytes: 0,
+            },
+          },
+        ],
+        branch: {},
+      },
+    };
+    expect(parseActivityTree(shellOnly)?.root.entries).toMatchObject([
+      { kind: "shell", job: { jobId: "job_shell_only" } },
+    ]);
+
+    const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({ kind: "shell", job: { jobId: "job_root_1" } });
+    expect(getDelegateEntry(tree, 1)?.delegate.child?.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { jobId: "job_child_active" },
+    });
+    expect(getDelegateEntry(tree, 1, 1)?.delegate.child?.entries[0]).toMatchObject({
+      kind: "shell",
+      job: { jobId: "job_leaf_done" },
+    });
+  });
+
   it("parses a recursive wire-true tree with delegates, unavailable children, and truncated branches", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
     const rootDelegate = getDelegateEntry(tree, 1);
@@ -341,6 +387,18 @@ describe("parseActivityTree", () => {
   });
 
   it("drops malformed siblings while preserving valid siblings and marking the owning session incomplete", () => {
+    const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
+    const child = getDelegateEntry(tree, 1)?.delegate.child;
+    expect(child?.entries.map((entry: (typeof child.entries)[number]) => entry.kind)).toEqual([
+      "shell",
+      "delegate",
+      "delegate",
+      "delegate",
+    ]);
+    expect(child?.branch.error).toBe("incomplete");
+  });
+
+  it("keeps wire-true shell siblings while a malformed sibling still degrades the branch", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
     const child = getDelegateEntry(tree, 1)?.delegate.child;
     expect(child?.entries.map((entry: (typeof child.entries)[number]) => entry.kind)).toEqual([
@@ -508,7 +566,7 @@ describe("reconcileActivityState", () => {
     previousChild.aggregate = "completed";
     previousChild.counts = { active: 0, failed: 0, completed: 4, complete: true };
     const childEntry = assertDefined(previousChild.entries[0], "expected child shell wire entry");
-    if (childEntry.kind !== "job") throw new Error("expected child shell wire entry");
+    if (childEntry.kind !== "shell") throw new Error("expected child shell wire entry");
     const childJob = assertDefined(childEntry.job, "expected child shell job payload");
     childJob.status = "completed";
     childJob.terminal = true;
@@ -618,7 +676,7 @@ describe("reconcileActivityState", () => {
                         counts: { active: 1, failed: 0, completed: 0, complete: false },
                         entries: [
                           {
-                            kind: "job",
+                            kind: "shell",
                             job: {
                               jobId: "job_active_shell",
                               ownerSessionId: "sess_new",

@@ -35,6 +35,8 @@ type activitySessionSnapshot struct {
 	SessionID string
 	Ref       string
 	Label     string
+	RootID    string
+	Revision  uint64
 	Jobs      []*jobstore.JobRecord
 	LiveJobs  map[string]*jobstore.JobRecord
 	Delegates map[string]*jobstore.DelegateRecord
@@ -139,11 +141,43 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
+	if s.jobTreeClock == nil {
+		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0)
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		before := activityCurrentRootRevision(s.jobTreeClock)
+		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		after := activityCurrentRootRevision(s.jobTreeClock)
+		if before == after {
+			return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, after)
+		}
+	}
 	snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
-	return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth)
+	return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, activityCurrentRootRevision(s.jobTreeClock))
+}
+
+func activityCurrentRootRevision(clock *jobTreeClock) uint64 {
+	if clock == nil {
+		return 0
+	}
+	return clock.revision.Load()
+}
+
+func activityCurrentRootID(clock *jobTreeClock, fallback string) string {
+	if clock != nil && strings.TrimSpace(clock.rootSessionID) != "" {
+		return clock.rootSessionID
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func loadActivitySnapshotForParams(root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, error) {
@@ -269,6 +303,8 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		SessionID: s.ID(),
 		Ref:       encodeRef("", s.ID()),
 		Label:     activitySessionLabel(s.Meta()),
+			RootID:    activityCurrentRootID(s.jobTreeClock, s.ID()),
+			Revision:  activityCurrentRootRevision(s.jobTreeClock),
 		Jobs:      []*jobstore.JobRecord{},
 		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: map[string]*jobstore.DelegateRecord{},
@@ -379,6 +415,8 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		SessionID: base.SessionID,
 		Ref:       base.Ref,
 		Label:     base.Label,
+		RootID:    base.RootID,
+		Revision:  base.Revision,
 		Jobs:      filterActivityRecordsByDelegate(base.Jobs, delegateID),
 		LiveJobs:  filterActivityLiveRecordsByDelegate(base.LiveJobs, delegateID),
 		Delegates: make(map[string]*jobstore.DelegateRecord, 1),
@@ -414,11 +452,70 @@ func filterActivityLiveRecordsByDelegate(records map[string]*jobstore.JobRecord,
 	return filtered
 }
 
-func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int) (appwire.JobActivityTree, error) {
+func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int, revision uint64) (appwire.JobActivityTree, error) {
 	budget := newBoundedActivityBudget(rootID)
 	root := projectActivitySessionAt(snapshot, budget, startDepth, nil)
-	tree := appwire.JobActivityTree{Root: root}
+	tree := appwire.JobActivityTree{Revision: revision, Root: root}
 	return trimActivityTreeToFit(tree, rootID)
+}
+
+func activitySnapshotLifecycleRevision(snapshot *activitySessionSnapshot) uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
+	var revision uint64
+	for _, rec := range records {
+		if rec == nil || rec.JobID == "" {
+			continue
+		}
+		revision++
+		if rec.Status.IsTerminal() {
+			revision++
+		}
+	}
+	for _, childID := range sortedActivityChildIDs(snapshot.Children) {
+		revision += activitySnapshotLifecycleRevision(snapshot.Children[childID])
+	}
+	return revision
+}
+
+func activitySnapshotPersistedRevision(snapshot *activitySessionSnapshot, rootID string) uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		rootID = strings.TrimSpace(snapshot.RootID)
+		if rootID == "" {
+			rootID = strings.TrimSpace(snapshot.SessionID)
+		}
+	}
+	var maxRevision uint64
+	var walk func(*activitySessionSnapshot)
+	walk = func(node *activitySessionSnapshot) {
+		if node == nil {
+			return
+		}
+		nodeRoot := strings.TrimSpace(node.RootID)
+		if (nodeRoot == "" || rootID == "" || nodeRoot == rootID) && node.Revision > maxRevision {
+			maxRevision = node.Revision
+		}
+		for _, childID := range sortedActivityChildIDs(node.Children) {
+			walk(node.Children[childID])
+		}
+	}
+	walk(snapshot)
+	return maxRevision
+}
+
+func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []string {
+	ids := make([]string, 0, len(children))
+	for id := range children {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // mergeActivityRecords overlays live records on durable history without

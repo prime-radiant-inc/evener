@@ -51,6 +51,21 @@ func (c *jobTreeClock) nextRevision() (string, uint64, bool) {
 	return c.rootSessionID, c.revision.Add(1), true
 }
 
+func (c *jobTreeClock) ensureAtLeast(revision uint64) uint64 {
+	if c == nil {
+		return 0
+	}
+	for {
+		current := c.revision.Load()
+		if current >= revision {
+			return current
+		}
+		if c.revision.CompareAndSwap(current, revision) {
+			return revision
+		}
+	}
+}
+
 var (
 	jobTreeClockByTreeCounter sync.Map // map[*treeCounter]*jobTreeClock
 )
@@ -86,6 +101,7 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 				payload.TreeRevision = revision
 				data = payload
 			}
+			s.maybeAutoSave()
 		}
 	}
 	s.emitWithProvenance(kind, data, p)

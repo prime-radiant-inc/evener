@@ -108,6 +108,34 @@ func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 	}
 }
 
+func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendants(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootrevision"
+	childID := "childrevision"
+	started := time.Unix(250, 0).UTC()
+	ended := started.Add(time.Second)
+
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventDelegateCreated, TS: started, DelegateID: "dlg_revision", Delegate: &jobstore.DelegateEvent{ChildSessionID: childID, TranscriptRef: encodeRef("", childID), OwnerSessionID: rootID, VisibleSessionID: rootID, Generation: "gen_1", Resumable: true}},
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_delegate_revision", Type: jobstore.JobDelegate, OwnerSessionID: rootID, VisibleToSession: rootID, DelegateID: "dlg_revision", StartedAt: &started, TranscriptRef: encodeRef("", childID)},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_delegate_revision", Status: jobstore.StatusCompleted, EndedAt: &ended},
+	)
+	s1cov_writeJobLog(t, stateDir, childID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child_revision", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started, Description: "child shell"},
+		jobstore.Event{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_child_revision", Status: jobstore.StatusCompleted, EndedAt: &ended},
+	)
+	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 3)
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 7)
+
+	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 7 {
+		t.Fatalf("revision=%d, want 7", got.Revision)
+	}
+}
+
 func TestLoadSessionJobActivityTree_ContinuationFollowsDurablePath(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootcont"
@@ -127,12 +155,15 @@ func TestLoadSessionJobActivityTree_ContinuationFollowsDurablePath(t *testing.T)
 		childEvents = append(childEvents, jobstore.Event{Kind: jobstore.EventJobStarted, TS: ts, JobID: "job_child_" + strings.Repeat("x", 0) + time.Unix(int64(i+1), 0).UTC().Format("150405") + string(rune('a'+(i%26))), Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &ts, Description: "child"})
 	}
 	s1cov_writeJobLog(t, stateDir, childID, childEvents...)
-	savePastActivityMeta(t, stateDir, rootID, "Root")
-	savePastActivityMeta(t, stateDir, childID, "Child")
+	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 4)
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 9)
 
 	first, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.Revision != 9 {
+		t.Fatalf("first revision=%d, want 9", first.Revision)
 	}
 	child := pastFindDelegate(t, first.Root, childID)
 	if child.Child == nil || !child.Child.Branch.Truncated || child.Child.Branch.Continuation == "" {
@@ -151,11 +182,23 @@ func TestLoadSessionJobActivityTree_ContinuationFollowsDurablePath(t *testing.T)
 	if cont.Root.Entries[0].Delegate.Child.SessionID != childID {
 		t.Fatalf("continued child=%+v", cont.Root.Entries[0].Delegate.Child)
 	}
+	if cont.Revision != 9 {
+		t.Fatalf("continued revision=%d, want 9", cont.Revision)
+	}
 }
 
 func savePastActivityMeta(t *testing.T, stateDir, sessionID, name string) {
 	t.Helper()
-	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", Name: name, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC()}); err != nil {
+	savePastActivityMetaWithTreeRevision(t, stateDir, sessionID, name, "", 0)
+}
+
+func savePastActivityMetaWithTreeRevision(t *testing.T, stateDir, sessionID, name, rootID string, revision uint64) {
+	t.Helper()
+	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", Name: name, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), JobTreeRevision: revision}
+	if strings.TrimSpace(rootID) != "" {
+		meta.JobTreeRootSessionID = rootID
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta(%s): %v", sessionID, err)
 	}
 }

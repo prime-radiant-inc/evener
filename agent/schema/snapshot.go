@@ -102,6 +102,17 @@ type SessionMeta struct {
 	// duration, interrupted and failed included), persisted so the total
 	// survives restart/resume. omitzero for legacy round-trip.
 	WorkMillis int64 `json:"work_millis,omitzero"`
+	// JobTreeRootSessionID identifies the root session whose shared job/activity
+	// lifecycle revision this session participates in. For standalone/root
+	// sessions it is the session's own ID; descendants persist the inherited root
+	// ID so durable activity-tree responses can preserve the same root-scoped
+	// revision envelope after exit.
+	JobTreeRootSessionID string `json:"job_tree_root_session_id,omitempty"`
+	// JobTreeRevision is the latest authoritative root-scoped job/activity tree
+	// revision observed by this session's shared lifecycle clock. Persisted so
+	// exited activity-tree responses can report the same authoritative revision
+	// without inventing a synthetic counter from durable job records.
+	JobTreeRevision uint64 `json:"job_tree_revision,omitzero"`
 }
 
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
