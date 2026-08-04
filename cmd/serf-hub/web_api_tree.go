@@ -403,11 +403,19 @@ func pinSectionTrees(sections []hubcore.PinSection, assignments map[string]hubco
 }
 
 func annotatePinSection(node hubapi.TreeNode, bySession map[string]string) hubapi.TreeNode {
-	if sectionID := bySession[node.Ref]; sectionID != "" {
+	sectionID := bySession[node.Ref]
+	if sectionID != "" {
 		node.PinSectionID = sectionID
 	}
 	if node.PinSectionID == "" {
-		node.PinSectionID = bySession[node.SessionID]
+		sectionID = bySession[node.SessionID]
+		node.PinSectionID = sectionID
+	}
+	if sectionID != "" {
+		// A session represented by a named pin section is no longer a legacy
+		// favorite. Keep ordinary session favorites true when they have no
+		// pin-section assignment.
+		node.Favorite = false
 	}
 	for i := range node.Children {
 		node.Children[i] = annotatePinSection(node.Children[i], bySession)

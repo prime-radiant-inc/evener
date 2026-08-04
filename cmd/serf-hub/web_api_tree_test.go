@@ -1471,6 +1471,22 @@ func TestAPITreePinSectionIDAnnotatesLiveProjectTestRunAndPinnedCopies(t *testin
 	}
 }
 
+func TestAnnotatePinSectionClearsFavoriteOnlyForPinnedSession(t *testing.T) {
+	pinned := annotatePinSection(hubapi.TreeNode{
+		SessionID: "pinned", Favorite: true,
+	}, map[string]string{"pinned": "section-1"})
+	if pinned.PinSectionID != "section-1" || pinned.Favorite {
+		t.Fatalf("pinned row = %+v, want pin section and Favorite=false", pinned)
+	}
+
+	ordinary := annotatePinSection(hubapi.TreeNode{
+		SessionID: "ordinary", Favorite: true,
+	}, map[string]string{"pinned": "section-1"})
+	if ordinary.PinSectionID != "" || !ordinary.Favorite {
+		t.Fatalf("ordinary favorite row = %+v, want Favorite=true without pin section", ordinary)
+	}
+}
+
 func TestAPITreeNoLongerSerializesFavorites(t *testing.T) {
 	web, _ := namedPinTreeWeb(t, nil)
 	rec := httptest.NewRecorder()
