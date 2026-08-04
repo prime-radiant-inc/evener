@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 func TestS3Cov_DeliveredStatus(t *testing.T) {
@@ -51,6 +56,39 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("formatDelegateSend missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestS3Cov_FormatDelegateSendKeepsDisposalHintAfterTailTruncation(t *testing.T) {
+	const hint = "dispose the lane after merging"
+	reg := tooldefs.NewRegistry()
+	if err := reg.Register(tooldefs.RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "delegate_send",
+			Description: "test delegate sender",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		Limit: schema.ToolOutputLimit{MaxChars: 256, Strategy: schema.TruncTail},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return tooldefs.StateResult{Output: formatDelegateSend(delegateSendResult{
+				Action: "send",
+				StructuredResult: map[string]any{
+					"payload": strings.Repeat("x", 1024),
+				},
+				Worktree: &delegateWorktreeToolResult{DisposalHint: hint},
+			})}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register delegate_send fixture: %v", err)
+	}
+
+	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID:        "call_disposal_hint",
+		Name:      "delegate_send",
+		Arguments: []byte(`{}`),
+	})
+	if !strings.Contains(result.Output, "disposal_hint: "+hint) {
+		t.Fatalf("tail-truncated delegate_send output lost disposal hint:\n%s", result.Output)
 	}
 }
 
