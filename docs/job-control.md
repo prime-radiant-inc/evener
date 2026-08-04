@@ -1217,17 +1217,16 @@ Transcript tools remain separate:
 
 ```text
 find_session_transcripts
-read_session_transcript
 read_transcript
 ```
 
-Use job tools for a work unit's lifecycle and control. Use transcript tools to read evidence — a session `transcript_ref` for conversation history, a `job:<job_id>` ref for a job's own output.
+Use job tools for a work unit's lifecycle and control. Use the transcript tools to read evidence — a session `transcript_ref` for conversation history, or a `job:<job_id>` ref for a job's own output.
 
 For delegate jobs:
 
 - `job_list` and notifications expose the child `transcript_ref` when known.
 - `read_transcript(transcript_ref="job:<job_id>")` returns the delegate job output/log/final report for that invocation.
-- `read_session_transcript` reads the child conversation.
+- `read_transcript(transcript_ref)` reads the child conversation.
 
 Decision table:
 
@@ -1236,7 +1235,7 @@ Decision table:
 | Did the job finish? | Wait for automatic notification, or check `job_list` once when recovering state |
 | Shell stdout/stderr | `read_transcript(transcript_ref="job:<job_id>")` |
 | Delegate invocation final report/log | `read_transcript(transcript_ref="job:<job_id>")` |
-| Delegate full child conversation/tool history | `read_session_transcript(transcript_ref)` |
+| Delegate full child conversation/tool history | `read_transcript(transcript_ref)` |
 | Trigger observer/sidecar review | Parent: `delegate(watch_parent:true)`; observer: `job_watch(operation="create", source="parent", ...)`; callback: `communicate(end_turn=true)` |
 | Start a fresh delegate conversation | `delegate(...)` |
 | Follow up on an existing delegate conversation | `delegate_send(to=<delegate_id>, message=...)` |
