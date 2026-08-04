@@ -1581,7 +1581,7 @@ describe("pin section actions", () => {
     expect(screen.getByRole("dialog", { name: "Pin Session two" })).toBeTruthy();
   });
 
-  test("unpinning the last visible row hides its section while a later picker refetches and lists the hidden section", async () => {
+  test("unpinning the last visible row hides its section, and a later picker still lists the hidden section", async () => {
     const assigned = wireNode({
       row_id: "pin:client:local:s1",
       ref: "local:s1",
@@ -1616,15 +1616,14 @@ describe("pin section actions", () => {
     const projectRow = within(projectsSection).getByText("Session one").closest('[role="treeitem"]');
     if (!(projectRow instanceof HTMLElement)) throw new Error("Session one has no project treeitem");
     await user.click(within(projectRow).getByRole("button", { name: /actions for session one/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Move pinned session…" }));
-    await user.click(await screen.findByRole("button", { name: "Unpin" }));
+    await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
 
     await vi.waitFor(() => expect(screen.queryByRole("heading", { name: "Client" })).toBeNull());
     const remaining = rowFor("Session two");
     await user.click(within(remaining).getByRole("button", { name: /actions for session two/i }));
     await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
     expect(await screen.findByRole("button", { name: "Client" })).toBeTruthy();
-    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/pin-sections")).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/pin-sections")).toHaveLength(1);
   });
 
   // Project rows gain pin/unpin the same way session rows already have -

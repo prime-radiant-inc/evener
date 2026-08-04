@@ -298,11 +298,6 @@
   outline-offset: 1px;
 }
 
-.pickerCurrent {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-}
-
 .pickerError {
   margin: var(--space-2) 0 0;
   color: var(--danger);

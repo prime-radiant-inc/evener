@@ -258,7 +258,7 @@ function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boo
 
 export interface RailRowActions {
   onPinSectionRequest: (session: ApiTreeNode) => void;
-  onMovePinSectionRequest: (session: ApiTreeNode) => void;
+  onUnpinRequest: (session: ApiTreeNode) => void;
   onToggleArchiveSession: (session: ApiTreeNode) => void;
   onRenameRequest: (session: ApiTreeNode) => void;
   onDeleteSessionRequest: (session: ApiTreeNode) => void;
@@ -360,12 +360,22 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
   // flag from every nested and synthetic node, and the item below is gated on
   // it - the request 404s for those ids, and the menu never offers it.
   if (isTopLevelSession(session)) {
-    items.push({
-      id: "pin-section",
-      label: session.pin_section_id ? "Move pinned session…" : "Pin this session…",
-      onSelect: () =>
-        session.pin_section_id ? actions.onMovePinSectionRequest(session) : actions.onPinSectionRequest(session),
-    });
+    // A pinned session gets a direct Unpin, not a "move" flow: moving between
+    // sections is unpin + pin, and the one-gesture action is what the row
+    // menu owes. Only an unpinned session opens the section picker.
+    if (session.pin_section_id) {
+      items.push({
+        id: "unpin",
+        label: "Unpin",
+        onSelect: () => actions.onUnpinRequest(session),
+      });
+    } else {
+      items.push({
+        id: "pin-section",
+        label: "Pin this session…",
+        onSelect: () => actions.onPinSectionRequest(session),
+      });
+    }
   }
   if (session.rename) {
     items.push({ id: "rename", label: "Rename", onSelect: () => actions.onRenameRequest(session) });
@@ -546,8 +556,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       {/* Gated on the same rule as the pin action: the wire can still carry
           favorite:true on a nested or synthetic node (a decision written
           before pinning was scoped, or a direct API call), and a star on a row
-          whose menu offers no way to remove it is a dead end. */}
-      {session.pin_section_id !== undefined && isTopLevelSession(session) && (
+          whose menu offers no way to remove it is a dead end. Depth 0 rows -
+          the flat Live and named-pin-section tiers - never carry it at all:
+          being listed in those sections already says the session is pinned,
+          so the star there is redundancy, not information. */}
+      {session.pin_section_id !== undefined && isTopLevelSession(session) && info.depth > 0 && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>

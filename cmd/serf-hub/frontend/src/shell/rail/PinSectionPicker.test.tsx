@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { PinSectionSummary, TreeNode } from "../../stores/tree";
+import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import { listPinSections, RailRequestError } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
@@ -35,7 +36,6 @@ const RESEARCH: PinSectionSummary = { id: "research", name: "research", member_c
 function props(overrides: Partial<PinSectionPickerProps> = {}): PinSectionPickerProps {
   return {
     session: session(),
-    mode: "pin",
     onAssign: vi.fn().mockResolvedValue(undefined),
     onClose: vi.fn(),
     ...overrides,
@@ -83,15 +83,6 @@ describe("PinSectionPicker", () => {
     const list = await screen.findByRole("list", { name: /pin sections/i });
     const names = Array.from(list.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(names).toEqual(["client", "Client", "Personal", "research", "New section…"]);
-  });
-
-  test("marks the current section accessibly and disables its selection", async () => {
-    render(<PinSectionPicker {...props({ mode: "move", currentSectionId: "personal" })} />);
-
-    const current = await screen.findByRole("button", { name: /Personal.*Current section/i });
-    expect(current.getAttribute("aria-current")).toBe("true");
-    expect((current as HTMLButtonElement).disabled).toBe(true);
-    expect(current.textContent).toContain("✓");
   });
 
   test("assigns to an existing section with its fetched canonical summary", async () => {
@@ -158,18 +149,6 @@ describe("PinSectionPicker", () => {
     expect(onAssign).not.toHaveBeenCalled();
   });
 
-  test("shows Unpin only in move mode and invokes it", async () => {
-    const onUnpin = vi.fn().mockResolvedValue(undefined);
-    const first = render(<PinSectionPicker {...props({ mode: "pin", onUnpin })} />);
-    await screen.findByRole("button", { name: "Client" });
-    expect(screen.queryByRole("button", { name: "Unpin" })).toBeNull();
-    first.unmount();
-
-    render(<PinSectionPicker {...props({ mode: "move", currentSectionId: "personal", onUnpin })} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Unpin" }));
-    expect(onUnpin).toHaveBeenCalledTimes(1);
-  });
-
   test("Cancel closes and Dialog restores focus to the opener", async () => {
     function Harness() {
       const [open, setOpen] = useState(false);
@@ -193,5 +172,31 @@ describe("PinSectionPicker", () => {
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  test("renders as a bottom Sheet on mobile, keeping the centered Dialog on desktop", async () => {
+    // Desktop first: jsdom has no matchMedia at all, so useIsMobile is false.
+    const desktop = render(<PinSectionPicker {...props()} />);
+    await screen.findByRole("dialog", { name: /pin session one/i });
+    expect(screen.getByRole("dialog").className.split(" ")).not.toContain(sheetStyles.bottom);
+    desktop.unmount();
+
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    try {
+      render(<PinSectionPicker {...props()} />);
+      await screen.findByRole("dialog", { name: /pin session one/i });
+      expect(screen.getByRole("dialog").className.split(" ")).toContain(sheetStyles.bottom);
+      expect(vi.mocked(window.matchMedia)).toHaveBeenCalledWith("(max-width: 899px)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

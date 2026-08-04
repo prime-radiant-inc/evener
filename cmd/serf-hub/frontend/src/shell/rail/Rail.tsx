@@ -292,7 +292,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [renameValue, setRenameValue] = useState("");
   const [pickerTarget, setPickerTarget] = useState<{
     session: ApiTreeNode;
-    mode: "pin" | "move";
     token: number;
   } | null>(null);
   const pickerToken = useRef(0);
@@ -544,12 +543,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     onPinSectionRequest: (session) => {
       const token = pickerToken.current + 1;
       pickerToken.current = token;
-      setPickerTarget({ session, mode: "pin", token });
+      setPickerTarget({ session, token });
     },
-    onMovePinSectionRequest: (session) => {
-      const token = pickerToken.current + 1;
-      pickerToken.current = token;
-      setPickerTarget({ session, mode: "move", token });
+    onUnpinRequest: (session) => {
+      void runAction(() => unpinSession(session.ref), "Couldn't unpin session", {
+        kind: "sessionUnpin",
+        ref: session.ref,
+      });
     },
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
@@ -694,18 +694,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       () => assignSessionPin(picker.session.ref, target),
       "Couldn't assign pinned session",
       optimistic,
-      true,
-    );
-    if (pickerToken.current === picker.token) setPickerTarget(null);
-  }
-
-  async function unpinPickerTarget(): Promise<void> {
-    const picker = pickerTarget;
-    if (!picker) return;
-    await runAction(
-      () => unpinSession(picker.session.ref),
-      "Couldn't unpin session",
-      { kind: "sessionUnpin", ref: picker.session.ref },
       true,
     );
     if (pickerToken.current === picker.token) setPickerTarget(null);
@@ -997,10 +985,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       {pickerTarget && (
         <PinSectionPicker
           session={pickerTarget.session}
-          currentSectionId={pickerTarget.session.pin_section_id}
-          mode={pickerTarget.mode}
           onAssign={assignPickerTarget}
-          onUnpin={pickerTarget.mode === "move" ? unpinPickerTarget : undefined}
           onClose={() => {
             pickerToken.current += 1;
             setPickerTarget(null);
