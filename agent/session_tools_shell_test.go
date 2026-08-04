@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -189,6 +190,80 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	jobs := s.jobManager.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].JobID != out.JobID || jobs[0].Status != jobstore.StatusRunning {
 		t.Fatalf("jobs = %+v, want one running shell job %q", jobs, out.JobID)
+	}
+}
+
+func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unterminated-output fixture uses POSIX printf")
+	}
+	t.Parallel()
+	s := newTestSession(t)
+	notifications := make(chan jobNotification, 1)
+	s.jobManager.enqueue = func(n jobNotification) { notifications <- n }
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf done","background":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var started struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &started); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	if started.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+
+	var notification jobNotification
+	select {
+	case notification = <-notifications:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background shell completion notification did not arrive")
+	}
+	if notification.JobID != started.JobID ||
+		notification.Status != string(jobstore.StatusCompleted) ||
+		notification.Reason != "exit_zero" {
+		t.Fatalf("completion notification = %+v, want completed/exit_zero for %s", notification, started.JobID)
+	}
+	if notification.ExitCode == nil || *notification.ExitCode != 0 {
+		t.Fatalf("completion notification exit code = %v, want 0", notification.ExitCode)
+	}
+	if notification.OutputBytes != int64(len("done")) {
+		t.Fatalf("completion notification output bytes = %d, want %d", notification.OutputBytes, len("done"))
+	}
+	if notification.TranscriptRef != "job:"+started.JobID {
+		t.Fatalf("completion notification transcript ref = %q, want job ref", notification.TranscriptRef)
+	}
+
+	waitForShellDone(t, s.jobManager, started.JobID)
+	rec := loadShellRecord(t, s.jobManager, started.JobID)
+	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
+		t.Fatalf("job record = %+v, want completed/exit_zero", rec)
+	}
+	if rec.ExitCode == nil || *rec.ExitCode != 0 {
+		t.Fatalf("job exit code = %v, want 0", rec.ExitCode)
+	}
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "read_transcript",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s"}`, started.JobID)),
+	})
+	if readRes.IsError {
+		t.Fatalf("read_transcript returned error: %s", readRes.Output)
+	}
+	var transcript readMarkdownEnvelope
+	if err := json.Unmarshal(toolResultJSON(readRes), &transcript); err != nil {
+		t.Fatalf("unmarshal read_transcript: %v (output: %s)", err, readRes.Output)
+	}
+	if !strings.Contains(transcript.Content, "done") {
+		t.Fatalf("transcript content = %q, want unterminated shell output", transcript.Content)
 	}
 }
 

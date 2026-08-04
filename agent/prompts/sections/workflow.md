@@ -10,15 +10,17 @@ Verify your work against the actual acceptance criteria you were given. Being to
 
 When you create or enter a fresh worktree, its dependency directories may be absent; copy or install the project's dependencies before running its gates.
 
-For shell commands, pipeline failures propagate: the POSIX shell uses `pipefail`, so a failed stage makes the command nonzero. Always inspect the exit code. Do not pipe long-running or verbose commands through `tail` or `head` to manage output; the shell tool does that automatically. Small foreground output is returned in full, while larger or background output is bounded; completed large output includes a head+tail digest and a `job_id`, and retained job output is available through `read_transcript(transcript_ref="job:<job_id>")`.
+For shell commands, pipeline failures propagate: on POSIX, Serf runs Bash with `pipefail`, so a failed stage makes the command nonzero. Always inspect the exit code. Do not pipe long-running or verbose commands through `tail` or `head` to manage output; the shell tool does that automatically. Small foreground output is returned in full, while larger or background output is bounded; completed large output includes a head+tail digest and a `job_id`, and retained job output is available through `read_transcript(transcript_ref="job:<job_id>")`.
 
-When a background command needs both a complete artifact and a watchable completion marker, keep a copy in the shell stream instead of redirecting all output away:
+Background shell jobs are logged automatically. A launch failure is reported immediately; once a job is running, Serf returns a `job_id`, notifies you when it finishes with its status and exit code, and lets you inspect retained output with `read_transcript(transcript_ref="job:<job_id>")`. Do not redirect output or add a completion marker merely to observe progress or completion. Use `job_watch` only for a real intermediate readiness condition, not ordinary job completion.
+
+If you need a complete external artifact beyond the retained job output, keep a copy in the shell stream:
 
 ```bash
-{ <command>; rc=$?; printf 'EXIT=%s\n' "$rc"; exit "$rc"; } 2>&1 | tee /absolute/path/artifact.log
+( <command> ) 2>&1 | tee "/absolute/path/inside/your/scratch/artifact.log"
 ```
 
-Then use `job_watch` with `output_match:"^EXIT="` on the concrete `job_id`. `pipefail` preserves the command's failure while `tee` preserves the full artifact. Prefer an absolute path inside your allocated scratch directory, especially for read-only delegates; report that path to your parent. `tee` overwrites the artifact file by default.
+Replace the placeholder with an actual absolute path. Prefer the session's allocated scratch directory, especially for read-only delegates; when `SERF_SCRATCH_DIR` is provided, `"$SERF_SCRATCH_DIR/artifact.log"` is a suitable path. Report the artifact path to your parent. `pipefail` preserves the command's failure while `tee` preserves the stream, and `tee` overwrites the artifact file by default.
 
 If the task depends on tools or capabilities explicitly listed as unavailable in
 this session, report that mismatch promptly through your result tool instead of

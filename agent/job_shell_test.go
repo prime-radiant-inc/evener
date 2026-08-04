@@ -162,6 +162,32 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 
 type waitErrorStreamingExecutor struct{}
 
+type startErrorStreamingExecutor struct{}
+
+func (startErrorStreamingExecutor) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
+	return nil, errors.New("bash unavailable")
+}
+
+func TestRunShellStartFailureIncludesDiagnostic(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	res := runShell(context.Background(), jm, startErrorStreamingExecutor{}, shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "start_failed" {
+		t.Fatalf("result = %+v, want failed/start_failed", res)
+	}
+	if res.Output != "shell start failed: bash unavailable" {
+		t.Fatalf("start failure output = %q, want diagnostic", res.Output)
+	}
+
+	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars)
+	if err != nil {
+		t.Fatalf("marshalShellToolResult: %v", err)
+	}
+	if !strings.Contains(formatted.Output, "shell start failed: bash unavailable") {
+		t.Fatalf("formatted start failure = %q, want diagnostic", formatted.Output)
+	}
+}
+
 func (waitErrorStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
 	_, _ = out.Write([]byte("partial"))
 	return &execenv.StreamHandle{

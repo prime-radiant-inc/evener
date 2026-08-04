@@ -1551,19 +1551,24 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	return append(env, envvars.Path.Assignment(newPath))
 }
 
-// shellCommand returns an *exec.Cmd that runs the given command string
-// through the platform's default shell. POSIX invocations enable pipefail so a
-// failed pipeline stage cannot be hidden by a successful final stage. The
-// command's lifecycle (cancellation, timeout) is managed by the caller
-// (ExecCommand) via its own process-group SIGTERM->SIGKILL escalation, so
-// CommandContext is deliberately not used here.
+// shellCommand returns an *exec.Cmd that runs the given command string through
+// the platform shell. POSIX invocations use Bash explicitly because pipefail
+// is part of the shell contract; falling back to /bin/sh would silently make
+// the command invalid on shells such as dash. If /bin/bash is unavailable,
+// resolve Bash through the caller's effective PATH and otherwise leave the
+// explicit /bin/bash path in place so command start fails instead of running
+// with different pipeline semantics. The command's lifecycle (cancellation,
+// timeout) is managed by the caller (ExecCommand) via its own process-group
+// SIGTERM->SIGKILL escalation, so CommandContext is deliberately not used here.
 func shellCommand(command string) *exec.Cmd {
 	if runtimeGOOS == "windows" {
 		return exec.Command("cmd.exe", "/c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 	}
 	shell := "/bin/bash"
 	if _, err := shellStat(shell); err != nil {
-		shell = "/bin/sh"
+		if resolved, err := execLookPath("bash"); err == nil {
+			shell = resolved
+		}
 	}
 	return exec.Command(shell, "-o", "pipefail", "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 }
