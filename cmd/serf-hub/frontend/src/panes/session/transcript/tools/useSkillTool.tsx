@@ -11,12 +11,13 @@
 import type { ItemModel } from "../../../../protocol/model";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
+import { Markdown } from "../../../../widgets";
 import { parseArgs, str } from "./helpers";
 
 function UseSkillBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  return <div>{output}</div>;
+  return <Markdown source={output} />;
 }
 
 registerToolRenderer({
