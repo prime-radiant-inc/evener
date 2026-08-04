@@ -48,7 +48,7 @@ structured fields are how the parent judges outcome.
 4. Turn 3 — arm (c), schema inheritance on explicit follow-up (new user prompt):
 
    > Call delegate_send with `to` set to the turn-1 delegate_id,
-   > `on_idle` "start", and this message: "Follow-up: report a
+   > and this message: "Follow-up: report a
    > structured result with verdict resumed and count 21." Report the
    > full result JSON verbatim, then end your turn; when the started
    > job's completion notification arrives, call read_transcript with

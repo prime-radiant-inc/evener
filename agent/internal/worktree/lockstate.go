@@ -76,7 +76,7 @@ const (
 	// EvDelegateCreate: parent-side creation of an isolated delegate lane
 	// (§9 lifecycle step 1, table row "delegate creation").
 	EvDelegateCreate
-	// EvDelegateRevive: `delegate_send(on_idle:"start")` reviving a kept lane
+	// EvDelegateRevive: `delegate_send(...)` reviving a kept lane
 	// (§7 delegate revival; §9 Guards, table row "delegate revival").
 	EvDelegateRevive
 	// EvDisposeUnchanged: close-time disposal of an unchanged delegate lane

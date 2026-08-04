@@ -319,7 +319,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `delegate_send(on_idle="start")` targets the delegate_id to
+  job, then `delegate_send` targets the delegate_id to
   continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
   `read_transcript(transcript_ref="job:<job_id>")` peeks the result twice
@@ -361,9 +361,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   and a resumed turn inherits the original schema.
 - `job-send-message-surface.md` — the handle split: a `job_id` handed to
   `delegate_send` is rejected with guidance toward the `delegate_id`, a
-  RUNNING delegate takes a live steer with no new job, and an IDLE one
-  refuses with `target_idle` unless `on_idle:"start"` explicitly starts
-  its next job in the same conversation.
+  RUNNING delegate takes a live steer with no new job, and an IDLE one automatically starts its next job in the same conversation.
 - `job-notification-wake.md` — the proactive completion wake
   (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
   delegate and ends its turn; when the child reaches a terminal state later,

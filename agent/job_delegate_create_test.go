@@ -1103,7 +1103,6 @@ func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
 	resume := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:        res.DelegateID,
 		Message:       "resume after consumption",
-		OnIdle:        "start",
 		Background:    false,
 		BackgroundSet: true,
 	})

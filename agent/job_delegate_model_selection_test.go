@@ -338,7 +338,6 @@ func TestSendDelegateMessage_RestoreIgnoresChangedPluginModel(t *testing.T) {
 	result := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "resume using the frozen descriptor",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,

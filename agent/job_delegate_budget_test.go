@@ -108,7 +108,6 @@ func TestDelegate_LifetimeBudgetExhaustionIsDurableAndNotResumable(t *testing.T)
 	sent := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         result.DelegateID,
 		Message:        "try another turn",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -228,7 +227,6 @@ func TestDelegate_ToolRoundBudgetExhaustionIsDurableAndResumable(t *testing.T) {
 	resumed := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        "continue with a fresh input",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,

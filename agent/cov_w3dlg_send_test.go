@@ -79,8 +79,7 @@ func TestW3Dlg_SendCallerMarksWatchCallbackDelivered(t *testing.T) {
 func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first complete") },
-		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("second complete") },
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("resumed complete") },
 	}}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -88,7 +87,7 @@ func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testin
 	rec := seedStoppedDelegateRestoreRecord(t, sess)
 	childID := rec.DelegateRestore.ChildSessionID
 
-	liveChild := newTestSession(t)
+	liveChild := newDelegateTestSession(t, c)
 	sess.subagents.track(&subagent{
 		id:      childID,
 		sess:    liveChild,
@@ -127,7 +126,7 @@ func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testin
 	if err != nil {
 		t.Fatalf("read resumed output: %v", err)
 	}
-	if started.Status != jobstore.StatusCompleted || !strings.Contains(output, "second complete") {
+	if started.Status != jobstore.StatusCompleted || !strings.Contains(output, "resumed complete") {
 		t.Fatalf("started record = %+v, output should contain resumed completion", started)
 	}
 }
@@ -190,7 +189,6 @@ func TestW3Dlg_SendStoreRunningNotInRuntimeStaysNonResumable(t *testing.T) {
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  delegateID,
 		Message: "steer",
-		OnIdle:  "start",
 	})
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "has status") {
 		t.Fatalf("err = %v, want target_not_resumable has status running", res.Err)

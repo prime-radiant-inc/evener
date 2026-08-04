@@ -77,7 +77,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			setStoredDelegateTerminalStatus(t, s, rec, jobstore.Status("pending"), "pending")
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello"})
 			requireSendSeed100Error(t, res, "target_not_resumable:")
 		case 8:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
@@ -89,7 +89,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 				t.Fatal(err)
 			}
 			s.subagents.track(&subagent{id: childID, sess: &Session{}, driving: true})
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello"})
 			_ = res
 		case 9:
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
@@ -136,7 +136,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			setStoredDelegateTerminalStatus(t, s, rec, jobstore.StatusCompleted, "exit_zero")
 			removeChildSessionMeta(t, s, rec)
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "hello"})
 			if res.Err == nil {
 				t.Fatalf("missing-runtime restore = %+v", res)
 			}

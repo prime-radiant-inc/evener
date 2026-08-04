@@ -234,7 +234,6 @@ type delegateResult struct {
 type sendMessageArgs struct {
 	Target         string
 	Message        string
-	OnIdle         string
 	Background     bool
 	BackgroundSet  bool
 	BlockTimeoutMS int
@@ -708,13 +707,6 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 	}
 	var restorePreflight *delegateRestorePreflight
-	if isRuntimeLostDelegate(rec) {
-		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
-		if !assessment.Resumable {
-			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
-		}
-		restorePreflight = assessment.Preflight
-	}
 	if sub == nil || sub.sess == nil {
 		if restorePreflight == nil {
 			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)

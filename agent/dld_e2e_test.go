@@ -138,7 +138,6 @@ func TestE2E_ScriptedDisposeFlow(t *testing.T) {
 	send := r.s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         id,
 		Message:        "more work",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -190,7 +189,6 @@ func TestE2E_CloseCollectsMergedLaneThenResumeDisposed(t *testing.T) {
 	send := resumed.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         id,
 		Message:        "resume please",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -295,7 +293,6 @@ func TestE2E_KeptLaneSweptByForeignSessionThenResumeStatNet(t *testing.T) {
 	send := resumed.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         id,
 		Message:        "resume please",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
