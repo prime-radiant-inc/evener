@@ -284,10 +284,10 @@ run_module() {
 			return 1
 		fi
 		if [ "$ROOT_FULL" -ne 0 ]; then
-			# ROOT_FULL removes the runner's regular name filter so the root
-			# module uses go test's complete non-fuzz test surface. Fuzz-owned
-			# sanity functions stay under the explicit make fuzz gate.
-			/usr/bin/time -p go test $test_flags $extra -skip "$fuzz_test_skip" "${packages[@]}"
+			# ROOT_FULL removes short mode while retaining the regular
+			# Test/Example name filter. Fuzz-owned targets and sanity functions
+			# stay under the explicit make fuzz gate.
+			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		else
 			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		fi
