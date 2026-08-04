@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
@@ -82,15 +83,30 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 	return signals
 }
 
-func requestContainsToolResult(req llm.Request, callID string) bool {
+func requestToolResult(req llm.Request, callID string) (*llm.ToolResultData, bool) {
 	for _, message := range req.Messages {
 		for _, part := range message.Content {
 			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
-				return true
+				return part.ToolResult, true
 			}
 		}
 	}
-	return false
+	return nil, false
+}
+
+func transcriptToolResult(data []byte, callID string) (*llm.ToolResultData, bool) {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		entry, err := transcript.DecodeEntry(bytes.TrimSpace(line))
+		if err != nil {
+			continue
+		}
+		for _, part := range entry.Turn.Message.Content {
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				return part.ToolResult, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func waitForServeState(addr, want string, timeout time.Duration) bool {
@@ -151,7 +167,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	shellCommand := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(gatePath))
 	secondRequest := make(chan struct{})
 	var secondOnce sync.Once
-	secondRequestHasToolResult := false
+	var secondRequestResult *llm.ToolResultData
 	installServeScriptedProvider(t, &scriptedProvider{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -159,7 +175,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 				return scriptedToolCalls(scriptedForegroundShellCall("shell_1", shellCommand))
 			},
 			func(req llm.Request) llm.Response {
-				secondRequestHasToolResult = requestContainsToolResult(req, "shell_1")
+				secondRequestResult, _ = requestToolResult(req, "shell_1")
 				secondOnce.Do(func() { close(secondRequest) })
 				return scriptedCommunicate("shell persisted")
 			},
@@ -225,8 +241,14 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	case <-ctx.Done():
 		t.Fatalf("second provider request after foreground shell: %v", ctx.Err())
 	}
-	if !secondRequestHasToolResult {
+	if secondRequestResult == nil {
 		t.Fatal("second provider request did not contain the foreground shell tool result")
+	}
+	if secondRequestResult.IsError {
+		t.Fatalf("second provider request carried an error result: %#v", secondRequestResult)
+	}
+	if !strings.Contains(fmt.Sprint(secondRequestResult.Content), "shell-complete") {
+		t.Fatalf("second provider request result = %#v, want shell-complete output", secondRequestResult.Content)
 	}
 
 	path := filepath.Join(transcriptPath, entry.SessionID+".transcript.jsonl")
@@ -234,8 +256,15 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	if !ok {
 		t.Fatalf("transcript %s never contained TOOL_RESULTS", path)
 	}
-	if !bytes.Contains(data, []byte(`"kind":"TOOL_RESULTS"`)) {
-		t.Fatalf("transcript data lost TOOL_RESULTS after the wait")
+	transcriptResult, ok := transcriptToolResult(data, "shell_1")
+	if !ok {
+		t.Fatalf("transcript data lost the foreground shell tool result")
+	}
+	if transcriptResult.IsError {
+		t.Fatalf("transcript recorded an error result: %#v", transcriptResult)
+	}
+	if !strings.Contains(fmt.Sprint(transcriptResult.Content), "shell-complete") {
+		t.Fatalf("transcript result = %#v, want shell-complete output", transcriptResult.Content)
 	}
 	if mode != foregroundShellNoSubscriber {
 		select {
