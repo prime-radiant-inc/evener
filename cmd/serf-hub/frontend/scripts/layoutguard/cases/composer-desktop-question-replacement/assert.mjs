@@ -9,11 +9,15 @@ export default function assert(m) {
   if (short.pane.bottom > m.viewportHeight + tolerance) {
     failures.push(`pane escapes viewport by ${(short.pane.bottom - m.viewportHeight).toFixed(1)}px`);
   }
-  if (short.composer.height <= short.dock.height + tolerance) {
-    failures.push(`short question has no free replacement-slot space (${short.dock.height}px dock in ${short.composer.height}px slot)`);
+  if (short.composer.height > short.dock.height + tolerance) {
+    failures.push(
+      `short question keeps dead space in replacement slot (${short.dock.height}px dock in ${short.composer.height}px slot)`,
+    );
   }
   if (Math.abs(short.dock.bottom - short.composer.bottom) > tolerance) {
-    failures.push(`short question is not bottom-anchored (${short.dock.bottom}px vs slot bottom ${short.composer.bottom}px)`);
+    failures.push(
+      `short question is not bottom-anchored (${short.dock.bottom}px vs slot bottom ${short.composer.bottom}px)`,
+    );
   }
   if (short.dock.bottom > short.status.top + tolerance) {
     failures.push(`short question overlaps status footer by ${(short.dock.bottom - short.status.top).toFixed(1)}px`);

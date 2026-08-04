@@ -103,13 +103,13 @@ test("the body rule scrolls independently of the header and footer", () => {
   expect(css).toContain("overflow-y: auto");
 });
 
-test("the pane reserves a bounded question region independently of transcript content height", () => {
+test("the question footer fits short content and caps tall content", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   expect(css).toContain("flex: none");
   expect(css).toContain("flex: 1 1 0");
   expect(css).toContain(".footer:has([data-ask-response-dock])");
-  expect(css).toContain("flex: 0 1 70%");
+  expect(css).toContain("flex: 0 1 auto");
   expect(css).toContain("min-height: 0");
   expect(css).toContain("max-height: 70%");
 });
