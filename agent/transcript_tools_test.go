@@ -50,6 +50,12 @@ func TestReadTranscriptReadsShellJobRef(t *testing.T) {
 	if !strings.Contains(out.Content, "hello") {
 		t.Fatalf("content missing shell output: %q", out.Content)
 	}
+	if !strings.Contains(out.Content, "total_bytes: 6") {
+		t.Fatalf("content missing retained byte count: %q", out.Content)
+	}
+	if strings.Contains(out.Content, "dropped_bytes:") {
+		t.Fatalf("complete output should not report dropped bytes: %q", out.Content)
+	}
 }
 
 func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
