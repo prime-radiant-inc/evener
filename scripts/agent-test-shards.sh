@@ -61,6 +61,7 @@ par=${AGENT_SHARD_PARALLEL:-3}
 skip=${AGENT_SHARD_SKIP:-}
 noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
 logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
+logdir="$(cd "$logdir" && pwd -P)"
 
 # The reclaimer cannot use the shard directory mtime as a liveness signal:
 # shard output is appended below it, and appending an existing log does not
@@ -68,7 +69,8 @@ logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
 # this run owns it so a long-running shard remains protected.
 heartbeat="$logdir/.heartbeat"
 heartbeat_pid=""
-retain_heartbeat=0
+normal_completion=0
+cleanup_done=0
 pids=()
 names=()
 : >"$heartbeat"
@@ -90,6 +92,14 @@ heartbeat_loop() {
 heartbeat_loop "$$" &
 heartbeat_pid="$!"
 
+process_descendants() {
+	local parent="$1" child
+	for child in $(ps -axo pid=,ppid= 2>/dev/null | awk -v parent="$parent" '$2 == parent {print $1}'); do
+		process_descendants "$child"
+		printf '%s\n' "$child"
+	done
+}
+
 stop_heartbeat_process() {
 	[ -n "$heartbeat_pid" ] || return 0
 	kill -TERM "$heartbeat_pid" 2>/dev/null || :
@@ -97,17 +107,43 @@ stop_heartbeat_process() {
 	heartbeat_pid=""
 }
 
+stop_shard_processes() {
+	local pid descendant
+	local -a descendants=()
+	for pid in ${pids[@]+"${pids[@]}"}; do
+		[ -n "$pid" ] || continue
+		for descendant in $(process_descendants "$pid"); do
+			descendants+=("$descendant")
+		done
+	done
+	for descendant in ${descendants[@]+"${descendants[@]}"} ${pids[@]+"${pids[@]}"}; do
+		[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
+	done
+	for pid in ${pids[@]+"${pids[@]}"}; do
+		[ -n "$pid" ] && wait "$pid" 2>/dev/null || :
+	done
+	pids=()
+}
+
 cleanup() {
 	local status="$?"
 	trap - EXIT
+	trap - HUP INT TERM
+	[ "$cleanup_done" -eq 0 ] || exit "$status"
+	cleanup_done=1
+	stop_shard_processes
 	stop_heartbeat_process
-	[ "$retain_heartbeat" -eq 1 ] || rm -f "$heartbeat" 2>/dev/null || :
+	rm -f "$heartbeat" 2>/dev/null || :
+	if [ "$normal_completion" -eq 1 ] && [ "$status" -eq 0 ]; then
+		rm -rf "$logdir"
+	else
+		printf 'full logs: %s\n' "$logdir" >&2
+	fi
 	exit "$status"
 }
 
 interrupted() {
 	local status="$1" signal="$2"
-	retain_heartbeat=1
 	printf 'agent-test-shards.sh: interrupted by %s\n' "$signal" >&2
 	exit "$status"
 }
@@ -253,4 +289,7 @@ if [ "$fail" -ne 0 ]; then
 	echo "full logs: $logdir"
 fi
 
+if [ "$fail" -eq 0 ]; then
+	normal_completion=1
+fi
 exit "$fail"
