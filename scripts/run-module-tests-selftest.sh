@@ -204,6 +204,8 @@ stream=web
 [ "${1:-}" = "selftest" ] && stream=selftest
 printf '%s\t%s\n' "$stream" "$*" >>"$FAKE_STATE/calls"
 if [ "$stream" = "web" ] && [ "${FAKE_HOLD_STREAMS:-0}" -ne 0 ]; then
+	printf 'web-stdout: interrupted-run marker\n'
+	printf 'web-stderr: interrupted-run marker\n' >&2
 	printf '%s\n' "$$" >"$FAKE_STATE/web.pid"
 	: >"$FAKE_STATE/web.started"
 	exec sleep 1000
@@ -622,11 +624,15 @@ if wait "$runner_pid"; then rc=0; else rc=$?; fi
 assert_eq "$rc" "143" "an interrupted run exits with the signal status"
 assert_has "$out" "interrupted by SIGTERM" "an interrupted run explains its exit"
 logs="$(full_logs_path "$out")"
-if [ -n "$logs" ] && [ -d "$logs" ]; then
-	if [ -f "$logs/agent.log" ] && [ -f "$logs/web.log" ]; then
-		ok "an interrupted run preserves the diagnostic logs it names"
-	else
-		bad "an interrupted run preserves the log directory but loses a stream log"
+	if [ -n "$logs" ] && [ -d "$logs" ]; then
+		if [ -f "$logs/agent.log" ] && [ -f "$logs/web.log" ]; then
+			ok "an interrupted run preserves the diagnostic logs it names"
+			assert_has "$logs/agent.log" "go-stdout:agent" "the interrupted agent log keeps stdout diagnostics"
+			assert_has "$logs/agent.log" "go-stderr:agent" "the interrupted agent log keeps stderr diagnostics"
+			assert_has "$logs/web.log" "web-stdout: interrupted-run marker" "the interrupted web log keeps stdout diagnostics"
+			assert_has "$logs/web.log" "web-stderr: interrupted-run marker" "the interrupted web log keeps stderr diagnostics"
+		else
+			bad "an interrupted run preserves the log directory but loses a stream log"
 	fi
 else
 	bad "an interrupted run removes or fails to name its diagnostic logs"
