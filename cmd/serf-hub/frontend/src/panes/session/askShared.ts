@@ -43,7 +43,11 @@ function parseOption(raw: unknown): AskUserOption | undefined {
 function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
-  if ((obj.header !== undefined && typeof obj.header !== "string") || typeof obj.question !== "string" || !Array.isArray(obj.options)) {
+  if (
+    (obj.header !== undefined && typeof obj.header !== "string") ||
+    typeof obj.question !== "string" ||
+    !Array.isArray(obj.options)
+  ) {
     return undefined;
   }
   const options = obj.options.map(parseOption).filter((o): o is AskUserOption => o !== undefined);
@@ -70,7 +74,9 @@ export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | unde
   const args = parseArgs(item.argumentsJSON);
   const raw = args.questions;
   if (!Array.isArray(raw)) return undefined;
-  const questions = raw.map((question, index) => parseQuestion(question, index)).filter((q): q is AskUserQuestion => q !== undefined);
+  const questions = raw
+    .map((question, index) => parseQuestion(question, index))
+    .filter((q): q is AskUserQuestion => q !== undefined);
   return questions.length > 0 ? questions : undefined;
 }
 
