@@ -145,7 +145,7 @@ func TestExpand_BacktickCommandNonzeroExitStillSubstitutesStdout(t *testing.T) {
 
 func TestExpand_BacktickCommandBounded(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
-	got, err := Expand(context.Background(), "!`yes x | head -c 40000`", "", env)
+	got, err := Expand(context.Background(), "!`head -c 40000 </dev/zero | tr '\\0' 'x'`", "", env)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}

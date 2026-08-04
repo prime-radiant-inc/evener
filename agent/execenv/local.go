@@ -1552,9 +1552,11 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 }
 
 // shellCommand returns an *exec.Cmd that runs the given command string
-// through the platform's default shell. The command's lifecycle (cancellation,
-// timeout) is managed by the caller (ExecCommand) via its own process-group
-// SIGTERM->SIGKILL escalation, so CommandContext is deliberately not used here.
+// through the platform's default shell. POSIX invocations enable pipefail so a
+// failed pipeline stage cannot be hidden by a successful final stage. The
+// command's lifecycle (cancellation, timeout) is managed by the caller
+// (ExecCommand) via its own process-group SIGTERM->SIGKILL escalation, so
+// CommandContext is deliberately not used here.
 func shellCommand(command string) *exec.Cmd {
 	if runtimeGOOS == "windows" {
 		return exec.Command("cmd.exe", "/c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
@@ -1563,7 +1565,7 @@ func shellCommand(command string) *exec.Cmd {
 	if _, err := shellStat(shell); err != nil {
 		shell = "/bin/sh"
 	}
-	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
+	return exec.Command(shell, "-o", "pipefail", "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 }
 
 // KernelWrapper returns the sandbox kernel wrapper for this environment, or nil

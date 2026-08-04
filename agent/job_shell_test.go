@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,43 @@ func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
 	}
 	if len(jm.list(listFilter{})) != 0 {
 		t.Errorf("ephemeral job must not appear in job_list")
+	}
+}
+
+func TestRunShellPipelineExitStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pipeline status contract is for the POSIX shell path")
+	}
+
+	tests := []struct {
+		name       string
+		command    string
+		wantStatus string
+		wantExit   int
+	}{
+		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusFailed), wantExit: 1},
+		{name: "successful pipeline remains successful", command: "printf 'ok\\n' | tail -1", wantStatus: string(jobstore.StatusCompleted), wantExit: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jm, se := newShellTestRig(t)
+			res := runShell(context.Background(), jm, se, shellArgs{Command: tt.command, BlockTimeoutMS: 5000})
+			if res.settle != nil {
+				if jobID := res.settle(false); jobID != "" {
+					t.Fatalf("discarded foreground shell returned job_id %q", jobID)
+				}
+			}
+			if res.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q (result: %+v)", res.Status, tt.wantStatus, res)
+			}
+			if res.ExitCode == nil {
+				t.Fatalf("exit code is nil (result: %+v)", res)
+			}
+			if *res.ExitCode != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d (result: %+v)", *res.ExitCode, tt.wantExit, res)
+			}
+		})
 	}
 }
 

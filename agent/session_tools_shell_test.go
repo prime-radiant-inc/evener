@@ -609,11 +609,12 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 
-	// yes produces >64KB output quickly; max_wait_ms:5000 gives it ample room.
+	// A finite producer produces >64KB without treating the consumer's early
+	// completion as an upstream SIGPIPE failure under pipefail.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 70000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -649,7 +650,7 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -679,7 +680,7 @@ func TestShellResultReportsOutputBytes(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -732,7 +733,7 @@ func TestShellOutputStatus(t *testing.T) {
 	r2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	var o2 struct {
 		JobID        string `json:"job_id"`
@@ -760,7 +761,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -829,7 +830,7 @@ func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 70000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
