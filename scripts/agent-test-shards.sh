@@ -125,11 +125,9 @@ stop_shard_processes() {
 	pids=()
 }
 
-cleanup() {
-	local status="$?"
-	trap - EXIT
-	trap - HUP INT TERM
-	[ "$cleanup_done" -eq 0 ] || exit "$status"
+cleanup_once() {
+	local status="${1:-1}"
+	[ "$cleanup_done" -eq 0 ] || return 0
 	cleanup_done=1
 	stop_shard_processes
 	stop_heartbeat_process
@@ -139,12 +137,22 @@ cleanup() {
 	else
 		printf 'full logs: %s\n' "$logdir" >&2
 	fi
+}
+
+cleanup() {
+	local status="$?"
+	trap - EXIT
+	trap - HUP INT TERM
+	cleanup_once "$status"
 	exit "$status"
 }
 
 interrupted() {
 	local status="$1" signal="$2"
 	printf 'agent-test-shards.sh: interrupted by %s\n' "$signal" >&2
+	trap - EXIT HUP INT TERM
+	cleanup_once "$status"
+	cleanup_once "$status"
 	exit "$status"
 }
 
