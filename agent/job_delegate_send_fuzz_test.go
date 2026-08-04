@@ -23,7 +23,7 @@ import (
 // are reached only incidentally, as steps of the real send flow.
 //
 // The dispatcher is a long chain of validation + store-lookup + routing branches:
-// arg validation (empty target/message, negative timeout, bad on_idle, reserved
+// arg validation (empty target/message, negative timeout, reserved
 // aliases, transcript-ref prefixes), the runtime "caller" alias route, the job_/
 // dlg_ target shapes, ownership + type + status checks on the resolved job record,
 // the running/terminal split, and the restore-then-resume tail. A menu of seeded
@@ -231,7 +231,6 @@ func dgfz_seedDelegates(t *testing.T, s *Session) dgfz_delegateTargets {
 	}}
 }
 
-var dgfz_onIdle = []string{"", "fail", "start", "bogus"}
 var dgfz_messages = []string{"do a thing", "", "   "}
 
 // dgfz_installCallerRoute optionally arms a parent caller route so the "caller"
@@ -258,7 +257,6 @@ func dgfz_drawArgs(r *dgfz_reader, targets dgfz_delegateTargets) sendMessageArgs
 	a := sendMessageArgs{
 		Target:    targets.all[r.intn(len(targets.all))],
 		Message:   r.pick(dgfz_messages),
-		OnIdle:    r.pick(dgfz_onIdle),
 		FromWatch: r.boolean(),
 	}
 	switch r.intn(3) {
@@ -309,17 +307,16 @@ const (
 const (
 	dgfz_msgReal  = 0 // "do a thing"
 	dgfz_msgEmpty = 1
-	dgfz_onStart  = 2
 )
 
-// dgfz_send encodes one send block (7 bytes) for the seed builder. background: 0
+// dgfz_send encodes one send block (6 bytes) for the seed builder. background: 0
 // unset, 1 set-false (foreground), 2 set-true (background).
-func dgfz_send(target, msg, onIdle int, fromWatch bool, background, blockMode int) []byte {
+func dgfz_send(target, msg int, fromWatch bool, background, blockMode int) []byte {
 	fw := byte(0)
 	if fromWatch {
 		fw = 1
 	}
-	return []byte{byte(target), byte(msg), byte(onIdle), fw, byte(background), byte(blockMode), 1}
+	return []byte{byte(target), byte(msg), fw, byte(background), byte(blockMode), 1}
 }
 
 // dgfz_seed assembles a full fuzz input: caller-route mode + a no-fault plan +
@@ -374,40 +371,38 @@ func FuzzDgfzSendDelegateMessage(f *testing.F) {
 	// reaches a known branch — coverage-guided mutation then explores around them.
 	seeds := [][]byte{
 		{}, // empty input -> all-zero prefix
-		dgfz_seed(1, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, dgfz_onStart, false, 0, 2)),         // caller alias, parentSteer route
-		dgfz_seedD(2, true, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, dgfz_onStart, false, 0, 2)),  // caller, parentSteerDelivered -> delivered
-		dgfz_seedD(2, false, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, dgfz_onStart, false, 0, 2)), // caller, parentSteerDelivered -> undeliverable
-		dgfz_seed(2, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, dgfz_onStart, true, 0, 2)),          // caller + FromWatch (internal-bug arm)
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, dgfz_onStart, false, 0, 2)),         // caller without route
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, 1, false, 0, 2)),             // terminal + on_idle=fail -> target_idle
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tMain, dgfz_msgReal, dgfz_onStart, false, 0, 2)),           // reserved alias
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tWatched, dgfz_msgReal, dgfz_onStart, false, 0, 2)),        // reserved alias
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tLocal, dgfz_msgReal, dgfz_onStart, false, 0, 2)),          // transcript-ref prefix
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tProj, dgfz_msgReal, dgfz_onStart, false, 0, 2)),           // transcript-ref prefix
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableJob, dgfz_msgReal, dgfz_onStart, false, 0, 2)),  // job_ handle -> use delegate_id
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tOwnJob, dgfz_msgReal, dgfz_onStart, false, 0, 2)),         // job_ owned by descendant
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tJobBogus, dgfz_msgReal, dgfz_onStart, false, 0, 2)),       // job_ not found
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 2, 2)),  // restore+resume, background
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 1, 2)),  // restore+resume, foreground wait
+		dgfz_seed(1, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, false, 0, 2)),         // caller alias, parentSteer route
+		dgfz_seedD(2, true, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, false, 0, 2)),  // caller, parentSteerDelivered -> delivered
+		dgfz_seedD(2, false, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, false, 0, 2)), // caller, parentSteerDelivered -> undeliverable
+		dgfz_seed(2, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, true, 0, 2)),          // caller + FromWatch (internal-bug arm)
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tCaller, dgfz_msgReal, false, 0, 2)),         // caller without route
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tMain, dgfz_msgReal, false, 0, 2)),           // reserved alias
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tWatched, dgfz_msgReal, false, 0, 2)),        // reserved alias
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tLocal, dgfz_msgReal, false, 0, 2)),          // transcript-ref prefix
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tProj, dgfz_msgReal, false, 0, 2)),           // transcript-ref prefix
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableJob, dgfz_msgReal, false, 0, 2)),  // job_ handle -> use delegate_id
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tOwnJob, dgfz_msgReal, false, 0, 2)),         // job_ owned by descendant
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tJobBogus, dgfz_msgReal, false, 0, 2)),       // job_ not found
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 2, 2)),  // restore+resume, background
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 1, 2)),  // restore+resume, foreground wait
 		dgfz_seed(0, noFault, // resume then immediately re-send (running/steer arm)
-			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 2, 2),
-			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 2, 2)),
+			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 2, 2),
+			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 2, 2)),
 		dgfz_seed(0, noFault, // resume then FromWatch re-send (watch-steer branches)
-			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 2, 2),
-			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, true, 2, 2)),
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRunDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),         // running, sub not retained
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tBadRefDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),      // running, bad transcript ref
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tTermBadDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),     // terminal, bad transcript ref
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tShellDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),       // shell-typed -> not messageable
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tOwnDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),         // owned by descendant
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tNoHistDlg, dgfz_msgReal, dgfz_onStart, false, 0, 2)),      // no job history
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tDlgMissing, dgfz_msgReal, dgfz_onStart, false, 0, 2)),     // dlg_ not found
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tNoHistDlg, dgfz_msgReal, 3, false, 0, 2)),                 // on_idle=bogus -> validation arm
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 0, 0)),  // negative max_wait arm
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgEmpty, dgfz_onStart, false, 0, 2)), // empty message arm
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tEmpty, dgfz_msgReal, dgfz_onStart, false, 0, 2)),          // empty target arm
-		dgfz_seed(0, noFault, dgfz_send(dgfz_tNonsense, dgfz_msgReal, dgfz_onStart, false, 0, 2)),       // unrecognized target
-		dgfz_seed(0, 0, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, dgfz_onStart, false, 2, 2)),        // resume under persist fault
+			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 2, 2),
+			dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, true, 2, 2)),
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRunDlg, dgfz_msgReal, false, 0, 2)),         // running, sub not retained
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tBadRefDlg, dgfz_msgReal, false, 0, 2)),      // running, bad transcript ref
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tTermBadDlg, dgfz_msgReal, false, 0, 2)),     // terminal, bad transcript ref
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tShellDlg, dgfz_msgReal, false, 0, 2)),       // shell-typed -> not messageable
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tOwnDlg, dgfz_msgReal, false, 0, 2)),         // owned by descendant
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tNoHistDlg, dgfz_msgReal, false, 0, 2)),      // no job history
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tDlgMissing, dgfz_msgReal, false, 0, 2)),     // dlg_ not found
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 0, 0)),  // negative max_wait arm
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tRestorableDlg, dgfz_msgEmpty, false, 0, 2)), // empty message arm
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tEmpty, dgfz_msgReal, false, 0, 2)),          // empty target arm
+		dgfz_seed(0, noFault, dgfz_send(dgfz_tNonsense, dgfz_msgReal, false, 0, 2)),       // unrecognized target
+		dgfz_seed(0, 0, dgfz_send(dgfz_tRestorableDlg, dgfz_msgReal, false, 2, 2)),        // resume under persist fault
 	}
 	for _, s := range seeds {
 		f.Add(s)

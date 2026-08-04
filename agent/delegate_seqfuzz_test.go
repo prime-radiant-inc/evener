@@ -41,7 +41,7 @@ import (
 // The op model (declarative; a replay never touches rapid):
 //
 //	dsOpCreate:        createDelegate(foreground) with a fuzzed delegation_allowance.
-//	dsOpResume:        sendDelegateMessage(on_idle=start, foreground) to a tracked,
+//	dsOpResume:        sendDelegateMessage(foreground) to a tracked,
 //	                   terminal delegate — the resume-after-finalize transition.
 //	dsOpFinalizeAgain: finalizeDelegate again on a tracked terminal job — the
 //	                   double-finalize transition (must be an idempotent no-op).
@@ -402,7 +402,6 @@ func ds_applyResume(root *Session, op ds_op, model *ds_model) {
 	res := root.sendDelegateMessage(ctx, sendMessageArgs{
 		Target:         d.delegateID,
 		Message:        op.Text,
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 2000,

@@ -1,13 +1,12 @@
-# job-send-message-surface: job handles are rejected, running delegates steer, and idle delegates start only when explicit
+# job-send-message-surface: job handles are rejected, running delegates steer, and idle delegates resume automatically
 
 **What this covers**: the core `delegate_send` outcomes against the
 handle-split API. (a) A concrete `job_id` is a turn handle and is
 rejected with guidance to use the delegate's `delegate_id`; (b) a
 RUNNING delegate receives a live steer through `delegate_send`, with
-`action:"steered"` and no new job; (c) an IDLE delegate rejects
-`delegate_send` by default with `target_idle`; (d)
-`delegate_send(on_idle:"start")` starts the delegate's next job in the
-same conversation and returns `started_job_id`/`current_job_id`.
+`action:"steered"` and no new job; (c) an IDLE delegate automatically
+starts/resumes its next job in the same conversation and returns
+`started_job_id`/`current_job_id`.
 
 ## Pre-state
 
@@ -36,7 +35,7 @@ same conversation and returns `started_job_id`/`current_job_id`.
    > 4. Say STEER_SENT and end your turn. When JA's completion
    >    notification arrives, call read_transcript with transcript_ref
    >    "job:JA" and report the full JSON.
-3. Turn 2 — idle default failure and explicit start:
+3. Turn 2 — idle delegate automatic resume:
 
    > Do these steps in order.
    > 1. Call delegate with max_wait_ms 120000 and this exact task:
@@ -45,14 +44,8 @@ same conversation and returns `started_job_id`/`current_job_id`.
    >    Capture the returned `delegate_id`, `job_id` (JB), and
    >    `transcript_ref`.
    > 2. Call delegate_send with `to` set to that delegate_id and
-   >    message "Reply with the codeword." Do not set on_idle. Report
-   >    the error verbatim.
-   > 3. Call delegate_send with `to` set to that delegate_id,
-   >    `on_idle` "start", `max_wait_ms` 120000, and message "Reply via
-   >    communicate with exactly the codeword you were told earlier,
-   >    and nothing else." Report the full result JSON verbatim.
-   > 4. Call read_transcript with transcript_ref "job:<the returned
-   >    current_job_id>" and report the full JSON.
+   >    message "Reply via communicate with exactly the codeword you were told earlier, and nothing else." Set `max_wait_ms` 120000 and report the full result JSON verbatim.
+   > 3. Call read_transcript with transcript_ref "job:<the returned current_job_id>" and report the full JSON.
 4. Read the parent transcript, the child transcript (by JB's
    `transcript_ref` via `read_session_transcript` or on disk), and
    `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
@@ -70,14 +63,7 @@ same conversation and returns `started_job_id`/`current_job_id`.
   communicate. Falsification: the token is absent from both result
   content and child transcript, or a new job is created for the live
   steer.
-- Idle default: the turn-2 step-2 call fails synchronously with
-  `target_idle` and creates no new job. This proves idle delegates do
-  not restart by default.
-- Explicit start: the turn-2 step-3 result has `action` `"started"`, a
-  NEW `started_job_id`/`current_job_id` different from JB, the same
-  `delegate_id`, and the same `transcript_ref` as JB. The result or
-  follow-up `job:` read contains `AZURE_FALCON`, a fact present
-  only in the prior turn's context — retention proven, not assumed.
+- Idle resume: the turn-2 step-2 result has `action` `"started"`, a NEW `started_job_id`/`current_job_id` different from JB, the same `delegate_id`, and the same `transcript_ref` as JB. The result or follow-up `job:` read contains `AZURE_FALCON`, a fact present only in the prior turn's context — retention proven, not assumed.
   Falsification: the codeword is missing, the transcript ref changes,
   or the call starts from a blank conversation.
 

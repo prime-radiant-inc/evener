@@ -3438,7 +3438,6 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	res := send(ctx, sendMessageArgs{
 		Target:        state.Key.ResolvedSendTo,
 		Message:       state.Frame,
-		OnIdle:        "start",
 		Background:    true,
 		BackgroundSet: true,
 		FromWatch:     true,

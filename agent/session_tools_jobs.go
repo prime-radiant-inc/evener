@@ -135,7 +135,6 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 	a := sendMessageArgs{
 		Target:     stringArg(args, "to"),
 		Message:    stringArg(args, "message"),
-		OnIdle:     stringArg(args, "on_idle"),
 		Background: true, // default: no wait, return immediately
 	}
 	if strings.TrimSpace(a.Target) == runtimeMessageAliasCaller {

@@ -15,7 +15,7 @@ plus the resumable follow-up path through `delegate_send`.
    > Immediately call `job_stop` on that `job_id`; do not call `job_list`
    > first. Report the full JSON, especially status and reason.
    > Then call `delegate_send` targeting the same `delegate_id` with
-   > on_idle "start", max_wait_ms 30000, and this message: "Forget the
+   > max_wait_ms 30000 and this message: "Forget the
    > sleep. Using the shell tool, run: echo RESUMED_OK. Then communicate
    > the message RESUMED_OK."
    > Report the follow-up job's `started_job_id`, `current_job_id`,
@@ -30,6 +30,6 @@ plus the resumable follow-up path through `delegate_send`.
   cancellation cannot be confirmed. `running`/`stop_pending` means the stop has
   not completed within the bounded wait; the scenario must wait for the later
   terminal notification/record before considering the stop successful.
-- `delegate_send(on_idle="start")` against the stopped delegate starts a
+- `delegate_send` against the stopped delegate starts a
   follow-up delegate job unless the target is explicitly not resumable.
 - The follow-up completes and reports `RESUMED_OK`.

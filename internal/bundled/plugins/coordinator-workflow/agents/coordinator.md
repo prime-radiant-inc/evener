@@ -67,8 +67,7 @@ tasks:
       If the verifier's verdict was PASS, skip this task. If the
       verifier found issues, use delegate_send with the implementer's
       delegate_id to continue the existing delegate conversation — this
-      preserves context about what was already tried. Use on_idle="start"
-      when the implementer is idle. Include the verifier's evidence verbatim in the
+      preserves context about what was already tried. A plain delegate_send wakes or resumes an idle implementer, so omit any idle-mode flag. Include the verifier's evidence verbatim in the
       message — do not paraphrase or reinterpret. Determine
       WHY the failure occurred from the verifier's evidence — not
       just what failed. Include your root-cause hypothesis in the

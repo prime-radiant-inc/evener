@@ -151,7 +151,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	pinRevalidation := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinRevalidation)
 	bySession := pinSectionAssignmentLookup(assignments, pinRevalidation.Presentation)
-	favs := projectFavoritePresentation(revalidation.Presentation)
+	favs := revalidation.Presentation
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),

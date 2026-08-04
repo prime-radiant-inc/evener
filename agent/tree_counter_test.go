@@ -202,7 +202,6 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 		res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:         first.DelegateID,
 			Message:        "resume and block",
-			OnIdle:         "start",
 			Background:     true,
 			BackgroundSet:  true,
 			BlockTimeoutMS: 1000,

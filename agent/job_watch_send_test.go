@@ -226,7 +226,6 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "resume and block",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -3963,7 +3962,6 @@ func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "resume and block",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -4051,7 +4049,6 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "resume and block",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -4130,7 +4127,6 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "resume and block",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -4174,7 +4170,6 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	restarted := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "explicit restart",
-		OnIdle:  "start",
 	})
 	if restarted.Err != nil {
 		t.Fatalf("explicit restart: %v", restarted.Err)
@@ -4381,7 +4376,6 @@ func TestDelegateStopGateFailureDoesNotSignalDelegate(t *testing.T) {
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "resume and block",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)

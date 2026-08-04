@@ -71,7 +71,6 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "run again",
-		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
@@ -151,7 +150,6 @@ func TestSendDisposedRetainedDelegateRefusesOnRetainedPath(t *testing.T) {
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        "second",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -181,7 +179,6 @@ func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        "second",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -215,7 +212,6 @@ func TestDelegateResumeJobStartedKeepsOriginalOriginLinkage(t *testing.T) {
 	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "run again",
-		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage: %v", res.Err)
@@ -275,7 +271,6 @@ func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         delegateID,
 		Message:        "resume after observed terminal",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -392,7 +387,6 @@ func TestSendDelegateMessageOwnDirectDelegatesAtDepth(t *testing.T) {
 	res := coordinator.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  worker.DelegateID,
 		Message: "worker, run again",
-		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("depth-1 coordinator messaging its own direct worker delegate: %v", res.Err)
@@ -507,7 +501,6 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "run again",
-		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
@@ -583,7 +576,6 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        "run again",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 50,
@@ -627,7 +619,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
-func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
+func TestSendDelegateMessageTerminalDelegateDefaultIdleResumes(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -653,15 +645,18 @@ func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
 		Target:  first.DelegateID,
 		Message: "must be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
-		t.Fatalf("error = %v, want target_idle", res.Err)
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
-		t.Fatalf("delegate jobs = %+v, want no new job", jobs)
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == first.JobID || res.DelegateID != first.DelegateID {
+		t.Fatalf("send result = %+v, want started resumed delegate job", res)
+	}
+	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 2 {
+		t.Fatalf("delegate jobs = %+v, want resumed job recorded", jobs)
 	}
 }
 
-func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *testing.T) {
+func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleResumes(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -690,14 +685,14 @@ func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *tes
 		Target:  run.rec.DelegateID,
 		Message: "must still be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
-		t.Fatalf("error = %v, want target_idle", res.Err)
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if strings.Contains(res.Err.Error(), "not_controllable") {
-		t.Fatalf("error = %v, must not report not_controllable", res.Err)
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == run.rec.JobID || res.DelegateID != run.rec.DelegateID {
+		t.Fatalf("send result = %+v, want started resumed delegate job", res)
 	}
 	after := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate})
-	if len(after) != len(before) {
+	if len(after) != len(before)+1 {
 		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
 	}
 }
@@ -812,7 +807,6 @@ drain:
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:    first.DelegateID,
 		Message:   "watch-originated resume",
-		OnIdle:    "start",
 		FromWatch: true,
 	})
 	if second.Err != nil {
@@ -867,7 +861,6 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "run again",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -961,7 +954,6 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 		firstResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  first.DelegateID,
 			Message: "run again",
-			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -975,7 +967,6 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 		secondResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  first.DelegateID,
 			Message: "steer while attaching",
-			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -1056,7 +1047,6 @@ func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T)
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
 		Message: "run again",
-		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
@@ -1315,7 +1305,6 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 				Target:  rec.DelegateID,
 				Message: "resume",
-				OnIdle:  "start",
 			})
 
 			if res.Err == nil || res.Err.Error() != tc.want {
@@ -1424,7 +1413,6 @@ func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "resume using descriptor",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -1540,7 +1528,6 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "new input after restore",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -1630,7 +1617,6 @@ func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "resume observer after restart",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -1772,7 +1758,6 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        resumedInput,
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -1894,7 +1879,6 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         first.DelegateID,
 		Message:        "resume and start a nested shell",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2036,7 +2020,6 @@ func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "continue with the checklist",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2101,7 +2084,6 @@ func TestJobSendMessageReconstructsDelegateFrozenSkillBodiesFromDescriptor(t *te
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "continue with the descriptor checklist",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2144,7 +2126,6 @@ func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
-		OnIdle:  "start",
 	})
 
 	if res.Err == nil || res.Err.Error() != "target_not_resumable:missing_child_session_meta" {
@@ -2201,7 +2182,6 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 				Target:  rec.DelegateID,
 				Message: "resume",
-				OnIdle:  "start",
 			})
 
 			if res.Err == nil {
@@ -2251,7 +2231,6 @@ func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *test
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
-		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "missing_frozen_tool") {
@@ -2311,7 +2290,6 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
-		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -2380,7 +2358,6 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *te
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
-		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -2530,7 +2507,6 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 		userTurnDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:         rec.DelegateID,
 			Message:        "first post-restore delegate user turn",
-			OnIdle:         "start",
 			BackgroundSet:  true,
 			Background:     false,
 			BlockTimeoutMS: 5000,
@@ -2672,7 +2648,6 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 		done <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  rec.DelegateID,
 			Message: "resume while parent closes",
-			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -2751,7 +2726,6 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 		sendDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  rec.DelegateID,
 			Message: "resume while close waits for reconstruction claim",
-			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -2825,7 +2799,6 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume while parent closes before side effects",
-		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
@@ -3219,7 +3192,6 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 				Target:  rec.DelegateID,
 				Message: "resume",
-				OnIdle:  "start",
 			})
 
 			if res.Err == nil || res.Err.Error() != "target_not_resumable:corrupt_child_transcript" {
@@ -3272,7 +3244,6 @@ func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "resume valid terminal delegate",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,

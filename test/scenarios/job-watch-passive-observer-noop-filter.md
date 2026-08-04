@@ -52,8 +52,8 @@ terminal `communicate(end_turn:true)` callbacks.
    >    assistant.tool event for the broad watch.
    > 3. Call `job_watch` with operation "clear" and watch_id equal to
    >    broad_watch_id.
-   > 4. Call `delegate_send` to the observer delegate_id with `on_idle`
-   >    "start" and this message: "Now call job_watch with operation
+   > 4. Call `delegate_send` to the observer delegate_id with this
+   >    message: "Now call job_watch with operation
    >    'create', source 'parent', events ['assistant.tool'],
    >    event_filter {\"tool_name\":\"read_file\",\"status\":\"ok\"},
    >    then communicate exactly PASSIVE_FILTERED_READY and finish."

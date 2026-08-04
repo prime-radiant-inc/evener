@@ -836,7 +836,6 @@ func FuzzRootDelegateResumeLifecycleProgram(f *testing.F) {
 		resumed := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:    first.DelegateID,
 			Message:   "rwlp resumed work " + rwlpTexts[r.intn(len(rwlpTexts))],
-			OnIdle:    "start",
 			FromWatch: r.bool(),
 		})
 		if resumed.Err != nil || resumed.Action != "started" || resumed.JobID == "" || resumed.JobID == first.JobID || resumed.ResumedFromJobID != first.JobID || !resumed.RunningInBackground {

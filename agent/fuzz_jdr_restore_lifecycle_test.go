@@ -399,7 +399,6 @@ func FuzzJdrDelegateRestoreLifecycle(f *testing.F) {
 		result := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:         started.DelegateID,
 			Message:        "jdr resume now",
-			OnIdle:         "start",
 			BackgroundSet:  true,
 			Background:     false,
 			BlockTimeoutMS: 500,

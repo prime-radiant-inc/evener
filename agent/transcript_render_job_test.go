@@ -207,7 +207,7 @@ func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
 		t.Fatalf("delegate_send returned error: %s", res.Output)

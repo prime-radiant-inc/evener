@@ -234,7 +234,6 @@ type delegateResult struct {
 type sendMessageArgs struct {
 	Target         string
 	Message        string
-	OnIdle         string
 	Background     bool
 	BackgroundSet  bool
 	BlockTimeoutMS int
@@ -476,15 +475,15 @@ const (
 )
 
 // classifyDelegateSendTarget is the pure pre-dispatch decision lifted out of
-// sendDelegateMessage. Given the already-trimmed target/message, the resolved
-// on_idle, the requested block timeout, and the caller's routing context, it
-// decides how the target is dispatched (or why it is rejected) without touching
-// the job manager or store. The wrapper performs the matching effect per kind
-// and preserves the original ordering: rejections and the caller-alias steer
-// happen before sessionJobManager; the job_/delegate-id handling happens after.
-// A rejected reason is fully rendered (including the target where the original
-// embedded it) so the wrapper can wrap it verbatim.
-func classifyDelegateSendTarget(target, message, onIdle string, blockTimeoutMS int, fromWatch, hasCallerRoute bool) (kind delegateTargetKind, reason string) {
+// sendDelegateMessage. Given the already-trimmed target/message, the requested
+// block timeout, and the caller's routing context, it decides how the target is
+// dispatched (or why it is rejected) without touching the job manager or store.
+// The wrapper performs the matching effect per kind and preserves the original
+// ordering: rejections and the caller-alias steer happen before
+// sessionJobManager; the job_/delegate-id handling happens after. A rejected
+// reason is fully rendered (including the target where the original embedded it)
+// so the wrapper can wrap it verbatim.
+func classifyDelegateSendTarget(target, message string, blockTimeoutMS int, fromWatch, hasCallerRoute bool) (kind delegateTargetKind, reason string) {
 	if target == "" {
 		return delegateTargetRejected, "invalid_request: target is required"
 	}
@@ -493,9 +492,6 @@ func classifyDelegateSendTarget(target, message, onIdle string, blockTimeoutMS i
 	}
 	if blockTimeoutMS < 0 {
 		return delegateTargetRejected, "invalid_request: max_wait_ms must be non-negative"
-	}
-	if onIdle != "fail" && onIdle != "start" {
-		return delegateTargetRejected, "invalid_request: on_idle must be start or fail"
 	}
 	if target == "main" || target == runtimeMessageAliasWatched {
 		return delegateTargetRejected, fmt.Sprintf("invalid_request: %s is not a delegate_send target", target)
@@ -537,11 +533,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	target := strings.TrimSpace(args.Target)
 	message := strings.TrimSpace(args.Message)
-	onIdle := strings.TrimSpace(args.OnIdle)
-	if onIdle == "" {
-		onIdle = "fail"
-	}
-	kind, reason := classifyDelegateSendTarget(target, message, onIdle, args.BlockTimeoutMS, args.FromWatch, s.hasCallerRoute())
+	kind, reason := classifyDelegateSendTarget(target, message, args.BlockTimeoutMS, args.FromWatch, s.hasCallerRoute())
 	if hook := delegateSendTestHooks.afterClassify; hook != nil {
 		hook(s)
 	}
@@ -709,26 +701,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		if running {
 			active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
-			if err != nil {
-				if onIdle == "fail" {
-					return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
-				}
-			} else {
+			if err == nil {
 				return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 			}
 		}
 	}
-	if onIdle == "fail" {
-		return sendMessageFailed(target, fmt.Errorf("target_idle: delegate %q is idle; pass on_idle=\"start\" to start the next job", target))
-	}
 	var restorePreflight *delegateRestorePreflight
-	if isRuntimeLostDelegate(rec) {
-		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
-		if !assessment.Resumable {
-			return sendMessageFailed(target, notResumableSendError(assessment.Reason))
-		}
-		restorePreflight = assessment.Preflight
-	}
 	if sub == nil || sub.sess == nil {
 		if restorePreflight == nil {
 			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
@@ -766,10 +744,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			findRunning = hook
 		}
 		active, err := findRunning(jm, rec.TranscriptRef)
-		if err != nil {
-			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
+		if err == nil {
+			return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 		}
-		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 
 	messageProvenance := provenance.Clone(args.Provenance)

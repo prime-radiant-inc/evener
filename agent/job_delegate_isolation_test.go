@@ -514,7 +514,6 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 	sendRes := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         res.DelegateID,
 		Message:        "keep going",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -586,7 +585,6 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 	sendRes := r.s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         res.DelegateID,
 		Message:        "second job",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -784,7 +782,6 @@ func TestDelegateIsolation_RevivalOnForeignLockedLaneRefuses(t *testing.T) {
 	sendRes := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         res.DelegateID,
 		Message:        "revive",
-		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,

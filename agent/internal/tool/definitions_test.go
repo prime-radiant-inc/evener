@@ -310,14 +310,25 @@ func TestDefDelegateSendShape(t *testing.T) {
 	}
 	required(t, def, "delegate_send", []string{"to", "message"})
 	props := def.Parameters["properties"].(map[string]any)
+	if got := len(props); got != 3 {
+		t.Fatalf("delegate_send properties len = %d, want exactly 3 (to, message, max_wait_ms)", got)
+	}
+	for _, want := range []string{"to", "message", "max_wait_ms"} {
+		if _, ok := props[want]; !ok {
+			t.Fatalf("delegate_send missing property %q", want)
+		}
+	}
 	if _, ok := props["target"]; ok {
 		t.Fatalf("delegate_send must not expose target")
 	}
 	if _, ok := props["on_finished"]; ok {
 		t.Fatalf("delegate_send must not expose on_finished")
 	}
-	if _, ok := props["on_idle"]; !ok {
-		t.Fatalf("delegate_send missing on_idle")
+	if _, ok := props["on_idle"]; ok {
+		t.Fatalf("delegate_send must not expose on_idle")
+	}
+	if !strings.Contains(def.Description, "started/resumed automatically") {
+		t.Fatalf("delegate_send description must explain automatic idle restart: %q", def.Description)
 	}
 	combined := def.Description + "\n" + props["to"].(map[string]any)["description"].(string)
 	for _, banned := range []string{"job_send_message", "watched", "main"} {

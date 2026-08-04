@@ -164,7 +164,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	if sends[0].Target != "dlg_obs" {
 		t.Fatalf("watch send target = %q, want dlg_obs", sends[0].Target)
 	}
-	if !sends[0].FromWatch || !sends[0].Background || !sends[0].BackgroundSet || sends[0].OnIdle != "start" {
+	if !sends[0].FromWatch || !sends[0].Background || !sends[0].BackgroundSet {
 		t.Fatalf("watch send args = %+v, want background watch delivery", sends[0])
 	}
 	if !strings.Contains(sends[0].Message, "observe") || !strings.Contains(sends[0].Message, "server READY") {
