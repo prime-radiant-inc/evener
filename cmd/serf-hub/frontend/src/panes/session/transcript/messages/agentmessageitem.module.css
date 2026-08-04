@@ -55,6 +55,7 @@
  * inline, so there is no breakpoint here. */
 .opener {
   display: flex;
+  align-items: flex-start;
   gap: var(--speaker-gap);
 }
 

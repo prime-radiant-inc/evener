@@ -285,6 +285,12 @@ test("the agent message keeps .message a bare layout row - the bubble treatment 
   expect(css).not.toMatch(/\.tag\s*\{/);
 });
 
+test("the speaker avatar starts at the top of the agent message row", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.opener\s*\{[\s\S]*align-items:\s*flex-start;/);
+});
+
 // --- the chat bubble (2026-07-30-transcript-chat-bubbles-design.md) --------
 // Every fragment bubbles: opener tailed toward the avatar, continuations
 // fully rounded, the SAME wrapper live and settled.

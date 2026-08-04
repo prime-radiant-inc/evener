@@ -22,6 +22,7 @@
  * handful of times per session, and the header is signal enough. */
 .message {
   display: flex;
+  align-items: flex-start;
   /* 24px avatar + 10px gap = the 34px content column the TurnBlock gutter
    * indents agent-side items to (spec decision 3). 10px sits between
    * --space-2 and --space-3 with no token of its own. The value inherits the

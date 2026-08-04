@@ -179,6 +179,12 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
+test("the speaker avatar starts at the top of the user message row", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "usermessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.message\s*\{[\s\S]*align-items:\s*flex-start;/);
+});
+
 // --- the chat bubble (2026-07-30-transcript-chat-bubbles-design.md) --------
 
 test("the body renders as a bubble wrapping the text and attachments", () => {
