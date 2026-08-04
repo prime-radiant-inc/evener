@@ -224,11 +224,10 @@ export const ThinkBlock = memo(function ThinkBlock({ item, turn, live, sessionRe
           {/* One document, not one per summaryIndex: a markdown parser needs
               the whole text to resolve block structure. Blank-line joined so
               each index still starts its own block-level token rather than
-              being folded into the previous index's paragraph. Safe here and
-              only here - this settled branch runs after reasoningSummaries
-              has stopped growing, so there is no append-only invariant left
-              to violate (see this file's top comment). Markdown owns its own
-              paragraph/heading/list layout, so nothing re-wraps it in
+              being folded into the previous index's paragraph. The live and
+              settled branches use this same complete document; only the
+              live branch opts into streaming preview behavior. Markdown owns
+              its own paragraph/heading/list layout, so nothing re-wraps it in
               .paragraph. */}
           <Markdown source={paragraphs.join("\n\n")} />
         </div>
