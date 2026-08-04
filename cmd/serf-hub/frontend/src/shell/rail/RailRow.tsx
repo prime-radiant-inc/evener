@@ -51,6 +51,7 @@ import {
   type ProjectRailNode,
   type RailNode,
   type SessionRailNode,
+  workingDescendantCount,
 } from "./railNodes";
 
 const CLASS = {
@@ -229,7 +230,12 @@ function Signal({ wireState }: { wireState: string }) {
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
 export function activityGloss(session: ApiTreeNode): string {
-  const parts = [humanizeState(session.state, session.ask_pending === true)];
+  const workingCount = workingDescendantCount(session);
+  const parts = [
+    workingCount === 0
+      ? humanizeState(session.state, session.ask_pending === true)
+      : `${workingCount} subagent${workingCount === 1 ? "" : "s"} working`,
+  ];
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
@@ -487,6 +493,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(session.state));
+  const hasWorkingDescendants = workingDescendantCount(session) > 0;
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
   // Archived session is always nested under its own ProjectRow, never a depth-0
@@ -496,8 +503,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const gloss = secondLine(session, showsGloss, showsProject);
-  const showsSecondLine = showsGloss || showsProject;
+  const showsActivity = showsGloss || hasWorkingDescendants;
+  const gloss = secondLine(session, showsActivity, showsProject);
+  const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
   // has no state family to color, so it stays the plain --ink-low default.
