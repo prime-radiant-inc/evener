@@ -86,10 +86,10 @@
  * Let only that footer shrink against the pane, leaving other panes' fixed
  * footer contract unchanged. */
 .footer:has([data-ask-response-dock]) {
-  /* Reserve the same pane-relative share this footer is capped to. Using an
-   * auto basis lets a long transcript win flex shrink and crush AskDock down
-   * to its status chrome. */
-  flex: 0 1 70%;
+  /* Short questions should make the footer only as tall as their content;
+   * the cap still gives a tall question a bounded slot whose own dock can
+   * scroll without stealing the whole pane from the transcript. */
+  flex: 0 1 auto;
   min-height: 0;
   max-height: 70%;
   display: flex;
