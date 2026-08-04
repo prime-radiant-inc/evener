@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -572,6 +573,108 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   expect(screen.getByText("hi")).toBeTruthy();
 });
 
+test("switches between Everything, Conversation, and Intent transcript views", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "Please inspect the project",
+              status: "completed",
+            },
+            {
+              id: "tool_1",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_alpha",
+              description: "Find the relevant source files",
+              error: "RAW_TOOL_RESULT_ALPHA",
+              status: "failed",
+            },
+            {
+              id: "tool_2",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_beta",
+              description: "Check the current behavior",
+              error: "RAW_TOOL_RESULT_BETA",
+              status: "failed",
+            },
+            {
+              id: "tool_3",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_gamma",
+              description: "Verify the intended change",
+              error: "RAW_TOOL_RESULT_GAMMA",
+              status: "failed",
+            },
+            {
+              id: "agent_1",
+              turnId: "turn_1",
+              type: "agentMessage",
+              text: "The project is ready",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const viewSelector = await screen.findByRole("radiogroup", { name: /session view/i });
+  const radios = within(viewSelector).getAllByRole("radio");
+  expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Conversation", "Intent"]);
+  expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("RAW_TOOL_RESULT_ALPHA")).toBeTruthy();
+  const everythingAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
+  expect(everythingAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
+  expect(everythingAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
+  expect(everythingAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
+
+  await user.click(screen.getByRole("radio", { name: "Conversation" }));
+  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Please inspect the project")).toBeTruthy();
+  expect(screen.getByText("The project is ready")).toBeTruthy();
+  expect(screen.getByText("3 tool calls")).toBeTruthy();
+  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
+  const conversationAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
+  expect(conversationAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
+  expect(conversationAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
+  expect(conversationAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
+
+  await user.click(screen.getByRole("radio", { name: "Intent" }));
+  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Find the relevant source files")).toBeTruthy();
+  expect(screen.getByText("Check the current behavior")).toBeTruthy();
+  expect(screen.getByText("Verify the intended change")).toBeTruthy();
+  expect(screen.queryByText("raw_tool_alpha")).toBeNull();
+  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
+
+  screen.getByRole("radio", { name: "Intent" }).focus();
+  await user.keyboard("{ArrowLeft}");
+  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("false");
+});
+
 // --- seen divider (kata g2ez) --------------------------------------------
 
 function turnFixture(id: string, text: string) {
@@ -992,6 +1095,208 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
 
   const pill = await screen.findByTestId("new-content-pill");
   expect(pill.textContent).toContain("1");
+});
+
+test("a real mode switch captures the DOM row crossing the viewport top and applies its saved offset after VirtualList measures the fallback", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const turns = Array.from({ length: 15 }, (_, index) => ({
+    id: `turn_${index}`,
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items:
+      index === 0
+        ? [
+            {
+              id: "user_0",
+              turnId: "turn_0",
+              type: "userMessage" as const,
+              text: "the nearest surviving message",
+              status: "completed" as const,
+            },
+          ]
+        : [
+            {
+              id: `tool_${index}`,
+              turnId: `turn_${index}`,
+              type: "commandExecution" as const,
+              text: "",
+              toolName: `tool_${index}`,
+              // No description: Intent hides this turn entirely, forcing the
+              // source-nearest surviving message at turn_0 as the fallback.
+              status: "completed" as const,
+            },
+          ],
+  }));
+  fake.on("thread/read", () => readResponse("ref_a", { turns }));
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText("the nearest surviving message");
+
+  const root = scrollRootOf(container);
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: turns.length * CONTAINER_HEIGHT });
+  Object.defineProperty(root, "clientHeight", { configurable: true, value: CONTAINER_HEIGHT });
+
+  let requestedTop: number | undefined;
+  root.scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
+    requestedTop = typeof options === "number" ? (y ?? options) : (options?.top ?? 0);
+    // A browser delivers the resulting scroll/measurement asynchronously.
+    // The test does so explicitly below, after proving the fallback is still
+    // outside the real VirtualList's rendered window.
+  });
+
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const element = this as HTMLElement;
+    const sourceIndex = element.dataset.viewAnchorSourceIndex;
+    if (sourceIndex !== undefined) {
+      const top = Number(sourceIndex) * CONTAINER_HEIGHT - root.scrollTop;
+      return {
+        x: 0,
+        y: top,
+        top,
+        right: 100,
+        bottom: top + CONTAINER_HEIGHT,
+        left: 0,
+        width: 100,
+        height: CONTAINER_HEIGHT,
+        toJSON: () => ({}),
+      };
+    }
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 100,
+      bottom: element === root ? CONTAINER_HEIGHT : 0,
+      left: 0,
+      width: 100,
+      height: element === root ? CONTAINER_HEIGHT : 0,
+      toJSON: () => ({}),
+    };
+  });
+
+  // turn_10 crosses the viewport top by 18px. turn_9 is rendered only as
+  // overscan above it; turn_11 begins below it. This geometry distinguishes
+  // the real top content from either rendered-order shortcut.
+  root.scrollTop = 10 * CONTAINER_HEIGHT + 18;
+  fireEvent.scroll(root);
+  await waitFor(() => {
+    expect(container.querySelector('[data-view-anchor-index="9"]')).toBeTruthy();
+    expect(container.querySelector('[data-view-anchor-index="10"]')).toBeTruthy();
+    expect(container.querySelector('[data-view-anchor-index="11"]')).toBeTruthy();
+  });
+  requestedTop = undefined;
+
+  await user.click(screen.getByRole("radio", { name: "Intent" }));
+
+  // turn_10 is hidden in Intent. The actual Session -> hook -> VirtualList
+  // wiring requests turn_0, which is initially outside overscan, while keeping
+  // turn_10's saved -18px offset pending.
+  await waitFor(() => expect(requestedTop).toBe(0));
+  expect(container.querySelector('[data-view-anchor-index="0"]')).toBeNull();
+
+  // Deliver the browser's scroll event. The real VirtualList renders and
+  // measures turn_0, its onChange callback re-enters useTranscriptScroll, and
+  // the pending offset correction places the row 18px above the viewport top.
+  root.scrollTop = requestedTop ?? 0;
+  fireEvent.scroll(root);
+  await waitFor(() => expect(root.scrollTop).toBe(18));
+
+  geometry.mockRestore();
+});
+
+test("a real mode switch preserves the top-visible message inside a mixed turn", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "mixed_turn",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "mixed_user",
+              turnId: "mixed_turn",
+              type: "userMessage",
+              text: "first entry in the mixed turn",
+              status: "completed",
+            },
+            {
+              id: "mixed_tool",
+              turnId: "mixed_turn",
+              type: "commandExecution",
+              text: "",
+              toolName: "mixed_tool",
+              status: "completed",
+            },
+            {
+              id: "mixed_agent",
+              turnId: "mixed_turn",
+              type: "agentMessage",
+              text: "actual top-visible entry",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText("actual top-visible entry");
+
+  const root = scrollRootOf(container);
+  Object.defineProperty(root, "scrollTop", { configurable: true, writable: true, value: 300 });
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: 1200 });
+  Object.defineProperty(root, "clientHeight", { configurable: true, value: 300 });
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const element = this as HTMLElement;
+    const focused = container.querySelector('[data-testid="focused-transcript"]') !== null;
+    const box = focused
+      ? {
+          mixed_user: { top: -130, height: 60 },
+          "tools:mixed_tool:mixed_tool": { top: -70, height: 40 },
+          mixed_agent: { top: -30, height: 96 },
+        }[element.dataset.viewAnchorId ?? ""]
+      : {
+          mixed_user: { top: -240, height: 60 },
+          mixed_tool: { top: -180, height: 162 },
+          mixed_agent: { top: -18, height: 96 },
+        }[element.dataset.viewAnchorId ?? ""];
+    const top = box?.top ?? 0;
+    const height = box?.height ?? (element === root ? 300 : 0);
+    return {
+      x: 0,
+      y: top,
+      top,
+      right: 100,
+      bottom: top + height,
+      left: 0,
+      width: 100,
+      height,
+      toJSON: () => ({}),
+    };
+  });
+
+  await user.click(screen.getByRole("radio", { name: "Conversation" }));
+
+  await waitFor(() => expect(root.scrollTop).toBe(288));
+  expect(container.querySelector('[data-view-anchor-id="mixed_agent"]')).toBeTruthy();
+  geometry.mockRestore();
 });
 
 test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {

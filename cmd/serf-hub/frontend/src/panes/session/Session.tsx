@@ -21,11 +21,11 @@
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome (the status row) stays full-width beneath, reading
 // like a status bar.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -33,8 +33,9 @@ import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
-import { TurnBlock } from "./transcript/TurnBlock";
+import { isItemLive, TurnBlock } from "./transcript/TurnBlock";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
+import { itemRendererFor } from "./transcript/types";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
 // every tool descriptor (T3) the moment the pane module loads, so the
@@ -50,6 +51,7 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { type FocusedEntry, focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
 
 export interface SessionPaneParams {
   ref: string;
@@ -89,6 +91,25 @@ function EmptyTranscript({ active }: { active: boolean }) {
 // widgets/virtuallist's own `dynamic` prop doc comment.
 const ESTIMATED_TURN_HEIGHT = 96;
 
+type ViewRow =
+  | {
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      visible: true;
+    }
+  | {
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      visible: boolean;
+      entries: FocusedEntry[];
+    };
+
+function normalizeViewMode(value: string): SessionViewMode {
+  return SESSION_VIEW_MODES.some((mode) => mode.value === value) ? (value as SessionViewMode) : "everything";
+}
+
 // Failure-feedback convention: a USER-INITIATED action that fails surfaces via
 // the useToasts() singleton, kind "error" - no new banner systems, no silent
 // `.catch(() => {})`. Every stream's failure handling (composer
@@ -98,6 +119,7 @@ const ESTIMATED_TURN_HEIGHT = 96;
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const [viewMode, setViewMode] = useState<SessionViewMode>("everything");
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -151,6 +173,73 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
+  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
+  const focused = useMemo(
+    () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
+    [model, viewMode],
+  );
+  const itemSourceIndexes = useMemo(() => {
+    const indexes = new Map<string, number>();
+    let sourceIndex = 0;
+    for (const turn of model?.turns ?? []) {
+      for (const item of turn.items) {
+        indexes.set(item.id, sourceIndex);
+        sourceIndex += 1;
+      }
+    }
+    return indexes;
+  }, [model]);
+  const viewRows = useMemo<ViewRow[]>(() => {
+    if (!model) return [];
+    if (viewMode === "everything") {
+      return model.turns.map((turn, index) => ({
+        id: turn.id,
+        turnId: turn.id,
+        sourceIndex: index,
+        visible: true as const,
+      }));
+    }
+    const entriesByTurn = new Map<string, FocusedEntry[]>();
+    for (const entry of focused) {
+      const entries = entriesByTurn.get(entry.turnId);
+      if (entries) entries.push(entry);
+      else entriesByTurn.set(entry.turnId, [entry]);
+    }
+    return model.turns.map((turn, sourceIndex) => {
+      const entries = entriesByTurn.get(turn.id) ?? [];
+      return {
+        id: turn.id,
+        turnId: turn.id,
+        sourceIndex,
+        visible: entries.length > 0,
+        entries,
+      };
+    });
+  }, [model, viewMode, focused]);
+  const anchorEntries = useMemo(() => {
+    if (!model) return [];
+    if (viewMode === "everything") {
+      return model.turns.flatMap((turn, index) =>
+        turn.items.map((item) => ({
+          id: item.id,
+          sourceIndex: itemSourceIndexes.get(item.id) ?? 0,
+          index,
+          isMessage: item.type === "userMessage" || item.type === "agentMessage",
+        })),
+      );
+    }
+    return viewRows.flatMap((row, index) =>
+      "entries" in row
+        ? row.entries.map((entry) => ({
+            id: entry.id,
+            sourceIndex: entry.sourceIndex,
+            index,
+            isMessage: entry.kind === "message",
+          }))
+        : [],
+    );
+  }, [model, viewMode, viewRows, itemSourceIndexes]);
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -158,13 +247,18 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
-  const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+  const flow = useTranscriptScroll({
+    ref,
+    model,
+    listRef: virtualListRef,
+    loadOlder,
+    viewKey: viewMode,
+    anchorEntries,
+  });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
-  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
-  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
 
   if (!model) {
     return (
@@ -187,6 +281,12 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     const turn = model.turns[index];
     if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
     return turn;
+  };
+
+  const rowAt = (index: number) => {
+    const row = viewRows[index];
+    if (!row) throw new Error(`VirtualList index ${index} out of range for ${viewRows.length} view rows`);
+    return row;
   };
 
   const transcript = (
@@ -212,21 +312,76 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
             <VirtualList
               ref={virtualListRef}
               dynamic
-              count={model.turns.length}
+              count={viewRows.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => turnAt(index).id}
+              getItemKey={(index) => rowAt(index).id}
               renderRow={(index) => {
-                const t = turnAt(index);
+                const row = rowAt(index);
+                if (!("entries" in row)) {
+                  const t = turnAt(row.sourceIndex);
+                  return (
+                    <div>
+                      <TurnBlock
+                        turn={t}
+                        sessionRef={ref}
+                        showSeenDivider={t.id === seenDividerTurnId}
+                        exchangeOpeners={openers}
+                        agentLabel={agentLabel}
+                        viewAnchorIndex={index}
+                        viewAnchorSourceIndexes={itemSourceIndexes}
+                      />
+                    </div>
+                  );
+                }
+                if (!row.visible) return null;
                 return (
-                  <TurnBlock
-                    turn={t}
-                    sessionRef={ref}
-                    showSeenDivider={t.id === seenDividerTurnId}
-                    exchangeOpeners={openers}
-                    agentLabel={agentLabel}
-                  />
+                  <div className={styles.focusedTranscript} data-testid="focused-transcript">
+                    {row.entries.map((entry) => {
+                      const anchor = {
+                        "data-view-anchor-id": entry.id,
+                        "data-view-anchor-index": index,
+                        "data-view-anchor-source-index": entry.sourceIndex,
+                        "data-view-anchor-message": entry.kind === "message",
+                      } as const;
+                      if (entry.kind === "tool-count") {
+                        return (
+                          <div key={entry.id} className={styles.toolCount} {...anchor}>
+                            {entry.label}
+                          </div>
+                        );
+                      }
+                      if (entry.kind === "intent") {
+                        return (
+                          <div key={entry.id} className={styles.intent} {...anchor}>
+                            {entry.rationale}
+                          </div>
+                        );
+                      }
+                      const turn = model.turns[row.sourceIndex];
+                      if (!turn) return null;
+                      const ItemRenderer = itemRendererFor(entry.message.type);
+                      const opensExchange = openers?.has(entry.message.id);
+                      return (
+                        <div
+                          key={entry.id}
+                          className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
+                          {...anchor}
+                        >
+                          <ItemRenderer
+                            item={entry.message}
+                            turn={turn}
+                            live={isItemLive(entry.message)}
+                            sessionRef={ref}
+                            opensExchange={opensExchange}
+                            agentLabel={agentLabel}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 );
               }}
+              onChange={flow.restoreViewAnchorAfterMeasurement}
             />
           </div>
           {showColdStartSkeleton && <ColdStartSkeleton />}
@@ -239,6 +394,19 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     <PaneScaffold
       title={model.name || ref}
       cadence={cadence}
+      actions={
+        <div className={styles.viewSelector}>
+          <RadioGroup
+            label="Session view"
+            value={viewMode}
+            options={[...SESSION_VIEW_MODES]}
+            onChange={(value) => {
+              flow.captureViewAnchor();
+              setViewMode(normalizeViewMode(value));
+            }}
+          />
+        </div>
+      }
       footer={
         <div className={styles.footer}>
           <div className={styles.measure}>

@@ -6,7 +6,12 @@ import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
-import { useTranscriptScroll } from "./useTranscriptScroll";
+import {
+  captureTopAnchor,
+  restoreTopAnchor,
+  useTranscriptScroll,
+  type ViewAnchorPosition,
+} from "./useTranscriptScroll";
 
 // --- fixtures ------------------------------------------------------------
 
@@ -845,6 +850,234 @@ describe("mount positioning", () => {
 
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
     expect(el.scrollTop).toBe(0);
+  });
+
+  test("hydration opens at the final transcript turn after content becomes available, past an interstitial marker", () => {
+    const list = makeListHandle();
+    const handle = list.ref.current;
+    (list.ref as { current: VirtualListHandle | null }).current = null;
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_hydrating",
+          model: m,
+          listRef: list.ref,
+          loadOlder: vi.fn(),
+          measure,
+        }),
+      { initialProps: { m: undefined as ThreadModel | undefined } },
+    );
+
+    (list.ref as { current: VirtualListHandle | null }).current = handle;
+    rerender({
+      m: model([turn("t1", ["i1"]), { id: "interstitial", status: "completed", items: [] }, turn("t2", ["i2"])]),
+    });
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith(2, { align: "end" });
+  });
+});
+
+describe("view-mode anchor preservation", () => {
+  test("captures and restores the same stable entry and viewport offset", () => {
+    const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
+
+    expect(restoreTopAnchor(anchor, [{ id: "turn-4", sourceIndex: 4, index: 2, offset: 18, isMessage: true }])).toEqual(
+      { id: "turn-4", index: 2, offset: 18 },
+    );
+  });
+
+  test("captures the stable row crossing the viewport top, not the first rendered overscan row", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "overscan-1", sourceIndex: 1, index: 1, offset: -220, height: 80, isMessage: true },
+      { id: "turn-4", sourceIndex: 4, index: 4, offset: -18, height: 96, isMessage: true },
+      { id: "turn-5", sourceIndex: 5, index: 5, offset: 78, height: 96, isMessage: true },
+    ];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    const el = ref.current?.getScrollElement();
+    if (el) el.scrollTop = 500;
+
+    act(() => result.current.captureViewAnchor());
+    positions = [{ id: "turn-4", sourceIndex: 4, index: 2, offset: -70, height: 96, isMessage: true }];
+    rerender({ viewKey: "conversation" });
+
+    expect(ref.current?.getScrollElement()?.scrollTop).toBe(448);
+  });
+
+  test("falls forward when the following user or agent entry is the nearest surviving message", () => {
+    const anchor = captureTopAnchor({ id: "tool-4", sourceIndex: 4, index: 4, offset: 18, isMessage: false });
+
+    expect(
+      restoreTopAnchor(anchor, [
+        { id: "user-2", sourceIndex: 2, index: 1, offset: 70, isMessage: true },
+        { id: "agent-5", sourceIndex: 5, index: 2, offset: -30, isMessage: true },
+      ]),
+    ).toEqual({ id: "agent-5", index: 2, offset: 18 });
+  });
+
+  test("a hidden anchor falls back to the preceding message when it is closer than the following message", () => {
+    const anchor = captureTopAnchor({
+      id: "tool-9",
+      sourceIndex: 9,
+      index: 9,
+      offset: 18,
+      height: 40,
+      isMessage: false,
+    });
+
+    expect(
+      restoreTopAnchor(anchor, [
+        { id: "user-8", sourceIndex: 8, index: 3, offset: 70, height: 40, isMessage: true },
+        { id: "agent-12", sourceIndex: 12, index: 4, offset: -30, height: 40, isMessage: true },
+      ]),
+    ).toEqual({ id: "user-8", index: 3, offset: 18 });
+  });
+
+  test("a mode switch restores the stable entry after hidden tool rows change the list height", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [{ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true }];
+    const measureAnchors = () => positions;
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"]), turn("turn-4", ["i4"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          measureAnchors,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    scrollToIndex.mockClear();
+    el.scrollTop = 300;
+
+    act(() => result.current.captureViewAnchor());
+    positions = [{ id: "turn-4", sourceIndex: 4, index: 1, offset: -82, isMessage: true }];
+    rerender({ viewKey: "conversation" });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(el.scrollTop).toBe(200);
+  });
+
+  test("a mixed turn restores its actual top-visible message instead of the turn's first entry", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "user-1", sourceIndex: 8, index: 3, offset: -240, height: 60, isMessage: true },
+      { id: "tool-1", sourceIndex: 9, index: 3, offset: -180, height: 162, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, offset: -18, height: 96, isMessage: true },
+    ];
+    const anchorEntries = [
+      { id: "user-1", sourceIndex: 8, index: 3, isMessage: true },
+      { id: "tools:tool-1:tool-1", sourceIndex: 9, index: 3, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, isMessage: true },
+    ];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("mixed-turn", ["user-1", "tool-1", "agent-1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          anchorEntries,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    scrollToIndex.mockClear();
+    el.scrollTop = 300;
+
+    act(() => result.current.captureViewAnchor());
+    positions = [
+      { id: "user-1", sourceIndex: 8, index: 3, offset: -130, height: 60, isMessage: true },
+      { id: "tools:tool-1:tool-1", sourceIndex: 9, index: 3, offset: -70, height: 40, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, offset: -30, height: 96, isMessage: true },
+    ];
+    rerender({ viewKey: "conversation" });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(el.scrollTop).toBe(288);
+  });
+
+  test("uses normalized scroll proportion when no surrounding message survives", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const metrics = makeMeasure({ scrollTop: 450, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [{ id: "tool-only", sourceIndex: 4, index: 4, offset: 18, isMessage: false }];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure: metrics.measure,
+          viewKey,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    scrollToIndex.mockClear();
+
+    act(() => result.current.captureViewAnchor());
+    positions = [];
+    metrics.set({ scrollTop: 0, scrollHeight: 600, clientHeight: 300 });
+    rerender({ viewKey: "intent" });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(el.scrollTop).toBe(150);
+  });
+
+  test("applies the saved pixel offset after an initially unmeasured fallback row is measured", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "tool-4", sourceIndex: 4, index: 4, offset: 18, height: 40, isMessage: false },
+    ];
+    const anchorEntries = [{ id: "agent-5", sourceIndex: 5, index: 5, isMessage: true }];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          anchorEntries,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+
+    act(() => result.current.captureViewAnchor());
+    positions = [];
+    rerender({ viewKey: "conversation" });
+    expect(scrollToIndex).toHaveBeenCalledWith(5, { align: "start" });
+
+    el.scrollTop = 480;
+    positions = [{ id: "agent-5", sourceIndex: 5, index: 5, offset: 0, height: 96, isMessage: true }];
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(462);
   });
 });
 

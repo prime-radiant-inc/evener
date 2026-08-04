@@ -41,6 +41,11 @@ export interface TurnBlockProps {
   // useSeenDivider.ts names as the boundary - defaults false so every
   // other turn is unaffected.
   showSeenDivider?: boolean;
+  // Session view switching anchors at item granularity even though
+  // VirtualList windows whole turns. The flattened source position is shared
+  // by every view; the row index remains the turn VirtualList can scroll to.
+  viewAnchorIndex?: number;
+  viewAnchorSourceIndexes?: ReadonlyMap<string, number>;
 }
 
 const CLASS = {
@@ -64,7 +69,15 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
-export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showSeenDivider = false }: TurnBlockProps) {
+export function TurnBlock({
+  turn,
+  sessionRef,
+  exchangeOpeners,
+  agentLabel,
+  showSeenDivider = false,
+  viewAnchorIndex,
+  viewAnchorSourceIndexes,
+}: TurnBlockProps) {
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
@@ -89,6 +102,16 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
   // identity-stable then), so the memoized renderers' `turn` prop churns no
   // more than it already did.
   const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
+  const viewAnchorFor = (item: ItemModel) => {
+    const sourceIndex = viewAnchorSourceIndexes?.get(item.id);
+    if (sourceIndex === undefined || viewAnchorIndex === undefined) return undefined;
+    return {
+      "data-view-anchor-id": item.id,
+      "data-view-anchor-index": viewAnchorIndex,
+      "data-view-anchor-source-index": sourceIndex,
+      "data-view-anchor-message": item.type === "userMessage" || item.type === "agentMessage",
+    } as const;
+  };
   return (
     <>
       {showSeenDivider && <SeenDivider />}
@@ -101,7 +124,12 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
             // content and takes the indent too. The key moves to the wrapper
             // so the cluster's identity is unchanged.
             return (
-              <div key={itemScopeKey(sessionRef, item.id)} className={CLASS.runContent} data-testid="run-content">
+              <div
+                key={itemScopeKey(sessionRef, item.id)}
+                className={CLASS.runContent}
+                data-testid="run-content"
+                {...viewAnchorFor(item)}
+              >
                 <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
               </div>
             );
@@ -118,19 +146,20 @@ export function TurnBlock({ turn, sessionRef, exchangeOpeners, agentLabel, showS
           // here.
           if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
             return (
-              <ItemRenderer
-                key={item.id}
-                item={item}
-                turn={shownTurn}
-                live={isItemLive(item)}
-                sessionRef={sessionRef}
-                opensExchange={exchangeOpeners?.has(item.id)}
-                agentLabel={agentLabel}
-              />
+              <div key={item.id} {...viewAnchorFor(item)}>
+                <ItemRenderer
+                  item={item}
+                  turn={shownTurn}
+                  live={isItemLive(item)}
+                  sessionRef={sessionRef}
+                  opensExchange={exchangeOpeners?.has(item.id)}
+                  agentLabel={agentLabel}
+                />
+              </div>
             );
           }
           return (
-            <div key={item.id} className={CLASS.runContent} data-testid="run-content">
+            <div key={item.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(item)}>
               <ItemRenderer
                 item={item}
                 turn={shownTurn}

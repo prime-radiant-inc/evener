@@ -53,6 +53,12 @@ export interface VirtualListProps {
    * identity consumer (e.g. the gallery demo) completely unaffected.
    */
   getItemKey?: (index: number) => string | number;
+  /**
+   * Called after react-virtual changes its rendered range or measurements.
+   * Consumers can finish layout work that depends on a row becoming measured
+   * without timers or polling.
+   */
+  onChange?: () => void;
   ref?: Ref<VirtualListHandle>;
 }
 
@@ -75,7 +81,7 @@ const DEFAULT_OVERSCAN = 6;
  * rows this wave's consumers have and keeps this a thin wrapper rather
  * than a dynamic-height layout engine.
  */
-export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKey, ref }: VirtualListProps) {
+export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKey, onChange, ref }: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -84,6 +90,7 @@ export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKe
     estimateSize,
     overscan: DEFAULT_OVERSCAN,
     getItemKey,
+    onChange,
   });
 
   useImperativeHandle(
