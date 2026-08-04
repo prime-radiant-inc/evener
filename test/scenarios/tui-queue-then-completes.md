@@ -124,7 +124,9 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    test -f "$RUN_ROOT/hub.log"
 
    WORKDIR="$RUN_ROOT/work"
-   TMUX_SESSION="serf-queue-$$"
+   run_suffix="${RUN_ROOT##*/}"
+   run_suffix="${run_suffix//[^A-Za-z0-9_-]/-}"
+   TMUX_SESSION="serf-queue-${run_suffix}-$$"
    if [ -z "${PORT:-}" ]; then
      printf 'PORT must name the Setup checklist hub\n' >&2
      exit 1
