@@ -116,15 +116,21 @@ func TestSchemaWaitKnobs(t *testing.T) {
 
 func TestDefShellHasJobParams(t *testing.T) {
 	props := DefShell().Parameters["properties"].(map[string]any)
-	for _, p := range []string{"command", "description", "background", "max_runtime_ms"} {
+	for _, p := range []string{"command", "description", "background"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefShell missing param %q", p)
 		}
 	}
-	for _, banned := range []string{"timeout_ms", "max_wait_ms", "block_timeout_ms"} {
+	for _, banned := range []string{"max_runtime_ms", "timeout_ms", "max_wait_ms", "block_timeout_ms"} {
 		if _, ok := props[banned]; ok {
 			t.Errorf("DefShell must not have the %q param", banned)
 		}
+	}
+	if got := DefShell().Description; got != "Run a shell command and report stdout, stderr, and exit status." {
+		t.Fatalf("DefShell description mismatch:\n%q", got)
+	}
+	if got := props["background"].(map[string]any)["description"]; got != "Choose foreground execution (false, default) for inline results, or background execution (true) for an immediate job_id. Foreground commands still running at ~120s continue as background jobs." {
+		t.Fatalf("background description mismatch:\n%q", got)
 	}
 }
 

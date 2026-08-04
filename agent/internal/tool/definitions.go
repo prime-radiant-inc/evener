@@ -78,15 +78,14 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run a shell command. On POSIX, Serf runs Bash with `pipefail`, so a failed stage in a pipeline makes the command fail; always inspect the reported exit code. By default it runs in the foreground and returns stdout, stderr, and exit code inline when it finishes (up to the session command timeout, ~120s; a command still running at that bound is promoted to a durable background job: you get its `job_id`, the process is not killed). Set `background: true` to start the command and return its `job_id` immediately (status `running` confirms it launched; a shell launch failure is reported immediately, while a process failure after launch surfaces via the terminal notification). `max_runtime_ms` separately caps total process runtime. Output is bounded automatically: completed foreground output up to ~8 KB is returned in full; larger output returns a head+tail digest plus a `job_id`, and background or timeout-promoted output returns a bounded window plus a `job_id`. Do not pipe commands through `tail` or `head` just to limit output; that can hide failures and is unnecessary. Background jobs are logged automatically: Serf notifies you when a job finishes with its status and exit code, and you can read retained output with `read_transcript(transcript_ref=\"job:<job_id>\")`. Do not redirect output or add a completion marker merely to observe completion; use `job_watch(output_match=...)` only for a real intermediate readiness notification. `total_bytes`/`dropped_bytes`/`output_status` say how much exists and whether any was evicted. A result with NO `job_id` is already complete: the inline output is the whole result, so do not call transcript tools for it. Prefer `rg`/`rg --files` for searching.",
+		Description: "Run a shell command and report stdout, stderr, and exit status.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":        map[string]any{"type": "string"},
-				"description":    map[string]any{"type": "string"},
-				"background":     map[string]any{"type": "boolean", "description": "false (default): run in the foreground and return when the command finishes (still running at the session timeout → promoted to a background job). true: start the command and return its job_id immediately."},
-				"max_runtime_ms": map[string]any{"type": "integer"},
+				"command":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"background":  map[string]any{"type": "boolean", "description": "Choose foreground execution (false, default) for inline results, or background execution (true) for an immediate job_id. Foreground commands still running at ~120s continue as background jobs."},
 			},
 			"required": []string{"command"},
 		},
