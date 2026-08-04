@@ -1130,6 +1130,9 @@ func formatDelegateSend(out delegateSendResult) string {
 		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
 			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA,
 			out.Worktree.Ahead, out.Worktree.Dirty)
+		if out.Worktree.DisposalHint != "" {
+			fmt.Fprintf(&b, "\ndisposal_hint: %s", out.Worktree.DisposalHint)
+		}
 	}
 	if out.StructuredResult != nil {
 		if sr, err := json.Marshal(out.StructuredResult); err == nil {

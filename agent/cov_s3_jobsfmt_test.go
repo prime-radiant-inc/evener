@@ -31,7 +31,7 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 		StructuredResult:      map[string]any{"k": "v"},
 		StructuredResultValid: func() *bool { b := true; return &b }(),
 		Worktree: &delegateWorktreeToolResult{
-			Path: "/tmp/lane", Branch: "feature", HeadSHA: "abc123", Ahead: 2, Dirty: true,
+			Path: "/tmp/lane", Branch: "feature", HeadSHA: "abc123", Ahead: 2, Dirty: true, DisposalHint: "dispose the lane",
 		},
 	}
 	got := formatDelegateSend(out)
@@ -45,6 +45,7 @@ func TestS3Cov_FormatDelegateSend(t *testing.T) {
 		"watches:",
 		"w1 → src (on_complete)",
 		"worktree: path=/tmp/lane, branch=feature, head=abc123, 2 commits ahead, dirty=true",
+		"disposal_hint: dispose the lane",
 		"structured_result (valid=true)",
 	} {
 		if !strings.Contains(got, want) {
