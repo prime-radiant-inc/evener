@@ -111,6 +111,16 @@ ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-6}
 AGENT_P=${AGENT_P-4}
 
+# Root discovery is normally quick, but it can block forever when the configured
+# Go caches live on a stalled volume. Keep that failure bounded without changing
+# cache configuration: the operator gets the configured cache paths and an exact
+# repair/retry command instead. This must be a positive integer in seconds.
+ROOT_PACKAGE_LIST_TIMEOUT=${SERF_ROOT_PACKAGE_LIST_TIMEOUT:-30}
+if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: SERF_ROOT_PACKAGE_LIST_TIMEOUT must be a positive integer in seconds (got %q)\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	exit 2
+fi
+
 # Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
 # targets are already excluded by -run; these names cover rapid/sequence fuzz
 # tests and structured-generator reachability proofs that remain under make fuzz.
@@ -153,6 +163,18 @@ process_descendants() {
 		process_descendants "$child"
 		printf '%s\n' "$child"
 	done
+}
+
+stop_process_tree() {
+	local pid="$1" descendant
+	local -a descendants=()
+	for descendant in $(process_descendants "$pid"); do
+		descendants+=("$descendant")
+	done
+	for descendant in ${descendants[@]+"${descendants[@]}"} "$pid"; do
+		[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
+	done
+	wait "$pid" 2>/dev/null || :
 }
 
 stop_children() {
@@ -202,6 +224,43 @@ failed_modules=()
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
+root_package_list_timeout_diagnostic() {
+	local package_list="$1" worktree gocache gomodcache
+	worktree="$(pwd -P)"
+	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
+	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
+	printf 'run-module-tests.sh: go list ./... timed out after %ss.\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
+	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
+	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
+	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list" >&2
+	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
+	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/run-module-tests.sh -short -count=1\n' \
+		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+}
+
+run_root_package_list() {
+	local package_list="$1" list_pid started_at list_status
+	( go list ./... >"$package_list" 2>&1 ) &
+	list_pid="$!"
+	started_at=$SECONDS
+	while kill -0 "$list_pid" 2>/dev/null; do
+		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+			stop_process_tree "$list_pid"
+			root_package_list_timeout_diagnostic "$package_list"
+			return 1
+		fi
+		sleep 0.1
+	done
+	if wait "$list_pid"; then
+		return 0
+	else
+		list_status=$?
+		cat "$package_list" >&2
+		return "$list_status"
+	fi
+}
+
 run_module() {
 	local m="$1" extra="$2" test_flags
 	test_flags="$(module_test_flags "$m")"
@@ -211,9 +270,7 @@ run_module() {
 		local -a packages=()
 		local pkg package_list
 		package_list="$logdir/root.packages"
-		if ! go list ./... >"$package_list"; then
-			return 1
-		fi
+		run_root_package_list "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/serf/cmd/serf-fuzzcov|primeradiant.com/serf/cmd/serf-fuzz-harvest)

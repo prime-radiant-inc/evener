@@ -20,3 +20,11 @@ Use this boundary:
 
 A provider API key by itself must never cause default tests to issue live
 requests.
+
+## Frontend gates
+
+Before the gate, run `npx biome check --write` on touched frontend files. Use
+`make test-web` as the canonical frontend unit, typecheck, and Biome gate; on
+Chrome-capable hosts, also run `make test-web-browser` for real geometry and
+browser guards. CI checks Biome formatting. Avoid `noNonNullAssertion` and
+array-index-key violations.

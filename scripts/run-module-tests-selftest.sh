@@ -133,11 +133,30 @@ set -u
 module="$(basename "$PWD")"
 [ "$PWD" = "$FAKE_REPO" ] && module=.
 case "${1:-}" in
+	env)
+		case "${2:-}" in
+			GOCACHE) printf '%s\n' "${GOCACHE:-}" ;;
+			GOMODCACHE) printf '%s\n' "${GOMODCACHE:-}" ;;
+			*) exit 1 ;;
+		esac
+		exit 0
+		;;
 	list)
 		if [ "${FAKE_LIST_FAIL:-0}" -ne 0 ]; then
 			printf 'go: cannot load module\n' >&2
 			exit 1
 		fi
+		if [ "${FAKE_LIST_HOLD:-0}" -ne 0 ]; then
+			if [ -n "${FAKE_READY_FIFO:-}" ] && [ -p "$FAKE_READY_FIFO" ]; then
+				printf 'go-list-started\n' >"$FAKE_READY_FIFO"
+			fi
+			: >"$FAKE_STATE/root-list.started"
+			sleep 1000 &
+			printf '%s\n' "$!" >"$FAKE_STATE/root-list-child.pid"
+			wait "$!"
+			exit $?
+		fi
+		: >"$FAKE_STATE/root.listed"
 		printf 'primeradiant.com/serf/%s\n' "$module"
 		exit 0
 		;;
@@ -234,6 +253,7 @@ run_tests() {
 	(
 		cd "$repo" || exit 1
 		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -242,9 +262,25 @@ run_tests_async() {
 	modules="$1"
 	output="$2"
 	shift 2
+	ready_fifo=""
+	for argument in "$@"; do
+		case "$argument" in
+			FAKE_READY_FIFO=*) ready_fifo="${argument#FAKE_READY_FIFO=}" ;;
+		esac
+	done
 	(
 		cd "$repo" || exit 1
+		if [ -n "$ready_fifo" ]; then
+			printf 'runner-started\n' >"$ready_fifo"
+		env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
+			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
+			runner_status="$?"
+			printf 'runner-exited:%s\n' "$runner_status" >"$ready_fifo"
+			exit "$runner_status"
+		fi
 		exec env -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			MODULES="$modules" AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1 &
 	runner_pid="$!"
@@ -256,6 +292,7 @@ run_tests_default_modules() {
 	(
 		cd "$repo" || exit 1
 		env -u MODULES -u WAVE1 -u WAVE2 TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			GOCACHE="$case_dir/gocache" GOMODCACHE="$case_dir/gomodcache" \
 			AGENT_SHARDS=0 SELFTEST=0 WEB=1 WEB_DIR="$repo/cmd/serf-hub/frontend" MAKE="$bin/make" "$@" "$runner" -short -count=1
 	) >"$output" 2>&1
 }
@@ -269,13 +306,61 @@ runner_logdirs() {
 }
 
 wait_for_file() {
-	local path="$1" attempts=200
+	local path="$1" attempts="${2:-200}"
 	while [ "$attempts" -gt 0 ]; do
 		[ -f "$path" ] && return 0
 		sleep 0.01
 		attempts=$((attempts - 1))
 	done
 	return 1
+}
+
+wait_for_process_exit() {
+	local pid="$1" attempts=200
+	while [ "$attempts" -gt 0 ]; do
+		kill -0 "$pid" 2>/dev/null || return 0
+		sleep 0.01
+		attempts=$((attempts - 1))
+	done
+	return 1
+}
+
+start_fixture_watchdog() {
+	local target_pid="$1" delay="$2" marker="$3" event_fifo="$4" event="$5"
+	(
+		watchdog_sleep_pid=""
+		stop_watchdog_sleep() {
+			if [ -n "$watchdog_sleep_pid" ]; then
+				kill -TERM "$watchdog_sleep_pid" 2>/dev/null || :
+				wait "$watchdog_sleep_pid" 2>/dev/null || :
+				watchdog_sleep_pid=""
+			fi
+		}
+		watchdog_interrupted() {
+			stop_watchdog_sleep
+			exit 143
+		}
+		trap watchdog_interrupted HUP INT TERM
+		trap stop_watchdog_sleep EXIT
+		sleep "$delay" &
+		watchdog_sleep_pid="$!"
+		wait "$watchdog_sleep_pid" || exit 0
+		watchdog_sleep_pid=""
+		if kill -0 "$target_pid" 2>/dev/null; then
+			[ -n "$marker" ] && : >"$marker"
+			kill -TERM "$target_pid" 2>/dev/null || :
+		fi
+		[ -n "$event_fifo" ] && printf '%s\n' "$event" >"$event_fifo"
+	) &
+	fixture_watchdog_pid="$!"
+}
+
+stop_fixture_watchdog() {
+	local pid="$1"
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -TERM "$pid" 2>/dev/null || :
+	fi
+	wait "$pid" 2>/dev/null || :
 }
 
 full_logs_path() {
@@ -296,6 +381,7 @@ assert_eq "$rc" "0" "all-passing run exits zero"
 assert_eq "$(verdicts "$out" | tr '\n' ' ' | sed 's/ *$//')" ". agent llm web" "every stream reports once, in wave order"
 assert_one_verdict_per_name "$out" "all-passing run reports no name twice"
 assert_eq "$(started_streams)" ". agent llm web" "every requested stream ran"
+if [ -f "$state/root.listed" ]; then ok "a root package-discovery success reaches the root test invocation"; else bad "a root package-discovery success never listed root packages"; fi
 assert_not_has "$out" "=== failing module output ===" "all-passing run prints no failure section"
 assert_not_has "$out" "go-stdout:" "passing suite chatter stays hidden"
 assert_eq "$(runner_logdirs)" "" "a successful run removes its temporary logs"
@@ -420,8 +506,82 @@ new_case
 out="$case_dir/root-package-discovery-failure.out"
 if FAKE_LIST_FAIL=1 run_tests "." "$out"; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "a root package-discovery failure exits nonzero"; else bad "a root package-discovery failure unexpectedly exits zero"; fi
+assert_has "$out" "FAIL  ." "a root package-discovery failure contributes a root verdict"
+assert_has "$out" "----- . -----" "a root package-discovery failure is included in aggregate output"
 assert_has "$out" "go: cannot load module" "a root package-discovery diagnostic reaches the reader"
 assert_not_has "$out" "packages[@]: unbound variable" "a root package-discovery failure does not fall into an empty-array error"
+
+# Root package discovery happens before the root test command. A wedged cache
+# can therefore freeze the entire gate while the concurrent frontend stream
+# remains live. The watchdog makes the pre-timeout behavior deterministic: it
+# records that the runner needed outside intervention instead of leaving this
+# selftest itself stuck forever.
+new_case
+out="$case_dir/root-package-discovery-timeout.out"
+root_worktree="$(cd "$repo" && pwd -P)"
+ready_fifo="$state/root-list.ready"
+mkfifo "$ready_fifo"
+(
+	exec 8>"$ready_fifo"
+	exec sleep 20
+) &
+ready_keeper_pid="$!"
+exec 9<"$ready_fifo"
+run_tests_async "." "$out" FAKE_LIST_HOLD=1 SERF_ROOT_PACKAGE_LIST_TIMEOUT=5 FAKE_READY_FIFO="$ready_fifo"
+start_fixture_watchdog "$runner_pid" 10 "$state/root-list.watchdog" "$ready_fifo" startup-watchdog
+startup_watchdog_pid="$fixture_watchdog_pid"
+ready_signal=""
+startup_ready=0
+if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "runner-started" ]; then
+	if IFS= read -r -u 9 ready_signal && [ "$ready_signal" = "go-list-started" ]; then
+		startup_ready=1
+	fi
+fi
+if [ "$startup_ready" -eq 1 ]; then
+	stop_fixture_watchdog "$startup_watchdog_pid"
+	exec 9<&-
+	kill "$ready_keeper_pid" 2>/dev/null || :
+	wait "$ready_keeper_pid" 2>/dev/null || :
+	start_fixture_watchdog "$runner_pid" 8 "$state/root-list.watchdog" "" ""
+	watchdog_pid="$fixture_watchdog_pid"
+	if wait "$runner_pid"; then rc=0; else rc=$?; fi
+	stop_fixture_watchdog "$watchdog_pid"
+	assert_eq "$rc" "1" "a root package-discovery timeout exits nonzero"
+	if [ -f "$state/root-list.watchdog" ]; then
+		bad "root package discovery required the watchdog despite its configured timeout"
+	else
+		ok "root package discovery finishes before the watchdog"
+	fi
+	assert_has "$out" "go list ./... timed out" "a root package-discovery timeout names the blocked command"
+	assert_has "$out" "effective GOCACHE: $case_dir/gocache" "a root package-discovery timeout reports the effective GOCACHE"
+	assert_has "$out" "effective GOMODCACHE: $case_dir/gomodcache" "a root package-discovery timeout reports the effective GOMODCACHE"
+	assert_has "$out" "worktree/module: $root_worktree (.)" "a root package-discovery timeout reports its worktree and module"
+	assert_has "$out" "retained package-list log:" "a root package-discovery timeout names the retained package-list log"
+	timeout_logs="$(full_logs_path "$out")"
+	timeout_package_list="$(awk '/^run-module-tests\.sh: retained package-list log: / { sub(/^run-module-tests\.sh: retained package-list log: /, ""); print; exit }' "$out")"
+	if [ -n "$timeout_logs" ] && [ "$timeout_package_list" = "$timeout_logs/root.packages" ] && [ -f "$timeout_package_list" ]; then
+		ok "a root package-discovery timeout retains the reported root package-list log"
+	else
+		bad "a root package-discovery timeout names a missing or wrong package-list log (logs '$timeout_logs', package list '$timeout_package_list')"
+	fi
+	assert_has "$out" "go clean -cache -modcache" "a root package-discovery timeout gives a cache repair command"
+	assert_has "$out" "scripts/run-module-tests.sh -short -count=1" "a root package-discovery timeout gives an exact retry command"
+	child_pid="$(cat "$state/root-list-child.pid" 2>/dev/null || :)"
+	if [ -n "$child_pid" ] && wait_for_process_exit "$child_pid"; then
+		ok "a root package-discovery timeout reaps its descendant"
+	else
+		bad "a root package-discovery timeout leaves its descendant alive"
+		[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
+	fi
+else
+	bad "the root package-discovery timeout fixture did not reach held go list (last event '$ready_signal')"
+	if kill -0 "$runner_pid" 2>/dev/null; then kill -TERM "$runner_pid" 2>/dev/null || :; fi
+	wait "$runner_pid" 2>/dev/null || :
+	stop_fixture_watchdog "$startup_watchdog_pid"
+	exec 9<&-
+	kill "$ready_keeper_pid" 2>/dev/null || :
+	wait "$ready_keeper_pid" 2>/dev/null || :
+fi
 
 new_case
 out="$case_dir/web-failure.out"
