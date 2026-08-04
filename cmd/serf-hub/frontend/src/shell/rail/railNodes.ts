@@ -210,7 +210,10 @@ export function needsYouDescendantCount(node: ApiTreeNode): number {
 }
 
 export function workingDescendantCount(node: ApiTreeNode): number {
-  return node.children.reduce((count, child) => count + (child.state === "active" ? 1 : 0) + workingDescendantCount(child), 0);
+  return node.children.reduce(
+    (count, child) => count + (child.state === "active" ? 1 : 0) + workingDescendantCount(child),
+    0,
+  );
 }
 
 // A session "wants you" either directly (its own state) or transitively (a

@@ -13,8 +13,8 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   sessionNodes,
-  workingDescendantCount,
   topLevelAncestorRef,
+  workingDescendantCount,
 } from "./railNodes";
 
 function node(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
