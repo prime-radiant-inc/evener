@@ -1211,10 +1211,11 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
 	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	pins := hubcore.NewPinSectionStore(filepath.Join(root, "index.db"))
 	// No PastIndex entry for this session at all (nothing ever Rebuilt or
 	// seeded) — this is what routes it through the orphan-live fallback loop
 	// instead of the PastIndex-derived project walk.
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore, PinSections: pins})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
 	req.Host = "127.0.0.1:9180"

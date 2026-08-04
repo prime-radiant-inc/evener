@@ -533,6 +533,7 @@ _(no fields)_
 | `jobId` | `string` |  |  |
 | `ownerSessionId` | `string` |  |  |
 | `ownerRef` | `string` |  |  |
+| `transcriptRef` | `string` | yes |  |
 | `type` | `string` |  |  |
 | `status` | `string` |  |  |
 | `outcome` | `string` | yes |  |
