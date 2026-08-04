@@ -42,7 +42,6 @@ FuzzJobstoreLifecycleProgram 95.4
 FuzzLLMCallParsers 100.0
 FuzzLaunchConfigDecode 1.5
 FuzzLifecycleSeq 21.2
-FuzzLineWindowExtractors 32.4
 FuzzList 70.0
 FuzzMCPConfigLoad 48.1
 FuzzMCPSchemaToParams 84.6

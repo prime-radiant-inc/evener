@@ -279,8 +279,7 @@ found came from here:
   both real bugs lived on; a standing regression guard for them.
 - **two-path equivalence** — independent code paths over the same data:
   `FuzzTranscriptReadersAgree` (the three transcript scanners),
-  `FuzzTurnPagingEquivalence` (`WindowTurns` vs `PageTurns`),
-  `FuzzLineWindowExtractors`.
+  `FuzzTurnPagingEquivalence` (`WindowTurns` vs `PageTurns`).
 
 Each carries a documented **allow-list** of legitimately path-specific fields
 (raw payloads, provider ids, reasoning encoding, …) excluded from the comparison;
