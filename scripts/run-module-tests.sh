@@ -283,14 +283,10 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
-		if [ "$ROOT_FULL" -ne 0 ]; then
-			# ROOT_FULL removes short mode while retaining the regular
-			# Test/Example name filter. Fuzz-owned targets and sanity functions
-			# stay under the explicit make fuzz gate.
-			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
-		else
-			/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
-		fi
+		# ROOT_FULL removes short mode through module_test_flags while retaining
+		# the regular Test/Example name filter. Fuzz-owned targets and sanity
+		# functions stay under the explicit make fuzz gate.
+		/usr/bin/time -p go test $test_flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
