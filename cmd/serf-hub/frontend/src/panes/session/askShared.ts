@@ -1,6 +1,6 @@
 // Shared ask_user question/option parsing (wave-5 T4 extraction). Ground
 // truth: agent/internal/tool/definitions.go's DefAskUser gives the exact
-// argumentsJson shape - {questions:[{header(<=12 chars), question,
+// argumentsJson shape - {questions:[{header?(<=12 chars), question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
 // if_unanswered?}]}, 1-4 questions. This used to live private to
 // transcript/tools/askUser.tsx (the wave-4 read-only tool-call renderer);
@@ -40,16 +40,16 @@ function parseOption(raw: unknown): AskUserOption | undefined {
   return { label: obj.label, detail: obj.detail, recommended: obj.recommended === true };
 }
 
-function parseQuestion(raw: unknown): AskUserQuestion | undefined {
+function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
-  if (typeof obj.header !== "string" || typeof obj.question !== "string" || !Array.isArray(obj.options)) {
+  if ((obj.header !== undefined && typeof obj.header !== "string") || typeof obj.question !== "string" || !Array.isArray(obj.options)) {
     return undefined;
   }
   const options = obj.options.map(parseOption).filter((o): o is AskUserOption => o !== undefined);
   if (options.length === 0) return undefined;
   return {
-    header: obj.header,
+    header: typeof obj.header === "string" ? obj.header : `Question ${index + 1}`,
     question: obj.question,
     options,
     multiSelect: obj.multi_select === true,
@@ -70,7 +70,7 @@ export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | unde
   const args = parseArgs(item.argumentsJSON);
   const raw = args.questions;
   if (!Array.isArray(raw)) return undefined;
-  const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
+  const questions = raw.map((question, index) => parseQuestion(question, index)).filter((q): q is AskUserQuestion => q !== undefined);
   return questions.length > 0 ? questions : undefined;
 }
 

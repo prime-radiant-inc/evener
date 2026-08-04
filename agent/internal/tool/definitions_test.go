@@ -620,7 +620,7 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 }
 
 // TestDefAskUserSchema locks the ask_user input schema to spec §4.2: questions
-// 1-4 per call, each with header (<=12 chars)/question/options (2-5 of
+// 1-4 per call, each with optional header (<=12 chars)/question/options (2-5 of
 // {label, detail, recommended?}), multi_select, why, and if_unanswered.
 func TestDefAskUserSchema(t *testing.T) {
 	def := DefAskUser()
@@ -661,7 +661,7 @@ func TestDefAskUserSchema(t *testing.T) {
 		}
 	}
 	req := item["required"].([]string)
-	want := []string{"header", "question", "options"}
+	want := []string{"question", "options"}
 	if !reflect.DeepEqual(req, want) {
 		t.Fatalf("required = %v, want %v", req, want)
 	}
