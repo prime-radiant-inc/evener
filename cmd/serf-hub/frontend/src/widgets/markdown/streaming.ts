@@ -51,7 +51,36 @@ interface OpenEmphasis {
 
 type OpenMarker = OpenCodeSpan | OpenEmphasis;
 
-const FENCE_LINE = /^\s*(`{3,}|~{3,})/;
+const FENCE_OPENER = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSER = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+
+function fenceOpener(line: string): string | undefined {
+  const match = FENCE_OPENER.exec(line);
+  if (!match) return undefined;
+  const run = match[1];
+  const info = match[2] ?? "";
+  // CommonMark rejects a backtick fence whose info string contains a
+  // backtick; treating it as ordinary text avoids inventing a code block.
+  if (run?.startsWith("`") && info.includes("`")) return undefined;
+  return run;
+}
+
+function fenceCloser(line: string): string | undefined {
+  return FENCE_CLOSER.exec(line)?.[1];
+}
+
+function isIndentedCodeBlock(line: string): boolean {
+  return line.startsWith("    ") || line.startsWith("\t");
+}
+
+function isBlockBoundary(line: string): boolean {
+  return (
+    /^ {0,3}#{1,6}(?:[ \t]+|$)/.test(line) ||
+    /^ {0,3}>/.test(line) ||
+    /^ {0,3}(?:[-+*](?:[ \t]+|$)|\d{1,9}[.)](?:[ \t]+|$))/.test(line) ||
+    /^(?: {0,3}(?:\*[ \t]*){3,}| {0,3}(?:-[ \t]*){3,}| {0,3}(?:_[ \t]*){3,})$/.test(line)
+  );
+}
 
 function isWhitespace(char: string | undefined): boolean {
   return char === undefined || /\s/.test(char);
@@ -152,11 +181,12 @@ export function closeOpenMarkdown(source: string): string {
   let stack: OpenMarker[] = [];
 
   for (const line of lines) {
-    const fenceRun = FENCE_LINE.exec(line)?.[1];
+    const fenceRun = fenceOpener(line);
     if (fence) {
       // Inside a fence the only live syntax is a closing fence of the same
       // character at least as long as the opener.
-      if (fenceRun !== undefined && fenceRun.charAt(0) === fence.char && fenceRun.length >= fence.length) {
+      const closingRun = fenceCloser(line);
+      if (closingRun !== undefined && closingRun.charAt(0) === fence.char && closingRun.length >= fence.length) {
         fence = null;
       }
       continue;
@@ -170,6 +200,11 @@ export function closeOpenMarkdown(source: string): string {
       stack = []; // emphasis cannot span a block boundary
       continue;
     }
+    if (isIndentedCodeBlock(line)) {
+      stack = [];
+      continue;
+    }
+    if (isBlockBoundary(line)) stack = [];
     scanInline(line, stack);
   }
 

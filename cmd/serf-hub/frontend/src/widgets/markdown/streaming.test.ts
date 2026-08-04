@@ -102,6 +102,26 @@ test("a fence closed mid-stream is not closed again", () => {
   expect(closeOpenMarkdown("```\ncode\n```\nafter **bo")).toBe("```\ncode\n```\nafter **bo**");
 });
 
+test("a closing fence with a non-whitespace suffix remains code content", () => {
+  const source = "```\n````js\ncode";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n\`\`\``);
+});
+
+test("a fence indented four spaces is not treated as a fenced block", () => {
+  const source = "    ```\ncode";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an abandoned emphasis opener does not close across a heading", () => {
+  const source = "**abandoned\n# heading";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an abandoned emphasis opener does not close across a list", () => {
+  const source = "**abandoned\n- item";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 // --- documented non-goals ------------------------------------------------------
 
 test("underscore emphasis is NEVER auto-closed (snake_case would false-positive constantly)", () => {
