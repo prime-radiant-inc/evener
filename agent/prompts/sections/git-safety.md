@@ -8,3 +8,5 @@
 - Do not amend a commit unless explicitly requested to do so.
 - **NEVER** use destructive commands like `git reset --hard`, `git checkout --`, `git add -A`  unless specifically requested or approved.
 - **ALWAYS** prefer using non-interactive git commands.
+- Before a local branch integration, re-check the target branch and ref immediately before the merge; stop if either changed since preflight.
+- Do not use `git pull` for local integration. Fetch only the intended base ref with `--no-tags`, check ancestry, use an explicit merge mode (normally `git merge --no-ff --no-edit`), preserve unrelated dirty files, and block overlaps.

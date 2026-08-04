@@ -511,6 +511,15 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		lastIdx = idx
 	}
 
+	for _, guidance := range []string{
+		"Before a local branch integration, re-check the target branch and ref immediately before the merge; stop if either changed since preflight.",
+		"Do not use `git pull` for local integration. Fetch only the intended base ref with `--no-tags`, check ancestry, use an explicit merge mode (normally `git merge --no-ff --no-edit`), preserve unrelated dirty files, and block overlaps.",
+	} {
+		if !strings.Contains(result, guidance) {
+			t.Errorf("system prompt missing local integration guidance %q", guidance)
+		}
+	}
+
 	// Verify sources were tracked.
 	if len(sources) < 5 {
 		t.Errorf("expected at least 5 tracked sources, got %d", len(sources))
