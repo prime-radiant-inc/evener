@@ -9,9 +9,9 @@
 // text), not the tool_state field legacy actually read.
 
 import type { ItemModel } from "../../../../protocol/model";
+import { Markdown } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { Markdown } from "../../../../widgets";
 import { parseArgs, str } from "./helpers";
 
 function UseSkillBody({ item }: ToolRenderProps) {
