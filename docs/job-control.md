@@ -68,7 +68,7 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` |
-| Steer a running delegate | `delegate_send(to=<delegate_id>)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
+| Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
 There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `read_transcript(transcript_ref="job:<job_id>")`, or resume its next turn with `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` once it is idle.
 

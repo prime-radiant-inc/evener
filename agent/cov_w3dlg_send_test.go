@@ -123,7 +123,11 @@ func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testin
 	}
 	waitForShellDone(t, sess.jobManager, res.StartedJobID)
 	started := loadShellRecord(t, sess.jobManager, res.StartedJobID)
-	if started.Status != jobstore.StatusCompleted || !strings.Contains(readShellOutput(t, sess.jobManager, res.StartedJobID), "second complete") {
+	output, _, _, err := sess.jobManager.readOutput(res.StartedJobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read resumed output: %v", err)
+	}
+	if started.Status != jobstore.StatusCompleted || !strings.Contains(output, "second complete") {
 		t.Fatalf("started record = %+v, output should contain resumed completion", started)
 	}
 }
