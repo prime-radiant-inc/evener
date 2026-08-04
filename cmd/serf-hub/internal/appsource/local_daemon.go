@@ -39,6 +39,10 @@ type LocalDaemonEntry struct {
 	Entry     rendezvous.Entry
 	SessionID string
 	Status    string
+	// ReadOnlyAlias addresses an in-process descendant through its owner's
+	// daemon. It is valid for reads/subscriptions only; mutation methods must not
+	// accidentally apply a child-targeted request to the owning root session.
+	ReadOnlyAlias bool
 	// PendingAsk mirrors hubcore.LiveEntry.PendingAsk — true while the daemon
 	// reports an unanswered ask_user question. threadFromEntry carries it into
 	// appwire.SerfThread.AskPending so the TUI's per-row ask marker (Task 29)
@@ -79,7 +83,7 @@ func (s *LocalDaemonSource) ID() string {
 }
 
 func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {
-	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +106,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams)
 	if session == nil {
 		created := newRelaySession(
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
-				currentEntry, resolveErr := s.entryForRef(key, "")
+				currentEntry, resolveErr := s.entryForReadRef(key, "")
 				if resolveErr != nil {
 					return nil, nil, resolveErr
 				}
@@ -198,7 +202,7 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 		}
 		return result.Response, nil
 	}
-	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
@@ -212,7 +216,7 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 }
 
 func (s *LocalDaemonSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -748,6 +752,14 @@ func daemonAuthHeader(token string) http.Header {
 }
 
 func (s *LocalDaemonSource) entryForRef(rawRef, threadID string) (rendezvous.Entry, error) {
+	return s.entryForRefMode(rawRef, threadID, false)
+}
+
+func (s *LocalDaemonSource) entryForReadRef(rawRef, threadID string) (rendezvous.Entry, error) {
+	return s.entryForRefMode(rawRef, threadID, true)
+}
+
+func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (rendezvous.Entry, error) {
 	if rawRef != "" {
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil {
@@ -759,6 +771,9 @@ func (s *LocalDaemonSource) entryForRef(rawRef, threadID string) (rendezvous.Ent
 		threadID = ref.ThreadID
 	}
 	for _, item := range s.liveEntries() {
+		if item.ReadOnlyAlias && !allowReadOnlyAlias {
+			continue
+		}
 		entry := localDaemonRendezvousEntry(item)
 		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
 			return entry, nil
@@ -799,7 +814,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 	if !entry.StartedAt.IsZero() {
 		startedAt = entry.StartedAt.Unix()
 	}
-	return appwire.Thread{
+	thread := appwire.Thread{
 		ID:            threadID,
 		SessionID:     entry.SessionID,
 		Preview:       entry.SessionID,
@@ -828,6 +843,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
+	if item.ReadOnlyAlias {
+		thread.Serf.Capabilities = appwire.ThreadCapabilities{}
+	}
+	return thread
 }
 
 func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {

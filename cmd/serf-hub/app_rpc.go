@@ -28,12 +28,21 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 				if item.Crashed {
 					continue
 				}
-				entries = append(entries, appsource.LocalDaemonEntry{
+				entry := appsource.LocalDaemonEntry{
 					Entry:      item.Entry,
 					SessionID:  item.SessionID,
 					Status:     item.Status,
 					PendingAsk: item.PendingAsk,
-				})
+				}
+				entries = append(entries, entry)
+				// In-process descendants are addressed as their own AppWire
+				// threads, but are served by their owner's daemon endpoint.
+				for _, childID := range item.RunningSubagentIDs {
+					child := entry
+					child.SessionID = childID
+					child.ReadOnlyAlias = true
+					entries = append(entries, child)
+				}
 			}
 			return entries
 		}

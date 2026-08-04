@@ -1085,6 +1085,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentSteer:              s.SteerWithProvenance,
 			parentSteerDelivered:     s.trySteerWithProvenanceAndNotify,
 			parentSystemNotification: s.routeSystemNotification,
+			descendantEvent:          s.cfg.spawn.descendantEvent,
 			parentWatchGranted:       desc.ParentWatchGranted,
 			parentInstallWatch:       restoredParentInstallWatch(s, desc),
 			parentClearWatch:         restoredParentClearWatch(s, desc),

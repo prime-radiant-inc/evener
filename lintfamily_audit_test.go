@@ -149,8 +149,8 @@ func aggregateLintFamilies(t *testing.T) []string {
 			variable := strings.TrimSuffix(strings.TrimPrefix(families[0], "$("), ")")
 			prefix := variable + " :="
 			for _, definition := range lines {
-				if strings.HasPrefix(definition, prefix) {
-					families = strings.Fields(strings.TrimSpace(strings.TrimPrefix(definition, prefix)))
+				if value, ok := strings.CutPrefix(definition, prefix); ok {
+					families = strings.Fields(strings.TrimSpace(value))
 					break
 				}
 			}

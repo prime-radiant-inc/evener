@@ -260,6 +260,61 @@ func TestPreparedSubagentGetsNoAuthoritativeConsumer(t *testing.T) {
 	})
 }
 
+// TestPreparedSubagentForwardsEventsToRootObserver pins the live event path
+// used by a root daemon to project in-process descendants without consuming a
+// child's event channel. The callback is installed before construction so the
+// child's SESSION_START is observable too, and it must not make the child an
+// authoritative consumer: nothing drains that channel.
+func TestPreparedSubagentForwardsEventsToRootObserver(t *testing.T) {
+	parent := newTestSession(t)
+	var observed []events.SessionEvent
+	parent.SetDescendantEventFunc(func(event events.SessionEvent) {
+		observed = append(observed, event)
+	})
+
+	prepared, err := parent.prepareSubagentRun(context.Background(), "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	child := prepared.sub.sess
+	defer child.Close()
+
+	child.sendEvent(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: "live"}, nil)
+
+	foundStart := false
+	foundDelta := false
+	for _, event := range observed {
+		if event.SessionID != child.ID() {
+			t.Fatalf("observed event session = %q, want child %q", event.SessionID, child.ID())
+		}
+		switch event.Kind {
+		case events.EventSessionStart:
+			foundStart = true
+		case events.EventAssistantTextDelta:
+			foundDelta = true
+		}
+	}
+	if !foundStart || !foundDelta {
+		t.Fatalf("observed child events: start=%v delta=%v; want both", foundStart, foundDelta)
+	}
+	child.eventsMu.RLock()
+	marked := child.authoritativeConsumer
+	child.eventsMu.RUnlock()
+	if marked {
+		t.Fatal("descendant event observation marked the child as having an authoritative consumer")
+	}
+	foundBufferedDelta := false
+	for len(child.events) > 0 {
+		if event := <-child.events; event.Kind == events.EventAssistantTextDelta {
+			foundBufferedDelta = true
+		}
+	}
+	if !foundBufferedDelta {
+		t.Fatal("descendant observation consumed the child's own event stream")
+	}
+}
+
 // TestSessionConstructionStaysWellInsideTheBuffer pins the one window the
 // design cannot close.
 //

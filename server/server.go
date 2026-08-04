@@ -109,6 +109,11 @@ type StatusInfo struct {
 	ContextRemaining int                `json:"context_remaining,omitempty"`
 	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
 	Capabilities     ActionCapabilities `json:"capabilities"`
+	// DescendantSessionIDs lists every non-closed in-process descendant currently
+	// projected by this daemon. It is separate from Detailed.Jobs because a
+	// nested descendant's delegate job is owned by its immediate parent and does
+	// not appear in the root session's job store.
+	DescendantSessionIDs []string `json:"descendant_session_ids,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2 A7), served from the materialized thread
 	// envelope. Usage is a pointer (unlike the other
@@ -169,17 +174,29 @@ type ServerConfig struct {
 	AllowedHost   string
 }
 
+// appDescendantProjection is the in-memory AppWire view of one in-process
+// descendant. Descendants share the root daemon's transport, but each keeps an
+// independent projector and turn snapshot so their notification streams and
+// thread/read cuts remain isolated.
+type appDescendantProjection struct {
+	projector    *appprojector.AppEventProjector
+	turns        *appTurnSnapshot
+	thread       appwire.Thread
+	activeTurnID string
+}
+
 // Server is the HTTP server that bridges an agent.Session to REST and appwire clients.
 type Server struct {
 	mux         *http.ServeMux
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu           sync.RWMutex
-	status       StatusInfo
-	appSourceID  string
-	appThreadID  string
-	appProjector *appprojector.AppEventProjector
+	mu             sync.RWMutex
+	status         StatusInfo
+	appSourceID    string
+	appThreadID    string
+	appProjector   *appprojector.AppEventProjector
+	appDescendants map[string]*appDescendantProjection
 	// appTurns is the daemon's one materialized turn authority. Every turn read
 	// -- thread/read, the latest window, an older page -- clones or windows this
 	// and nothing else.
@@ -284,12 +301,13 @@ func NewServer(cfg ServerConfig) *Server {
 		// replay for a reconnecting subscriber. It does not bound the turn
 		// snapshot: eviction changes how far a client can catch up from
 		// deltas, never what the thread contains.
-		appNotifier: appserver.NewNotifier(replaySize),
-		appSourceID: "local",
-		appTurns:    &appTurnSnapshot{},
-		inputCh:     make(chan InputMessage, 1),
-		hubToken:    strings.TrimSpace(cfg.HubToken),
-		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),
+		appNotifier:    appserver.NewNotifier(replaySize),
+		appSourceID:    "local",
+		appTurns:       &appTurnSnapshot{},
+		appDescendants: make(map[string]*appDescendantProjection),
+		inputCh:        make(chan InputMessage, 1),
+		hubToken:       strings.TrimSpace(cfg.HubToken),
+		sameOrigin:     httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)

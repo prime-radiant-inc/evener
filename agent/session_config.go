@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
@@ -359,6 +360,11 @@ type spawnConfig struct {
 	// parentJobActivity reports parent-observable child progress for the
 	// delegate job that owns this session.
 	parentJobActivity func(jobID, phase string)
+
+	// descendantEvent reports every event emitted by this session to the root
+	// daemon. It is inherited unchanged by descendants, so one callback observes
+	// the whole in-process tree without consuming any child's event channel.
+	descendantEvent func(events.SessionEvent)
 
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.

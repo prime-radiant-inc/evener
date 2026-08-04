@@ -34,11 +34,12 @@ type StatusProber struct {
 // prober_wire_test.go) proves the two declarations still agree on the
 // fields listed here, without merging them.
 type statusInfo struct {
-	SessionID         string `json:"session_id"`
-	State             string `json:"state"`
-	PendingAsk        bool   `json:"pending_ask"`
-	PendingEscalation bool   `json:"pending_escalation"`
-	Detailed          *struct {
+	SessionID            string   `json:"session_id"`
+	State                string   `json:"state"`
+	PendingAsk           bool     `json:"pending_ask"`
+	PendingEscalation    bool     `json:"pending_escalation"`
+	DescendantSessionIDs []string `json:"descendant_session_ids"`
+	Detailed             *struct {
 		Jobs []struct {
 			JobType       string `json:"job_type"`
 			Type          string `json:"type"`
@@ -79,6 +80,13 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	seen := make(map[string]bool)
 	var runningSubagentIDs []string
+	for _, id := range s.DescendantSessionIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		runningSubagentIDs = append(runningSubagentIDs, id)
+	}
 	if s.Detailed != nil {
 		for _, job := range s.Detailed.Jobs {
 			jobType := job.JobType

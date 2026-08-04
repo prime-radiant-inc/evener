@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 
 	"primeradiant.com/serf/appwire"
@@ -320,6 +321,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	status := s.status
 	envelope := s.appEnvelope
+	descendantSessionIDs := make([]string, 0, len(s.appDescendants))
+	for id, projection := range s.appDescendants {
+		if projection != nil && projection.thread.Status.Type != appwire.ThreadStatusClosed {
+			descendantSessionIDs = append(descendantSessionIDs, id)
+		}
+	}
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
@@ -334,6 +341,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Queue:       s.queueFunc != nil && processing && !closed,
 	}
 	s.mu.RUnlock()
+	sort.Strings(descendantSessionIDs)
 
 	// /status answers from the same materialized envelope thread/read does. The
 	// two used to pull the same seven session callbacks independently, which is
@@ -344,6 +352,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status.ContextWindow = envelope.ContextMetrics.Window
 	status.ContextRemaining = envelope.ContextMetrics.Remaining
 	status.Detailed = envelope.Detailed
+	status.DescendantSessionIDs = descendantSessionIDs
 	status.WorkMillis = envelope.WorkMillis
 	status.Usage = envelope.Usage
 	status.ActiveTurnStartedAt = envelope.ActiveTurnStartedAt

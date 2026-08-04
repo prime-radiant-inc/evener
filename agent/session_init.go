@@ -154,6 +154,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	s := &Session{
 		id:                            sessionID,
 		cfg:                           cfg,
+		descendantEvent:               cfg.spawn.descendantEvent,
 		client:                        client,
 		profile:                       profile,
 		resolveProfile:                cfg.ResolveProfile,
@@ -533,6 +534,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s := &Session{
 		id:                       meta.ID,
 		cfg:                      cfg,
+		descendantEvent:          cfg.spawn.descendantEvent,
 		client:                   client,
 		profile:                  profile,
 		resolveProfile:           cfg.ResolveProfile,

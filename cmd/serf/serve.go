@@ -97,6 +97,7 @@ type serveServer interface {
 	SetState(string)
 	SetCancelFunc(context.CancelFunc)
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
+	RecordDescendantAppEvent(string, events.SessionEvent)
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
@@ -674,6 +675,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		s.SetNotifyFunc(notifyCallback)
 		s.SetClientMutationStartWakeFunc(func() {
 			srv.SubmitClientMutationStart(s.ID())
+		})
+		// Descendants do not have their own daemon or authoritative event
+		// consumer. Forward their enriched events synchronously into this
+		// daemon's per-thread AppWire projections instead.
+		ownerThreadID := s.ID()
+		s.SetDescendantEventFunc(func(event events.SessionEvent) {
+			srv.RecordDescendantAppEvent(ownerThreadID, event)
 		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire

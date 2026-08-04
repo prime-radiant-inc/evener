@@ -158,6 +158,10 @@ type Session struct {
 	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
+	// descendantEvent is inherited from the spawning root and remains immutable
+	// for this Session's lifetime. Children use it to expose their live event
+	// stream without acquiring an authoritative consumer for their own channel.
+	descendantEvent func(events.SessionEvent)
 	// authoritativeConsumer records that something has UNDERTAKEN to drain
 	// events and cannot be lied to. ConsumeEventsLossless is the ONLY writer,
 	// and it sets this in the same call that starts the drain, so the flag
