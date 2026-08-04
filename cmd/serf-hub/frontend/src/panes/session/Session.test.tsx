@@ -645,6 +645,10 @@ test("switches between Everything, Conversation, and Intent transcript views", a
   expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Conversation", "Intent"]);
   expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByText("RAW_TOOL_RESULT_ALPHA")).toBeTruthy();
+  const everythingAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
+  expect(everythingAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
+  expect(everythingAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
+  expect(everythingAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
 
   await user.click(screen.getByRole("radio", { name: "Conversation" }));
   expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
@@ -652,6 +656,10 @@ test("switches between Everything, Conversation, and Intent transcript views", a
   expect(screen.getByText("The project is ready")).toBeTruthy();
   expect(screen.getByText("3 tool calls")).toBeTruthy();
   expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
+  const conversationAgentAnchor = document.querySelector<HTMLElement>('[data-view-anchor-id="agent_1"]');
+  expect(conversationAgentAnchor?.dataset.viewAnchorIndex).toBe("0");
+  expect(conversationAgentAnchor?.dataset.viewAnchorSourceIndex).toBe("4");
+  expect(conversationAgentAnchor?.dataset.viewAnchorMessage).toBe("true");
 
   await user.click(screen.getByRole("radio", { name: "Intent" }));
   expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("true");
@@ -1200,6 +1208,94 @@ test("a real mode switch captures the DOM row crossing the viewport top and appl
   fireEvent.scroll(root);
   await waitFor(() => expect(root.scrollTop).toBe(18));
 
+  geometry.mockRestore();
+});
+
+test("a real mode switch preserves the top-visible message inside a mixed turn", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "mixed_turn",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "mixed_user",
+              turnId: "mixed_turn",
+              type: "userMessage",
+              text: "first entry in the mixed turn",
+              status: "completed",
+            },
+            {
+              id: "mixed_tool",
+              turnId: "mixed_turn",
+              type: "commandExecution",
+              text: "",
+              toolName: "mixed_tool",
+              status: "completed",
+            },
+            {
+              id: "mixed_agent",
+              turnId: "mixed_turn",
+              type: "agentMessage",
+              text: "actual top-visible entry",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText("actual top-visible entry");
+
+  const root = scrollRootOf(container);
+  Object.defineProperty(root, "scrollTop", { configurable: true, writable: true, value: 300 });
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: 1200 });
+  Object.defineProperty(root, "clientHeight", { configurable: true, value: 300 });
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const element = this as HTMLElement;
+    const focused = container.querySelector('[data-testid="focused-transcript"]') !== null;
+    const box = focused
+      ? {
+          mixed_user: { top: -130, height: 60 },
+          "tools:mixed_tool:mixed_tool": { top: -70, height: 40 },
+          mixed_agent: { top: -30, height: 96 },
+        }[element.dataset.viewAnchorId ?? ""]
+      : {
+          mixed_user: { top: -240, height: 60 },
+          mixed_tool: { top: -180, height: 162 },
+          mixed_agent: { top: -18, height: 96 },
+        }[element.dataset.viewAnchorId ?? ""];
+    const top = box?.top ?? 0;
+    const height = box?.height ?? (element === root ? 300 : 0);
+    return {
+      x: 0,
+      y: top,
+      top,
+      right: 100,
+      bottom: top + height,
+      left: 0,
+      width: 100,
+      height,
+      toJSON: () => ({}),
+    };
+  });
+
+  await user.click(screen.getByRole("radio", { name: "Conversation" }));
+
+  await waitFor(() => expect(root.scrollTop).toBe(288));
+  expect(container.querySelector('[data-view-anchor-id="mixed_agent"]')).toBeTruthy();
   geometry.mockRestore();
 });
 

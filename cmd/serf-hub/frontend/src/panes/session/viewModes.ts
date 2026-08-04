@@ -16,6 +16,7 @@ export type FocusedEntry =
       kind: "message";
       id: string;
       turnId: string;
+      sourceIndex: number;
       role: "user" | "agent";
       message: ItemModel;
     }
@@ -23,6 +24,7 @@ export type FocusedEntry =
       kind: "tool-count";
       id: string;
       turnId: string;
+      sourceIndex: number;
       count: number;
       label: string;
     }
@@ -30,6 +32,7 @@ export type FocusedEntry =
       kind: "intent";
       id: string;
       turnId: string;
+      sourceIndex: number;
       rationale: string;
     };
 
@@ -50,30 +53,43 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
   let firstToolId: string | undefined;
   let lastToolId: string | undefined;
   let firstToolTurnId: string | undefined;
+  let firstToolSourceIndex: number | undefined;
   let toolCount = 0;
+  let sourceIndex = 0;
 
   const flushToolCount = () => {
-    if (toolCount === 0 || firstToolId === undefined || lastToolId === undefined || firstToolTurnId === undefined)
+    if (
+      toolCount === 0 ||
+      firstToolId === undefined ||
+      lastToolId === undefined ||
+      firstToolTurnId === undefined ||
+      firstToolSourceIndex === undefined
+    )
       return;
     entries.push({
       kind: "tool-count",
       id: `tools:${firstToolId}:${lastToolId}`,
       turnId: firstToolTurnId,
+      sourceIndex: firstToolSourceIndex,
       count: toolCount,
       label: toolCountLabel(toolCount),
     });
     firstToolId = undefined;
     lastToolId = undefined;
     firstToolTurnId = undefined;
+    firstToolSourceIndex = undefined;
     toolCount = 0;
   };
 
   for (const turn of turns) {
     for (const item of turn.items) {
+      const itemSourceIndex = sourceIndex;
+      sourceIndex += 1;
       if (item.type === "commandExecution") {
         if (mode === "conversation") {
           firstToolId ??= item.id;
           firstToolTurnId ??= turn.id;
+          firstToolSourceIndex ??= itemSourceIndex;
           lastToolId = item.id;
           toolCount += 1;
         } else {
@@ -83,6 +99,7 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
               kind: "intent",
               id: `intent:${item.id}`,
               turnId: turn.id,
+              sourceIndex: itemSourceIndex,
               rationale,
             });
           }
@@ -97,6 +114,7 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
           kind: "message",
           id: item.id,
           turnId: turn.id,
+          sourceIndex: itemSourceIndex,
           role,
           message: item,
         });

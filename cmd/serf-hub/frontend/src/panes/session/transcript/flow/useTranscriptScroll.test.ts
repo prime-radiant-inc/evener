@@ -976,6 +976,48 @@ describe("view-mode anchor preservation", () => {
     expect(el.scrollTop).toBe(200);
   });
 
+  test("a mixed turn restores its actual top-visible message instead of the turn's first entry", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "user-1", sourceIndex: 8, index: 3, offset: -240, height: 60, isMessage: true },
+      { id: "tool-1", sourceIndex: 9, index: 3, offset: -180, height: 162, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, offset: -18, height: 96, isMessage: true },
+    ];
+    const anchorEntries = [
+      { id: "user-1", sourceIndex: 8, index: 3, isMessage: true },
+      { id: "tools:tool-1:tool-1", sourceIndex: 9, index: 3, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, isMessage: true },
+    ];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("mixed-turn", ["user-1", "tool-1", "agent-1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          anchorEntries,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    scrollToIndex.mockClear();
+    el.scrollTop = 300;
+
+    act(() => result.current.captureViewAnchor());
+    positions = [
+      { id: "user-1", sourceIndex: 8, index: 3, offset: -130, height: 60, isMessage: true },
+      { id: "tools:tool-1:tool-1", sourceIndex: 9, index: 3, offset: -70, height: 40, isMessage: false },
+      { id: "agent-1", sourceIndex: 10, index: 3, offset: -30, height: 96, isMessage: true },
+    ];
+    rerender({ viewKey: "conversation" });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(el.scrollTop).toBe(288);
+  });
+
   test("uses normalized scroll proportion when no surrounding message survives", () => {
     const { ref, el, scrollToIndex } = makeListHandle();
     const metrics = makeMeasure({ scrollTop: 450, scrollHeight: 1200, clientHeight: 300 });

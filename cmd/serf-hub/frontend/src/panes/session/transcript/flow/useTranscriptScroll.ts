@@ -37,21 +37,21 @@ export interface UseTranscriptScrollOptions {
   measure?: (el: HTMLElement) => ScrollMetrics;
   /** Identity of the currently rendered transcript representation. */
   viewKey?: string;
-  /** Injectable stable-row geometry seam; production reads data-view-anchor rows. */
+  /** Injectable stable-entry geometry seam; production reads data-view-anchor elements. */
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
-  /** All rows in the active representation, including currently virtualized-out rows. */
+  /** All entries in the active representation, including those in virtualized-out rows. */
   anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
 }
 
 export interface ViewAnchorPosition {
   id: string;
-  /** Position in the unfiltered transcript; shared across every representation. */
+  /** Item position in the unfiltered transcript; shared across every representation. */
   sourceIndex: number;
-  /** Position in the currently rendered list. */
+  /** VirtualList row containing this entry. */
   index: number;
   /** Row top relative to the scroll viewport top. */
   offset: number;
-  /** Measured row height; used to identify content crossing the viewport top. */
+  /** Measured entry height; used to identify content crossing the viewport top. */
   height?: number;
   /** User/agent content survives every focused representation. */
   isMessage: boolean;
@@ -114,9 +114,9 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
 }
 
 function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAnchorPosition | undefined {
-  // Overscan rows are rendered above the viewport. The anchor is the row whose
-  // measured box actually crosses the viewport top, not the first DOM row and
-  // not merely the first row whose top happens to be nonnegative.
+  // Overscan entries are rendered above the viewport. The anchor is the entry
+  // whose measured box actually crosses the viewport top, not the first DOM
+  // entry and not merely the first entry whose top happens to be nonnegative.
   const crossing = positions
     .filter((position) => position.offset <= 0 && position.offset + (position.height ?? 0) > 0)
     .sort((a, b) => b.offset - a.offset)[0];

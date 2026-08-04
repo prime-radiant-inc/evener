@@ -96,14 +96,12 @@ type ViewRow =
       id: string;
       turnId: string;
       sourceIndex: number;
-      isMessage: boolean;
       visible: true;
     }
   | {
       id: string;
       turnId: string;
       sourceIndex: number;
-      isMessage: boolean;
       visible: boolean;
       entries: FocusedEntry[];
     };
@@ -181,6 +179,17 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
     [model, viewMode],
   );
+  const itemSourceIndexes = useMemo(() => {
+    const indexes = new Map<string, number>();
+    let sourceIndex = 0;
+    for (const turn of model?.turns ?? []) {
+      for (const item of turn.items) {
+        indexes.set(item.id, sourceIndex);
+        sourceIndex += 1;
+      }
+    }
+    return indexes;
+  }, [model]);
   const viewRows = useMemo<ViewRow[]>(() => {
     if (!model) return [];
     if (viewMode === "everything") {
@@ -188,7 +197,6 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         id: turn.id,
         turnId: turn.id,
         sourceIndex: index,
-        isMessage: turn.items.some((item) => item.type === "userMessage" || item.type === "agentMessage"),
         visible: true as const,
       }));
     }
@@ -204,24 +212,34 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         id: turn.id,
         turnId: turn.id,
         sourceIndex,
-        isMessage: entries.some((entry) => entry.kind === "message"),
         visible: entries.length > 0,
         entries,
       };
     });
   }, [model, viewMode, focused]);
-  const anchorEntries = useMemo(
-    () =>
-      viewRows
-        .filter((row) => row.visible)
-        .map((row) => ({
-          id: row.id,
-          sourceIndex: row.sourceIndex,
-          index: row.sourceIndex,
-          isMessage: row.isMessage,
+  const anchorEntries = useMemo(() => {
+    if (!model) return [];
+    if (viewMode === "everything") {
+      return model.turns.flatMap((turn, index) =>
+        turn.items.map((item) => ({
+          id: item.id,
+          sourceIndex: itemSourceIndexes.get(item.id) ?? 0,
+          index,
+          isMessage: item.type === "userMessage" || item.type === "agentMessage",
         })),
-    [viewRows],
-  );
+      );
+    }
+    return viewRows.flatMap((row, index) =>
+      "entries" in row
+        ? row.entries.map((entry) => ({
+            id: entry.id,
+            sourceIndex: entry.sourceIndex,
+            index,
+            isMessage: entry.kind === "message",
+          }))
+        : [],
+    );
+  }, [model, viewMode, viewRows, itemSourceIndexes]);
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -299,40 +317,42 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               getItemKey={(index) => rowAt(index).id}
               renderRow={(index) => {
                 const row = rowAt(index);
-                const anchor = {
-                  "data-view-anchor-id": row.id,
-                  "data-view-anchor-index": index,
-                  "data-view-anchor-source-index": row.sourceIndex,
-                  "data-view-anchor-message": row.isMessage,
-                } as const;
                 if (!("entries" in row)) {
                   const t = turnAt(row.sourceIndex);
                   return (
-                    <div {...anchor}>
+                    <div>
                       <TurnBlock
                         turn={t}
                         sessionRef={ref}
                         showSeenDivider={t.id === seenDividerTurnId}
                         exchangeOpeners={openers}
                         agentLabel={agentLabel}
+                        viewAnchorIndex={index}
+                        viewAnchorSourceIndexes={itemSourceIndexes}
                       />
                     </div>
                   );
                 }
                 if (!row.visible) return null;
                 return (
-                  <div {...anchor} className={styles.focusedTranscript} data-testid="focused-transcript">
+                  <div className={styles.focusedTranscript} data-testid="focused-transcript">
                     {row.entries.map((entry) => {
+                      const anchor = {
+                        "data-view-anchor-id": entry.id,
+                        "data-view-anchor-index": index,
+                        "data-view-anchor-source-index": entry.sourceIndex,
+                        "data-view-anchor-message": entry.kind === "message",
+                      } as const;
                       if (entry.kind === "tool-count") {
                         return (
-                          <div key={entry.id} className={styles.toolCount}>
+                          <div key={entry.id} className={styles.toolCount} {...anchor}>
                             {entry.label}
                           </div>
                         );
                       }
                       if (entry.kind === "intent") {
                         return (
-                          <div key={entry.id} className={styles.intent}>
+                          <div key={entry.id} className={styles.intent} {...anchor}>
                             {entry.rationale}
                           </div>
                         );
@@ -345,6 +365,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                         <div
                           key={entry.id}
                           className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
+                          {...anchor}
                         >
                           <ItemRenderer
                             item={entry.message}
