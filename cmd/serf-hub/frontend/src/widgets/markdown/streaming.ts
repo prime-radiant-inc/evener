@@ -37,6 +37,8 @@
 interface OpenFence {
   char: "`" | "~";
   length: number;
+  quoteDepth: number;
+  quotePrefix: string;
 }
 
 interface OpenCodeSpan {
@@ -96,7 +98,7 @@ function isSetextUnderline(line: string): boolean {
 type BlockquoteLine = { content: string; depth: number };
 
 function blockquoteLine(line: string): BlockquoteLine | undefined {
-  const prefix = /^ {0,3}(?:>[ \t]?)+/.exec(line)?.[0];
+  const prefix = /^ {0,3}(?:>[ \t]{0,3})+/.exec(line)?.[0];
   if (prefix === undefined) return undefined;
   return { content: line.slice(prefix.length), depth: (prefix.match(/>/g) ?? []).length };
 }
@@ -207,14 +209,25 @@ export function closeOpenMarkdown(source: string): string {
     if (fence) {
       // Inside a fence the only live syntax is a closing fence of the same
       // character at least as long as the opener.
-      const closingRun = fenceCloser(line);
+      const quoted = fence.quoteDepth === 0 ? undefined : blockquoteLine(line);
+      const closingRun =
+        fence.quoteDepth === 0
+          ? fenceCloser(line)
+          : quoted?.depth === fence.quoteDepth
+            ? fenceCloser(quoted.content)
+            : undefined;
       if (closingRun !== undefined && closingRun.charAt(0) === fence.char && closingRun.length >= fence.length) {
         fence = null;
       }
       continue;
     }
     if (fenceRun !== undefined) {
-      fence = { char: fenceRun.charAt(0) as "`" | "~", length: fenceRun.length };
+      fence = {
+        char: fenceRun.charAt(0) as "`" | "~",
+        length: fenceRun.length,
+        quoteDepth: 0,
+        quotePrefix: "",
+      };
       stack = []; // a fence interrupts a paragraph; its open emphasis dies here
       paragraph = "none";
       blockquoteDepth = 0;
@@ -247,6 +260,19 @@ export function closeOpenMarkdown(source: string): string {
       listContainerIndent = null;
       if (paragraph !== "blockquote" || blockquoteDepth !== quoted.depth) stack = [];
       if (quoted.content.trim() === "") {
+        stack = [];
+        paragraph = "none";
+        blockquoteDepth = quoted.depth;
+        continue;
+      }
+      const quotedFenceRun = fenceOpener(quoted.content);
+      if (quotedFenceRun !== undefined) {
+        fence = {
+          char: quotedFenceRun.charAt(0) as "`" | "~",
+          length: quotedFenceRun.length,
+          quoteDepth: quoted.depth,
+          quotePrefix: line.slice(0, line.length - quoted.content.length),
+        };
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
@@ -298,7 +324,7 @@ export function closeOpenMarkdown(source: string): string {
     }
   }
 
-  if (fence) return `${source}\n${fence.char.repeat(fence.length)}`;
+  if (fence) return `${source}\n${fence.quotePrefix}${fence.char.repeat(fence.length)}`;
   let closers = "";
   for (let index = stack.length - 1; index >= 0; index -= 1) {
     const entry = stack[index];

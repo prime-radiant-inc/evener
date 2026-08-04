@@ -142,6 +142,21 @@ test.each(["> child", "- child", "code"])("an indented nested %s block ends the 
   expect(closeOpenMarkdown(source)).toBe(source);
 });
 
+test("a quoted fence clears emphasis and closes only with the same quote depth", () => {
+  const source = "> **abandoned\n> ```\n> **code**\n> ```";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("an open quoted fence receives a quoted closing fence", () => {
+  const source = "> ```\n> code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
+test("spaced nested quote markers do not leak emphasis into the parent quote", () => {
+  const source = ">   > **nested\n> parent";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);
