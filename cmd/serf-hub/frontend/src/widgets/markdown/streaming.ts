@@ -24,9 +24,9 @@
 //     literal. A closing run matches the most recent open of the SAME
 //     marker, popping any markers opened inside it (CommonMark's crossover
 //     rule, e.g. "**a *b** c*").
-//   - Emphasis dies at block boundaries (blank lines and fence lines) -
-//     CommonMark emphasis cannot span blocks, so an opener abandoned by a
-//     blank line is never closed.
+//   - Emphasis dies at block boundaries (blank lines, fence lines, and the
+//     recognized heading/list/quote boundaries) - CommonMark emphasis cannot
+//     span blocks, so an opener abandoned by a block boundary is never closed.
 //   - `_` / `__` are deliberately NEVER auto-closed: intraword underscores
 //     (snake_case) would false-positive constantly, and marked's own GFM
 //     rules refuse intraword `_` emphasis for the same reason.
@@ -73,13 +73,28 @@ function isIndentedCodeBlock(line: string): boolean {
   return line.startsWith("    ") || line.startsWith("\t");
 }
 
-function isBlockBoundary(line: string): boolean {
-  return (
-    /^ {0,3}#{1,6}(?:[ \t]+|$)/.test(line) ||
-    /^ {0,3}>/.test(line) ||
-    /^ {0,3}(?:[-+*](?:[ \t]+|$)|\d{1,9}[.)](?:[ \t]+|$))/.test(line) ||
-    /^(?: {0,3}(?:\*[ \t]*){3,}| {0,3}(?:-[ \t]*){3,}| {0,3}(?:_[ \t]*){3,})$/.test(line)
-  );
+function isAtxHeading(line: string): boolean {
+  return /^ {0,3}#{1,6}(?:[ \t]+|$)/.test(line);
+}
+
+function isListItem(line: string): boolean {
+  return /^ {0,3}(?:[-+*](?:[ \t]+|$)|\d{1,9}[.)](?:[ \t]+|$))/.test(line);
+}
+
+function isThematicBreak(line: string): boolean {
+  return /^(?: {0,3}(?:\*[ \t]*){3,}| {0,3}(?:-[ \t]*){3,}| {0,3}(?:_[ \t]*){3,})$/.test(line);
+}
+
+function isSetextUnderline(line: string): boolean {
+  return /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
+}
+
+type BlockquoteLine = { content: string; depth: number };
+
+function blockquoteLine(line: string): BlockquoteLine | undefined {
+  const prefix = /^ {0,3}(?:>[ \t]?)+/.exec(line)?.[0];
+  if (prefix === undefined) return undefined;
+  return { content: line.slice(prefix.length), depth: (prefix.match(/>/g) ?? []).length };
 }
 
 function isWhitespace(char: string | undefined): boolean {
@@ -179,6 +194,8 @@ export function closeOpenMarkdown(source: string): string {
   const lines = source.split("\n");
   let fence: OpenFence | null = null;
   let stack: OpenMarker[] = [];
+  let paragraph: "none" | "paragraph" | "blockquote" = "none";
+  let blockquoteDepth = 0;
 
   for (const line of lines) {
     const fenceRun = fenceOpener(line);
@@ -194,18 +211,68 @@ export function closeOpenMarkdown(source: string): string {
     if (fenceRun !== undefined) {
       fence = { char: fenceRun.charAt(0) as "`" | "~", length: fenceRun.length };
       stack = []; // a fence interrupts a paragraph; its open emphasis dies here
+      paragraph = "none";
+      blockquoteDepth = 0;
       continue;
     }
     if (line.trim() === "") {
       stack = []; // emphasis cannot span a block boundary
+      paragraph = "none";
+      blockquoteDepth = 0;
       continue;
     }
     if (isIndentedCodeBlock(line)) {
+      if (paragraph === "none") {
+        stack = [];
+        continue;
+      }
+      scanInline(line, stack);
+      continue;
+    }
+
+    const quoted = blockquoteLine(line);
+    if (quoted !== undefined) {
+      if (paragraph !== "blockquote" || blockquoteDepth !== quoted.depth) stack = [];
+      if (quoted.content.trim() === "") {
+        stack = [];
+        paragraph = "none";
+        blockquoteDepth = quoted.depth;
+        continue;
+      }
+      if (isAtxHeading(quoted.content) || isListItem(quoted.content) || isThematicBreak(quoted.content)) {
+        stack = [];
+      }
+      if (isSetextUnderline(quoted.content)) {
+        stack = [];
+        paragraph = "none";
+        blockquoteDepth = quoted.depth;
+        continue;
+      }
+      scanInline(quoted.content, stack);
+      paragraph = isAtxHeading(quoted.content) || isThematicBreak(quoted.content) ? "none" : "blockquote";
+      blockquoteDepth = quoted.depth;
+      continue;
+    }
+
+    paragraph = "none";
+    blockquoteDepth = 0;
+    if (isSetextUnderline(line) || isThematicBreak(line)) {
       stack = [];
       continue;
     }
-    if (isBlockBoundary(line)) stack = [];
+    if (isAtxHeading(line)) {
+      stack = [];
+      scanInline(line, stack);
+      continue;
+    }
+    if (isListItem(line)) {
+      stack = [];
+      scanInline(line, stack);
+      paragraph = "paragraph";
+      continue;
+    }
     scanInline(line, stack);
+    paragraph = "paragraph";
   }
 
   if (fence) return `${source}\n${fence.char.repeat(fence.length)}`;

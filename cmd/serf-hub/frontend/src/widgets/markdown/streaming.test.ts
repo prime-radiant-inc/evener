@@ -122,6 +122,21 @@ test("an abandoned emphasis opener does not close across a list", () => {
   expect(closeOpenMarkdown(source)).toBe(source);
 });
 
+test("indented continuation text stays in the active paragraph", () => {
+  const source = "**bold\n    continuation";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("emphasis continues across consecutive blockquote lines", () => {
+  const source = "> **bold\n> continuation";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("an abandoned emphasis opener does not close across a setext heading underline", () => {
+  const source = "**abandoned\n===";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 // --- documented non-goals ------------------------------------------------------
 
 test("underscore emphasis is NEVER auto-closed (snake_case would false-positive constantly)", () => {
