@@ -361,7 +361,7 @@ func isIncompleteTrailingJSON(line []byte, err error) bool {
 	if err.Error() == "unexpected end of JSON input" {
 		return true
 	}
-	if len(trimmed) != len(line) {
+	if len(bytes.TrimRight(line, " \t\r\n")) != len(line) {
 		return false
 	}
 	var syntaxErr *json.SyntaxError

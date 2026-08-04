@@ -142,6 +142,8 @@ func TestIsIncompleteTrailingJSON(t *testing.T) {
 		{name: "invalid_literal", line: `{"resumable":trx`, want: false},
 		{name: "literal_with_trailing_space", line: `{"resumable":tru `, want: false},
 		{name: "number_with_trailing_space", line: `{"seq":1e `, want: false},
+		{name: "literal_with_leading_space", line: ` {"resumable":tru`, want: true},
+		{name: "number_with_leading_space", line: ` {"seq":1e`, want: true},
 		{name: "syntax_offset_before_end", line: `}garbage`, want: false},
 		{name: "complete_but_invalid_object", line: `{"kind":}`, want: false},
 		{name: "type_error_not_syntax", line: `{"seq":"not-a-number"}`, want: false},
