@@ -68,12 +68,21 @@ function expandRow(): void {
 }
 
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
+  const args = JSON.stringify({ kind: "mcp", id: 7 });
   render(
-    <ToolCallItem item={item({ toolName: "tci_unregistered", output: "raw bytes here" })} turn={turn} live={false} />,
+    <ToolCallItem
+      item={item({ toolName: "tci_unregistered", argumentsJSON: args, output: "raw bytes here" })}
+      turn={turn}
+      live={false}
+    />,
   );
   expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
   expandRow();
-  expect(screen.getByText("raw bytes here")).toBeTruthy(); // default body = raw output
+  const body = screen.getByTestId("tool-call-body");
+  const blocks = body.querySelectorAll("pre > code");
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]?.textContent).toBe(JSON.stringify(JSON.parse(args), null, 2));
+  expect(blocks[1]?.textContent).toBe("raw bytes here");
 });
 
 test("renders no body element when the resolved descriptor has none", () => {
