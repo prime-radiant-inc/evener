@@ -1,11 +1,11 @@
 # Session Transcript Tools
 
 Two read-only agent tools, split along one clean seam — *which session?* vs *show me
-this session*:
+this session or job*:
 
 - **`find_session_transcripts`** — discover sessions across the corpus. Returns refs.
-- **`read_session_transcript`** — view one session at the verbosity you ask for.
-  Consumes a ref.
+- **`read_transcript`** — view a session or a persisted job's output at the verbosity
+  supported by that ref. Consumes a ref.
 
 The mental model is exactly that: **find returns refs, read consumes a ref.** `find`
 takes filters and hands back session refs; it is never given a session to read — you
@@ -114,28 +114,26 @@ children-of-a-parent are just which filters you set, and all return the same rec
   *approximate*; it can differ from a `read` outline's exact `turns_total`. `is_current`
   flags the live session (which also sorts last), so you don't audit yourself by mistake.
 
-## `read_session_transcript` — show me this session
+## `read_transcript` — show me this session or job
 
-Views one session at one of three verbosities, selected by `format`.
+Views one session at one of three verbosities, selected by `format`, or reads the
+bounded retained output of a `job:<job_id>` ref.
 
 **Parameters:**
 
 | Param | Applies to | Meaning |
 |-------|-----------|---------|
-| `transcript_ref` | all | ref / bare id / omitted = current session |
-| `source` | all | `transcript` (default) or explicit private `api_log` |
-| `format` | transcript | `outline` \| `markdown` (default) \| `jsonl` |
-| `range` | transcript/API summary | turn or API-record window; defaults to last 40 turns or last 20 API records |
-| `expand_turn` | transcript markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
-| `attempt_id` | API log | one explicit attempt; requires `source=api_log` |
-| `body` | API attempt | `request`, `response`, or deterministic encoded `request_headers` JSON; requires `attempt_id` |
-| `offset_bytes` | expansion | continuation byte offset |
-| `max_bytes` | expansion | defaults to 16 KiB; hard maximum 64 KiB |
+| `transcript_ref` | all | session ref / bare id / omitted = current session, or `job:<job_id>` |
+| `format` | session | `outline` \| `markdown` (default) \| `jsonl`; job refs accept `markdown` only |
+| `range` | session | turn window; defaults to the last 40 turns |
+| `expand_turn` | session markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
+| `offset_bytes` | session expansion | continuation byte offset |
 
 Registered `strict:false`, so every parameter is optional. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
-and each returns the same envelope skeleton (`transcript_ref`, `format`, `content`,
-format-specific `meta`). API-log reads use a separate bounded record envelope.
+and each session read returns the same envelope skeleton (`transcript_ref`, `format`,
+`content`, format-specific `meta`). Job reads return bounded markdown evidence and
+retention metadata; API-log selectors are not part of this tool.
 
 **`range` grammar** (over `Turn` numbers, length = `turns_total`):
 
@@ -214,7 +212,7 @@ Rendering rules:
 The bounded transcript-v2 JSONL for the range: one header followed only by semantic
 entries. It contains neither the system prompt nor provider request/response records.
 This is rarely what you want: reserve it for debugging transcript structure. For
-comprehension, use markdown; for provider forensics, explicitly select `source=api_log`.
+comprehension, use markdown; for provider forensics, use `serf-doctor apilog <selector>`.
 
 ```
 { "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
@@ -224,25 +222,11 @@ comprehension, use markdown; for provider forensics, explicitly select `source=a
             "range_warning"? } }
 ```
 
-### `source: "api_log"` — explicit provider forensics
+### Provider forensics
 
-When API logging is attached, `<session-id>.api.jsonl` is the private exact-attempt log.
-Each completed transport attempt is appended as `api_attempt`; after the outer model call
-settles, an `attempt_group_settlement` records final attempt identity, count, and outcome.
-A crash between those appends leaves a readable attempt whose group is truthfully
-unsettled.
-
-The default API-log read returns at most the last 20 records (100 maximum and 64 KiB
-serialized output). Summaries include attempt/group identity, endpoint, outcome, timing,
-usage, and each body's encoding, byte count, `exact`, and
-`credential_values_excluded` truth, but not body data or headers. Every result states
-`credential_values_excluded:true`. An explicit `attempt_id` includes the sanitized
-request-header map with each ordered value represented as exact UTF-8 or base64 when it
-fits the bounded envelope. Otherwise it returns byte-count evidence and a
-`body=request_headers` continuation; that selector pages deterministic encoded JSON
-without changing value order. Explicit request or response expansion likewise preserves
-the selected stored body's `exact` and `credential_values_excluded` truth and pages its
-available bytes with a continuation handle. Transcript reads never open this file.
+The model-facing `read_transcript` tool does not expose API-log selectors or request/
+response bodies. Use `serf-doctor apilog <selector>` for private attempt metadata and
+aggregates. Credential values remain excluded from that diagnostic surface.
 
 ## Truncation and size budgets (markdown)
 
@@ -283,11 +267,11 @@ section naming its real Turn number.
 ## The navigation loop
 
 1. **Locate** — `find_session_transcripts({})` (catalog) or `{query}` to pick a session.
-2. **Read** — `read_session_transcript({transcript_ref})`: markdown by default, landing on
+2. **Read** — `read_transcript({transcript_ref})`: markdown by default, landing on
    the most recent turns (the outcome), with a header naming the window.
-3. **Map** — `read_session_transcript({transcript_ref, format:"outline"})` for the shape and
+3. **Map** — `read_transcript({transcript_ref, format:"outline"})` for the shape and
    the turn numbers worth reading.
-4. **Detail** — `read_session_transcript({transcript_ref, range})` for a span;
+4. **Detail** — `read_transcript({transcript_ref, range})` for a span;
    `{…, expand_turn: N}` for byte-paged exact evidence from any semantic turn.
 5. **Descend** — `find_session_transcripts({children_of: transcript_ref})` to enumerate what
    a session spawned, then audit each child the same way.

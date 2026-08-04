@@ -117,9 +117,8 @@ the final attempt and count. A clean EOF after an attempt without its settlement
 is an explicitly unsettled group; a partial tail has unknown finality.
 
 **Read it via:** `serf-doctor apilog <selector>` for attempt metadata and
-aggregates. Exact bodies require an explicit `read_session_transcript`
-`source=api_log` attempt/body expansion; ordinary transcript tools never read
-the API log. Credential values are excluded.
+aggregates. The model-facing `read_transcript` tool does not accept API-log
+selectors or expose request/response bodies. Credential values are excluded.
 
 ---
 
