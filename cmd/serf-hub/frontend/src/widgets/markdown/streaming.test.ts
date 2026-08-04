@@ -157,6 +157,26 @@ test("spaced nested quote markers do not leak emphasis into the parent quote", (
   expect(closeOpenMarkdown(source)).toBe(source);
 });
 
+test("a quoted fence ends when its blockquote container ends", () => {
+  const source = "> ```\n> code\noutside **bo";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("a shallower quote ends a deeper quoted fence", () => {
+  const source = "> > ```\n> > code\n> outside **bo";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test("an over-indented quoted fence line remains code content", () => {
+  const source = "> ```\n>     ```\n> code";
+  expect(closeOpenMarkdown(source)).toBe(`${source}\n> \`\`\``);
+});
+
+test("four spaces between quote markers form a nested quote", () => {
+  const source = ">    > **nested\n> parent";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);

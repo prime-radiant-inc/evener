@@ -95,12 +95,36 @@ function isSetextUnderline(line: string): boolean {
   return /^ {0,3}(?:=+|-+)[ \t]*$/.test(line);
 }
 
-type BlockquoteLine = { content: string; depth: number };
+type BlockquoteLine = { content: string; depth: number; prefix: string };
+
+function isQuoteSpace(char: string | undefined): boolean {
+  return char === " " || char === "\t";
+}
 
 function blockquoteLine(line: string): BlockquoteLine | undefined {
-  const prefix = /^ {0,3}(?:>[ \t]{0,3})+/.exec(line)?.[0];
-  if (prefix === undefined) return undefined;
-  return { content: line.slice(prefix.length), depth: (prefix.match(/>/g) ?? []).length };
+  let index = 0;
+  while (index < 3 && line.charAt(index) === " ") index += 1;
+  if (line.charAt(index) !== ">") return undefined;
+
+  let depth = 0;
+  while (line.charAt(index) === ">") {
+    depth += 1;
+    index += 1;
+    if (isQuoteSpace(line.charAt(index))) index += 1;
+
+    const nestedIndentStart = index;
+    let nestedIndent = 0;
+    while (nestedIndent < 3 && isQuoteSpace(line.charAt(index))) {
+      nestedIndent += 1;
+      index += 1;
+    }
+    if (line.charAt(index) !== ">") {
+      index = nestedIndentStart;
+      break;
+    }
+  }
+
+  return { content: line.slice(index), depth, prefix: line.slice(0, index) };
 }
 
 function isWhitespace(char: string | undefined): boolean {
@@ -210,16 +234,20 @@ export function closeOpenMarkdown(source: string): string {
       // Inside a fence the only live syntax is a closing fence of the same
       // character at least as long as the opener.
       const quoted = fence.quoteDepth === 0 ? undefined : blockquoteLine(line);
-      const closingRun =
-        fence.quoteDepth === 0
-          ? fenceCloser(line)
-          : quoted?.depth === fence.quoteDepth
-            ? fenceCloser(quoted.content)
-            : undefined;
-      if (closingRun !== undefined && closingRun.charAt(0) === fence.char && closingRun.length >= fence.length) {
+      if (fence.quoteDepth > 0 && (quoted === undefined || quoted.depth < fence.quoteDepth)) {
         fence = null;
+      } else {
+        const closingRun =
+          fence.quoteDepth === 0
+            ? fenceCloser(line)
+            : quoted?.depth === fence.quoteDepth
+              ? fenceCloser(quoted.content)
+              : undefined;
+        if (closingRun !== undefined && closingRun.charAt(0) === fence.char && closingRun.length >= fence.length) {
+          fence = null;
+        }
+        continue;
       }
-      continue;
     }
     if (fenceRun !== undefined) {
       fence = {
@@ -271,7 +299,7 @@ export function closeOpenMarkdown(source: string): string {
           char: quotedFenceRun.charAt(0) as "`" | "~",
           length: quotedFenceRun.length,
           quoteDepth: quoted.depth,
-          quotePrefix: line.slice(0, line.length - quoted.content.length),
+          quotePrefix: quoted.prefix,
         };
         stack = [];
         paragraph = "none";
