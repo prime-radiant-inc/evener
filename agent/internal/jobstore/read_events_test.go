@@ -78,6 +78,8 @@ func TestReadEvents_ErrorsOnDefinitiveTrailingCorruption(t *testing.T) {
 		`{"kind":}`,
 		`{"seq":1e2x`,
 		`{"resumable":trx`,
+		`{"resumable":tru `,
+		`{"seq":1e `,
 	} {
 		t.Run(trailing, func(t *testing.T) {
 			dir := t.TempDir()
