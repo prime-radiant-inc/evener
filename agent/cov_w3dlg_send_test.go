@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -71,12 +72,16 @@ func TestW3Dlg_SendCallerMarksWatchCallbackDelivered(t *testing.T) {
 	}
 }
 
-// TestW3Dlg_SendTerminalRunningSubNoActiveJobIdleFails covers the running-sub /
-// unknown-active-job guard: a retained child marked running with no running
-// delegate job and on_idle=fail is rejected as active-job-unknown.
-func TestW3Dlg_SendTerminalRunningSubNoActiveJobIdleFails(t *testing.T) {
+// TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume covers the
+// retained-running lookup failure path: when the retained child is marked
+// running but findRunningDelegateByTranscriptRef fails, delegate_send falls
+// through to the established resume path instead of hard-failing.
+func TestW3Dlg_SendTerminalRunningSubLookupFailureFallsThroughToResume(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai"}
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first complete") },
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("second complete") },
+	}}
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newDelegateRestorePreflightSession(t, c)
@@ -91,14 +96,35 @@ func TestW3Dlg_SendTerminalRunningSubNoActiveJobIdleFails(t *testing.T) {
 		status:  SubagentRunning,
 		done:    make(chan struct{}),
 	})
+	oldFindRunning := delegateSendTestHooks.findRunning
+	oldBeforePostState := delegateSendTestHooks.beforePostState
+	delegateSendTestHooks.findRunning = func(*jobManager, string) (*jobstore.JobRecord, error) {
+		return nil, errors.New("running lookup fault")
+	}
+	delegateSendTestHooks.beforePostState = func(sub *subagent) {
+		sub.mu.Lock()
+		sub.running = false
+		sub.mu.Unlock()
+	}
+	t.Cleanup(func() {
+		delegateSendTestHooks.findRunning = oldFindRunning
+		delegateSendTestHooks.beforePostState = oldBeforePostState
+	})
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
-		Message: "steer",
-		OnIdle:  "fail",
+		Message: "resume",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "active job is unknown") {
-		t.Fatalf("err = %v, want active job is unknown", res.Err)
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == rec.JobID || res.DelegateID != rec.DelegateID || res.Status != jobstore.StatusRunning {
+		t.Fatalf("result = %+v, want resumed delegate start", res)
+	}
+	waitForShellDone(t, sess.jobManager, res.StartedJobID)
+	started := loadShellRecord(t, sess.jobManager, res.StartedJobID)
+	if started.Status != jobstore.StatusCompleted || !strings.Contains(readShellOutput(t, sess.jobManager, res.StartedJobID), "second complete") {
+		t.Fatalf("started record = %+v, output should contain resumed completion", started)
 	}
 }
 

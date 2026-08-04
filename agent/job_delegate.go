@@ -702,10 +702,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		if running {
 			active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
-			if err != nil {
-				return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
+			if err == nil {
+				return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 			}
-			return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 		}
 	}
 	var restorePreflight *delegateRestorePreflight
@@ -753,10 +752,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			findRunning = hook
 		}
 		active, err := findRunning(jm, rec.TranscriptRef)
-		if err != nil {
-			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
+		if err == nil {
+			return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 		}
-		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 
 	messageProvenance := provenance.Clone(args.Provenance)
