@@ -236,11 +236,17 @@ func corroboratedAnchors(lines []string, i int, names declarationTable) []string
 		if strings.HasSuffix(candidate, ".go") {
 			continue
 		}
-		if len(names[candidate]) == 0 || seen[candidate] {
+		anchor := candidate
+		if len(names[anchor]) == 0 {
+			if dot := strings.LastIndexByte(anchor, '.'); dot >= 0 {
+				anchor = anchor[dot+1:]
+			}
+		}
+		if len(names[anchor]) == 0 || seen[anchor] {
 			continue
 		}
-		seen[candidate] = true
-		anchors = append(anchors, candidate)
+		seen[anchor] = true
+		anchors = append(anchors, anchor)
 	}
 	sort.Strings(anchors)
 	return anchors
