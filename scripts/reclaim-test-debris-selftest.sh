@@ -139,6 +139,23 @@ else
 fi
 [ ! -e "$cache" ] && ok "a distinct verified live cache permits debris removal" || bad "a distinct verified live cache blocked debris removal"
 
+# An abandoned fixed-namespace cache is read-only evidence for a dry run: the
+# reclaimer may report it, but must not remove it until the operator chooses
+# --yes. Keep the live cache distinct so the identity guard is exercised too.
+abandoned="$cache_root/serf-gocache-k3"
+mkdir -p "$abandoned"
+printf 'abandoned fixture cache\n' >"$abandoned/blob"
+dry_cache_out="$work/cache-abandoned-dry-run.out"
+if run_cache "$other_cache" "$cache_root" --dry-run >"$dry_cache_out" 2>&1; then
+	ok "an abandoned-cache dry-run exits zero"
+else
+	bad "an abandoned-cache dry-run exits nonzero"
+fi
+assert_has "$dry_cache_out" "gocache debris: $abandoned" "a dry-run reports the abandoned fixed-namespace cache"
+assert_has "$dry_cache_out" "dry run: nothing removed" "a dry-run declares that it made no changes"
+[ -d "$abandoned" ] && ok "a dry-run leaves the abandoned cache in place" || bad "a dry-run removed the abandoned cache"
+[ -d "$other_cache" ] && ok "a dry-run leaves the verified live cache in place" || bad "a dry-run removed the live cache"
+
 echo
 echo "reclaim-test-debris-selftest: $checks checks, $fails failed"
 [ "$fails" -eq 0 ]
