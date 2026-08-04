@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,7 +105,12 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	detachStartCtx()
 	if err != nil {
 		jm.discardDelayedShell(run)
-		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
+		return shellResult{
+			Type:   string(jobstore.JobShell),
+			Status: string(jobstore.StatusFailed),
+			Reason: "start_failed",
+			Output: fmt.Sprintf("shell start failed: %v", err),
+		}
 	}
 
 	jm.setShellSignal(run, handle.Signal)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -122,7 +123,70 @@ func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
 	}
 }
 
+func TestRunShellPipelineExitStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pipeline status contract is for the POSIX shell path")
+	}
+
+	tests := []struct {
+		name       string
+		command    string
+		wantStatus string
+		wantExit   int
+	}{
+		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusFailed), wantExit: 1},
+		{name: "successful pipeline remains successful", command: "printf 'ok\\n' | tail -1", wantStatus: string(jobstore.StatusCompleted), wantExit: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jm, se := newShellTestRig(t)
+			res := runShell(context.Background(), jm, se, shellArgs{Command: tt.command, BlockTimeoutMS: 5000})
+			if res.settle != nil {
+				if jobID := res.settle(false); jobID != "" {
+					t.Fatalf("discarded foreground shell returned job_id %q", jobID)
+				}
+			}
+			if res.Status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q (result: %+v)", res.Status, tt.wantStatus, res)
+			}
+			if res.ExitCode == nil {
+				t.Fatalf("exit code is nil (result: %+v)", res)
+			}
+			if *res.ExitCode != tt.wantExit {
+				t.Fatalf("exit code = %d, want %d (result: %+v)", *res.ExitCode, tt.wantExit, res)
+			}
+		})
+	}
+}
+
 type waitErrorStreamingExecutor struct{}
+
+type startErrorStreamingExecutor struct{}
+
+func (startErrorStreamingExecutor) StreamCommand(context.Context, string, string, map[string]string, io.Writer) (*execenv.StreamHandle, error) {
+	return nil, errors.New("bash unavailable")
+}
+
+func TestRunShellStartFailureIncludesDiagnostic(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	res := runShell(context.Background(), jm, startErrorStreamingExecutor{}, shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "start_failed" {
+		t.Fatalf("result = %+v, want failed/start_failed", res)
+	}
+	if res.Output != "shell start failed: bash unavailable" {
+		t.Fatalf("start failure output = %q, want diagnostic", res.Output)
+	}
+
+	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars)
+	if err != nil {
+		t.Fatalf("marshalShellToolResult: %v", err)
+	}
+	if !strings.Contains(formatted.Output, "shell start failed: bash unavailable") {
+		t.Fatalf("formatted start failure = %q, want diagnostic", formatted.Output)
+	}
+}
 
 func (waitErrorStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
 	_, _ = out.Write([]byte("partial"))

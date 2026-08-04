@@ -47,7 +47,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 		ExhaustionBudget: rec.ExhaustionBudget,
 		ExhaustionLimit:  rec.ExhaustionLimit,
 		Resumable:        rec.Resumable,
-		TranscriptRef:    rec.TranscriptRef,
+		TranscriptRef:    jobTranscriptRef(rec),
 		OutputBytes:      rec.OutputBytes,
 		ExitCode:         rec.ExitCode,
 		Provenance:       provenance.Clone(recordNotificationProvenance(rec)),

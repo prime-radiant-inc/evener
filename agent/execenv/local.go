@@ -1551,8 +1551,13 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	return append(env, envvars.Path.Assignment(newPath))
 }
 
-// shellCommand returns an *exec.Cmd that runs the given command string
-// through the platform's default shell. The command's lifecycle (cancellation,
+// shellCommand returns an *exec.Cmd that runs the given command string through
+// the platform shell. POSIX invocations use Bash explicitly because pipefail
+// is part of the shell contract; falling back to /bin/sh would silently make
+// the command invalid on shells such as dash. If /bin/bash is unavailable,
+// resolve Bash through the caller's effective PATH and otherwise leave the
+// explicit /bin/bash path in place so command start fails instead of running
+// with different pipeline semantics. The command's lifecycle (cancellation,
 // timeout) is managed by the caller (ExecCommand) via its own process-group
 // SIGTERM->SIGKILL escalation, so CommandContext is deliberately not used here.
 func shellCommand(command string) *exec.Cmd {
@@ -1561,9 +1566,11 @@ func shellCommand(command string) *exec.Cmd {
 	}
 	shell := "/bin/bash"
 	if _, err := shellStat(shell); err != nil {
-		shell = "/bin/sh"
+		if resolved, err := execLookPath("bash"); err == nil {
+			shell = resolved
+		}
 	}
-	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
+	return exec.Command(shell, "-o", "pipefail", "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 }
 
 // KernelWrapper returns the sandbox kernel wrapper for this environment, or nil

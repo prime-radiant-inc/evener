@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -856,10 +858,65 @@ func TestShellCommand_ReturnsValidCmd(t *testing.T) {
 			t.Errorf("on windows, expected cmd.exe, got: %s", cmd.Path)
 		}
 	} else {
-		// Should use bash or sh
-		if !strings.Contains(cmd.Path, "sh") {
-			t.Errorf("on unix, expected bash or sh, got: %s", cmd.Path)
+		if filepath.Base(cmd.Path) != "bash" {
+			t.Errorf("on unix, expected bash, got: %s", cmd.Path)
 		}
+		wantArgs := []string{"-o", "pipefail", "-c", "echo test"}
+		if !reflect.DeepEqual(cmd.Args[1:], wantArgs) {
+			t.Errorf("on unix, args = %v, want %v", cmd.Args[1:], wantArgs)
+		}
+	}
+}
+
+func TestShellCommandUsesBashWhenBinBashIsMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell contract does not apply on windows")
+	}
+
+	originalGOOS, originalShellStat, originalLookPath := runtimeGOOS, shellStat, execLookPath
+	t.Cleanup(func() {
+		runtimeGOOS, shellStat, execLookPath = originalGOOS, originalShellStat, originalLookPath
+	})
+	runtimeGOOS = "linux"
+	shellStat = func(string) (os.FileInfo, error) { return nil, fs.ErrNotExist }
+	execLookPath = func(name string) (string, error) {
+		if name != "bash" {
+			t.Fatalf("shell resolver looked up %q, want bash", name)
+		}
+		return "/fixture/bin/bash", nil
+	}
+
+	cmd := shellCommand("false | tail -1")
+	if filepath.Clean(cmd.Path) != "/fixture/bin/bash" {
+		t.Fatalf("shell path = %q, want PATH-resolved Bash", cmd.Path)
+	}
+	if filepath.Base(cmd.Path) == "sh" {
+		t.Fatalf("shell path = %q, must not fall back to an incompatible sh", cmd.Path)
+	}
+	if !reflect.DeepEqual(cmd.Args[1:3], []string{"-o", "pipefail"}) {
+		t.Fatalf("shell args = %v, want pipefail option", cmd.Args)
+	}
+}
+
+func TestShellCommandDoesNotFallbackToShWhenBashIsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell contract does not apply on windows")
+	}
+
+	originalGOOS, originalShellStat, originalLookPath := runtimeGOOS, shellStat, execLookPath
+	t.Cleanup(func() {
+		runtimeGOOS, shellStat, execLookPath = originalGOOS, originalShellStat, originalLookPath
+	})
+	runtimeGOOS = "linux"
+	shellStat = func(string) (os.FileInfo, error) { return nil, fs.ErrNotExist }
+	execLookPath = func(string) (string, error) { return "", fs.ErrNotExist }
+
+	cmd := shellCommand("false | tail -1")
+	if filepath.Base(cmd.Path) != "bash" {
+		t.Fatalf("shell path = %q, want an explicit Bash start failure rather than /bin/sh", cmd.Path)
+	}
+	if !reflect.DeepEqual(cmd.Args[1:3], []string{"-o", "pipefail"}) {
+		t.Fatalf("shell args = %v, want pipefail option", cmd.Args)
 	}
 }
 
