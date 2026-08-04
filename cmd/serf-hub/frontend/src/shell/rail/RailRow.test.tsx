@@ -65,7 +65,7 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
     onPinSectionRequest: vi.fn(),
-    onMovePinSectionRequest: vi.fn(),
+    onUnpinRequest: vi.fn(),
     onToggleArchiveSession: vi.fn(),
     onRenameRequest: vi.fn(),
     onDeleteSessionRequest: vi.fn(),
@@ -349,14 +349,35 @@ describe("session row", () => {
     expect(row?.children[1]?.textContent).toContain("Fix flaky test");
   });
 
-  test("shows a pin star when the session has a section assignment, hides it otherwise", () => {
+  test("shows a pin star on a nested row with a section assignment, and hides it on flat Live/pinned rows", () => {
+    // depth > 0: nested under its own project - the star is the only in-list
+    // signal there that the session is pinned.
     const { rerender } = render(
-      <RailRow node={sessionRailNode(apiNode({ pin_section_id: "research" }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
     );
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
 
+    // depth 0: the flat Live and named-pin-section tiers - being listed there
+    // already says the session is pinned, so the star is pure redundancy.
     rerender(
-      <RailRow node={sessionRailNode(apiNode({ pin_section_id: undefined }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }))}
+        info={info({ depth: 0 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
+
+    rerender(
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: undefined }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
     );
     expect(screen.queryByTestId("favorite-star")).toBeNull();
   });
@@ -766,13 +787,14 @@ describe("session row", () => {
     expect(acts.onPinSectionRequest).toHaveBeenCalledWith(session);
   });
 
-  test("menu offers 'Move pinned session…' for an assigned top-level session", async () => {
+  test("menu offers 'Unpin' for an assigned top-level session", async () => {
     const acts = actions();
     const session = apiNode({ pin_section_id: "research" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
     const user = await openMenu(/actions for/i);
-    await user.click(screen.getByRole("menuitem", { name: "Move pinned session…" }));
-    expect(acts.onMovePinSectionRequest).toHaveBeenCalledWith(session);
+    expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
+    expect(acts.onUnpinRequest).toHaveBeenCalledWith(session);
   });
 
   test("menu omits Rename when the session does not support it", async () => {
@@ -871,13 +893,13 @@ describe("session row", () => {
   // session at all, so it writes a decision row nothing will ever clean up.
   // Both verified against a live hub.
   for (const kind of ["subagent", "fork", "cluster"]) {
-    test(`menu omits pin and move on a ${kind} row`, async () => {
+    test(`menu omits pin and unpin on a ${kind} row`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
       const trigger = screen.queryByRole("button", { name: /actions for/i });
       if (trigger) {
         await openMenu(/actions for/i);
         expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
-        expect(screen.queryByRole("menuitem", { name: "Move pinned session…" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Unpin" })).toBeNull();
       }
     });
   }
@@ -970,15 +992,16 @@ describe("session row", () => {
   // was already correct with no rail-side code change; pinned explicitly
   // here (rather than left to incidental coverage from fixtures that never
   // set tier at all) since a live row is the realistic shape a reviewer
-  // would specifically want proof for.
-  test("pin star, Move, and Rename all work on a live-tier duplicate", async () => {
+  // would specifically want proof for. The star stays hidden: a depth-0 row
+  // (Live, like a named pin section) never carries the pin star at all.
+  test("Unpin and Rename work on a live-tier duplicate, and its pin star stays hidden", async () => {
     const acts = actions();
     const session = apiNode({ tier: "live", pin_section_id: "research", rename: true });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
 
-    expect(screen.getByTestId("favorite-star")).toBeTruthy();
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
     const user = await openMenu(/actions for/i);
-    expect(screen.getByRole("menuitem", { name: "Move pinned session…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Unpin" })).toBeTruthy();
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     expect(acts.onRenameRequest).toHaveBeenCalledWith(session);
   });
@@ -1267,12 +1290,15 @@ describe("row actions overlay (Rail.module.css)", () => {
 // before pinning was scoped, or by a direct API call - and rendering the star
 // there is a dead end: the menu offers no way to take it off. Suppressing it
 // keeps "only top-level sessions can be pinned" true in both directions.
+// Depth 0 rows are rendered at depth 1 here so the KIND gate alone decides -
+// the depth-0 flat tiers (Live, named pin sections) never show the star at
+// all (see "shows a pin star on a nested row…" above).
 describe("pin star follows the same scoping as the pin action", () => {
   test("a top-level session shows its star", () => {
     render(
       <RailRow
         node={sessionRailNode(apiNode({ kind: "session", pin_section_id: "research" }))}
-        info={info()}
+        info={info({ depth: 1 })}
         actions={actions()}
       />,
     );
@@ -1284,7 +1310,7 @@ describe("pin star follows the same scoping as the pin action", () => {
       render(
         <RailRow
           node={sessionRailNode(apiNode({ kind, pin_section_id: "research" }))}
-          info={info()}
+          info={info({ depth: 1 })}
           actions={actions()}
         />,
       );
