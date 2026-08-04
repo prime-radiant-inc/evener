@@ -192,8 +192,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         visible: true as const,
       }));
     }
+    const entriesByTurn = new Map<string, FocusedEntry[]>();
+    for (const entry of focused) {
+      const entries = entriesByTurn.get(entry.turnId);
+      if (entries) entries.push(entry);
+      else entriesByTurn.set(entry.turnId, [entry]);
+    }
     return model.turns.map((turn, sourceIndex) => {
-      const entries = focused.filter((entry) => entry.turnId === turn.id);
+      const entries = entriesByTurn.get(turn.id) ?? [];
       return {
         id: turn.id,
         turnId: turn.id,
@@ -295,6 +301,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                 const row = rowAt(index);
                 const anchor = {
                   "data-view-anchor-id": row.id,
+                  "data-view-anchor-index": index,
                   "data-view-anchor-source-index": row.sourceIndex,
                   "data-view-anchor-message": row.isMessage,
                 } as const;
@@ -353,6 +360,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                   </div>
                 );
               }}
+              onChange={flow.restoreViewAnchorAfterMeasurement}
             />
           </div>
           {showColdStartSkeleton && <ColdStartSkeleton />}

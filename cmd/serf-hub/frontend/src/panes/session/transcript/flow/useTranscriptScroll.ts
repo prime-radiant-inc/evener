@@ -40,7 +40,7 @@ export interface UseTranscriptScrollOptions {
   /** Injectable stable-row geometry seam; production reads data-view-anchor rows. */
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   /** All rows in the active representation, including currently virtualized-out rows. */
-  anchorEntries?: readonly Omit<ViewAnchorPosition, "offset">[];
+  anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
 }
 
 export interface ViewAnchorPosition {
@@ -51,6 +51,8 @@ export interface ViewAnchorPosition {
   index: number;
   /** Row top relative to the scroll viewport top. */
   offset: number;
+  /** Measured row height; used to identify content crossing the viewport top. */
+  height?: number;
   /** User/agent content survives every focused representation. */
   isMessage: boolean;
 }
@@ -84,29 +86,42 @@ export function restoreTopAnchor(
   const exact = positions.find((position) => position.id === anchor.id);
   if (exact) return { id: exact.id, index: exact.index, offset: anchor.offset };
 
-  // Prefer the next surviving message at or below the hidden content, which
-  // keeps the reader moving forward through the transcript. Only fall back to
-  // the preceding message when nothing later survives.
-  const messages = positions.filter((position) => position.isMessage);
-  const next = messages
-    .filter((position) => position.sourceIndex >= anchor.sourceIndex)
-    .sort((a, b) => a.sourceIndex - b.sourceIndex)[0];
-  const previous = messages
-    .filter((position) => position.sourceIndex < anchor.sourceIndex)
-    .sort((a, b) => b.sourceIndex - a.sourceIndex)[0];
-  const nearest = next ?? previous;
+  const nearest = positions
+    .filter((position) => position.isMessage)
+    .sort((a, b) => {
+      const distance = Math.abs(a.sourceIndex - anchor.sourceIndex) - Math.abs(b.sourceIndex - anchor.sourceIndex);
+      // Equal-distance ties resolve to the preceding message, keeping the
+      // content the reader just passed rather than skipping forward.
+      return distance || a.sourceIndex - b.sourceIndex;
+    })[0];
   return nearest ? { id: nearest.id, index: nearest.index, offset: anchor.offset } : undefined;
 }
 
 function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   const viewportTop = el.getBoundingClientRect().top;
-  return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, index) => ({
-    id: row.dataset.viewAnchorId ?? "",
-    sourceIndex: Number(row.dataset.viewAnchorSourceIndex ?? index),
-    index,
-    offset: row.getBoundingClientRect().top - viewportTop,
-    isMessage: row.dataset.viewAnchorMessage === "true",
-  }));
+  return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
+    const rect = row.getBoundingClientRect();
+    const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
+    return {
+      id: row.dataset.viewAnchorId ?? "",
+      sourceIndex,
+      index: Number(row.dataset.viewAnchorIndex ?? sourceIndex),
+      offset: rect.top - viewportTop,
+      height: rect.height,
+      isMessage: row.dataset.viewAnchorMessage === "true",
+    };
+  });
+}
+
+function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAnchorPosition | undefined {
+  // Overscan rows are rendered above the viewport. The anchor is the row whose
+  // measured box actually crosses the viewport top, not the first DOM row and
+  // not merely the first row whose top happens to be nonnegative.
+  const crossing = positions
+    .filter((position) => position.offset <= 0 && position.offset + (position.height ?? 0) > 0)
+    .sort((a, b) => b.offset - a.offset)[0];
+  if (crossing) return crossing;
+  return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
 }
 
 export interface UseTranscriptScrollResult {
@@ -136,6 +151,8 @@ export interface UseTranscriptScrollResult {
   jumpToBottom: () => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
+  /** Finish a pending restore after VirtualList reports new measurements. */
+  restoreViewAnchorAfterMeasurement: () => void;
 }
 
 function totalItemCount(model: ThreadModel | undefined): number {
@@ -216,7 +233,12 @@ export function useTranscriptScroll({
   const firstTurnIdRef = useRef<string | undefined>(undefined);
   const baselineItemCountRef = useRef(0);
   const initializedRef = useRef(false);
-  const pendingViewAnchorRef = useRef<{ anchor: ViewAnchor | undefined; proportion: number } | null>(null);
+  const pendingViewAnchorRef = useRef<{
+    anchor: ViewAnchor | undefined;
+    proportion: number;
+    target?: RestoredViewAnchor;
+    scrollRequested?: boolean;
+  } | null>(null);
   // Turn IDs whose failure (if any) has already been accounted for - seen
   // live while at the bottom, already anchored-and-cleared, or currently
   // the active anchor (added the moment it's chosen - see the
@@ -326,12 +348,45 @@ export function useTranscriptScroll({
     const m = measure(el);
     const scrollable = Math.max(0, m.scrollHeight - m.clientHeight);
     const positions = measureAnchors(el);
-    const firstVisible = positions.find((position) => position.offset >= 0) ?? positions.at(-1);
+    const firstVisible = topVisiblePosition(positions);
     pendingViewAnchorRef.current = {
       anchor: firstVisible ? captureTopAnchor(firstVisible) : undefined,
       proportion: scrollable > 0 ? m.scrollTop / scrollable : 0,
     };
   }, [listRef, measure, measureAnchors]);
+
+  const restoreViewAnchorAfterMeasurement = useCallback(() => {
+    const pending = pendingViewAnchorRef.current;
+    if (!pending) return;
+    const el = listRef.current?.getScrollElement();
+    if (!el) return;
+
+    const measured = measureAnchors(el);
+    const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+    const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
+    if (!restored) {
+      const m = measure(el);
+      el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
+      pendingViewAnchorRef.current = null;
+      return;
+    }
+
+    const current = measured.find((position) => position.id === restored.id);
+    if (current) {
+      el.scrollTop += current.offset - restored.offset;
+      pendingViewAnchorRef.current = null;
+      return;
+    }
+
+    // Keep the target and desired offset pending. VirtualList's onChange seam
+    // calls this function again after scrollToIndex renders/measures the row.
+    // Mark first because react-virtual can notify synchronously from the call.
+    if (!pending.scrollRequested) {
+      pending.target = restored;
+      pending.scrollRequested = true;
+      listRef.current?.scrollToIndex(restored.index, { align: "start" });
+    }
+  }, [listRef, measure, measureAnchors, anchorEntries]);
 
   // Mount / (re)attach. Guarded by initializedRef so the one-time restore-
   // or-default-to-bottom positioning and baseline recording happen exactly
@@ -446,34 +501,8 @@ export function useTranscriptScroll({
   // its exact viewport offset corrected synchronously before paint.
   // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
   useLayoutEffect(() => {
-    const pending = pendingViewAnchorRef.current;
-    if (!pending) return;
-    pendingViewAnchorRef.current = null;
-    const el = listRef.current?.getScrollElement();
-    if (!el) return;
-
-    const measured = measureAnchors(el);
-    const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
-    const restored = pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined;
-    if (restored) {
-      const current = measured.find((position) => position.id === restored.id);
-      if (current) {
-        // The preserved row normally remains in the virtualizer's measured
-        // window because mode rows retain their source turn indices. Correct
-        // its offset directly; scrolling it to start first would discard the
-        // very pixel offset we are preserving.
-        el.scrollTop += current.offset - restored.offset;
-      } else {
-        // A far fallback can be outside overscan. The stable index still gets
-        // the reader to the right surrounding content; react-virtual applies
-        // its measured correction through this existing imperative seam.
-        listRef.current?.scrollToIndex(restored.index, { align: "start" });
-      }
-    } else {
-      const m = measure(el);
-      el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
-    }
-  }, [viewKey, listRef, measure, measureAnchors, anchorEntries]);
+    restoreViewAnchorAfterMeasurement();
+  }, [viewKey, restoreViewAnchorAfterMeasurement]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn
@@ -593,5 +622,6 @@ export function useTranscriptScroll({
     pillArrowDirection,
     jumpToBottom,
     captureViewAnchor,
+    restoreViewAnchorAfterMeasurement,
   };
 }

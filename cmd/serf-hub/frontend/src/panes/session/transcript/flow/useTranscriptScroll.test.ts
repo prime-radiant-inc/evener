@@ -887,15 +887,64 @@ describe("view-mode anchor preservation", () => {
     );
   });
 
-  test("falls forward to the nearest surrounding user or agent entry when the exact anchor is hidden", () => {
+  test("captures the stable row crossing the viewport top, not the first rendered overscan row", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 500, scrollHeight: 2000, clientHeight: 400 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "overscan-1", sourceIndex: 1, index: 1, offset: -220, height: 80, isMessage: true },
+      { id: "turn-4", sourceIndex: 4, index: 4, offset: -18, height: 96, isMessage: true },
+      { id: "turn-5", sourceIndex: 5, index: 5, offset: 78, height: 96, isMessage: true },
+    ];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+    const el = ref.current?.getScrollElement();
+    if (el) el.scrollTop = 500;
+
+    act(() => result.current.captureViewAnchor());
+    positions = [{ id: "turn-4", sourceIndex: 4, index: 2, offset: -70, height: 96, isMessage: true }];
+    rerender({ viewKey: "conversation" });
+
+    expect(ref.current?.getScrollElement()?.scrollTop).toBe(448);
+  });
+
+  test("falls forward when the following user or agent entry is the nearest surviving message", () => {
     const anchor = captureTopAnchor({ id: "tool-4", sourceIndex: 4, index: 4, offset: 18, isMessage: false });
 
     expect(
       restoreTopAnchor(anchor, [
-        { id: "user-3", sourceIndex: 3, index: 1, offset: 70, isMessage: true },
+        { id: "user-2", sourceIndex: 2, index: 1, offset: 70, isMessage: true },
         { id: "agent-5", sourceIndex: 5, index: 2, offset: -30, isMessage: true },
       ]),
     ).toEqual({ id: "agent-5", index: 2, offset: 18 });
+  });
+
+  test("a hidden anchor falls back to the preceding message when it is closer than the following message", () => {
+    const anchor = captureTopAnchor({
+      id: "tool-9",
+      sourceIndex: 9,
+      index: 9,
+      offset: 18,
+      height: 40,
+      isMessage: false,
+    });
+
+    expect(
+      restoreTopAnchor(anchor, [
+        { id: "user-8", sourceIndex: 8, index: 3, offset: 70, height: 40, isMessage: true },
+        { id: "agent-12", sourceIndex: 12, index: 4, offset: -30, height: 40, isMessage: true },
+      ]),
+    ).toEqual({ id: "user-8", index: 3, offset: 18 });
   });
 
   test("a mode switch restores the stable entry after hidden tool rows change the list height", () => {
@@ -953,6 +1002,40 @@ describe("view-mode anchor preservation", () => {
 
     expect(scrollToIndex).not.toHaveBeenCalled();
     expect(el.scrollTop).toBe(150);
+  });
+
+  test("applies the saved pixel offset after an initially unmeasured fallback row is measured", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 });
+    let positions: ViewAnchorPosition[] = [
+      { id: "tool-4", sourceIndex: 4, index: 4, offset: 18, height: 40, isMessage: false },
+    ];
+    const anchorEntries = [{ id: "agent-5", sourceIndex: 5, index: 5, isMessage: true }];
+    const { result, rerender } = renderHook(
+      ({ viewKey }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          viewKey,
+          anchorEntries,
+          measureAnchors: () => positions,
+        }),
+      { initialProps: { viewKey: "everything" } },
+    );
+
+    act(() => result.current.captureViewAnchor());
+    positions = [];
+    rerender({ viewKey: "conversation" });
+    expect(scrollToIndex).toHaveBeenCalledWith(5, { align: "start" });
+
+    el.scrollTop = 480;
+    positions = [{ id: "agent-5", sourceIndex: 5, index: 5, offset: 0, height: 96, isMessage: true }];
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(462);
   });
 });
 
