@@ -346,29 +346,39 @@ run_wave() {
 		( cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
-	local i
+	local i status
 	for i in "${!pids[@]}"; do
 		m="${names[$i]}"; log="$(logpath "$m")"
 		if wait "${pids[$i]}"; then
+			status=0
+		else
+			status=$?
+		fi
+		forget_pid "${pids[$i]}"
+		if [ "$status" -eq 0 ]; then
 			printf 'PASS  %-8s %s\n' "$m" "$(awk '/^real /{print $2"s"}' "$log" | tail -1)"
 		else
 			printf 'FAIL  %-8s\n' "$m"; fail=1; failed_modules+=("$m")
 		fi
-		forget_pid "${pids[$i]}"
 	done
 }
 
 finish_stream() {
-	local name="$1" pid="$2" log
+	local name="$1" pid="$2" log status
 	log="$(logpath "$name")"
 	if wait "$pid"; then
+		status=0
+	else
+		status=$?
+	fi
+	forget_pid "$pid"
+	if [ "$status" -eq 0 ]; then
 		printf 'PASS  %-8s %s\n' "$name" "$(awk '/^real /{print $2"s"}' "$log" | tail -1)"
 	else
 		printf 'FAIL  %-8s\n' "$name"
 		fail=1
 		failed_modules+=("$name")
 	fi
-	forget_pid "$pid"
 }
 
 # Start the frontend gate first so it runs across both Go waves. It is joined
