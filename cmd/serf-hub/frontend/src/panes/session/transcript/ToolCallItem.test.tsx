@@ -85,6 +85,39 @@ test("falls back to the default descriptor (raw output body) for an unregistered
   expect(blocks[1]?.textContent).toBe("raw bytes here");
 });
 
+test("the default descriptor keeps both arguments and output visible for a settled unregistered tool", () => {
+  const args = '{"width":375,"options":{"mobile":true}}';
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_default_coexist", argumentsJSON: args, output: "downloaded 128 bytes" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expandRow();
+
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).getByRole("region", { name: "Tool call arguments" })).toBeTruthy();
+  expect(within(body).getByText("downloaded 128 bytes")).toBeTruthy();
+});
+
+test("the default descriptor keeps both arguments and error text visible for a settled unregistered tool", () => {
+  const args = '{"width":375,"options":{"mobile":true}}';
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_default_error", argumentsJSON: args, error: "permission denied by sandbox" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).getByRole("region", { name: "Tool call arguments" })).toBeTruthy();
+  expect(within(body).getByText("permission denied by sandbox")).toBeTruthy();
+});
+
 test("renders no body element when the resolved descriptor has none", () => {
   registerToolRenderer({ match: "tci_no_body", summary: () => "no body here" });
   render(<ToolCallItem item={item({ toolName: "tci_no_body" })} turn={turn} live={false} />);

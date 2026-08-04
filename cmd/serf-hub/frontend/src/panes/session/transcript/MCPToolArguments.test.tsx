@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel } from "../../../protocol/model";
 import { MCPToolArguments } from "./MCPToolArguments";
@@ -20,9 +20,11 @@ test("renders nothing for whitespace-only arguments", () => {
 });
 
 test("pretty-prints valid JSON arguments while preserving the raw copy text", () => {
-  const raw = '{"a":1,"b":{"c":2}}';
-  const { container } = render(<MCPToolArguments item={item({ argumentsJSON: raw })} live={false} />);
-  expect(container.querySelector("pre > code")?.textContent).toBe(JSON.stringify(JSON.parse(raw), null, 2));
+  const raw = '{"width":375,"options":{"mobile":true}}';
+  render(<MCPToolArguments item={item({ argumentsJSON: raw })} live={false} />);
+  const section = screen.getByRole("region", { name: "Tool call arguments" });
+  expect(section).toBeTruthy();
+  expect(section.querySelector("pre > code")?.textContent).toBe(JSON.stringify(JSON.parse(raw), null, 2));
 });
 
 test("leaves malformed JSON arguments exactly as received", () => {
