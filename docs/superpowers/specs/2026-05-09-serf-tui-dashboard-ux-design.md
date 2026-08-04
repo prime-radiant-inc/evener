@@ -273,7 +273,7 @@ ctrl+o            Go to dashboard.
 ```text
 j/k               Move selected message or tool annotation.
 up/down           Scroll the transcript one line when the composer is empty
-                  and no history is active; otherwise navigate available
+                  and no history is available; otherwise navigate available
                   history or pass through to composer editing.
 pgup/pgdn         Scroll transcript.
 home/end          Jump to transcript start/end.
