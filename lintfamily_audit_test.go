@@ -131,16 +131,29 @@ func TestEveryLintFamilyJoinsTheAggregateGate(t *testing.T) {
 }
 
 // aggregateLintFamilies returns the prerequisites of the Makefile's `lint:`
-// rule — the canonical list of lint families.
+// rule — the canonical list of lint families. The list may be held in a Make
+// variable so the per-family cache prerequisite and aggregate rule share one
+// source of truth.
 func aggregateLintFamilies(t *testing.T) []string {
 	t.Helper()
-	for _, line := range makefileLines(t) {
+	lines := makefileLines(t)
+	for _, line := range lines {
 		if !strings.HasPrefix(line, "lint:") {
 			continue
 		}
 		families := strings.Fields(strings.TrimPrefix(line, "lint:"))
 		if len(families) == 0 {
 			t.Fatalf("%s: the `lint:` rule has no prerequisites", lintMakefilePath)
+		}
+		if len(families) == 1 && strings.HasPrefix(families[0], "$(") && strings.HasSuffix(families[0], ")") {
+			variable := strings.TrimSuffix(strings.TrimPrefix(families[0], "$("), ")")
+			prefix := variable + " :="
+			for _, definition := range lines {
+				if strings.HasPrefix(definition, prefix) {
+					families = strings.Fields(strings.TrimSpace(strings.TrimPrefix(definition, prefix)))
+					break
+				}
+			}
 		}
 		return families
 	}
