@@ -373,7 +373,10 @@ func isIncompleteTrailingJSON(line []byte, err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "literal") || strings.Contains(msg, "numeric literal")
+	// The JSON scanner feeds a synthetic space at EOF, so an incomplete
+	// literal or number reports an invalid space. A malformed final byte such
+	// as the x in "trx" reports that byte instead and is durable corruption.
+	return strings.Contains(msg, "literal") && strings.Contains(msg, "invalid character ' '")
 }
 
 func (s *Store) ensureOpenLocked() error {

@@ -77,6 +77,7 @@ func TestReadEvents_ErrorsOnDefinitiveTrailingCorruption(t *testing.T) {
 		"not-json",
 		`{"kind":}`,
 		`{"seq":1e2x`,
+		`{"resumable":trx`,
 	} {
 		t.Run(trailing, func(t *testing.T) {
 			dir := t.TempDir()
