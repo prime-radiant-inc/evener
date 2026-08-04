@@ -37,15 +37,16 @@ assert_count() {
 	assert_eq "$actual" "$3" "$4"
 }
 
-# Exercise the real gitleaks script at its git boundary. The fixture PATH has
-# no gitleaks executable, so the optional and strict missing-tool policies are
+# Exercise the real gitleaks script at its git boundary. The fixture PATH is
+# recorded by fake git, so the optional and strict missing-tool policies are
 # deterministic and never depend on the host installation.
 gitleaks_case="$work/gitleaks-case"
-mkdir -p "$gitleaks_case/bin" "$gitleaks_case/host-bin"
+mkdir -p "$gitleaks_case/bin"
 cat >"$gitleaks_case/bin/git" <<'FAKE_GIT_ROOT'
 #!/bin/bash
 set -u
 printf '%s\n' "$*" >>"$FAKE_GIT_CALLS"
+printf '%s\n' "$PATH" >>"$FAKE_GIT_PATHS"
 if [ "${1:-}" = "rev-parse" ]; then
 	printf '%s\n' "$FAKE_REPO_ROOT"
 	exit 0
@@ -53,17 +54,12 @@ fi
 exit 64
 FAKE_GIT_ROOT
 chmod +x "$gitleaks_case/bin/git"
-cat >"$gitleaks_case/host-bin/gitleaks" <<'HOST_GITLEAKS'
-#!/bin/bash
-printf '%s\n' "$*" >>"$FAKE_HOST_GITLEAKS_CALLS"
-HOST_GITLEAKS
-chmod +x "$gitleaks_case/host-bin/gitleaks"
 : >"$gitleaks_case/git.calls"
-: >"$gitleaks_case/host-gitleaks.calls"
+: >"$gitleaks_case/git.paths"
 
 out="$gitleaks_case/optional.out"
 if env -u SERF_GITLEAKS_REQUIRED FAKE_REPO_ROOT="$script_dir/.." \
-	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_HOST_GITLEAKS_CALLS="$gitleaks_case/host-gitleaks.calls" \
+	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_GIT_PATHS="$gitleaks_case/git.paths" \
 	PATH="$gitleaks_case/bin" /bin/bash "$script_dir/gitleaks-scan.sh" repo \
 	>"$out" 2>&1; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "missing gitleaks remains optional by default"
@@ -71,7 +67,7 @@ assert_eq "$(cat "$out")" "warning: gitleaks not installed; skipping repo secret
 
 out="$gitleaks_case/required.out"
 if SERF_GITLEAKS_REQUIRED=1 FAKE_REPO_ROOT="$script_dir/.." \
-	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_HOST_GITLEAKS_CALLS="$gitleaks_case/host-gitleaks.calls" \
+	FAKE_GIT_CALLS="$gitleaks_case/git.calls" FAKE_GIT_PATHS="$gitleaks_case/git.paths" \
 	PATH="$gitleaks_case/bin" /bin/bash "$script_dir/gitleaks-scan.sh" repo \
 	>"$out" 2>&1; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then
@@ -81,7 +77,9 @@ else
 fi
 assert_has "$out" "error: gitleaks is required but not installed; cannot run repo secret scan" "required mode names the missing tool"
 assert_eq "$(wc -l <"$gitleaks_case/git.calls" | tr -d ' ')" "2" "missing-tool cases still exercise the fake git boundary"
-assert_eq "$(wc -l <"$gitleaks_case/host-gitleaks.calls" 2>/dev/null | tr -d ' ')" "0" "missing-tool cases cannot discover a host gitleaks"
+assert_eq "$(wc -l <"$gitleaks_case/git.paths" | tr -d ' ')" "2" "missing-tool cases record both git PATHs"
+assert_eq "$(sed -n '1p' "$gitleaks_case/git.paths")" "$gitleaks_case/bin" "optional scan restricts git PATH to the fixture bin"
+assert_eq "$(sed -n '2p' "$gitleaks_case/git.paths")" "$gitleaks_case/bin" "required scan restricts git PATH to the fixture bin"
 
 # The runner's contract to humans and log scrapers is one summary line per run,
 # whatever the run does, so every scenario that reaches the runner pins it.
