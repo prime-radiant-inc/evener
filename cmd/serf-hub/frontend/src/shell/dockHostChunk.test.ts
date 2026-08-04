@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import {
   type DockHostImporter,
   type DockHostModule,
+  isStaleDockHostChunkError,
   loadDockHost,
   resetDockHostLoaderForTests,
   setDockHostImporterForTests,
@@ -96,4 +97,10 @@ test("a retry CSS error prevents cache-busted DockHost JS evaluation", async () 
 
   await expect(retry).rejects.toThrow("Unable to preload DockHost CSS");
   expect(evaluations).toBe(0);
+});
+
+test("a stale DockHost stylesheet error offers the page-reload fallback", () => {
+  expect(
+    isStaleDockHostChunkError(new Error("Failed to fetch dynamically imported module: /webassets/DockHost-d4e5f6.css")),
+  ).toBe(true);
 });

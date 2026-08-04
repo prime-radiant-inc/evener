@@ -66,6 +66,15 @@ function dockHostStylesheetURL(candidate: string): string | null {
   }
 }
 
+function dockHostStylesheetURLFromError(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  for (const candidate of message.match(URL_IN_ERROR) ?? []) {
+    const url = dockHostStylesheetURL(candidate);
+    if (url !== null) return url;
+  }
+  return null;
+}
+
 function linkPath(href: string): string {
   try {
     return new URL(href, window.location.href).pathname;
@@ -181,7 +190,7 @@ function rememberError(error: unknown): never {
 }
 
 export function isStaleDockHostChunkError(error: unknown): boolean {
-  return dockHostURLFromError(error) !== null;
+  return dockHostURLFromError(error) !== null || dockHostStylesheetURLFromError(error) !== null;
 }
 
 export function loadDockHost(cacheBust = false): Promise<DockHostModule> {
