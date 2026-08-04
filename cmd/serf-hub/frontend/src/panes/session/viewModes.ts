@@ -47,30 +47,33 @@ function toolCountLabel(count: number): string {
 
 export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMode): FocusedEntry[] {
   const entries: FocusedEntry[] = [];
+  let firstToolId: string | undefined;
+  let lastToolId: string | undefined;
+  let firstToolTurnId: string | undefined;
+  let toolCount = 0;
+
+  const flushToolCount = () => {
+    if (toolCount === 0 || firstToolId === undefined || lastToolId === undefined || firstToolTurnId === undefined)
+      return;
+    entries.push({
+      kind: "tool-count",
+      id: `tools:${firstToolId}:${lastToolId}`,
+      turnId: firstToolTurnId,
+      count: toolCount,
+      label: toolCountLabel(toolCount),
+    });
+    firstToolId = undefined;
+    lastToolId = undefined;
+    firstToolTurnId = undefined;
+    toolCount = 0;
+  };
 
   for (const turn of turns) {
-    let firstToolId: string | undefined;
-    let lastToolId: string | undefined;
-    let toolCount = 0;
-
-    const flushToolCount = () => {
-      if (toolCount === 0 || firstToolId === undefined || lastToolId === undefined) return;
-      entries.push({
-        kind: "tool-count",
-        id: `tools:${firstToolId}:${lastToolId}`,
-        turnId: turn.id,
-        count: toolCount,
-        label: toolCountLabel(toolCount),
-      });
-      firstToolId = undefined;
-      lastToolId = undefined;
-      toolCount = 0;
-    };
-
     for (const item of turn.items) {
       if (item.type === "commandExecution") {
         if (mode === "conversation") {
           firstToolId ??= item.id;
+          firstToolTurnId ??= turn.id;
           lastToolId = item.id;
           toolCount += 1;
         } else {
@@ -87,10 +90,9 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
         continue;
       }
 
-      if (mode === "conversation") flushToolCount();
-
       const role = messageRole(item);
       if (role) {
+        if (mode === "conversation") flushToolCount();
         entries.push({
           kind: "message",
           id: item.id,
@@ -100,9 +102,9 @@ export function focusedEntries(turns: readonly TurnModel[], mode: FocusedViewMod
         });
       }
     }
-
-    if (mode === "conversation") flushToolCount();
   }
+
+  if (mode === "conversation") flushToolCount();
 
   return entries;
 }

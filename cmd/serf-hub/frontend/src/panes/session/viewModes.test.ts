@@ -56,15 +56,37 @@ describe("session view modes", () => {
     ]);
   });
 
+  test("conversation coalesces tool calls across adjacent turns", () => {
+    const adjacent = [
+      turn("turn-a", [item({ id: "tool-a", turnId: "turn-a", type: "commandExecution" })]),
+      turn("turn-b", [item({ id: "tool-b", turnId: "turn-b", type: "commandExecution" })]),
+      turn("turn-c", [
+        item({ id: "tool-c", turnId: "turn-c", type: "commandExecution" }),
+        item({ id: "agent-c", turnId: "turn-c", type: "agentMessage", text: "done" }),
+      ]),
+    ];
+
+    expect(focusedEntries(adjacent, "conversation")).toEqual([
+      expect.objectContaining({
+        kind: "tool-count",
+        turnId: "turn-a",
+        count: 3,
+        label: "3 tool calls",
+        id: "tools:tool-a:tool-c",
+      }),
+      expect.objectContaining({ kind: "message", role: "agent", id: "agent-c" }),
+    ]);
+  });
+
   test("a visible message splits tool-call groups", () => {
     const split = [
-      turn("turn-2", [
-        item({ id: "tool-a", turnId: "turn-2", type: "commandExecution" }),
-        item({ id: "agent-a", turnId: "turn-2", type: "agentMessage", text: "between" }),
-        item({ id: "tool-b", turnId: "turn-2", type: "commandExecution" }),
-        item({ id: "tool-c", turnId: "turn-2", type: "commandExecution" }),
-        item({ id: "tool-d", turnId: "turn-2", type: "commandExecution" }),
+      turn("turn-2", [item({ id: "tool-a", turnId: "turn-2", type: "commandExecution" })]),
+      turn("turn-3", [
+        item({ id: "agent-a", turnId: "turn-3", type: "agentMessage", text: "between" }),
+        item({ id: "tool-b", turnId: "turn-3", type: "commandExecution" }),
       ]),
+      turn("turn-4", [item({ id: "tool-c", turnId: "turn-4", type: "commandExecution" })]),
+      turn("turn-5", [item({ id: "tool-d", turnId: "turn-5", type: "commandExecution" })]),
     ];
 
     expect(focusedEntries(split, "conversation")).toEqual([
