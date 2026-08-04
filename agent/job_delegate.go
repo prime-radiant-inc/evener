@@ -700,9 +700,16 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 		}
 		if running {
-			active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
+			findRunning := findRunningDelegateByTranscriptRef
+			if hook := delegateSendTestHooks.findRunning; hook != nil {
+				findRunning = hook
+			}
+			active, err := findRunning(jm, rec.TranscriptRef)
 			if err == nil {
 				return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
+			}
+			if strings.HasPrefix(err.Error(), "active_delegate_not_found:") {
+				return sendMessageFailed(target, notResumableSendError(notResumableChildSessionBusy))
 			}
 		}
 	}
