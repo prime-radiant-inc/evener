@@ -178,8 +178,13 @@ test("four spaces between quote markers form a nested quote", () => {
 });
 
 test("tab-indented quote content does not become a nested quote", () => {
-  const source = ">\t\t> **nested\n> parent";
+  const source = ">\t\t> **nested";
   expect(closeOpenMarkdown(source)).toBe(source);
+});
+
+test("indented quoted continuation text stays in the active paragraph", () => {
+  const source = "> **bold\n>     continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
 });
 
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {

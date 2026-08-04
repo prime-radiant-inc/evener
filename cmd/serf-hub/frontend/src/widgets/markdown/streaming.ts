@@ -286,7 +286,8 @@ export function closeOpenMarkdown(source: string): string {
     const quoted = blockquoteLine(line);
     if (quoted !== undefined) {
       listContainerIndent = null;
-      if (paragraph !== "blockquote" || blockquoteDepth !== quoted.depth) stack = [];
+      const quoteContinuesParagraph = paragraph === "blockquote" && blockquoteDepth === quoted.depth;
+      if (!quoteContinuesParagraph) stack = [];
       if (quoted.content.trim() === "") {
         stack = [];
         paragraph = "none";
@@ -294,8 +295,13 @@ export function closeOpenMarkdown(source: string): string {
         continue;
       }
       if (isIndentedCodeBlock(quoted.content)) {
-        stack = [];
-        paragraph = "none";
+        if (!quoteContinuesParagraph) {
+          stack = [];
+          paragraph = "none";
+        } else {
+          scanInline(quoted.content, stack);
+          paragraph = "blockquote";
+        }
         blockquoteDepth = quoted.depth;
         continue;
       }
