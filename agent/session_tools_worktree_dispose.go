@@ -78,6 +78,13 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 	}
 	rec, desc := findDelegateLaneRecord(recs, id)
 	if desc == nil {
+		if known := findDelegateRecord(recs, id); known != nil {
+			isolation := "<missing>"
+			if known.DelegateRestore != nil {
+				isolation = fmt.Sprintf("%q", known.DelegateRestore.Isolation)
+			}
+			return WorktreeDisposeResult{}, fmt.Errorf("invalid_request: manage_worktree dispose: %s is not worktree-isolated (recorded isolation=%s); dispose only applies to delegates with isolation:\"worktree\"", id, isolation)
+		}
 		return WorktreeDisposeResult{}, fmt.Errorf("invalid_request: manage_worktree dispose: %s is not a known isolation delegate of this session", id)
 	}
 	if desc.ParentSessionID != s.id {
@@ -480,6 +487,15 @@ func laneAheadCount(run worktree.GitRunner, lanePath, baseSHA string) (n int, ok
 		return 0, false
 	}
 	return n, true
+}
+
+func findDelegateRecord(recs map[string]*jobstore.JobRecord, id string) *jobstore.JobRecord {
+	for _, r := range recs {
+		if r != nil && r.DelegateID == id {
+			return r
+		}
+	}
+	return nil
 }
 
 // findDelegateLaneRecord locates the folded job record and worktree-isolation

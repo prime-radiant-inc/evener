@@ -817,16 +817,16 @@ const (
 
 // disposeHintForRetainedIdle returns a remove-refusal suffix pointing the caller
 // at the dispose op (spec §P1 step 3), but ONLY when every live-work blocker in
-// handles is a retained, idle delegate child. A retained-idle subagent holds no
-// live work of its own — it is terminal history the dispose op can reclaim — so
-// naming the delegate id and suggesting `manage_worktree op=dispose id=<dlg_…>`
-// gives the model a legitimate way forward instead of an opaque refusal it
-// correctly will not bypass. It returns "" (leaving the generic refusal in
-// place) when any blocker is NOT a retained-idle subagent — a running shell,
-// delegate job, or driving child would not be cleared by a dispose — or when a
-// blocker does not resolve to a delegate id (a plain subagent is not a delegate,
-// so no dispose op applies). The forward reference to a not-yet-implemented
-// dispose op is intentional (spec §P1 step 3).
+// handles is a retained, idle delegate child with an owned worktree-isolation
+// record. A retained-idle subagent holds no live work of its own — it is
+// terminal history the dispose op can reclaim — so naming the delegate id and
+// suggesting `manage_worktree op=dispose id=<dlg_…>` gives the model a
+// legitimate way forward instead of an opaque refusal it correctly will not
+// bypass. It returns "" (leaving the generic refusal in place) when any blocker
+// is NOT a retained-idle subagent — a running shell, delegate job, or driving
+// child would not be cleared by a dispose — or when a blocker does not resolve
+// to an owned worktree-isolated delegate (a plain or ordinary/shared subagent
+// has no disposable lane).
 func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 	if len(handles) == 0 || s.jobManager == nil {
 		return ""
@@ -843,6 +843,10 @@ func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 	if err != nil {
 		return ""
 	}
+	recs, err := s.jobManager.store.Load()
+	if err != nil {
+		return ""
+	}
 	childToDelegate := make(map[string]string, len(delegates))
 	for _, d := range delegates {
 		if d != nil && d.ChildSessionID != "" && d.DelegateID != "" {
@@ -853,6 +857,10 @@ func (s *Session) disposeHintForRetainedIdle(handles []string) string {
 	for _, cid := range childIDs {
 		dlg, ok := childToDelegate[cid]
 		if !ok {
+			return ""
+		}
+		_, desc := findDelegateLaneRecord(recs, dlg)
+		if desc == nil || desc.ParentSessionID != s.id {
 			return ""
 		}
 		suggestions = append(suggestions, "manage_worktree op=dispose id="+dlg)

@@ -347,10 +347,14 @@ func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) 
 
 // --- remove refusal legibility: dispose hint ---
 
-// seedRetainedDelegate appends a delegate-created record mapping delegateID to
+// seedRetainedDelegate appends a retained delegate record mapping delegateID to
 // childID in the session's own store, so LoadDelegates resolves the child
 // session id (what liveWorkUnder surfaces) back to a dlg_ id for the refusal.
 func seedRetainedDelegate(t *testing.T, s *Session, delegateID, childID string) {
+	seedRetainedDelegateWithIsolation(t, s, delegateID, childID, "worktree")
+}
+
+func seedRetainedDelegateWithIsolation(t *testing.T, s *Session, delegateID, childID, isolation string) {
 	t.Helper()
 	jm := s.jobManager
 	now := jm.now()
@@ -368,6 +372,42 @@ func seedRetainedDelegate(t *testing.T, s *Session, delegateID, childID string) 
 		},
 	}); err != nil {
 		t.Fatalf("append delegate: %v", err)
+	}
+
+	jobID := jobstore.NewJobID(jm.sessionID)
+	ref := encodeRef("", childID)
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobID,
+		DelegateID:       delegateID,
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+		StartedAt:        &now,
+		TranscriptRef:    ref,
+		DelegateRestore: &jobstore.DelegateRestoreDescriptor{
+			Version:          1,
+			ChildSessionID:   childID,
+			TranscriptRef:    ref,
+			ParentSessionID:  jm.sessionID,
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Isolation:        isolation,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate job: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          now,
+		JobID:       jobID,
+		Status:      jobstore.StatusStopped,
+		Reason:      "runtime_lost",
+		EndedAt:     &now,
+		TerminalGen: jobstore.NewWatchGeneration(),
+	}); err != nil {
+		t.Fatalf("finish delegate job: %v", err)
 	}
 }
 
@@ -410,6 +450,42 @@ func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 	}
 	if !strings.Contains(msg, "op=dispose") {
 		t.Errorf("refusal should suggest op=dispose, got: %v", msg)
+	}
+}
+
+// TestWorktreeRemove_RetainedIdleNonWorktreeDelegate_NoDisposeHint keeps an
+// ordinary/shared delegate as a removal blocker without suggesting an
+// operation that can only reclaim an isolated worktree lane.
+func TestWorktreeRemove_RetainedIdleNonWorktreeDelegate_NoDisposeHint(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	nested := filepath.Join(path, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+
+	child := newSession(t, withDir(nested), withConfig(worktreeTestSessionConfig()))
+	r.s.subagents.track(&subagent{id: child.id, sess: child})
+	seedRetainedDelegateWithIsolation(t, r.s, "dlg_shared", child.id, "")
+
+	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	if err == nil {
+		t.Fatal("expected remove to be refused by the retained ordinary delegate")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, child.id) {
+		t.Errorf("refusal should still name the blocker %q, got: %v", child.id, msg)
+	}
+	if strings.Contains(msg, "op=dispose") {
+		t.Errorf("ordinary delegate must not get a dispose hint, got: %v", msg)
 	}
 }
 

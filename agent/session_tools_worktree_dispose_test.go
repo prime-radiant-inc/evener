@@ -84,6 +84,18 @@ func TestDispose_UnknownID_InvalidRequest(t *testing.T) {
 	requireRefusalContains(t, err, "not a known isolation delegate")
 }
 
+func TestDispose_NonWorktreeDelegate_InvalidRequest(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id := "dlg_shared"
+	seedRetainedDelegateWithIsolation(t, r.s, id, "shared-child", "")
+
+	err := disposeErr(t, r.s, id, false, false)
+	requireRefusalContains(t, err, "invalid_request")
+	requireRefusalContains(t, err, "not worktree-isolated")
+	requireRefusalContains(t, err, `isolation:"worktree"`)
+}
+
 func TestDispose_NonDelegateID_InvalidRequest(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
