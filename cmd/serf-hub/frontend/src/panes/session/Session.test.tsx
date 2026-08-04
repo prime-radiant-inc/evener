@@ -1089,6 +1089,120 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
   expect(pill.textContent).toContain("1");
 });
 
+test("a real mode switch captures the DOM row crossing the viewport top and applies its saved offset after VirtualList measures the fallback", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const turns = Array.from({ length: 15 }, (_, index) => ({
+    id: `turn_${index}`,
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items:
+      index === 0
+        ? [
+            {
+              id: "user_0",
+              turnId: "turn_0",
+              type: "userMessage" as const,
+              text: "the nearest surviving message",
+              status: "completed" as const,
+            },
+          ]
+        : [
+            {
+              id: `tool_${index}`,
+              turnId: `turn_${index}`,
+              type: "commandExecution" as const,
+              text: "",
+              toolName: `tool_${index}`,
+              // No description: Intent hides this turn entirely, forcing the
+              // source-nearest surviving message at turn_0 as the fallback.
+              status: "completed" as const,
+            },
+          ],
+  }));
+  fake.on("thread/read", () => readResponse("ref_a", { turns }));
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByText("the nearest surviving message");
+
+  const root = scrollRootOf(container);
+  Object.defineProperty(root, "scrollHeight", { configurable: true, value: turns.length * CONTAINER_HEIGHT });
+  Object.defineProperty(root, "clientHeight", { configurable: true, value: CONTAINER_HEIGHT });
+
+  let requestedTop: number | undefined;
+  root.scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
+    requestedTop = typeof options === "number" ? (y ?? options) : (options?.top ?? 0);
+    // A browser delivers the resulting scroll/measurement asynchronously.
+    // The test does so explicitly below, after proving the fallback is still
+    // outside the real VirtualList's rendered window.
+  });
+
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const element = this as HTMLElement;
+    const sourceIndex = element.dataset.viewAnchorSourceIndex;
+    if (sourceIndex !== undefined) {
+      const top = Number(sourceIndex) * CONTAINER_HEIGHT - root.scrollTop;
+      return {
+        x: 0,
+        y: top,
+        top,
+        right: 100,
+        bottom: top + CONTAINER_HEIGHT,
+        left: 0,
+        width: 100,
+        height: CONTAINER_HEIGHT,
+        toJSON: () => ({}),
+      };
+    }
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 100,
+      bottom: element === root ? CONTAINER_HEIGHT : 0,
+      left: 0,
+      width: 100,
+      height: element === root ? CONTAINER_HEIGHT : 0,
+      toJSON: () => ({}),
+    };
+  });
+
+  // turn_10 crosses the viewport top by 18px. turn_9 is rendered only as
+  // overscan above it; turn_11 begins below it. This geometry distinguishes
+  // the real top content from either rendered-order shortcut.
+  root.scrollTop = 10 * CONTAINER_HEIGHT + 18;
+  fireEvent.scroll(root);
+  await waitFor(() => {
+    expect(container.querySelector('[data-view-anchor-index="9"]')).toBeTruthy();
+    expect(container.querySelector('[data-view-anchor-index="10"]')).toBeTruthy();
+    expect(container.querySelector('[data-view-anchor-index="11"]')).toBeTruthy();
+  });
+  requestedTop = undefined;
+
+  await user.click(screen.getByRole("radio", { name: "Intent" }));
+
+  // turn_10 is hidden in Intent. The actual Session -> hook -> VirtualList
+  // wiring requests turn_0, which is initially outside overscan, while keeping
+  // turn_10's saved -18px offset pending.
+  await waitFor(() => expect(requestedTop).toBe(0));
+  expect(container.querySelector('[data-view-anchor-index="0"]')).toBeNull();
+
+  // Deliver the browser's scroll event. The real VirtualList renders and
+  // measures turn_0, its onChange callback re-enters useTranscriptScroll, and
+  // the pending offset correction places the row 18px above the viewport top.
+  root.scrollTop = requestedTop ?? 0;
+  fireEvent.scroll(root);
+  await waitFor(() => expect(root.scrollTop).toBe(18));
+
+  geometry.mockRestore();
+});
+
 test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
