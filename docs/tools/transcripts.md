@@ -280,8 +280,8 @@ section naming its real Turn number.
 
 - **Read-only.** No tool mutates a transcript. Both are `ReadOnly:true` and wired in only
   when state persistence is enabled.
-- **One job per tool.** `find` does corpus discovery and never reads a session; `read` views
-  one session and always takes a ref.
+- **One ref per read.** `find` does corpus discovery and never reads a session; `read`
+  consumes one session or job transcript ref.
 - **One turn numbering.** What the outline and markdown show is what `range` and `expand_turn`
   take. No second index is ever exposed.
 - **The registry never truncates.** Each format bounds its own output, always rune-safe and
