@@ -1699,6 +1699,20 @@ func TestSafeCutoff_DoesNotSkipStandaloneHookCompleted(t *testing.T) {
 	}
 }
 
+func TestSafeCutoff_SkipsHookBeforeStandaloneSteering(t *testing.T) {
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("earlier answer")},
+		schema.NewTurn(schema.TurnHookCompleted, llm.System("SessionStart hook exit 0")),
+		{Kind: schema.TurnSteering, Message: llm.User("continue with the next step")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	if got := safeCutoff(history, 2); got != 1 {
+		t.Fatalf("safeCutoff = %d, want 1 (hook before steering must move cutoff)", got)
+	}
+}
+
 func TestCheckpoint_PreservesToolCallAcrossHookCompleted(t *testing.T) {
 	const callID = "call_with_hook"
 	tests := []struct {
