@@ -18,19 +18,19 @@ import (
 //   - every non-rejected kind carries an empty reason, and every rejected kind
 //     carries a non-empty reason with a documented prefix.
 func FuzzJdClassifyDelegateSendTarget(f *testing.F) {
-	f.Add("dlg_1", "hi", "fail", 0, false, false)
-	f.Add("job_2", "hi", "start", 0, false, false)
-	f.Add("caller", "hi", "fail", 0, false, true)
-	f.Add("caller", "hi", "fail", 0, true, true)
-	f.Add("", "hi", "fail", 0, false, false)
-	f.Add("main", "hi", "fail", -1, false, false)
-	f.Add("bare", "", "bogus", 0, false, true)
+	f.Add("dlg_1", "hi", 0, false, false)
+	f.Add("job_2", "hi", 0, false, false)
+	f.Add("caller", "hi", 0, false, true)
+	f.Add("caller", "hi", 0, true, true)
+	f.Add("", "hi", 0, false, false)
+	f.Add("main", "hi", -1, false, false)
+	f.Add("bare", "", 0, false, true)
 
 	allowedPrefixes := []string{"invalid_request:", "target_not_found:", "internal:"}
 
-	f.Fuzz(func(t *testing.T, target, message, onIdle string, blockTimeoutMS int, fromWatch, hasCallerRoute bool) {
-		kind, reason := classifyDelegateSendTarget(target, message, onIdle, blockTimeoutMS, fromWatch, hasCallerRoute)
-		if k2, r2 := classifyDelegateSendTarget(target, message, onIdle, blockTimeoutMS, fromWatch, hasCallerRoute); kind != k2 || reason != r2 {
+	f.Fuzz(func(t *testing.T, target, message string, blockTimeoutMS int, fromWatch, hasCallerRoute bool) {
+		kind, reason := classifyDelegateSendTarget(target, message, blockTimeoutMS, fromWatch, hasCallerRoute)
+		if k2, r2 := classifyDelegateSendTarget(target, message, blockTimeoutMS, fromWatch, hasCallerRoute); kind != k2 || reason != r2 {
 			t.Fatalf("non-deterministic: (%v,%q) vs (%v,%q)", kind, reason, k2, r2)
 		}
 

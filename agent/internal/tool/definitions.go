@@ -163,18 +163,13 @@ func DefDelegateSend() llm.ToolDefinition {
 		Description: "Send a message to one of your durable delegates by delegate_id. " +
 			"`to` accepts a `dlg_...` delegate_id; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
-			"If the delegate is idle, set `on_idle=\"start\"` to start the next job; the default `on_idle=\"fail\"` rejects idle delegates instead of starting work.",
+			"Idle delegates are resumed through the existing restore path.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"to":      map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) owned by this session."},
-				"message": map[string]any{"type": "string"},
-				"on_idle": map[string]any{
-					"type":        "string",
-					"enum":        []string{"start", "fail"},
-					"description": "Default fail: reject an idle delegate. start: start the delegate's next job.",
-				},
+				"to":          map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) owned by this session."},
+				"message":     map[string]any{"type": "string"},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; delivery to a running delegate returns once delivered."},
 			},
 			"required": []string{"to", "message"},

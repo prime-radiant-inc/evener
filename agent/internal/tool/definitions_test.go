@@ -316,8 +316,8 @@ func TestDefDelegateSendShape(t *testing.T) {
 	if _, ok := props["on_finished"]; ok {
 		t.Fatalf("delegate_send must not expose on_finished")
 	}
-	if _, ok := props["on_idle"]; !ok {
-		t.Fatalf("delegate_send missing on_idle")
+	if _, ok := props["on_idle"]; ok {
+		t.Fatalf("delegate_send must not expose on_idle")
 	}
 	combined := def.Description + "\n" + props["to"].(map[string]any)["description"].(string)
 	for _, banned := range []string{"job_send_message", "watched", "main"} {

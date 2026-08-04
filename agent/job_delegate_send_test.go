@@ -627,7 +627,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
-func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
+func TestSendDelegateMessageTerminalDelegateDefaultIdleResumes(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -653,15 +653,18 @@ func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
 		Target:  first.DelegateID,
 		Message: "must be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
-		t.Fatalf("error = %v, want target_idle", res.Err)
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
-		t.Fatalf("delegate jobs = %+v, want no new job", jobs)
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == first.JobID || res.DelegateID != first.DelegateID {
+		t.Fatalf("send result = %+v, want started resumed delegate job", res)
+	}
+	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 2 {
+		t.Fatalf("delegate jobs = %+v, want resumed job recorded", jobs)
 	}
 }
 
-func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *testing.T) {
+func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleResumes(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -690,14 +693,14 @@ func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *tes
 		Target:  run.rec.DelegateID,
 		Message: "must still be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
-		t.Fatalf("error = %v, want target_idle", res.Err)
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if strings.Contains(res.Err.Error(), "not_controllable") {
-		t.Fatalf("error = %v, must not report not_controllable", res.Err)
+	if res.Action != "started" || res.StartedJobID == "" || res.StartedJobID == run.rec.JobID || res.DelegateID != run.rec.DelegateID {
+		t.Fatalf("send result = %+v, want started resumed delegate job", res)
 	}
 	after := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate})
-	if len(after) != len(before) {
+	if len(after) != len(before)+1 {
 		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
 	}
 }

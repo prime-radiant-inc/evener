@@ -439,7 +439,7 @@ func TestDelegateSendForegroundStartReturnsTerminalResult(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
 		t.Fatalf("delegate_send returned error: %s", res.Output)
@@ -517,7 +517,7 @@ func TestDelegateSendRejectsJobIDTargetWithGuidance(t *testing.T) {
 	}
 }
 
-func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
+func TestDelegateSendIdleDefaultResumesAndOnIdleIsRejected(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -545,22 +545,10 @@ func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
 	})
 	adapter.mu.Unlock()
 
-	idle := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send-idle",
 		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again"}`, first.DelegateID)),
-	})
-	if !idle.IsError {
-		t.Fatalf("delegate_send idle default succeeded, want error: %s", idle.Output)
-	}
-	if !strings.Contains(idle.Output, "target_idle") {
-		t.Fatalf("delegate_send idle error = %q, want target_idle", idle.Output)
-	}
-
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "send-start",
-		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
 		t.Fatalf("delegate_send returned error: %s", res.Output)
@@ -584,6 +572,18 @@ func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
 		out.Action != "started" ||
 		!strings.Contains(out.Output, "second") {
 		t.Fatalf("delegate_send output = %+v, want started resumed delegate result", out)
+	}
+
+	obsolete := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send-obsolete",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start"}`, first.DelegateID)),
+	})
+	if !obsolete.IsError {
+		t.Fatalf("delegate_send accepted obsolete on_idle argument: %s", obsolete.Output)
+	}
+	if !strings.Contains(obsolete.Output, "additionalProperties 'on_idle' not allowed") {
+		t.Fatalf("delegate_send obsolete on_idle error = %q, want schema rejection", obsolete.Output)
 	}
 }
 
@@ -635,7 +635,7 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 	res := restored.reg.ExecuteCall(context.Background(), restored.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume without structured output","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume without structured output","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
 		t.Fatalf("delegate_send returned error: %s", res.Output)
@@ -906,10 +906,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	sendProps := tooldefs.DefDelegateSend().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"to", "message", "on_idle", "max_wait_ms"} {
+	for _, param := range []string{"to", "message", "max_wait_ms"} {
 		if _, ok := sendProps[param]; !ok {
 			t.Fatalf("delegate_send missing param %q", param)
 		}
+	}
+	if _, ok := sendProps["on_idle"]; ok {
+		t.Fatalf("delegate_send exposes removed on_idle param")
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
 	for _, param := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every"} {
@@ -1133,7 +1136,7 @@ func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send0",
 		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"m","max_wait_ms":0,"on_idle":"start"}`, spawned.DelegateID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"m","max_wait_ms":0}`, spawned.DelegateID)),
 	})
 	if res2.IsError {
 		t.Fatalf("delegate_send with max_wait_ms=0 (unset) failed unexpectedly: %s", res2.Output)
