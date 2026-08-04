@@ -274,7 +274,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    capture_until "$RUN_ROOT/palette-live-pane.txt" 'Command palette'
    tmux send-keys -t "$TMUX_SESSION" -l "$SID"
    tmux send-keys -t "$TMUX_SESSION" Enter
-   capture_until "$RUN_ROOT/prequeue-pane.txt" 'enter: queue'
+   capture_until "$RUN_ROOT/prequeue-pane.txt" 'enter queue'
    curl -fsS -H "Authorization: Bearer $TOKEN" \
      "$HUB/api/sessions/local:$SID" > "$RUN_ROOT/prequeue-session.json"
    jq -e '
@@ -285,7 +285,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
    ```
 
    Confirm the pane shows the visible `queue` composer (not `message`) with
-   footer `enter: queue  ctrl+s: send as steer ...`. The dashboard, palette,
+   footer `enter queue  ctrl+s steer ...`. The dashboard, palette,
    and queue composer are visible readiness conditions; the REST response is
    authoritative for active state, the active turn, and queue capability. No
    fixed delay or provider-dependent assistant row is used as a proxy. If the
@@ -468,7 +468,7 @@ Use `tmux send-keys -t "$TMUX_SESSION" ...` to drive input and
 ## Expected
 
 - Step 3: the first turn is genuinely active, queue capability is advertised,
-  and the composer says `queue` / `enter: queue`. A `message`, `steer`, or
+  and the composer says `queue` / `enter queue`. A `message`, `steer`, or
   read-only composer falsifies the precondition or the queue-mode behavior.
 - Step 4: Enter calls `turn/queue`, clears the draft, and renders `queued (1)`
   plus the exact queue line with no ellipsis. Immediate appearance as a new
