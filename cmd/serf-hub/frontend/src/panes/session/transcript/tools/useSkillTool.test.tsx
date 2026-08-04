@@ -21,9 +21,27 @@ test("summary names the activated skill", () => {
 test("body shows the skill's own output text (Skill:/Location:/body, per agent/session_tools_communicate.go)", () => {
   const d = toolRendererFor("use_skill");
   const Body = d.body!;
-  const output = "Skill: test-driven-development\nLocation: /skills/tdd\n\n---\n\nWrite the failing test first.";
+  const output = [
+    "Skill: test-driven-development",
+    "Location: /skills/tdd",
+    "",
+    "---",
+    "",
+    "# Test-driven development",
+    "",
+    "- Write the failing test",
+    "- Run it and watch it fail",
+    "",
+    "```go",
+    "func TestExample(t *testing.T) {}",
+    "```",
+  ].join("\n");
   render(<Body item={item({ toolName: "use_skill", output })} live={false} />);
-  expect(screen.getByText(/Write the failing test first\./)).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Test-driven development" })).toBeTruthy();
+  expect(screen.getByRole("list")).toBeTruthy();
+  expect(screen.getByText("Write the failing test")).toBeTruthy();
+  expect(screen.getByText("func TestExample(t *testing.T) {}")).toBeTruthy();
+  expect(screen.queryByText("# Test-driven development")).toBeNull();
 });
 
 test("body renders nothing when output is blank (the started-before-activated race, agent/internal/appprojector)", () => {
