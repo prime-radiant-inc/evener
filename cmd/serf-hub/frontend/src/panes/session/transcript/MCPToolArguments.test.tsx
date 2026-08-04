@@ -12,11 +12,13 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 test("renders nothing for absent arguments", () => {
   const { container } = render(<MCPToolArguments item={item({ argumentsJSON: undefined })} live={false} />);
   expect(container.textContent).toBe("");
+  expect(screen.queryByRole("region", { name: "Tool call arguments" })).toBeNull();
 });
 
 test("renders nothing for whitespace-only arguments", () => {
   const { container } = render(<MCPToolArguments item={item({ argumentsJSON: "   \n \t" })} live={false} />);
   expect(container.textContent).toBe("");
+  expect(screen.queryByRole("region", { name: "Tool call arguments" })).toBeNull();
 });
 
 test("pretty-prints valid JSON arguments while preserving the raw copy text", () => {

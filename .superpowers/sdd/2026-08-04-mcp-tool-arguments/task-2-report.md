@@ -30,3 +30,28 @@
 
 ## Concerns
 - None beyond the intentional test expectation change in `toolRenderers.test.ts`, which was needed because the default descriptor body is composed rather than exported directly as `RawToolOutput`.
+
+## Fix round 1
+
+### Findings addressed
+- `MCPToolArguments.test.tsx` now asserts the accessible arguments region is absent for undefined and whitespace-only input, not just empty text.
+- `toolRenderers.test.ts` now restores the exact `RawToolOutput` identity checks for the default descriptor.
+- The composed default MCP body is still covered, but now through `ToolCallItem` integration tests, which is the correct layer for that behavior.
+
+### Files changed in the fix
+- `cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.ts`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.test.ts`
+
+### Commands run in the fix
+- `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/toolRenderers.test.ts`
+- `cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/toolRenderers.ts src/panes/session/transcript/toolRenderers.test.ts`
+
+### Outputs in the fix
+- Vitest: `3 passed` files, `79 passed` tests, `0 failed`
+- Biome: completed with one internal `No such file or directory` diagnostic from an unrelated `toolRenderers.test.tsx` path probe, but it still reported `Checked 4 files` and made the needed formatting fix.
+
+### Self-review for the fix
+- The round-trip now matches the review intent: the unit test verifies absence of the accessible region, the registry test keeps the exact exported body identity, and the composed default body remains covered at the integration layer.
+- I did not weaken unrelated registry coverage beyond restoring the exact identity assertions.

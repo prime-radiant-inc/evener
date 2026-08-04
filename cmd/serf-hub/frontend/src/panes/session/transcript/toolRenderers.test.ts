@@ -2,6 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { ItemModel } from "../../../protocol/model";
+import { RawToolOutput } from "./RawToolOutput";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -19,7 +20,7 @@ function DummyBody() {
 
 test("an unregistered tool name falls back to the default descriptor (raw output body)", () => {
   const d = toolRendererFor("tt-unregistered-tool");
-  expect(d.body).toBeTypeOf("function");
+  expect(d.body).toBe(RawToolOutput);
 });
 
 test("the default descriptor's summary is the tool name", () => {
@@ -52,7 +53,7 @@ test("registerToolRenderer with a predicate match resolves for any matching tool
 
 test("a predicate that does not match falls through to the default descriptor", () => {
   registerToolRenderer({ match: (name) => name.startsWith("tt_neverseen_"), summary: () => "should not resolve" });
-  expect(toolRendererFor("tt_completely_different").body).toBeTypeOf("function");
+  expect(toolRendererFor("tt_completely_different").body).toBe(RawToolOutput);
 });
 
 // Every unregistered tool - which includes every MCP tool - wears the generic

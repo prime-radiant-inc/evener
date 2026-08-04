@@ -3,10 +3,9 @@
 // items. Wave 4 T1 ships the registry + the raw-output fallback; T3
 // registers the real per-tool descriptors (read/grep/ls/glob/shell/diff/
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
-import { type ComponentType, createElement, Fragment } from "react";
+import type { ComponentType } from "react";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import type { ToolIconKind } from "../../../widgets";
-import { MCPToolArguments } from "./MCPToolArguments";
 import { RawToolOutput } from "./RawToolOutput";
 
 export interface ToolRenderProps {
@@ -139,9 +138,12 @@ const DEFAULT_DESCRIPTOR: ToolRendererDescriptor = {
   // The generic tool glyph: MCP tools (and any other unregistered name) have
   // no family descriptor, so they all wear the wrench.
   icon: "wrench",
-  body: (props) =>
-    createElement(Fragment, null, createElement(MCPToolArguments, props), createElement(RawToolOutput, props)),
+  body: RawToolOutput,
 };
+
+export function isDefaultDescriptor(descriptor: ToolRendererDescriptor): boolean {
+  return descriptor === DEFAULT_DESCRIPTOR;
+}
 
 // toolRendererFor mirrors legacy renderer-tools.js's own toolRendererFor
 // name (renderer-tools.js:17-19). Exact-string matches are checked across
