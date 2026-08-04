@@ -227,6 +227,7 @@ export function closeOpenMarkdown(source: string): string {
   let paragraph: "none" | "paragraph" | "blockquote" = "none";
   let blockquoteDepth = 0;
   let listContainerIndent: number | null = null;
+  let blockquoteListContainerDepth: number | null = null;
 
   for (const line of lines) {
     const fenceRun = fenceOpener(line);
@@ -260,6 +261,7 @@ export function closeOpenMarkdown(source: string): string {
       paragraph = "none";
       blockquoteDepth = 0;
       listContainerIndent = null;
+      blockquoteListContainerDepth = null;
       continue;
     }
     if (line.trim() === "") {
@@ -267,9 +269,17 @@ export function closeOpenMarkdown(source: string): string {
       paragraph = "none";
       blockquoteDepth = 0;
       listContainerIndent = null;
+      blockquoteListContainerDepth = null;
       continue;
     }
     if (isIndentedCodeBlock(line)) {
+      if (blockquoteListContainerDepth !== null && paragraph === "blockquote") {
+        stack = [];
+        paragraph = "none";
+        blockquoteDepth = 0;
+        blockquoteListContainerDepth = null;
+        continue;
+      }
       if (listContainerIndent !== null) {
         stack = [];
         paragraph = "none";
@@ -287,17 +297,23 @@ export function closeOpenMarkdown(source: string): string {
     if (quoted !== undefined) {
       listContainerIndent = null;
       const quoteContinuesParagraph = paragraph === "blockquote" && blockquoteDepth === quoted.depth;
-      if (!quoteContinuesParagraph) stack = [];
+      if (!quoteContinuesParagraph) {
+        stack = [];
+        blockquoteListContainerDepth = null;
+      }
       if (quoted.content.trim() === "") {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
+        blockquoteListContainerDepth = null;
         continue;
       }
       if (isIndentedCodeBlock(quoted.content)) {
-        if (!quoteContinuesParagraph) {
+        const isQuotedListChild = blockquoteListContainerDepth === quoted.depth;
+        if (!quoteContinuesParagraph || isQuotedListChild) {
           stack = [];
           paragraph = "none";
+          blockquoteListContainerDepth = null;
         } else {
           scanInline(quoted.content, stack);
           paragraph = "blockquote";
@@ -316,15 +332,19 @@ export function closeOpenMarkdown(source: string): string {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
+        blockquoteListContainerDepth = null;
         continue;
       }
-      if (isAtxHeading(quoted.content) || isListItem(quoted.content) || isThematicBreak(quoted.content)) {
+      const quotedIsListItem = isListItem(quoted.content);
+      if (isAtxHeading(quoted.content) || quotedIsListItem || isThematicBreak(quoted.content)) {
         stack = [];
+        blockquoteListContainerDepth = quotedIsListItem ? quoted.depth : null;
       }
       if (isSetextUnderline(quoted.content)) {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
+        blockquoteListContainerDepth = null;
         continue;
       }
       scanInline(quoted.content, stack);
@@ -340,11 +360,13 @@ export function closeOpenMarkdown(source: string): string {
     if (isSetextUnderline(line) || isThematicBreak(line)) {
       stack = [];
       listContainerIndent = null;
+      blockquoteListContainerDepth = null;
       continue;
     }
     if (isAtxHeading(line)) {
       stack = [];
       listContainerIndent = null;
+      blockquoteListContainerDepth = null;
       scanInline(line, stack);
       continue;
     }
@@ -353,6 +375,7 @@ export function closeOpenMarkdown(source: string): string {
       scanInline(line, stack);
       paragraph = "paragraph";
       listContainerIndent = listItemIndent(line);
+      blockquoteListContainerDepth = null;
       continue;
     }
     scanInline(line, stack);
@@ -361,6 +384,7 @@ export function closeOpenMarkdown(source: string): string {
       blockquoteDepth = lazyBlockquoteDepth;
     } else {
       paragraph = "paragraph";
+      blockquoteListContainerDepth = null;
     }
   }
 
