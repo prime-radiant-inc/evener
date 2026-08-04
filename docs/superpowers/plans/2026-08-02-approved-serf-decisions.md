@@ -96,7 +96,7 @@ handed-off scratch directory available until explicitly cleaned.
 ## Verification and handoff
 
 1. Run focused tests after each task and commit each coherent slice.
-2. Run `go test ./...` in this worktree after implementation.
+2. Run `make merge-approval-gate` in this worktree after implementation.
 3. Review the diff for scope contamination and verify the main worktree's
    unrelated deletion remains untouched.
 4. Add substantive implementation/evidence comments to only the relevant open
