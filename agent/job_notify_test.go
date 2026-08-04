@@ -1116,6 +1116,52 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 	}
 }
 
+func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		description string
+		command     string
+		task        string
+		want        string
+	}{
+		{
+			name:        "description",
+			description: "explicit description",
+			command:     "shell command",
+			task:        "delegate task",
+			want:        "explicit description",
+		},
+		{
+			name:    "command",
+			command: "shell command",
+			task:    "delegate task",
+			want:    "shell command",
+		},
+		{
+			name: "delegate task",
+			task: "Inspect the workspace",
+			want: "Inspect the workspace",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := jobNotificationFromRecord(&jobstore.JobRecord{
+				JobID:       "job_A",
+				Type:        jobstore.JobDelegate,
+				Status:      jobstore.StatusCompleted,
+				Description: tt.description,
+				Command:     tt.command,
+				Task:        tt.task,
+			})
+			if n.Description != tt.want {
+				t.Fatalf("notification description = %q, want %q", n.Description, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatWatchSendNotificationBlock(t *testing.T) {
 	t.Parallel()
 	n := watchSendTokenNotification("", jobstore.WatchSendState{

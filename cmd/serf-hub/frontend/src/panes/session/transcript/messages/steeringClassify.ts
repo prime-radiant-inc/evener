@@ -179,10 +179,11 @@ function titleForJobNotification(attrs: Record<string, string>, type: string): s
   return `Job ${status}`;
 }
 
-function notificationSecondary(attrs: Record<string, string>, tone: NotificationTone): string {
+function notificationSecondary(attrs: Record<string, string>, tone: NotificationTone, description: string): string {
   const bits: string[] = [];
   const type = (attrs.job_type ?? "").trim();
-  if (type && type !== "job") bits.push(type);
+  if (description) bits.push(description);
+  else if (type && type !== "job") bits.push(type);
   const exit = (attrs.exit_code ?? "").trim();
   if (exit && exit !== "0") bits.push(`exit ${exit}`);
   const reason = (attrs.reason ?? "").trim();
@@ -212,14 +213,15 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if (attrs.event === "watch_send") type = "watch-send";
   const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
+  const description = decodeNotificationEntities(attrs.description ?? "").trim();
   return {
     type,
     title: titleForJobNotification(attrs, type),
     tone,
-    secondary: decodeNotificationEntities(attrs.description ?? "").trim() || notificationSecondary(attrs, tone),
+    secondary: notificationSecondary(attrs, tone, description),
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
-    description: decodeNotificationEntities(attrs.description ?? "").trim() || undefined,
+    description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: attrs.reason?.trim() || undefined,
     outputBytes: optionalNonNegativeInteger(attrs, "output_bytes"),

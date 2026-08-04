@@ -50,6 +50,14 @@ Job job_42 completed.
   expect(n.secondary).toBe("Inspect the workspace");
 });
 
+test("retains failure metadata alongside a job description", () => {
+  const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" description="Inspect the workspace" status="completed" reason="boom" exit_code="2">
+Job job_42 completed.
+</job-notification>`;
+  const n = notif(parseSteeringNotifications(block).notifications, 0);
+  expect(n.secondary).toBe("Inspect the workspace · exit 2 · boom");
+});
+
 test("retains validated child identity and useful job fields from a completion", () => {
   const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" status="completed" reason="" output_bytes="12" exit_code="0" transcript_ref="local:child">
 Job job_42 completed.

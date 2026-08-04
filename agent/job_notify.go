@@ -37,11 +37,22 @@ func recordNotificationProvenance(rec *jobstore.JobRecord) *provenance.Causal {
 	return rec.Provenance
 }
 
+func jobRecordDisplayLabel(rec *jobstore.JobRecord) string {
+	description := rec.Description
+	if description == "" {
+		description = rec.Command
+	}
+	if description == "" {
+		description = rec.Task
+	}
+	return description
+}
+
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:            rec.JobID,
 		JobType:          string(rec.Type),
-		Description:      rec.Description,
+		Description:      jobRecordDisplayLabel(rec),
 		Status:           string(rec.Status),
 		Reason:           rec.Reason,
 		ExhaustionBudget: rec.ExhaustionBudget,
