@@ -34,7 +34,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Shell commands run foreground by default and return inline output for quick commands. Set `background: true` to launch-and-return immediately; omit `background` (or set it `false`) for the session-default foreground wait. Foreground shell commands that exceed that wait are promoted to durable background jobs and return a `job_id`.
 - Delegate work starts in the background by default (no `job_id` wait); use `max_wait_ms` when you want to wait inline for up to N ms. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It returns both a concrete `job_id` for that turn and a durable `delegate_id` for conversation follow-up. It does not continue an existing conversation.
-- Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the default `on_idle="fail"` rejects instead of starting work. Use `on_idle="start"` only when you intend to start the delegate's next job in the same conversation.
+- Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the same call starts or resumes the next job automatically when the delegate remains resumable.
 - Use `delegate_send` only for follow-up on a durable child delegate conversation. Observer sidecars report through `communicate(end_turn=true)`, not `delegate_send`. `delegate_send` rejects `job_id`, `transcript_ref`, and runtime aliases on the public tool surface; ordinary delegate follow-up targets a `delegate_id`.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
@@ -51,7 +51,7 @@ Tool descriptions should avoid these phrases because they train bad behavior:
 - Do not describe a job-output read as a way to wait. Say: “Completion is notification-driven; do not poll this waiting for a job to finish.”
 - Do not describe `job_stop` as cleanup. Say: “Request cancellation/stop; retained history/output remains.”
 - Do not say `delegate` resumes an old agent. Say: “Start a fresh delegate conversation/job.”
-- Do not say `delegate_send` resumes by default. Say: “Send a follow-up message to a delegate_id; running delegates receive it live, while idle delegates require `on_idle="start"` to start the next job.”
+- Do not say `delegate_send` has a separate idle-policy knob. Say: “Send a follow-up message to a delegate_id; running delegates receive it live, while idle delegates start or resume their next job through the same call when resumable.”
 - Do not say `job_watch` sends arbitrary unbounded transcript context. Say: “Deliver bounded frame/excerpt metadata when the watch condition is met.”
 - Do not say a `job:` transcript ref reads the delegate's conversation. Say: “Read the invocation's output/final report; use the child's session `transcript_ref` for the full conversation.”
 
@@ -67,10 +67,10 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
 | Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
-| Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, on_idle="start", max_wait_ms=N)` |
+| Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` |
 | Steer a running delegate | `delegate_send(to=<delegate_id>)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
-There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `read_transcript(transcript_ref="job:<job_id>")`, or start its next turn with `delegate_send(on_idle="start", max_wait_ms=N)` once it is idle.
+There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `read_transcript(transcript_ref="job:<job_id>")`, or resume its next turn with `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` once it is idle.
 
 Terminal targets differ by watch type: only an `output_match`-only `job_watch` supports terminal catch-up (a one-shot scan of retained output on an already-terminal job). `events`, `progress_interval_ms`, and `every` watches require a running target and reject a terminal one with `target_terminal`. Use transcript reads for retained terminal output evidence.
 
@@ -93,7 +93,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
-A **delegate job** is not the same as a **delegate conversation**. Each `delegate` invocation starts a new child conversation and a concrete delegate job/turn. Follow-up on that delegate conversation is performed through `delegate_send` against its `delegate_id`; if the delegate is idle and `on_idle="start"` is supplied, `delegate_send` creates a new job with a new `job_id` in the same delegate conversation. Observer sidecars use the normal result surface: `communicate(end_turn=true)` is the observer callback.
+A **delegate job** is not the same as a **delegate conversation**. Each `delegate` invocation starts a new child conversation and a concrete delegate job/turn. Follow-up on that delegate conversation is performed through `delegate_send` against its `delegate_id`; when the target delegate is idle and resumable, the same call creates a new job with a new `job_id` in the same delegate conversation. Observer sidecars use the normal result surface: `communicate(end_turn=true)` is the observer callback.
 
 For a top-level job, `owner_session_id` and `visible_to_session_id` are the creating session; `parent_session_id` is omitted unless an implementation records a diagnostic lineage field. For a nested forwarded job, `owner_session_id` is the child/delegate session that owns the runtime, `visible_to_session_id` is the parent session that can see the forwarded record, `parent_session_id` identifies the session that caused the child session to exist when that lineage is recorded, and `parent_job_id` links to the delegate job that caused the nested job.
 
@@ -402,7 +402,6 @@ Target shape:
 {
   "to": "dlg_prior_or_running_delegate",
   "message": "Check whether the serializer has the same issue.",
-  "on_idle": "start",
   "max_wait_ms": 120000
 }
 ```
@@ -418,14 +417,12 @@ Core target resolution:
 Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Serf injects the message into that active run, returns the current `job_id`, and does not create another terminal notification. The return `action` is `steered`.
-- If `to` identifies an idle delegate and `on_idle="fail"` or is omitted, the call fails synchronously with `target_idle`. This default prevents accidental restarts.
-- If `to` identifies an idle/resumable delegate and `on_idle="start"`, Serf creates the delegate's next job in the same delegate conversation, with a new `job_id`. The return `action` is `started`.
+- If `to` identifies an idle/resumable delegate, Serf creates the delegate's next job in the same delegate conversation, with a new `job_id`. The return `action` is `started`.
 - If `to` is `caller`, a `job_id`, `transcript_ref`, unknown delegate, unauthorized delegate, non-resumable delegate, or legacy alias, the call fails synchronously without creating a job record. A `job_id` error should guide the caller to the corresponding `delegate_id` when Serf can resolve it.
 - If another job is already running in the same delegate conversation and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
-- `on_idle` defaults to `fail`. Allowed values are `start` and `fail`.
 - `max_wait_ms` unset (or `0`) for a started delegate returns the new `job_id` immediately without waiting. With a positive `max_wait_ms`, the started delegate performs one bounded foreground wait; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running delegate returns promptly regardless of `max_wait_ms`. When a positive `max_wait_ms` is supplied to a live steer (which cannot honor it), the return carries `wait_ignored_reason` so the caller does not mistake delivery for a reply. There is no "steer and wait for the next reply" mode; let the live steer's turn finish (you are notified) and read its output, or start the next delegate turn once it is idle.
-- `on_idle` and `max_wait_ms` apply to concrete delegate targets.
+- `max_wait_ms` applies to concrete delegate targets.
 
 Watch-origin parent callbacks use `communicate(end_turn=true)` from the observer. Internal runtime plumbing may still steer a parent session, but `caller` is not a public `delegate_send` target.
 
@@ -436,8 +433,8 @@ stateDiagram-v2
     ValidateTarget --> TargetRunning: delegate running
     ValidateTarget --> TargetIdle: delegate idle
     TargetRunning --> MessageSameJob: inject guidance
-    TargetIdle --> NewJobSameSession: on_idle=start + resumable
-    TargetIdle --> Error: on_idle omitted/fail / not_resumable / session_busy
+    TargetIdle --> NewJobSameSession: resumable
+    TargetIdle --> Error: not_resumable / session_busy
     MessageSameJob --> [*]
     NewJobSameSession --> [*]
     Error --> [*]
@@ -728,7 +725,7 @@ Rules:
 - `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, read the relevant job's `job:<job_id>` ref once.
 - The owning session can list its own jobs.
 - A parent session may list nested jobs owned by delegate child sessions only when those jobs have been forwarded into parent-visible durable job records.
-- Delegate records include `delegate_id`, `current_job_id`, `latest_job_id`, `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `delegate_send(to=..., on_idle="start")` uses the same resumability contract when the target delegate is idle. After restart reconciliation, `stopped/runtime_lost` delegate jobs are resumable from retained transcript/session state when strict restore preflight passes. If required retained state is missing, pruned, inconsistent, or otherwise fails strict preflight, Serf reports the delegate as not resumable and follow-up fails synchronously with `target_not_resumable`.
+- Delegate records include `delegate_id`, `current_job_id`, `latest_job_id`, `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `delegate_send(to=...)` uses the same resumability contract when the target delegate is idle. After restart reconciliation, `stopped/runtime_lost` delegate jobs are resumable from retained transcript/session state when strict restore preflight passes. If required retained state is missing, pruned, inconsistent, or otherwise fails strict preflight, Serf reports the delegate as not resumable and follow-up fails synchronously with `target_not_resumable`.
 - Most agents should ignore session identity fields and use only `job_id`, `status`, `type`, `reason`, `transcript_ref`, and output metadata. Session fields are for diagnostics and nested/routed job visibility.
 
 Good inventory example:
@@ -951,7 +948,7 @@ The target model removes the current subagent-specific control plane. Replacemen
 | --- | --- | --- |
 | `spawn_agent(blocking=false)` | `delegate` (no `max_wait_ms`) | always starts a new delegate conversation and returns `job_id`, not `agent_id` |
 | `spawn_agent(blocking=true)` | `delegate(max_wait_ms=...)` | timeout leaves job running |
-| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=..., on_idle="start")` | steers if running; starts the delegate's next job only when `on_idle="start"` is supplied |
+| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=...)` | steers if running; starts or resumes the delegate's next job automatically when idle |
 | `wait` / `wait_job` | no direct replacement; wait for the automatic terminal notification | no read blocks; `job_watch` is the only way to be told about a condition |
 | `cancel_agent` / `job_kill` | `job_stop` | graceful stop plus internal escalation |
 | `close_agent` | none | retention automatic; transcript remains accessible |
@@ -1045,7 +1042,7 @@ Rules:
 
 Terminal job notifications are automatic for notification-armed jobs. A model should not need to subscribe to learn that a background job finished.
 
-A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `delegate_send` against a running delegate does not arm an additional terminal notification. `delegate_send(on_idle="start")` against an idle/resumable delegate creates a new notification-armed delegate job. A watch-origin observer job that successfully calls `communicate(end_turn=true)` uses that callback as the owner signal and skips the redundant terminal owner notification. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression, plus durable observer UI relationships keyed on the sidecar's session identity.
+A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `delegate_send` against a running delegate does not arm an additional terminal notification. `delegate_send(to=..., message=...)` against an idle/resumable delegate creates a new notification-armed delegate job. A watch-origin observer job that successfully calls `communicate(end_turn=true)` uses that callback as the owner signal and skips the redundant terminal owner notification. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression, plus durable observer UI relationships keyed on the sidecar's session identity.
 
 Notification example:
 
@@ -1113,7 +1110,7 @@ This is not command failure. It is supervision loss.
 
 Parent-visible forwarded nested jobs follow the same reconciliation rule: if the visible record says `running` and the owner runtime is absent after restore, Serf finalizes the parent-visible job exactly once as `stopped/runtime_lost` using the same parent-visible `job_id` and terminal notification dedupe key. Restart loss is never reported as job failure; active control attempts whose owner runtime is believed live but cannot route/control the job fail synchronously with `not_controllable`.
 
-Delegate jobs finalized as `stopped/runtime_lost` are not automatically resumed by restart reconciliation. Their delegate conversations remain resumable through `delegate_send(on_idle="start")` when retained transcript/session state is present and strict restore preflight can reconstruct the conversation safely. Missing or pruned retained state makes the delegate not resumable instead of triggering a best-effort replay.
+Delegate jobs finalized as `stopped/runtime_lost` are not automatically resumed by restart reconciliation. Their delegate conversations remain resumable through `delegate_send(to=..., message=...)` when retained transcript/session state is present and strict restore preflight can reconstruct the conversation safely. Missing or pruned retained state makes the delegate not resumable instead of triggering a best-effort replay.
 
 ```mermaid
 stateDiagram-v2
@@ -1243,7 +1240,7 @@ Decision table:
 | Trigger observer/sidecar review | Parent: `delegate(watch_parent:true)`; observer: `job_watch(operation="create", source="parent", ...)`; callback: `communicate(end_turn=true)` |
 | Start a fresh delegate conversation | `delegate(...)` |
 | Follow up on an existing delegate conversation | `delegate_send(to=<delegate_id>, message=...)` |
-| Start an idle delegate's next turn | `delegate_send(to=<delegate_id>, message=..., on_idle="start")` |
+| Start an idle delegate's next turn | `delegate_send(to=<delegate_id>, message=...)` |
 
 Canonical model-facing delegate conversation field is `transcript_ref`. `delegate_session_id` is diagnostics/internal-only unless an implementation-specific diagnostic view exposes it; ordinary agents should not need to reconcile it with `job_id`.
 

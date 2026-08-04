@@ -103,7 +103,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 					sub.mu.Unlock()
 				}
 			}
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			if res.Err != nil || res.Action != "steered" {
 				t.Fatalf("driving child send = %+v, want steered", res)
 			}
@@ -111,7 +111,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			s := newLeanDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
 			s.subagents.track(&subagent{id: rec.DelegateRestore.ChildSessionID, sess: &Session{}, running: true})
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_resumable:")
 		case 10:
 			s := &Session{}
@@ -185,7 +185,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				return rec, nil
 			}
 			t.Cleanup(func() { delegateSendTestHooks.beforePostState = nil; delegateSendTestHooks.findRunning = nil })
-			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 		case 17:
 			client := llm.NewClient()
 			client.Register(&fakeAdapter{name: "openai"})
@@ -195,7 +195,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				return nil, nil, rec, nil
 			}
 			t.Cleanup(func() { delegateSendTestHooks.resume = nil })
-			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			_ = s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 		case 18:
 			s := newDelegateRestorePreflightSession(t, llm.NewClient())
 			rec := seedStoppedDelegateRestoreRecord(t, s)
@@ -209,7 +209,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				delegateSendTestHooks.findJob = nil
 				delegateRestoreSession = old
 			})
-			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed", OnIdle: "start"})
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: rec.DelegateID, Message: "seed"})
 			requireSendSeed100Error(t, res, "target_not_resumable: delegate session")
 		case 19:
 			base := NewOpenAIProfile("base")

@@ -22,7 +22,7 @@ func seed100SessionToolsJobsMore(t *testing.T) {
 		TestJobWatchTerminalOutputMatchCatchupThroughTool,
 		TestJobToolsRejectDelegateIDWithActionableGuidance,
 		TestJobToolsControlBackgroundShellJob,
-		TestDelegateSendIdleDefaultResumesAndOnIdleIsRejected,
+		TestDelegateSendIdleDefaultResumesWithOmittedOnIdle,
 		TestMarshalDelegateResultsBoundLargeOutput,
 		TestLiveSteerWaitIgnoredReason,
 		TestClassifyStopOutcome,

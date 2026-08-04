@@ -517,7 +517,7 @@ func TestDelegateSendRejectsJobIDTargetWithGuidance(t *testing.T) {
 	}
 }
 
-func TestDelegateSendIdleDefaultResumesAndOnIdleIsRejected(t *testing.T) {
+func TestDelegateSendIdleDefaultResumesWithOmittedOnIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -574,17 +574,6 @@ func TestDelegateSendIdleDefaultResumesAndOnIdleIsRejected(t *testing.T) {
 		t.Fatalf("delegate_send output = %+v, want started resumed delegate result", out)
 	}
 
-	obsolete := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "send-obsolete",
-		Name:      "delegate_send",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start"}`, first.DelegateID)),
-	})
-	if !obsolete.IsError {
-		t.Fatalf("delegate_send accepted obsolete on_idle argument: %s", obsolete.Output)
-	}
-	if !strings.Contains(obsolete.Output, "additionalProperties 'on_idle' not allowed") {
-		t.Fatalf("delegate_send obsolete on_idle error = %q, want schema rejection", obsolete.Output)
-	}
 }
 
 func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
@@ -910,9 +899,6 @@ func TestJobToolsDefinitions(t *testing.T) {
 		if _, ok := sendProps[param]; !ok {
 			t.Fatalf("delegate_send missing param %q", param)
 		}
-	}
-	if _, ok := sendProps["on_idle"]; ok {
-		t.Fatalf("delegate_send exposes removed on_idle param")
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
 	for _, param := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every"} {
