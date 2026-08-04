@@ -20,7 +20,8 @@ function DummyBody() {
 
 test("an unregistered tool name falls back to the default descriptor (raw output body)", () => {
   const d = toolRendererFor("tt-unregistered-tool");
-  expect(d.body).toBe(RawToolOutput);
+  expect(d.body).not.toBe(RawToolOutput);
+  expect(d.body).toBeTypeOf("function");
 });
 
 test("the default descriptor's summary is the tool name", () => {
@@ -53,7 +54,8 @@ test("registerToolRenderer with a predicate match resolves for any matching tool
 
 test("a predicate that does not match falls through to the default descriptor", () => {
   registerToolRenderer({ match: (name) => name.startsWith("tt_neverseen_"), summary: () => "should not resolve" });
-  expect(toolRendererFor("tt_completely_different").body).toBe(RawToolOutput);
+  expect(toolRendererFor("tt_completely_different").body).not.toBe(RawToolOutput);
+  expect(toolRendererFor("tt_completely_different").body).toBeTypeOf("function");
 });
 
 // Every unregistered tool - which includes every MCP tool - wears the generic

@@ -31,6 +31,42 @@
 ## Concerns
 - None beyond the intentional test expectation change in `toolRenderers.test.ts`, which was needed because the default descriptor body is composed rather than exported directly as `RawToolOutput`.
 
+## Final fix wave
+
+### Findings addressed
+- Moved the MCP argument composition back into `DEFAULT_DESCRIPTOR.body` in `toolRenderers.ts` and removed the `ToolCallItem` special-case branch/import.
+- Strengthened the settled unregistered integration assertion to verify the formatted MCP argument text itself.
+- Preserved the dedicated-renderer regression so non-default bodies do not receive the MCP arguments block.
+
+### Files changed in the final fix
+- `cmd/serf-hub/frontend/src/panes/session/transcript/MCPToolArguments.test.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/RawToolOutput.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.ts`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/toolRenderers.test.ts`
+- `cmd/serf-hub/frontend/src/panes/session/transcript/tools/index.test.ts`
+
+### Commands run in the final fix
+- `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/toolRenderers.test.ts src/panes/session/transcript/tools/index.test.ts`
+- `cd cmd/serf-hub/frontend && npx biome check --write src/panes/session/transcript/MCPToolArguments.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/toolRenderers.test.ts src/panes/session/transcript/tools/index.test.ts src/panes/session/transcript/toolRenderers.ts src/panes/session/transcript/ToolCallItem.tsx src/panes/session/transcript/RawToolOutput.tsx`
+- `make test-web`
+- `make test-web-browser`
+
+### Exact outputs in the final fix
+- Focused Vitest: `Test Files 4 passed (4)`, `Tests 82 passed (82)`, `0 failed`
+- Biome: completed successfully with no diagnostics or fixes
+- `make test-web`: `PASS  web-typecheck`, `PASS  web-test`, `PASS  web-lint`
+- `make test-web-browser`: `PASS  web-layoutguard`, `PASS  web-overflowguard`, `PASS  web-spawnguard`
+
+### Self-review for the final fix
+- The production wiring now matches the approved architecture: the default descriptor owns the composed body, and `ToolCallItem` only renders the resolved body.
+- The test suite still checks the exact `RawToolOutput` identity only where that identity remains meaningful, while the composed default body is covered at the integration layer.
+- The new MCP argument assertion checks the accessible region and the rendered pretty-printed JSON text, not just the region's presence.
+
+### Concerns after the final fix
+- `make test-web-browser` is a frontend-target invocation and passed from the repository root; the same target name does not exist under `cmd/serf-hub/frontend`.
+
 ## Fix round 1
 
 ### Findings addressed

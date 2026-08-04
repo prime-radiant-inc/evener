@@ -12,10 +12,9 @@ import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
-import { MCPToolArguments } from "./MCPToolArguments";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
-import { isDefaultDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
+import { toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
@@ -292,7 +291,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
               below. Echoing detail() here too duplicated that fact on screen
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-          {isDefaultDescriptor(descriptor) && <MCPToolArguments item={item} live={live} sessionRef={sessionRef} />}
           {Body && <Body item={item} live={live} sessionRef={sessionRef} />}
           <ImageGallery images={item.outputImages} />
         </div>

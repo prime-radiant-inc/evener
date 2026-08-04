@@ -1,7 +1,9 @@
+// @vitest-environment jsdom
+
 import { expect, test } from "vitest";
 import "./index";
 import { RawToolOutput } from "../RawToolOutput";
-import { toolRendererFor } from "../toolRenderers";
+import { defaultToolBody, toolRendererFor } from "../toolRenderers";
 
 // A single import of this barrel must be enough to register every T3
 // descriptor - the smoke test every registration file's own test already
@@ -36,6 +38,6 @@ test("importing the barrel registers descriptors for every T3 tool family", () =
   }
 });
 
-test("an unregistered tool name still falls back to the raw default (the barrel doesn't break the fallback)", () => {
-  expect(toolRendererFor("totally_unregistered_tool_xyz").body).toBe(RawToolOutput);
+test("an unregistered tool name still falls back to the composed default body (the barrel doesn't break the fallback)", () => {
+  expect(toolRendererFor("totally_unregistered_tool_xyz").body).toBe(defaultToolBody);
 });
