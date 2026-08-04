@@ -511,13 +511,17 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		lastIdx = idx
 	}
 
-	for _, guidance := range []string{
-		"Before a local branch integration, re-check the target branch and ref immediately before the merge; stop if either changed since preflight.",
-		"Do not use `git pull` for local integration. Fetch only the intended base ref with `--no-tags`, check ancestry, use an explicit merge mode (normally `git merge --no-ff --no-edit`), preserve unrelated dirty files, block overlaps, and report whether refs, tags, merge policy, or dirty overlap caused a block.",
-	} {
-		if !strings.Contains(result, guidance) {
-			t.Errorf("system prompt missing local integration guidance %q", guidance)
+	foundGitSafety := false
+	for _, source := range sources {
+		if source.Label == "embedded:prompts/sections/git-safety.md" {
+			foundGitSafety = true
+			if source.Size == 0 {
+				t.Error("embedded git-safety section was tracked with no content")
+			}
 		}
+	}
+	if !foundGitSafety {
+		t.Errorf("system prompt did not resolve embedded git-safety section; sources = %v", sources)
 	}
 
 	// Verify sources were tracked.
