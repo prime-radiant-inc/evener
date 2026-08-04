@@ -368,7 +368,7 @@ func isIncompleteTrailingJSON(line []byte, err error) bool {
 	if !errors.As(err, &syntaxErr) {
 		return false
 	}
-	if syntaxErr.Offset < int64(len(trimmed)) {
+	if syntaxErr.Offset < int64(len(line)) {
 		return false
 	}
 	last := trimmed[len(trimmed)-1]
