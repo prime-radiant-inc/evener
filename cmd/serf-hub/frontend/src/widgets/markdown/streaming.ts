@@ -81,6 +81,10 @@ function isListItem(line: string): boolean {
   return /^ {0,3}(?:[-+*](?:[ \t]+|$)|\d{1,9}[.)](?:[ \t]+|$))/.test(line);
 }
 
+function listItemIndent(line: string): number {
+  return line.match(/^ */)?.[0].length ?? 0;
+}
+
 function isThematicBreak(line: string): boolean {
   return /^(?: {0,3}(?:\*[ \t]*){3,}| {0,3}(?:-[ \t]*){3,}| {0,3}(?:_[ \t]*){3,})$/.test(line);
 }
@@ -196,6 +200,7 @@ export function closeOpenMarkdown(source: string): string {
   let stack: OpenMarker[] = [];
   let paragraph: "none" | "paragraph" | "blockquote" = "none";
   let blockquoteDepth = 0;
+  let listContainerIndent: number | null = null;
 
   for (const line of lines) {
     const fenceRun = fenceOpener(line);
@@ -213,15 +218,22 @@ export function closeOpenMarkdown(source: string): string {
       stack = []; // a fence interrupts a paragraph; its open emphasis dies here
       paragraph = "none";
       blockquoteDepth = 0;
+      listContainerIndent = null;
       continue;
     }
     if (line.trim() === "") {
       stack = []; // emphasis cannot span a block boundary
       paragraph = "none";
       blockquoteDepth = 0;
+      listContainerIndent = null;
       continue;
     }
     if (isIndentedCodeBlock(line)) {
+      if (listContainerIndent !== null) {
+        stack = [];
+        paragraph = "none";
+        continue;
+      }
       if (paragraph === "none") {
         stack = [];
         continue;
@@ -232,6 +244,7 @@ export function closeOpenMarkdown(source: string): string {
 
     const quoted = blockquoteLine(line);
     if (quoted !== undefined) {
+      listContainerIndent = null;
       if (paragraph !== "blockquote" || blockquoteDepth !== quoted.depth) stack = [];
       if (quoted.content.trim() === "") {
         stack = [];
@@ -254,14 +267,18 @@ export function closeOpenMarkdown(source: string): string {
       continue;
     }
 
+    const wasLazyBlockquote = paragraph === "blockquote";
+    const lazyBlockquoteDepth = blockquoteDepth;
     paragraph = "none";
     blockquoteDepth = 0;
     if (isSetextUnderline(line) || isThematicBreak(line)) {
       stack = [];
+      listContainerIndent = null;
       continue;
     }
     if (isAtxHeading(line)) {
       stack = [];
+      listContainerIndent = null;
       scanInline(line, stack);
       continue;
     }
@@ -269,10 +286,16 @@ export function closeOpenMarkdown(source: string): string {
       stack = [];
       scanInline(line, stack);
       paragraph = "paragraph";
+      listContainerIndent = listItemIndent(line);
       continue;
     }
     scanInline(line, stack);
-    paragraph = "paragraph";
+    if (wasLazyBlockquote) {
+      paragraph = "blockquote";
+      blockquoteDepth = lazyBlockquoteDepth;
+    } else {
+      paragraph = "paragraph";
+    }
   }
 
   if (fence) return `${source}\n${fence.char.repeat(fence.length)}`;

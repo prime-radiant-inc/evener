@@ -132,6 +132,16 @@ test("emphasis continues across consecutive blockquote lines", () => {
   expect(closeOpenMarkdown(source)).toBe(`${source}**`);
 });
 
+test("a lazy blockquote continuation keeps the quoted paragraph active", () => {
+  const source = "> **bold\ncontinuation\n> end";
+  expect(closeOpenMarkdown(source)).toBe(`${source}**`);
+});
+
+test.each(["> child", "- child", "code"])("an indented nested %s block ends the parent list paragraph", (nested) => {
+  const source = `- **parent\n    ${nested}`;
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);
