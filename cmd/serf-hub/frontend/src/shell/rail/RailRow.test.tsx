@@ -150,6 +150,23 @@ describe("activityGloss", () => {
     expect(activityGloss(apiNode({ state: "active" }))).toBe("working");
   });
 
+  test("reports one recursive working subagent", () => {
+    expect(
+      activityGloss(
+        apiNode({
+          state: "active",
+          children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] })],
+        }),
+      ),
+    ).toBe("1 subagent working");
+  });
+
+  test("reports multiple recursive working subagents with plural wording", () => {
+    expect(activityGloss(apiNode({ children: [apiNode({ state: "active" }), apiNode({ state: "active" })] }))).toBe(
+      "2 subagents working",
+    );
+  });
+
   test("joins state and branch, in that order", () => {
     expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("your move · main");
   });
@@ -189,6 +206,14 @@ describe("activityGloss", () => {
   // where a fact a title cannot carry stays reachable without spending a line.
   test("never carries the tier on the visible line", () => {
     expect(activityGloss(apiNode({ state: "errored", tier: "archived" }))).toBe("failed");
+  });
+
+  test("keeps a branch suffix after the working subagent count", () => {
+    expect(
+      activityGloss(
+        apiNode({ branch: "fix/thing", children: [apiNode({ state: "active" }), apiNode({ state: "active" })] }),
+      ),
+    ).toBe("2 subagents working · fix/thing");
   });
 });
 
@@ -364,6 +389,39 @@ describe("session row", () => {
     const session = apiNode({ state: "active", age: "2m" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working/i);
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
+  });
+
+  test("shows recursive working subagent count and preserves the branch suffix on a working row", () => {
+    const session = apiNode({
+      state: "active",
+      branch: "fix/thing",
+      children: [apiNode({ state: "active" }), apiNode({ state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
+  });
+
+  test("shows recursive working subagent count on a quiet row with active descendants", () => {
+    const session = apiNode({
+      state: "idle",
+      branch: "fix/thing",
+      age: "2m",
+      children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] }), apiNode({ state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
+  });
+
+  test("keeps a quiet row without active descendants one line", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
     expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
   });
 

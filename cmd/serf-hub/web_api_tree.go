@@ -151,7 +151,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	pinRevalidation := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinRevalidation)
 	bySession := pinSectionAssignmentLookup(assignments, pinRevalidation.Presentation)
-	favs := projectFavoritePresentation(revalidation.Presentation)
+	sessionFavs := revalidation.Presentation
+	projectFavs := projectFavoritePresentation(sessionFavs)
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      time.Now().UTC(),
 		Sources:          s.apiTreeSources(),
@@ -161,7 +162,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if !treeNodeCanActLive(n) {
 			continue
 		}
-		resp.Live = append(resp.Live, s.apiTreeNodeTier("live", "", "live", favs, n))
+		resp.Live = append(resp.Live, s.apiTreeNodeTier("live", "", "live", sessionFavs, n))
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
@@ -177,7 +178,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		for _, n := range projectSessions(p) {
 			markTreeNodeIDs(seenProjectRefs, n)
 		}
-		resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", favs, p))
+		resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", projectFavs, p))
 	}
 	for _, p := range buckets.archived {
 		for _, n := range projectSessions(p) {
@@ -187,21 +188,21 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		// sessions never ride in the snapshot. Sessions stays nil (wire:
 		// null) and SessionCount carries the row count; the sidebar
 		// lazy-loads the full project from /api/tree/project?key= on expand.
-		stub := s.apiTreeProject("project", favs, p)
+		stub := s.apiTreeProject("project", projectFavs, p)
 		stub.SessionCount = p.TotalSessionCount()
 		stub.Sessions = nil
 		resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
 	}
 	for _, p := range buckets.active {
 		projectIndexes[p.Key] = len(resp.Projects)
-		ap := s.apiTreeProject("project", favs, p)
+		ap := s.apiTreeProject("project", projectFavs, p)
 		for _, n := range projectSessions(p) {
 			markTreeNodeIDs(seenProjectRefs, n)
 		}
 		resp.Projects = append(resp.Projects, ap)
 	}
 	for _, n := range tree.NeedsYou {
-		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", favs, n))
+		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", sessionFavs, n))
 	}
 	for _, le := range live {
 		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
@@ -225,7 +226,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: le.StartedAt,
 			Age:       hubcore.AgeString(le.StartedAt),
 		}
-		apiNode := s.apiTreeNodeTier("project", key, "live", favs, node)
+		apiNode := s.apiTreeNodeTier("project", key, "live", sessionFavs, node)
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
@@ -252,7 +253,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if n.Kind != "session" {
 			continue
 		}
-		node := s.apiTreeNodeTier("pinned", "", "pinned", favs, n)
+		node := s.apiTreeNodeTier("pinned", "", "pinned", sessionFavs, n)
 		indexPinSectionNode(nodes, n.ID, node)
 	}
 	resp.PinSections = pinSectionTrees(sections, assignments, pinRevalidation.Presentation, nodes)
