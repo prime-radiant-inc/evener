@@ -23,9 +23,9 @@ mkdir -p "$repo/scripts" "$repo/test/scenarios" "$repo/docs" "$bin" "$tmp_root"
 cp "$source_script" "$repo/scripts/scenario-cite-migrate.sh"
 chmod +x "$repo/scripts/scenario-cite-migrate.sh"
 printf 'module example.test/cite-fixture\n\ngo 1.25.6\n' >"$repo/go.mod"
-printf 'package fixture\n\nconst Sentinel = 1\n' >"$repo/sentinel.go"
+printf 'package fixture\n\nconst Sentinel = 1\n\ntype Box struct{}\n\nfunc (Box) Value() {}\n' >"$repo/sentinel.go"
 printf 'package fixture\n\nconst OtherSentinel = 2\n' >"$repo/other.go"
-printf '# scenario fixture\n\n`fixture.Sentinel` (`sentinel.go:3`)\n' >"$repo/test/scenarios/card.md"
+printf '# scenario fixture\n\n`fixture.Sentinel` (`sentinel.go:3`)\n\n`fixture.Box.Value` (`sentinel.go:7`)\n\n`other.Sentinel` (`sentinel.go:3`)\n' >"$repo/test/scenarios/card.md"
 printf '# documentation fixture\n' >"$repo/docs/agentic-testing.md"
 (
 	cd "$repo" &&
@@ -117,13 +117,19 @@ else
 	rc=$?
 fi
 printf '%s\n' "$output" >"$qualified_out"
-if [ "$rc" -eq 0 ] && grep -qF 'REWRITE test/scenarios/card.md:3' "$qualified_out"; then
+if [ "$rc" -eq 0 ] &&
+	grep -qF 'REWRITE test/scenarios/card.md:3' "$qualified_out" &&
+	grep -qF 'sentinel.go#Sentinel' "$qualified_out" &&
+	grep -qF 'sentinel.go#Box.Value' "$qualified_out" &&
+	! grep -qF 'REWRITE test/scenarios/card.md:7' "$qualified_out"; then
 	ok "qualified declaration anchor is migrated"
 else
 	bad "qualified declaration anchor is skipped"
 fi
 if (cd "$repo" && TMPDIR="$tmp_root" PATH="$PATH" bash scripts/scenario-cite-migrate.sh --apply >/dev/null 2>&1) &&
-	grep -qF '`sentinel.go#Sentinel`' "$repo/test/scenarios/card.md"; then
+	grep -qF '`sentinel.go#Sentinel`' "$repo/test/scenarios/card.md" &&
+	grep -qF '`sentinel.go#Box.Value`' "$repo/test/scenarios/card.md" &&
+	grep -qF '`other.Sentinel` (`sentinel.go:3`)' "$repo/test/scenarios/card.md"; then
 	ok "qualified declaration rewrite is applied"
 else
 	bad "qualified declaration rewrite is not applied"

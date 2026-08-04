@@ -147,7 +147,7 @@ func run(root string, apply, reportSkips, includeUnconfirmed bool) error {
 	if err != nil {
 		return err
 	}
-	declared := map[string]declarationTable{}
+	declared := map[string]declarationIndex{}
 	rewrote, skipped, unconfirmed := 0, 0, 0
 	for _, card := range cards {
 		raw, err := os.ReadFile(card)
@@ -169,11 +169,11 @@ func run(root string, apply, reportSkips, includeUnconfirmed bool) error {
 					}
 					continue
 				}
-				names, err := declarationsIn(declared, filepath.Join(root, files[0]))
+				index, err := declarationsIn(declared, filepath.Join(root, files[0]))
 				if err != nil {
 					return err
 				}
-				anchors := corroboratedAnchors(lines, i, names)
+				anchors := corroboratedAnchors(lines, i, index)
 				if len(anchors) != 1 {
 					skipped++
 					if reportSkips {
@@ -187,7 +187,7 @@ func run(root string, apply, reportSkips, includeUnconfirmed bool) error {
 				// card's prose is the only evidence, and the corpus proves
 				// that alone is not enough.
 				replacement := "`" + cited + "#" + anchors[0] + "`"
-				if !lineRangeIn(names[anchors[0]], m[2]) {
+				if !lineRangeIn(index.names[anchors[0]], m[2]) {
 					unconfirmed++
 					fmt.Printf("UNCONFIRMED %s %s -> %s (line range no longer inside %s)\n",
 						where, whole, replacement, anchors[0])
@@ -224,7 +224,7 @@ func run(root string, apply, reportSkips, includeUnconfirmed bool) error {
 // because prose wraps and puts "(`readOutputImageFile`,\n`output_images.go:289-299`)"
 // on two lines. The line BELOW is deliberately out of the window: it is
 // usually the next bullet, whose symbol has nothing to do with this citation.
-func corroboratedAnchors(lines []string, i int, names declarationTable) []string {
+func corroboratedAnchors(lines []string, i int, index declarationIndex) []string {
 	window := lines[i]
 	if i > 0 {
 		window = lines[i-1] + "\n" + window
@@ -237,12 +237,12 @@ func corroboratedAnchors(lines []string, i int, names declarationTable) []string
 			continue
 		}
 		anchor := candidate
-		if len(names[anchor]) == 0 {
-			if dot := strings.LastIndexByte(anchor, '.'); dot >= 0 {
-				anchor = anchor[dot+1:]
+		if len(index.names[anchor]) == 0 {
+			if pkg, suffix, ok := strings.Cut(anchor, "."); ok && pkg == index.packageName {
+				anchor = suffix
 			}
 		}
-		if len(names[anchor]) == 0 || seen[anchor] {
+		if len(index.names[anchor]) == 0 || seen[anchor] {
 			continue
 		}
 		seen[anchor] = true
@@ -259,22 +259,27 @@ type span struct{ from, to int }
 // declared; a method name can appear on more than one receiver.
 type declarationTable map[string][]span
 
+type declarationIndex struct {
+	packageName string
+	names       declarationTable
+}
+
 // declarationsIn returns every name a Go file declares — funcs and methods,
 // types, package-level and grouped consts and vars, struct fields, interface
 // methods — with the lines each occupies, memoized across citations into the
 // same file.
-func declarationsIn(cache map[string]declarationTable, path string) (declarationTable, error) {
-	if names, ok := cache[path]; ok {
-		return names, nil
+func declarationsIn(cache map[string]declarationIndex, path string) (declarationIndex, error) {
+	if index, ok := cache[path]; ok {
+		return index, nil
 	}
 	fset := token.NewFileSet()
 	parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return declarationIndex{}, err
 	}
-	names := declarationTable{}
+	index := declarationIndex{packageName: parsed.Name.Name, names: declarationTable{}}
 	record := func(name string, node ast.Node) {
-		names[name] = append(names[name], span{
+		index.names[name] = append(index.names[name], span{
 			from: fset.Position(node.Pos()).Line,
 			to:   fset.Position(node.End()).Line,
 		})
@@ -300,8 +305,8 @@ func declarationsIn(cache map[string]declarationTable, path string) (declaration
 			}
 		}
 	}
-	cache[path] = names
-	return names, nil
+	cache[path] = index
+	return index, nil
 }
 
 // recordMembers records the field names of a struct type and the method names
