@@ -306,6 +306,23 @@ func TestAskUser_ValidCallPostsAckAndPending(t *testing.T) {
 	}
 }
 
+func TestAskUser_OmittedHeaderUsesEmptyInternalHeader(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+	args := askUserArgsValid()
+	delete(args["questions"].([]any)[0].(map[string]any), "header")
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if res.IsError {
+		t.Fatalf("ask_user without header errored: %s", res.Output)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if got := sess.askPending[0].Header; got != "" {
+		t.Fatalf("pending header = %q, want empty internal header", got)
+	}
+}
+
 // TestAskUser_ClearAskPendingResetsCount exercises the second unexported
 // helper the brief names: clearAskPending empties the pending set built up
 // by prior calls.

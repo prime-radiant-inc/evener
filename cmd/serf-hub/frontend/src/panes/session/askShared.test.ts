@@ -47,6 +47,15 @@ test("parses a well-formed single question with two options", () => {
   ]);
 });
 
+test("uses a stable Question N fallback when headers are omitted", () => {
+  const questions = [
+    { question: "First?", options: [{ label: "A", detail: "a" }] },
+    { question: "Second?", options: [{ label: "B", detail: "b" }] },
+  ];
+  const result = parseAskUserQuestions(item({ argumentsJSON: askUserArgs(questions) }));
+  expect(result?.map((question) => question.header)).toEqual(["Question 1", "Question 2"]);
+});
+
 test("carries multi_select, why, and if_unanswered through when present", () => {
   const questions = [{ ...ONE_QUESTION[0], multi_select: true, why: "affects release", if_unanswered: "assume yes" }];
   const result = parseAskUserQuestions(item({ argumentsJSON: askUserArgs(questions) }));

@@ -3,7 +3,7 @@
 // unlike legacy's suppress-and-redirect-to-a-dock design, since the
 // composer-side answer flow is a separate wave-5 surface). Ground truth:
 // agent/internal/tool/definitions.go's DefAskUser gives the exact
-// argumentsJson shape - {questions:[{header(<=12 chars), question,
+// argumentsJson shape - {questions:[{header?(<=12 chars), question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
 // if_unanswered?}]}, 1-4 questions. ask_user's own Output is a single
 // FIXED string on success (agent/session_tools_ask.go's askUserAckText,

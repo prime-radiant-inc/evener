@@ -114,3 +114,9 @@ test("a note on an explicit skip still attaches (the note is universal, not chip
 test("an empty items array composes just the [answers] header line", () => {
   expect(composeAskAnswers([])).toBe("[answers]");
 });
+
+test("composes the stable fallback label for an omitted header", () => {
+  expect(composeAskAnswers([item({ header: undefined, resolution: { kind: "skip" } })])).toBe(
+    "[answers]\n1. [Question 1] → skipped (no answer)",
+  );
+});

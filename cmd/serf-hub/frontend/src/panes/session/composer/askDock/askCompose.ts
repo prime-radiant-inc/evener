@@ -22,10 +22,14 @@ export type AskResolution =
 // its optional note, and - only for a fallback resolution - the model's own
 // if_unanswered text to embed verbatim.
 export interface AskAnswerItem {
-  header: string;
+  header?: string;
   resolution: AskResolution | null;
   note: string;
   ifUnanswered?: string;
+}
+
+function askAnswerHeader(header: string | undefined, index: number): string {
+  return header ?? `Question ${index + 1}`;
 }
 
 // quoteGoString mirrors Go's %q escaping (renderer.js:6975-6994) exactly:
@@ -84,7 +88,7 @@ function askResolutionText(item: AskAnswerItem): string {
 export function composeAskAnswers(items: AskAnswerItem[]): string {
   const lines = ["[answers]"];
   items.forEach((item, idx) => {
-    let line = `${idx + 1}. [${item.header}] → ${askResolutionText(item)}`;
+    let line = `${idx + 1}. [${askAnswerHeader(item.header, idx)}] → ${askResolutionText(item)}`;
     if (item.note.trim()) line += ` — note: ${quoteGoString(item.note)}`;
     lines.push(line);
   });

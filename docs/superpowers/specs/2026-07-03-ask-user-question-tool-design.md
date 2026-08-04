@@ -56,7 +56,7 @@ We also decline Codex's plan-mode-only gating (users file issues begging for the
 {
   "questions": [            // 1..4
     {
-      "header": "DB choice",        // required, ≤12 chars; chip/tab label
+      "header": "DB choice",        // optional, ≤12 chars; chip/tab label; omitted headers display as Question N
       "question": "Which datastore for the ingest path?",  // required
       "options": [                   // required, 2..5
         { "label": "Postgres", "detail": "matches prod; heavier local setup", "recommended": true },
@@ -89,7 +89,7 @@ The user's **next message is the answer**. The form composes it in a stable form
 4. [Endpoint] → free text: "use RDS, not self-hosted"
 ```
 
-Per question, exactly one resolution: a quoted selection (multi-select joins **quoted** labels: `→ "A", "B"` — unambiguous even when a label contains a comma), `free text: "…"`, `you decide` (optional `leaning`, then `note`, both quoted), `do your stated fallback ("…")` (only where `if_unanswered` exists), or `skipped (no answer)`. Question numbering is global across the turn's pending set in posting order — spanning multiple `ask_user` calls — and every line carries the header, so the reply stays unambiguous even when clients render the calls as separate cards. **Every** resolution line accepts the trailing `— note: "…"` suffix — the annotation is universal (Jesse's hard requirement), and renderers must offer the note affordance on every resolution path, question-level, not chip-only.
+Per question, exactly one resolution: a quoted selection (multi-select joins **quoted** labels: `→ "A", "B"` — unambiguous even when a label contains a comma), `free text: "…"`, `you decide` (optional `leaning`, then `note`, both quoted), `do your stated fallback ("…")` (only where `if_unanswered` exists), or `skipped (no answer)`. Question numbering is global across the turn's pending set in posting order — spanning multiple `ask_user` calls — and every line carries the header (or the stable fallback label `Question N`, 1-based within the call), so the reply stays unambiguous even when clients render the calls as separate cards. **Every** resolution line accepts the trailing `— note: "…"` suffix — the annotation is universal (Jesse's hard requirement), and renderers must offer the note affordance on every resolution path, question-level, not chip-only.
 
 The user may instead ignore the form and type anything: free prose **is** a valid reply, delivered verbatim as the user message. There is no daemon-side answer validation and no invalid-answer state — a reply is a reply; the form's structure lives in the client.
 
@@ -97,7 +97,7 @@ The user may instead ignore the form and type anything: free prose **is** a vali
 
 > Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, "you decide" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.
 >
-> - `questions`: 1–4 per call, each with a short `header` (≤12 chars), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.
+> - `questions`: 1–4 per call, each with an optional short `header` (≤12 chars; omitted headers display as `Question N`, 1-based within the call), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.
 > - Do not add an "Other" or free-text option; the UI always offers one, plus "you decide".
 > - Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).
 >

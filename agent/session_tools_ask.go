@@ -114,8 +114,9 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 		if recommendedCount > 1 {
 			return nil, errors.New("ask_user: at most one option may be recommended")
 		}
+		header, _ := qm["header"].(string)
 		parsed = append(parsed, askQuestion{
-			Header:   fmt.Sprint(qm["header"]),
+			Header:   header,
 			Question: fmt.Sprint(qm["question"]),
 		})
 	}
