@@ -48,6 +48,7 @@ function startsComment(raw: string, index: number, lineStart: number): boolean {
 }
 
 function operatorAt(raw: string, index: number): string | undefined {
+  if (raw[index] === "|" && raw[index - 1] === ">") return undefined;
   return SHELL_OPERATORS.find((operator) => raw.startsWith(operator, index));
 }
 
@@ -196,6 +197,10 @@ function isAssignmentWord(text: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(text);
 }
 
+function hasLineContinuation(text: string): boolean {
+  return isEscaped(text, text.length);
+}
+
 /**
  * Decorates a command for display without parsing or normalizing shell input.
  * Every returned token is a direct slice of its formatted source line.
@@ -204,11 +209,14 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
   let quote: "'" | '"' | "`" | undefined;
   let quoteOpening = false;
   let escaped = false;
+  let lineContinues = false;
+  let expectCommand = true;
 
   return lines.map(({ text }) => {
     const tokens: ShellCommandToken[] = [];
     let index = 0;
-    let expectCommand = true;
+
+    if (!lineContinues) expectCommand = true;
 
     while (index < text.length) {
       const character = text[index] ?? "";
@@ -309,6 +317,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
       if (expectCommand && !isAssignmentWord(word)) expectCommand = false;
     }
 
+    lineContinues = quote !== undefined || hasLineContinuation(text);
     return tokens;
   });
 }

@@ -213,6 +213,22 @@ test("resets command expectation at a source newline", () => {
   expect(tokens[1]).toContainEqual({ kind: "command", text: "echo" });
 });
 
+test("keeps command expectation across an escaped newline", () => {
+  const raw = "echo foo " + "\\" + "\nbar";
+  const tokens = tokenizeShellCommand(formatShellCommand(raw));
+
+  expect(tokens[1]).toContainEqual({ kind: "plain", text: "bar" });
+  expect(tokens[1]).not.toContainEqual({ kind: "command", text: "bar" });
+});
+
+test("keeps command expectation after a multiline quoted argument", () => {
+  const raw = 'echo "first\nsecond" tail';
+  const tokens = tokenizeShellCommand(formatShellCommand(raw));
+
+  expect(tokens[1]).toContainEqual({ kind: "plain", text: "tail" });
+  expect(tokens[1]).not.toContainEqual({ kind: "command", text: "tail" });
+});
+
 test("keeps assignment-word context across variable slices", () => {
   const tokens = tokenizeShellCommand(formatShellCommand("NAME=$VALUE echo ok"));
 
@@ -227,9 +243,14 @@ test("keeps assignment-word context across variable slices", () => {
 });
 
 test("keeps redirection operators intact next to a word", () => {
-  const tokens = tokenizeShellCommand(formatShellCommand("echo value >| output"));
+  const raw = "echo value >| output";
+  const lines = formatShellCommand(raw);
+  const tokens = tokenizeShellCommand(lines);
 
+  expect(lines).toEqual([{ text: raw, indent: 0 }]);
   expect(tokens[0]).toContainEqual({ kind: "operator", text: ">|" });
+  expect(tokens[0]).toContainEqual({ kind: "plain", text: "output" });
+  expect(tokens[0]).not.toContainEqual({ kind: "command", text: "output" });
 });
 
 test("does not tokenize an escaped-space hash as a comment", () => {
