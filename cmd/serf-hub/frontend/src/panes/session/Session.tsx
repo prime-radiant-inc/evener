@@ -21,11 +21,11 @@
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome (the status row) stays full-width beneath, reading
 // like a status bar.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { Cadence, EmptyState, PaneScaffold, RadioGroup, VirtualList, type VirtualListHandle } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { modelLabel } from "./chrome/statusFormat";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -33,8 +33,9 @@ import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
-import { TurnBlock } from "./transcript/TurnBlock";
+import { isItemLive, TurnBlock } from "./transcript/TurnBlock";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
+import { itemRendererFor } from "./transcript/types";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
 // every tool descriptor (T3) the moment the pane module loads, so the
@@ -50,6 +51,7 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
 
 export interface SessionPaneParams {
   ref: string;
@@ -89,6 +91,10 @@ function EmptyTranscript({ active }: { active: boolean }) {
 // widgets/virtuallist's own `dynamic` prop doc comment.
 const ESTIMATED_TURN_HEIGHT = 96;
 
+function normalizeViewMode(value: string): SessionViewMode {
+  return SESSION_VIEW_MODES.some((mode) => mode.value === value) ? (value as SessionViewMode) : "everything";
+}
+
 // Failure-feedback convention: a USER-INITIATED action that fails surfaces via
 // the useToasts() singleton, kind "error" - no new banner systems, no silent
 // `.catch(() => {})`. Every stream's failure handling (composer
@@ -98,6 +104,7 @@ const ESTIMATED_TURN_HEIGHT = 96;
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const [viewMode, setViewMode] = useState<SessionViewMode>("everything");
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -165,6 +172,10 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const seenDividerTurnId = useSeenDivider(ref, model);
   const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
   const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
+  const focused = useMemo(
+    () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
+    [model, viewMode],
+  );
 
   if (!model) {
     return (
@@ -235,10 +246,61 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     </div>
   );
 
+  const focusedTranscript = (
+    <div className={styles.focusedTranscript} data-testid="focused-transcript">
+      {focused.map((entry) => {
+        if (entry.kind === "tool-count") {
+          return (
+            <div key={`${entry.turnId}:${entry.id}`} className={styles.toolCount}>
+              {entry.label}
+            </div>
+          );
+        }
+        if (entry.kind === "intent") {
+          return (
+            <div key={`${entry.turnId}:${entry.id}`} className={styles.intent}>
+              {entry.rationale}
+            </div>
+          );
+        }
+
+        const turn = model.turns.find((candidate) => candidate.id === entry.turnId);
+        if (!turn) return null;
+        const ItemRenderer = itemRendererFor(entry.message.type);
+        const opensExchange = openers?.has(entry.message.id);
+        return (
+          <div
+            key={`${entry.turnId}:${entry.id}`}
+            className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
+          >
+            <ItemRenderer
+              item={entry.message}
+              turn={turn}
+              live={isItemLive(entry.message)}
+              sessionRef={ref}
+              opensExchange={opensExchange}
+              agentLabel={agentLabel}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+
   return (
     <PaneScaffold
       title={model.name || ref}
       cadence={cadence}
+      actions={
+        <div className={styles.viewSelector}>
+          <RadioGroup
+            label="Session view"
+            value={viewMode}
+            options={[...SESSION_VIEW_MODES]}
+            onChange={(value) => setViewMode(normalizeViewMode(value))}
+          />
+        </div>
+      }
       footer={
         <div className={styles.footer}>
           <div className={styles.measure}>
@@ -262,6 +324,8 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         <ColdStartSkeleton />
       ) : isDormantTranscript(model.turns) ? (
         <EmptyTranscript active={model.status.type === "active"} />
+      ) : viewMode !== "everything" ? (
+        focusedTranscript
       ) : (
         transcript
       )}

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -570,6 +571,100 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   expect(screen.getByText("hi")).toBeTruthy();
+});
+
+test("switches between Everything, Conversation, and Intent transcript views", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "Please inspect the project",
+              status: "completed",
+            },
+            {
+              id: "tool_1",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_alpha",
+              description: "Find the relevant source files",
+              error: "RAW_TOOL_RESULT_ALPHA",
+              status: "failed",
+            },
+            {
+              id: "tool_2",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_beta",
+              description: "Check the current behavior",
+              error: "RAW_TOOL_RESULT_BETA",
+              status: "failed",
+            },
+            {
+              id: "tool_3",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "raw_tool_gamma",
+              description: "Verify the intended change",
+              error: "RAW_TOOL_RESULT_GAMMA",
+              status: "failed",
+            },
+            {
+              id: "agent_1",
+              turnId: "turn_1",
+              type: "agentMessage",
+              text: "The project is ready",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const viewSelector = await screen.findByRole("radiogroup", { name: /session view/i });
+  const radios = within(viewSelector).getAllByRole("radio");
+  expect(radios.map((radio) => radio.textContent)).toEqual(["Everything", "Conversation", "Intent"]);
+  expect(screen.getByRole("radio", { name: "Everything" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("RAW_TOOL_RESULT_ALPHA")).toBeTruthy();
+
+  await user.click(screen.getByRole("radio", { name: "Conversation" }));
+  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Please inspect the project")).toBeTruthy();
+  expect(screen.getByText("The project is ready")).toBeTruthy();
+  expect(screen.getByText("3 tool calls")).toBeTruthy();
+  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
+
+  await user.click(screen.getByRole("radio", { name: "Intent" }));
+  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Find the relevant source files")).toBeTruthy();
+  expect(screen.getByText("Check the current behavior")).toBeTruthy();
+  expect(screen.getByText("Verify the intended change")).toBeTruthy();
+  expect(screen.queryByText("raw_tool_alpha")).toBeNull();
+  expect(screen.queryByText("RAW_TOOL_RESULT_ALPHA")).toBeNull();
+
+  screen.getByRole("radio", { name: "Intent" }).focus();
+  await user.keyboard("{ArrowLeft}");
+  expect(screen.getByRole("radio", { name: "Conversation" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("radio", { name: "Intent" }).getAttribute("aria-checked")).toBe("false");
 });
 
 // --- seen divider (kata g2ez) --------------------------------------------
