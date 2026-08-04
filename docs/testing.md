@@ -95,6 +95,14 @@ The matrix intentionally does not make browser guards part of make lint or
 make test: those default gates remain usable without Chrome, while CI still
 requires the browser-specific gate in its web job.
 
+### Frontend setup boundary
+
+`make test-web` and `make test-web-browser` are deterministic after the
+frontend dependencies are installed. Establishing that install may require
+npm/network access or an existing compatible worktree install, so an
+unavailable setup is a reported prerequisite failure rather than a
+deterministic test pass.
+
 ## Proving a Type Survives a Round Trip
 
 When two code paths must agree about a struct — a decoder and a
