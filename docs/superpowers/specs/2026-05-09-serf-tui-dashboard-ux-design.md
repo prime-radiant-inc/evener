@@ -271,7 +271,9 @@ ctrl+o            Go to dashboard.
 ### Session browse keys
 
 ```text
-up/down, j/k      Move selected message or tool annotation.
+j/k               Move selected message or tool annotation.
+up/down           Scroll the transcript one line when the composer is empty;
+                  otherwise navigate composer history when available.
 pgup/pgdn         Scroll transcript.
 home/end          Jump to transcript start/end.
 enter             Expand/collapse selected tool annotation or select a message.
