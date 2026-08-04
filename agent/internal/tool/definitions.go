@@ -163,7 +163,7 @@ func DefDelegateSend() llm.ToolDefinition {
 		Description: "Send a message to one of your durable delegates by delegate_id. " +
 			"`to` accepts a `dlg_...` delegate_id; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
-			"Idle delegates are resumed through the existing restore path.",
+			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
