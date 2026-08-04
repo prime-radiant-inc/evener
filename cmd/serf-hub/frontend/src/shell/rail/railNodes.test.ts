@@ -13,6 +13,7 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   sessionNodes,
+  workingDescendantCount,
   topLevelAncestorRef,
 } from "./railNodes";
 
@@ -255,6 +256,25 @@ describe("needsYouDescendantCount", () => {
 
   test("a leaf node (no children) counts zero", () => {
     expect(needsYouDescendantCount(node({ row_id: "leaf", state: "awaiting" }))).toBe(0);
+  });
+});
+
+describe("workingDescendantCount", () => {
+  test("counts active descendants recursively and excludes non-active nodes", () => {
+    const root = node({
+      state: "active",
+      children: [
+        node({ state: "active", children: [node({ state: "active" })] }),
+        node({ state: "idle" }),
+        node({ state: "awaiting" }),
+      ],
+    });
+
+    expect(workingDescendantCount(root)).toBe(2);
+  });
+
+  test("returns zero when there are no active descendants", () => {
+    expect(workingDescendantCount(node({ state: "active", children: [node({ state: "idle" })] }))).toBe(0);
   });
 });
 

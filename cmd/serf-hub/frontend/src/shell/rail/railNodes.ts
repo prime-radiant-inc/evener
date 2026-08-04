@@ -209,6 +209,10 @@ export function needsYouDescendantCount(node: ApiTreeNode): number {
   return node.children.reduce((sum, c) => sum + (stateNeedsYou(c.state) ? 1 : 0) + needsYouDescendantCount(c), 0);
 }
 
+export function workingDescendantCount(node: ApiTreeNode): number {
+  return node.children.reduce((count, child) => count + (child.state === "active" ? 1 : 0) + workingDescendantCount(child), 0);
+}
+
 // A session "wants you" either directly (its own state) or transitively (a
 // needs-you descendant) - either way it should sort ahead of a quiet
 // sibling within the same project.
