@@ -305,7 +305,8 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 	// — is what guarantees we never send on a closed channel. Delivery of detached
 	// emitters' events before teardown is ensured separately by the WaitGroups.
 	s.eventsMu.RLock()
-	if !s.eventsClosed {
+	open := !s.eventsClosed
+	if open {
 		select {
 		case s.events <- ev:
 		default:
@@ -339,7 +340,19 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *pro
 		}
 	}
 	s.eventsMu.RUnlock()
+	if open && s.descendantEvent != nil {
+		s.descendantEvent(ev)
+	}
 	return data, ev
+}
+
+// SetDescendantEventFunc installs the callback inherited by subsequently
+// spawned descendants. Root events continue through the authoritative event
+// consumer; only child sessions invoke this callback.
+func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
+	s.mu.Lock()
+	s.cfg.spawn.descendantEvent = f
+	s.mu.Unlock()
 }
 
 // fireNotificationHook runs the Notification hook for a genuine, model-facing

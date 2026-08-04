@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"primeradiant.com/serf/agent"
@@ -109,6 +110,11 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appThreadID = prepared.threadID
 		s.appProjector = prepared.projector
 		s.appTurns = prepared.turns
+		oldDescendantIDs := make([]string, 0, len(s.appDescendants))
+		for threadID := range s.appDescendants {
+			oldDescendantIDs = append(oldDescendantIDs, threadID)
+		}
+		s.appDescendants = make(map[string]*appDescendantProjection)
 		s.appActiveTurnID = ""
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
@@ -130,11 +136,20 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 			oldSourceID = "local"
 		}
 		oldRef := appwire.Ref{SourceID: oldSourceID, ThreadID: oldThreadID}.String()
-		return []appserver.SequencedNotification{s.appNotifier.Record(oldThreadID, appwire.NotifyThreadClosed, appwire.ThreadClosedParams{
+		closed := []appserver.SequencedNotification{s.appNotifier.Record(oldThreadID, appwire.NotifyThreadClosed, appwire.ThreadClosedParams{
 			ThreadID: oldThreadID,
 			Ref:      oldRef,
 			Reason:   "replaced",
 		})}
+		sort.Strings(oldDescendantIDs)
+		for _, threadID := range oldDescendantIDs {
+			closed = append(closed, s.appNotifier.Record(threadID, appwire.NotifyThreadClosed, appwire.ThreadClosedParams{
+				ThreadID: threadID,
+				Ref:      appwire.Ref{SourceID: oldSourceID, ThreadID: threadID}.String(),
+				Reason:   "replaced",
+			}))
+		}
+		return closed
 	})
 }
 
@@ -204,6 +219,73 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			params = s.stampCapabilitiesOnStatusChange(item.Method, params)
 			params = s.stampFailureCountOnItemCompleted(item.Method, params)
 			params = stampAppNotificationTarget(params, threadID, ref)
+			record := s.appNotifier.Record(threadID, item.Method, params)
+			snapshot.Apply([]appserver.SequencedNotification{record})
+			committed = append(committed, record)
+		}
+		return committed
+	})
+}
+
+// RecordDescendantAppEvent projects an in-process descendant onto its root
+// daemon's AppWire transport. ownerThreadID fences late events from a child of
+// a replaced root identity: those events must not bleed into the new tree.
+// This deliberately does not sample or stamp the root session envelope;
+// descendant mutations remain owned by the agent tree, while this path supplies
+// the independently addressed read/notification view.
+func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.SessionEvent) {
+	threadID := strings.TrimSpace(event.SessionID)
+	ownerThreadID = strings.TrimSpace(ownerThreadID)
+	if threadID == "" || ownerThreadID == "" || threadID == ownerThreadID {
+		return
+	}
+	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+		s.mu.Lock()
+		if s.appThreadID != ownerThreadID {
+			s.mu.Unlock()
+			return nil
+		}
+		projection := s.appDescendants[threadID]
+		if projection == nil {
+			sourceID := s.appSourceID
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+			projection = &appDescendantProjection{
+				projector: appprojector.NewAppEventProjector(threadID, ref),
+				turns:     &appTurnSnapshot{threadID: threadID},
+				thread: appwire.Thread{
+					ID:        threadID,
+					SessionID: threadID,
+					Source:    sourceID,
+					Serf:      appwire.SerfThread{Ref: ref, Kind: "subagent"},
+				},
+			}
+			s.appDescendants[threadID] = projection
+		}
+		projected := projection.projector.Project(event)
+		projection.activeTurnID = projection.projector.ActiveTurnID()
+		for _, item := range projected {
+			switch params := item.Params.(type) {
+			case appwire.ThreadStartedParams:
+				projection.thread = params.Thread
+				projection.thread.Serf.Kind = "subagent"
+			case appwire.ThreadStatusChangedParams:
+				projection.thread.Status = params.Status
+			}
+		}
+		ref := projection.thread.Serf.Ref
+		if ref == "" {
+			ref = appwire.Ref{SourceID: projection.thread.Source, ThreadID: threadID}.String()
+			projection.thread.Serf.Ref = ref
+		}
+		snapshot := projection.turns
+		s.mu.Unlock()
+
+		committed := make([]appserver.SequencedNotification, 0, len(projected))
+		for _, item := range projected {
+			params := stampAppNotificationTarget(item.Params, threadID, ref)
 			record := s.appNotifier.Record(threadID, item.Method, params)
 			snapshot.Apply([]appserver.SequencedNotification{record})
 			committed = append(committed, record)
@@ -433,18 +515,36 @@ func (s *Server) registerAppWireHandlers() {
 }
 
 func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	return appwire.ThreadListResponse{Data: []appwire.Thread{s.appThread()}}, nil
+	data := []appwire.Thread{s.appThread()}
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.appDescendants))
+	for id := range s.appDescendants {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		projection := s.appDescendants[id]
+		thread := projection.thread
+		thread.Serf.ActiveTurnID = projection.activeTurnID
+		data = append(data, thread)
+	}
+	s.mu.RUnlock()
+	return appwire.ThreadListResponse{Data: data}, nil
 }
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	if !params.Subscribe {
 		return s.appThreadReadSnapshot(params), nil
 	}
+	threadID := s.appThreadIDForRead(params)
+	if threadID == "" {
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread is unavailable")
+	}
 	var response appwire.ThreadReadResponse
 	captured := appserver.CaptureSubscription(
 		ctx,
 		params.ReplaceSubscription,
-		s.appProjectionThreadID,
+		func() string { return threadID },
 		s.appNotifier.CurrentSequence,
 		func() bool {
 			response = s.appThreadReadSnapshot(params)
@@ -479,12 +579,48 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // this is a struct copy, and the Server holds no callback that could reach a
 // session from a read path.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
-	thread := s.appThread()
+	threadID := s.appThreadIDForRead(params)
+	thread, ok := s.appThreadForID(threadID)
+	if !ok {
+		return appwire.ThreadReadResponse{}
+	}
 	var olderCursor string
 	if params.IncludeTurns {
 		thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
 	}
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+}
+
+func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
+	threadID := strings.TrimSpace(params.ThreadID)
+	if threadID == "" && strings.TrimSpace(params.Ref) != "" {
+		if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
+			threadID = ref.ThreadID
+		}
+	}
+	if threadID == "" {
+		threadID = s.appProjectionThreadID()
+	}
+	if _, ok := s.appThreadForID(threadID); !ok {
+		return ""
+	}
+	return threadID
+}
+
+func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
+	if threadID == s.appProjectionThreadID() {
+		return s.appThread(), true
+	}
+	s.mu.RLock()
+	projection := s.appDescendants[threadID]
+	if projection == nil {
+		s.mu.RUnlock()
+		return appwire.Thread{}, false
+	}
+	thread := projection.thread
+	thread.Serf.ActiveTurnID = projection.activeTurnID
+	s.mu.RUnlock()
+	return thread, true
 }
 
 func (s *Server) appProjectionThreadID() string {
@@ -504,6 +640,12 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 	s.mu.RLock()
 	snapshot := s.appTurns
 	installed := s.appThreadID == threadID && snapshot != nil && snapshot.threadID == threadID
+	if !installed {
+		if projection := s.appDescendants[threadID]; projection != nil {
+			snapshot = projection.turns
+			installed = snapshot != nil && snapshot.threadID == threadID
+		}
+	}
 	s.mu.RUnlock()
 	if !installed {
 		return nil
@@ -552,10 +694,17 @@ func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.Thread
 // loading. The web client seeds the latest window via thread/read(TurnLimit)
 // and walks back with this as the user scrolls up.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit), nil
+	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	if threadID == "" {
+		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
+	}
+	return s.appPageTurns(threadID, params.Cursor, params.Limit), nil
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
@@ -590,6 +739,9 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
@@ -616,6 +768,9 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 }
 
 func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	escalationID := strings.TrimSpace(params.EscalationID)
 	if escalationID == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("escalationId is required")
@@ -636,6 +791,9 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 }
 
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
+		return appwire.TurnInterruptResponse{}, err
+	}
 	if strings.TrimSpace(params.ExpectedTurnID) == "" {
 		return appwire.TurnInterruptResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
@@ -654,6 +812,9 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 }
 
 func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
@@ -680,6 +841,9 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 }
 
 func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, err
+	}
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
@@ -705,6 +869,9 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
 // active-turn and queue compare-and-commit decisions to the Session callback.
 func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+	}
 	if params.Index < 0 {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
 	}
@@ -731,6 +898,9 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 // handleAppTurnCancelQueued validates static request shape and leaves queue
 // compare-and-commit decisions to the Session callback.
 func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.TurnCancelQueuedResponse{}, err
+	}
 	if params.Index < 0 {
 		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
 	}
@@ -757,6 +927,9 @@ func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.Tur
 // immediately (idle session) versus after the current turn (a turn is running,
 // whose gate is the backstop).
 func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.GoalSetResponse{}, err
+	}
 	s.mu.RLock()
 	fn := s.goalFunc
 	s.mu.RUnlock()
@@ -781,7 +954,10 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	return appwire.GoalSetResponse{Started: started}, nil
 }
 
-func (s *Server) handleAppThreadCompactStart(ctx context.Context, _ appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	s.mu.RLock()
 	fn := s.compactFunc
 	s.mu.RUnlock()
@@ -791,7 +967,10 @@ func (s *Server) handleAppThreadCompactStart(ctx context.Context, _ appwire.Thre
 	return appwire.EmptyResponse{}, fn(ctx)
 }
 
-func (s *Server) handleAppThreadShutdown(context.Context, appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	s.mu.RLock()
 	fn := s.shutdownFunc
 	s.mu.RUnlock()
@@ -814,6 +993,9 @@ func (s *Server) handleAppThreadClear(context.Context, appwire.ThreadClearParams
 }
 
 func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	model := strings.TrimSpace(params.Model)
 	if model == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("model is required")
@@ -848,6 +1030,9 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 }
 
 func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	name := strings.TrimSpace(params.Name)
 	if name == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("name is required")
@@ -863,6 +1048,9 @@ func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.Thread
 }
 
 func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	s.mu.RLock()
 	fn := s.reasoningEffortFunc
 	s.mu.RUnlock()
@@ -878,6 +1066,25 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	}
 	fn(effort)
 	return appwire.EmptyResponse{}, nil
+}
+
+func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {
+	target := strings.TrimSpace(threadID)
+	if strings.TrimSpace(rawRef) != "" {
+		ref, err := appwire.ParseRef(rawRef)
+		if err != nil {
+			return appwire.InvalidParams(err.Error())
+		}
+		if ref.SourceID != "local" {
+			return appwire.SessionUnavailable("thread is unavailable")
+		}
+		target = ref.ThreadID
+	}
+	root := s.appProjectionThreadID()
+	if target != "" && target != root {
+		return appwire.SessionUnavailable("thread is not served by this daemon: " + target)
+	}
+	return nil
 }
 
 func (s *Server) handleAppTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {

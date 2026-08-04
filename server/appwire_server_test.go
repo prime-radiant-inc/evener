@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1360,6 +1361,133 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	}
 	if got := srv.AppServer().SubscriberCount("th_1"); got != 1 {
 		t.Fatalf("subscriber count=%d, want 1", got)
+	}
+}
+
+func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "child",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5.5"},
+	})
+
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	defer httpServer.Close()
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck // test cleanup
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	for _, ref := range []string{"local:root", "local:child"} {
+		read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{
+			Ref:                 ref,
+			Subscribe:           true,
+			ReplaceSubscription: false,
+		})
+		if err != nil {
+			t.Fatalf("thread/read %s: %v", ref, err)
+		}
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil {
+			t.Fatalf("parse test ref %s: %v", ref, err)
+		}
+		if read.Thread.ID != parsed.ThreadID {
+			t.Fatalf("thread/read %s returned thread %q", ref, read.Thread.ID)
+		}
+	}
+	if got := srv.AppServer().SubscriberCount("root"); got != 1 {
+		t.Fatalf("root subscriber count = %d, want 1", got)
+	}
+	if got := srv.AppServer().SubscriberCount("child"); got != 1 {
+		t.Fatalf("child subscriber count = %d, want 1", got)
+	}
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "root", Data: events.AssistantTextDeltaData{Delta: "root"}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "child", Data: events.AssistantTextDeltaData{Delta: "child"}})
+	if got := srv.AppNotificationsAfter(0, "root"); len(got) == 0 {
+		t.Fatal("root event produced no root notification")
+	}
+	if got := srv.AppNotificationsAfter(0, "child"); len(got) == 0 {
+		t.Fatal("descendant event produced no child notification")
+	}
+	wantRefs := map[string]bool{"local:root": false, "local:child": false}
+	for wantRefs["local:root"] == false || wantRefs["local:child"] == false {
+		select {
+		case notification := <-client.Notifications():
+			if notification.Method != appwire.NotifyAgentMessageDelta {
+				continue
+			}
+			var params appwire.AgentMessageDeltaParams
+			if err := json.Unmarshal(notification.Params, &params); err != nil {
+				t.Fatalf("decode delta: %v", err)
+			}
+			if _, ok := wantRefs[params.Ref]; ok {
+				wantRefs[params.Ref] = true
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for root and child deltas; received %v", wantRefs)
+		}
+	}
+}
+
+func TestServerRejectsLateDescendantEventAfterIdentityReplacement(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "old-root")
+	srv.RecordDescendantAppEvent("old-root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "old-child"})
+	srv.SetAppIdentity("local", "new-root")
+	cursor := srv.appNotifier.CurrentSequence()
+	closed := srv.AppNotificationsAfter(0, "old-child")
+	if len(closed) == 0 || closed[len(closed)-1].Notification.Method != appwire.NotifyThreadClosed {
+		t.Fatalf("old child stream was not closed on identity replacement: %+v", closed)
+	}
+
+	srv.RecordDescendantAppEvent("old-root", events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
+		SessionID: "old-child",
+		Data:      events.AssistantTextDeltaData{Delta: "late"},
+	})
+
+	if got := srv.AppNotificationsAfter(cursor, "old-child"); len(got) != 0 {
+		t.Fatalf("late old-child notifications after identity replacement = %d, want 0", len(got))
+	}
+	list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	if len(list.Data) != 1 || list.Data[0].ID != "new-root" {
+		t.Fatalf("threads after replacement = %+v, want only new-root", list.Data)
+	}
+}
+
+func TestServerRejectsDescendantMutationInsteadOfMutatingRoot(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child"})
+	called := false
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		called = true
+		return appwire.TurnStartResponse{}, nil
+	}})
+
+	_, err := srv.handleAppTurnStart(context.Background(), appwire.TurnStartParams{
+		Ref:              "local:child",
+		ClientMutationID: "child-mutation",
+		Input:            []appwire.InputItem{{Type: "text", Text: "hello"}},
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("child turn/start error = %T %v, want session unavailable", err, err)
+	}
+	if called {
+		t.Fatal("child-targeted turn/start invoked the root mutation callback")
 	}
 }
 

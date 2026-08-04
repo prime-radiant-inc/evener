@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
@@ -74,6 +75,29 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		}},
 	})
 	srv.RefreshThreadEnvelope()
+	// The root daemon projects every in-process descendant, including nested
+	// descendants whose delegate jobs are owned by an intermediate child and are
+	// therefore absent from the root session's Detailed.Jobs.
+	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "child-1",
+		Data:      events.UserInputData{Text: "legacy job duplicate"},
+	})
+	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "child-2",
+		Data:      events.UserInputData{Text: "direct child"},
+	})
+	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "grandchild-1",
+		Data:      events.UserInputData{Text: "nested child"},
+	})
+	srv.RecordDescendantAppEvent("th_wire_1", events.SessionEvent{
+		Kind:      events.EventSessionEnd,
+		SessionID: "closed-child",
+		Data:      events.SessionEndData{Reason: "shutdown", State: "closed"},
+	})
 
 	httpSrv := httptest.NewServer(srv)
 	defer httpSrv.Close()
@@ -95,7 +119,7 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 	if !got.PendingEscalation {
 		t.Error("pending_escalation = false, want true: server.StatusInfo.PendingEscalation and the prober's pending_escalation tag no longer agree — the hub's needs-you badge would go dark")
 	}
-	if want := []string{"child-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
-		t.Errorf("running subagent ids = %v, want %v: JobStatusInfo's job_type/status/transcript_ref tags and the prober's job mirror no longer agree", got.RunningSubagentIDs, want)
+	if want := []string{"child-1", "child-2", "grandchild-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
+		t.Errorf("running subagent ids = %v, want %v: the daemon must expose every projected descendant while retaining legacy Detailed.Jobs discovery", got.RunningSubagentIDs, want)
 	}
 }

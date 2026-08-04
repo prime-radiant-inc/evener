@@ -4265,6 +4265,147 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	}
 }
 
+func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
+	sourceA := &relayBroadcastSource{
+		id: "codex-a",
+		thread: appwire.Thread{
+			ID:        "th_a",
+			SessionID: "th_a",
+			Source:    "codex-a",
+			Serf:      appwire.SerfThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	sourceB := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        "th_b",
+			SessionID: "th_b",
+			Source:    "codex-b",
+			Serf:      appwire.SerfThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(sourceA)
+	web.sources.Add(sourceB)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:th_a", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead sourceA: %v", err)
+	}
+	expectRelaySubscription(t, sourceA.subscribed)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:th_b", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead sourceB: %v", err)
+	}
+	expectRelaySubscription(t, sourceB.subscribed)
+
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_a",
+			Ref:      "codex-a:th_a",
+			TurnID:   "turn_a",
+			ItemID:   "item_a",
+			Delta:    "from source a",
+		}),
+	}
+	sourceB.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_b",
+			Ref:      "codex-b:th_b",
+			TurnID:   "turn_b",
+			ItemID:   "item_b",
+			Delta:    "from source b",
+		}),
+	}
+
+	gotRefs := make(map[string]bool, 2)
+	for len(gotRefs) < 2 {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyAgentMessageDelta {
+				continue
+			}
+			var params appwire.AgentMessageDeltaParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			gotRefs[params.Ref] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for both relay notifications; got refs %v", gotRefs)
+		}
+	}
+	if !gotRefs["codex-a:th_a"] || !gotRefs["codex-b:th_b"] {
+		t.Fatalf("received refs %v, want both additive subscriptions", gotRefs)
+	}
+}
+
+func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        ref.ThreadID,
+			SessionID: ref.ThreadID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: params.Ref},
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		PID:       1,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + httpServer.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "root",
+		SessionID: "root",
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:              entry,
+		SessionID:          "root",
+		RunningSubagentIDs: []string{"child"},
+	})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	source, ok := registry.Source("local")
+	if !ok {
+		t.Fatal("local source missing")
+	}
+	read, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:child"})
+	if err != nil {
+		t.Fatalf("read running subagent through owner daemon: %v", err)
+	}
+	if read.Thread.ID != "child" || read.Thread.Serf.Ref != "local:child" {
+		t.Fatalf("child read = %+v", read.Thread)
+	}
+	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:child", ClientMutationID: "must-not-hit-root", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	if data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
+	}
+}
+
 func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 	source := &relayLifecycleSource{
 		thread: appwire.Thread{
