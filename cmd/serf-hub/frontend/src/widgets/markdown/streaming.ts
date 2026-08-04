@@ -87,6 +87,21 @@ function listItemIndent(line: string): number {
   return line.match(/^ */)?.[0].length ?? 0;
 }
 
+function listItemContentIndent(line: string): number | undefined {
+  const match = /^( *)([-+*]|\d{1,9}[.)])([ \t]+|$)/.exec(line);
+  if (!match) return undefined;
+  const leadingIndent = match[1]?.length ?? 0;
+  const markerWidth = match[2]?.length ?? 0;
+  const followingWidth = match[3]?.length ?? 0;
+  return leadingIndent + markerWidth + (followingWidth === 0 ? 1 : Math.min(followingWidth, 4));
+}
+
+function removeIndent(line: string, indent: number): string {
+  let index = 0;
+  while (index < indent && line.charAt(index) === " ") index += 1;
+  return line.slice(index);
+}
+
 function isThematicBreak(line: string): boolean {
   return /^(?: {0,3}(?:\*[ \t]*){3,}| {0,3}(?:-[ \t]*){3,}| {0,3}(?:_[ \t]*){3,})$/.test(line);
 }
@@ -96,6 +111,7 @@ function isSetextUnderline(line: string): boolean {
 }
 
 type BlockquoteLine = { content: string; depth: number; prefix: string };
+type BlockquoteListContainer = { contentIndent: number; depth: number };
 
 function isQuoteSpace(char: string | undefined): boolean {
   return char === " " || char === "\t";
@@ -227,7 +243,7 @@ export function closeOpenMarkdown(source: string): string {
   let paragraph: "none" | "paragraph" | "blockquote" = "none";
   let blockquoteDepth = 0;
   let listContainerIndent: number | null = null;
-  let blockquoteListContainerDepth: number | null = null;
+  let blockquoteListContainer: BlockquoteListContainer | null = null;
 
   for (const line of lines) {
     const fenceRun = fenceOpener(line);
@@ -261,7 +277,7 @@ export function closeOpenMarkdown(source: string): string {
       paragraph = "none";
       blockquoteDepth = 0;
       listContainerIndent = null;
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
       continue;
     }
     if (line.trim() === "") {
@@ -269,15 +285,15 @@ export function closeOpenMarkdown(source: string): string {
       paragraph = "none";
       blockquoteDepth = 0;
       listContainerIndent = null;
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
       continue;
     }
     if (isIndentedCodeBlock(line)) {
-      if (blockquoteListContainerDepth !== null && paragraph === "blockquote") {
+      if (blockquoteListContainer !== null && paragraph === "blockquote") {
         stack = [];
         paragraph = "none";
         blockquoteDepth = 0;
-        blockquoteListContainerDepth = null;
+        blockquoteListContainer = null;
         continue;
       }
       if (listContainerIndent !== null) {
@@ -299,26 +315,42 @@ export function closeOpenMarkdown(source: string): string {
       const quoteContinuesParagraph = paragraph === "blockquote" && blockquoteDepth === quoted.depth;
       if (!quoteContinuesParagraph) {
         stack = [];
-        blockquoteListContainerDepth = null;
+        blockquoteListContainer = null;
       }
       if (quoted.content.trim() === "") {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
-        blockquoteListContainerDepth = null;
+        blockquoteListContainer = null;
         continue;
       }
       if (isIndentedCodeBlock(quoted.content)) {
-        const isQuotedListChild = blockquoteListContainerDepth === quoted.depth;
-        if (!quoteContinuesParagraph || isQuotedListChild) {
+        let resultingQuoteDepth = quoted.depth;
+        if (!quoteContinuesParagraph) {
           stack = [];
           paragraph = "none";
-          blockquoteListContainerDepth = null;
-        } else {
+          blockquoteListContainer = null;
+        } else if (blockquoteListContainer?.depth !== quoted.depth) {
           scanInline(quoted.content, stack);
           paragraph = "blockquote";
+        } else {
+          const childLine = removeIndent(quoted.content, blockquoteListContainer.contentIndent);
+          const childQuote = blockquoteLine(childLine);
+          if (isIndentedCodeBlock(childLine) || fenceOpener(childLine) !== undefined) {
+            stack = [];
+            paragraph = "none";
+          } else if (childQuote !== undefined) {
+            stack = [];
+            scanInline(childQuote.content, stack);
+            paragraph = "blockquote";
+            resultingQuoteDepth += childQuote.depth;
+          } else {
+            scanInline(childLine, stack);
+            paragraph = "blockquote";
+          }
+          blockquoteListContainer = null;
         }
-        blockquoteDepth = quoted.depth;
+        blockquoteDepth = resultingQuoteDepth;
         continue;
       }
       const quotedFenceRun = fenceOpener(quoted.content);
@@ -332,19 +364,21 @@ export function closeOpenMarkdown(source: string): string {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
-        blockquoteListContainerDepth = null;
+        blockquoteListContainer = null;
         continue;
       }
       const quotedIsListItem = isListItem(quoted.content);
       if (isAtxHeading(quoted.content) || quotedIsListItem || isThematicBreak(quoted.content)) {
         stack = [];
-        blockquoteListContainerDepth = quotedIsListItem ? quoted.depth : null;
+        const contentIndent = listItemContentIndent(quoted.content);
+        blockquoteListContainer =
+          quotedIsListItem && contentIndent !== undefined ? { contentIndent, depth: quoted.depth } : null;
       }
       if (isSetextUnderline(quoted.content)) {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
-        blockquoteListContainerDepth = null;
+        blockquoteListContainer = null;
         continue;
       }
       scanInline(quoted.content, stack);
@@ -360,13 +394,13 @@ export function closeOpenMarkdown(source: string): string {
     if (isSetextUnderline(line) || isThematicBreak(line)) {
       stack = [];
       listContainerIndent = null;
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
       continue;
     }
     if (isAtxHeading(line)) {
       stack = [];
       listContainerIndent = null;
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
       scanInline(line, stack);
       continue;
     }
@@ -375,7 +409,7 @@ export function closeOpenMarkdown(source: string): string {
       scanInline(line, stack);
       paragraph = "paragraph";
       listContainerIndent = listItemIndent(line);
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
       continue;
     }
     scanInline(line, stack);
@@ -384,7 +418,7 @@ export function closeOpenMarkdown(source: string): string {
       blockquoteDepth = lazyBlockquoteDepth;
     } else {
       paragraph = "paragraph";
-      blockquoteListContainerDepth = null;
+      blockquoteListContainer = null;
     }
   }
 

@@ -192,6 +192,16 @@ test("an indented child block ends a quoted list paragraph", () => {
   expect(closeOpenMarkdown(source)).toBe(source);
 });
 
+test("a quoted list paragraph keeps indented continuation text active", () => {
+  const source = "> - **parent\n>     continuation";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
+test("a nested quoted child scans its own inline markers", () => {
+  const source = "> - parent\n>     > **child";
+  expect(closeOpenMarkdown(source)).toBe(source.concat("**"));
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);
