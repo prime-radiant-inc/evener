@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
@@ -68,12 +70,56 @@ function expandRow(): void {
 }
 
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
+  const args = JSON.stringify({ kind: "mcp", id: 7 });
   render(
-    <ToolCallItem item={item({ toolName: "tci_unregistered", output: "raw bytes here" })} turn={turn} live={false} />,
+    <ToolCallItem
+      item={item({ toolName: "tci_unregistered", argumentsJSON: args, output: "raw bytes here" })}
+      turn={turn}
+      live={false}
+    />,
   );
   expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
   expandRow();
-  expect(screen.getByText("raw bytes here")).toBeTruthy(); // default body = raw output
+  const body = screen.getByTestId("tool-call-body");
+  const blocks = body.querySelectorAll("pre > code");
+  expect(blocks).toHaveLength(2);
+  expect(blocks[0]?.textContent).toBe(JSON.stringify(JSON.parse(args), null, 2));
+  expect(blocks[1]?.textContent).toBe("raw bytes here");
+});
+
+test("the default descriptor keeps both arguments and output visible for a settled unregistered tool", () => {
+  const args = '{"width":375,"options":{"mobile":true}}';
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_default_coexist", argumentsJSON: args, output: "downloaded 128 bytes" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expandRow();
+
+  const body = screen.getByTestId("tool-call-body");
+  const argsBlock = within(body).getByRole("region", { name: "Tool call arguments" });
+  expect(argsBlock).toBeTruthy();
+  expect(argsBlock.textContent).toBe(`{\n  "width": 375,\n  "options": {\n    "mobile": true\n  }\n}`);
+  expect(within(body).getByText("downloaded 128 bytes")).toBeTruthy();
+});
+
+test("the default descriptor keeps both arguments and error text visible for a settled unregistered tool", () => {
+  const args = '{"width":375,"options":{"mobile":true}}';
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_default_error", argumentsJSON: args, error: "permission denied by sandbox" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).getByRole("region", { name: "Tool call arguments" })).toBeTruthy();
+  expect(within(body).getByText("permission denied by sandbox")).toBeTruthy();
 });
 
 test("renders no body element when the resolved descriptor has none", () => {
@@ -93,6 +139,25 @@ test("passes live through to the descriptor's body component", () => {
   render(<ToolCallItem item={item({ toolName: "tci_live_echo" })} turn={turn} live={true} />);
   expandRow();
   expect(screen.getByTestId("live-echo").textContent).toBe("true");
+});
+
+test("dedicated renderers do not get MCP argument blocks", () => {
+  registerToolRenderer({
+    match: "tci_no_mcp_args",
+    summary: () => "s",
+    body: ({ item }) => <div data-testid="dedicated-body">{item.output}</div>,
+  });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_no_mcp_args", argumentsJSON: '{"width":375}', output: "body output" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expandRow();
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).queryByRole("region", { name: "Tool call arguments" })).toBeNull();
+  expect(screen.getByTestId("dedicated-body").textContent).toBe("body output");
 });
 
 // kata 0pzz: a descriptor's body needs the enclosing session's ref to build
