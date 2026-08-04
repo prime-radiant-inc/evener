@@ -51,7 +51,7 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
-import { focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
+import { type FocusedEntry, focusedEntries, SESSION_VIEW_MODES, type SessionViewMode } from "./viewModes";
 
 export interface SessionPaneParams {
   ref: string;
@@ -90,6 +90,23 @@ function EmptyTranscript({ active }: { active: boolean }) {
 // wildly: a one-line tool call vs. a long streamed response) - see
 // widgets/virtuallist's own `dynamic` prop doc comment.
 const ESTIMATED_TURN_HEIGHT = 96;
+
+type ViewRow =
+  | {
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      isMessage: boolean;
+      visible: true;
+    }
+  | {
+      id: string;
+      turnId: string;
+      sourceIndex: number;
+      isMessage: boolean;
+      visible: boolean;
+      entries: FocusedEntry[];
+    };
 
 function normalizeViewMode(value: string): SessionViewMode {
   return SESSION_VIEW_MODES.some((mode) => mode.value === value) ? (value as SessionViewMode) : "everything";
@@ -158,6 +175,47 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
+  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
+  const focused = useMemo(
+    () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
+    [model, viewMode],
+  );
+  const viewRows = useMemo<ViewRow[]>(() => {
+    if (!model) return [];
+    if (viewMode === "everything") {
+      return model.turns.map((turn, index) => ({
+        id: turn.id,
+        turnId: turn.id,
+        sourceIndex: index,
+        isMessage: turn.items.some((item) => item.type === "userMessage" || item.type === "agentMessage"),
+        visible: true as const,
+      }));
+    }
+    return model.turns.map((turn, sourceIndex) => {
+      const entries = focused.filter((entry) => entry.turnId === turn.id);
+      return {
+        id: turn.id,
+        turnId: turn.id,
+        sourceIndex,
+        isMessage: entries.some((entry) => entry.kind === "message"),
+        visible: entries.length > 0,
+        entries,
+      };
+    });
+  }, [model, viewMode, focused]);
+  const anchorEntries = useMemo(
+    () =>
+      viewRows
+        .filter((row) => row.visible)
+        .map((row) => ({
+          id: row.id,
+          sourceIndex: row.sourceIndex,
+          index: row.sourceIndex,
+          isMessage: row.isMessage,
+        })),
+    [viewRows],
+  );
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -165,17 +223,18 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
-  const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+  const flow = useTranscriptScroll({
+    ref,
+    model,
+    listRef: virtualListRef,
+    loadOlder,
+    viewKey: viewMode,
+    anchorEntries,
+  });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.
   const seenDividerTurnId = useSeenDivider(ref, model);
-  const openers = useMemo(() => (model ? exchangeOpenersFor(model.turns) : undefined), [model]);
-  const agentLabel = model ? modelLabel(model.modelProvider, model.model) : undefined;
-  const focused = useMemo(
-    () => (model && viewMode !== "everything" ? focusedEntries(model.turns, viewMode) : []),
-    [model, viewMode],
-  );
 
   if (!model) {
     return (
@@ -198,6 +257,12 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     const turn = model.turns[index];
     if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
     return turn;
+  };
+
+  const rowAt = (index: number) => {
+    const row = viewRows[index];
+    if (!row) throw new Error(`VirtualList index ${index} out of range for ${viewRows.length} view rows`);
+    return row;
   };
 
   const transcript = (
@@ -223,19 +288,69 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
             <VirtualList
               ref={virtualListRef}
               dynamic
-              count={model.turns.length}
+              count={viewRows.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => turnAt(index).id}
+              getItemKey={(index) => rowAt(index).id}
               renderRow={(index) => {
-                const t = turnAt(index);
+                const row = rowAt(index);
+                const anchor = {
+                  "data-view-anchor-id": row.id,
+                  "data-view-anchor-source-index": row.sourceIndex,
+                  "data-view-anchor-message": row.isMessage,
+                } as const;
+                if (!("entries" in row)) {
+                  const t = turnAt(row.sourceIndex);
+                  return (
+                    <div {...anchor}>
+                      <TurnBlock
+                        turn={t}
+                        sessionRef={ref}
+                        showSeenDivider={t.id === seenDividerTurnId}
+                        exchangeOpeners={openers}
+                        agentLabel={agentLabel}
+                      />
+                    </div>
+                  );
+                }
+                if (!row.visible) return null;
                 return (
-                  <TurnBlock
-                    turn={t}
-                    sessionRef={ref}
-                    showSeenDivider={t.id === seenDividerTurnId}
-                    exchangeOpeners={openers}
-                    agentLabel={agentLabel}
-                  />
+                  <div {...anchor} className={styles.focusedTranscript} data-testid="focused-transcript">
+                    {row.entries.map((entry) => {
+                      if (entry.kind === "tool-count") {
+                        return (
+                          <div key={entry.id} className={styles.toolCount}>
+                            {entry.label}
+                          </div>
+                        );
+                      }
+                      if (entry.kind === "intent") {
+                        return (
+                          <div key={entry.id} className={styles.intent}>
+                            {entry.rationale}
+                          </div>
+                        );
+                      }
+                      const turn = model.turns[row.sourceIndex];
+                      if (!turn) return null;
+                      const ItemRenderer = itemRendererFor(entry.message.type);
+                      const opensExchange = openers?.has(entry.message.id);
+                      return (
+                        <div
+                          key={entry.id}
+                          className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
+                        >
+                          <ItemRenderer
+                            item={entry.message}
+                            turn={turn}
+                            live={isItemLive(entry.message)}
+                            sessionRef={ref}
+                            opensExchange={opensExchange}
+                            agentLabel={agentLabel}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 );
               }}
             />
@@ -243,47 +358,6 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           {showColdStartSkeleton && <ColdStartSkeleton />}
         </div>
       </FlowOverlay>
-    </div>
-  );
-
-  const focusedTranscript = (
-    <div className={styles.focusedTranscript} data-testid="focused-transcript">
-      {focused.map((entry) => {
-        if (entry.kind === "tool-count") {
-          return (
-            <div key={`${entry.turnId}:${entry.id}`} className={styles.toolCount}>
-              {entry.label}
-            </div>
-          );
-        }
-        if (entry.kind === "intent") {
-          return (
-            <div key={`${entry.turnId}:${entry.id}`} className={styles.intent}>
-              {entry.rationale}
-            </div>
-          );
-        }
-
-        const turn = model.turns.find((candidate) => candidate.id === entry.turnId);
-        if (!turn) return null;
-        const ItemRenderer = itemRendererFor(entry.message.type);
-        const opensExchange = openers?.has(entry.message.id);
-        return (
-          <div
-            key={`${entry.turnId}:${entry.id}`}
-            className={entry.role === "agent" && !opensExchange ? styles.focusedRunContent : undefined}
-          >
-            <ItemRenderer
-              item={entry.message}
-              turn={turn}
-              live={isItemLive(entry.message)}
-              sessionRef={ref}
-              opensExchange={opensExchange}
-              agentLabel={agentLabel}
-            />
-          </div>
-        );
-      })}
     </div>
   );
 
@@ -297,7 +371,10 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
             label="Session view"
             value={viewMode}
             options={[...SESSION_VIEW_MODES]}
-            onChange={(value) => setViewMode(normalizeViewMode(value))}
+            onChange={(value) => {
+              flow.captureViewAnchor();
+              setViewMode(normalizeViewMode(value));
+            }}
           />
         </div>
       }
@@ -324,8 +401,6 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         <ColdStartSkeleton />
       ) : isDormantTranscript(model.turns) ? (
         <EmptyTranscript active={model.status.type === "active"} />
-      ) : viewMode !== "everything" ? (
-        focusedTranscript
       ) : (
         transcript
       )}
