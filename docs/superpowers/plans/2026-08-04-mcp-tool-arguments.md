@@ -14,6 +14,7 @@
 - Keep tool rows collapsed by default and preserve existing failure auto-expansion behavior.
 - Do not throw on malformed JSON; display the original argument text.
 - Render no argument block for absent or whitespace-only arguments.
+- Use the existing `CodeBlock` with formatted display text and the original `argumentsJSON` as `copyText`, so copying preserves the wire value exactly.
 - Preserve existing output, error, and image rendering.
 - Run Biome on touched frontend files before the frontend gates.
 
@@ -34,22 +35,24 @@
 Create `MCPToolArguments.tsx` with a named component:
 
 ```tsx
+import { CodeBlock } from "../../../widgets";
 import type { ToolRenderProps } from "./toolRenderers";
 
 export function MCPToolArguments({ item }: ToolRenderProps) {
-  const raw = item.argumentsJSON?.trim();
+  const original = item.argumentsJSON;
+  const raw = original?.trim();
   if (!raw) return null;
 
-  let formatted = raw;
+  let formatted = original ?? raw;
   try {
-    formatted = JSON.stringify(JSON.parse(raw), null, 2);
+    formatted = JSON.stringify(JSON.parse(original ?? raw), null, 2);
   } catch {
     // Preserve malformed wire input as received.
   }
 
   return (
     <section aria-label="Tool call arguments">
-      <pre>{formatted}</pre>
+      <CodeBlock text={formatted} copyText={original ?? raw} copyLabel="Copy arguments" fold={false} />
     </section>
   );
 }
@@ -59,7 +62,7 @@ Use the repository’s existing body/code-block styling conventions rather than 
 
 - [ ] **Step 2: Wire the component into the default renderer**
 
-Change `toolRenderers.ts` so `DEFAULT_DESCRIPTOR.body` is a wrapper component that renders `MCPToolArguments` followed by `RawToolOutput`, passing through `item`, `live`, and `sessionRef`. Import the new component. Do not alter the registry matching behavior.
+Keep `RawToolOutput` as the existing output child and compose `MCPToolArguments` before it in the default body component, passing through `item`, `live`, and `sessionRef`. Do not alter the registry matching behavior or the default body contract.
 
 - [ ] **Step 3: Run formatting and type checks for touched files**
 
@@ -110,6 +113,8 @@ Render malformed `argumentsJSON` such as `{width:375}` and assert the original s
 - [ ] **Step 3: Add default-descriptor integration test**
 
 Render `ToolCallItem` with an unregistered tool name, valid arguments, and output text. Open the details element, then assert the argument block and existing output are both present. Add an error-text case and assert the error remains present with the argument block.
+
+Click `Copy arguments` with formatting-sensitive input and assert the clipboard receives the original string byte-for-byte.
 
 - [ ] **Step 4: Run focused tests and commit tests**
 
