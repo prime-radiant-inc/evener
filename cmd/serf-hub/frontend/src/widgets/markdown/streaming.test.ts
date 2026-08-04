@@ -177,6 +177,11 @@ test("four spaces between quote markers form a nested quote", () => {
   expect(closeOpenMarkdown(source)).toBe(source);
 });
 
+test("tab-indented quote content does not become a nested quote", () => {
+  const source = ">\t\t> **nested\n> parent";
+  expect(closeOpenMarkdown(source)).toBe(source);
+});
+
 test("an abandoned emphasis opener does not close across a setext heading underline", () => {
   const source = "**abandoned\n===";
   expect(closeOpenMarkdown(source)).toBe(source);

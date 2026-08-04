@@ -114,7 +114,7 @@ function blockquoteLine(line: string): BlockquoteLine | undefined {
 
     const nestedIndentStart = index;
     let nestedIndent = 0;
-    while (nestedIndent < 3 && isQuoteSpace(line.charAt(index))) {
+    while (nestedIndent < 3 && line.charAt(index) === " ") {
       nestedIndent += 1;
       index += 1;
     }
@@ -288,6 +288,12 @@ export function closeOpenMarkdown(source: string): string {
       listContainerIndent = null;
       if (paragraph !== "blockquote" || blockquoteDepth !== quoted.depth) stack = [];
       if (quoted.content.trim() === "") {
+        stack = [];
+        paragraph = "none";
+        blockquoteDepth = quoted.depth;
+        continue;
+      }
+      if (isIndentedCodeBlock(quoted.content)) {
         stack = [];
         paragraph = "none";
         blockquoteDepth = quoted.depth;
