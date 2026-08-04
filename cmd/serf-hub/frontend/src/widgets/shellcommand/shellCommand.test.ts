@@ -229,6 +229,21 @@ test("keeps command expectation after a multiline quoted argument", () => {
   expect(tokens[1]).not.toContainEqual({ kind: "command", text: "tail" });
 });
 
+test("treats a command after a comment-ending backslash as a new command", () => {
+  const raw = "echo x # note" + "\\" + "\nnext";
+  const tokens = tokenizeShellCommand(formatShellCommand(raw));
+
+  expect(tokens[1]).toContainEqual({ kind: "command", text: "next" });
+});
+
+test("keeps command expectation through a standalone continuation", () => {
+  const assignment = tokenizeShellCommand(formatShellCommand("NAME=value " + "\\" + "\necho ok"));
+  const pipeline = tokenizeShellCommand(formatShellCommand("false && " + "\\" + "\necho ok"));
+
+  expect(assignment[1]).toContainEqual({ kind: "command", text: "echo" });
+  expect(pipeline[1]).toContainEqual({ kind: "command", text: "echo" });
+});
+
 test("keeps assignment-word context across variable slices", () => {
   const tokens = tokenizeShellCommand(formatShellCommand("NAME=$VALUE echo ok"));
 
@@ -251,6 +266,15 @@ test("keeps redirection operators intact next to a word", () => {
   expect(tokens[0]).toContainEqual({ kind: "operator", text: ">|" });
   expect(tokens[0]).toContainEqual({ kind: "plain", text: "output" });
   expect(tokens[0]).not.toContainEqual({ kind: "command", text: "output" });
+});
+
+test("splits at a pipe after an escaped redirection character", () => {
+  const raw = "echo \\>| cat";
+
+  expect(formatShellCommand(raw)).toEqual([
+    { text: "echo \\>| ", indent: 0 },
+    { text: "cat", indent: 2 },
+  ]);
 });
 
 test("does not tokenize an escaped-space hash as a comment", () => {

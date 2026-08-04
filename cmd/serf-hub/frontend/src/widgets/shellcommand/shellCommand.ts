@@ -48,7 +48,7 @@ function startsComment(raw: string, index: number, lineStart: number): boolean {
 }
 
 function operatorAt(raw: string, index: number): string | undefined {
-  if (raw[index] === "|" && raw[index - 1] === ">") return undefined;
+  if (raw[index] === "|" && raw[index - 1] === ">" && !isEscaped(raw, index - 1)) return undefined;
   return SHELL_OPERATORS.find((operator) => raw.startsWith(operator, index));
 }
 
@@ -215,6 +215,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
   return lines.map(({ text }) => {
     const tokens: ShellCommandToken[] = [];
     let index = 0;
+    let comment = false;
 
     if (!lineContinues) expectCommand = true;
 
@@ -266,6 +267,7 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
 
       if (character === "#" && startsComment(text, index, 0)) {
         tokens.push(token("comment", text.slice(index)));
+        comment = true;
         break;
       }
 
@@ -308,16 +310,19 @@ export function tokenizeShellCommand(lines: readonly ShellCommandLine[]): ShellC
         index += 1;
       }
       const word = text.slice(start, index);
-      const kind: ShellCommandTokenKind = word.startsWith("-")
-        ? "flag"
-        : expectCommand && !isAssignmentWord(word)
-          ? "command"
-          : "plain";
+      const standaloneContinuation = word === "\\" && hasLineContinuation(text);
+      const kind: ShellCommandTokenKind = standaloneContinuation
+        ? "plain"
+        : word.startsWith("-")
+          ? "flag"
+          : expectCommand && !isAssignmentWord(word)
+            ? "command"
+            : "plain";
       tokens.push(token(kind, word));
-      if (expectCommand && !isAssignmentWord(word)) expectCommand = false;
+      if (expectCommand && !isAssignmentWord(word) && !standaloneContinuation) expectCommand = false;
     }
 
-    lineContinues = quote !== undefined || hasLineContinuation(text);
+    lineContinues = !comment && (quote !== undefined || hasLineContinuation(text));
     return tokens;
   });
 }
