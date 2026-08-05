@@ -64,7 +64,11 @@ beforeEach(() => {
 });
 
 describe("boot-time registration lets a persisted layout with lazy panes restore", () => {
-  test("all session panels round-trip through layoutJSON and restore with raw-ref titles before hydration", () => {
+  // doc and transcript are the original wave-8 lazy registrations this file
+  // exists to protect (see the header's mutation net); the session panels are
+  // the later additions. One fixture carries all of them so dropping ANY
+  // boot-time registration from AppShell discards the layout and fails here.
+  test("session panels, doc, and transcript all round-trip through layoutJSON and restore with raw-ref titles before hydration", () => {
     const fake = new FakeDockviewApi();
     const saved = {
       grid: { root: { type: "branch", data: [] } },
@@ -85,6 +89,12 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
           contentComponent: "default",
           params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } },
         },
+        p5: {
+          id: "p5",
+          contentComponent: "default",
+          params: { paneType: "doc", paneParams: { ref: "ref_a", path: "notes.md" } },
+        },
+        p6: { id: "p6", contentComponent: "default", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
       },
       activeGroup: "group-2",
     };
@@ -95,6 +105,8 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         { id: "p2", params: { paneType: "sessionTasks", paneParams: { ref: "ref_a" } } },
         { id: "p3", params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } } },
         { id: "p4", params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } } },
+        { id: "p5", params: { paneType: "doc", paneParams: { ref: "ref_a", path: "notes.md" } } },
+        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
       ];
       fake.activePanel = { id: "p4" };
     };
@@ -112,12 +124,14 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p3", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
+      { id: "p5", type: "doc", params: { ref: "ref_a", path: "notes.md" }, slot: "secondary" },
+      { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
     expect(
       workspaceStore
         .getState()
-        .panes.slice(1)
+        .panes.slice(1, 4)
         .map((pane) => paneFor(pane.type).title(pane.params, {})),
     ).toEqual(["Tasks · ref_a", "Activity · ref_a", "Details · ref_a"]);
   });
