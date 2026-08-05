@@ -107,6 +107,9 @@ func installServeScriptedProvider(t *testing.T, adapter *scriptedProvider) {
 
 func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) {
 	t.Helper()
+	if len(adapters) == 0 {
+		t.Fatal("installServeScriptedProviders requires at least one adapter")
+	}
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 		client := llm.NewClient()

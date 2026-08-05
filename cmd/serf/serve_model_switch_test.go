@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -11,6 +12,18 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
+
+func waitServeMilestone(ctx context.Context, milestones <-chan string, want string) error {
+	select {
+	case got := <-milestones:
+		if got != want {
+			return fmt.Errorf("structured milestone = %q, want %q", got, want)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for structured milestone %q: %w", want, ctx.Err())
+	}
+}
 
 // TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn pins G2
 // against the REAL cmd/serf/serve.go wiring (not a hand-built hook). It boots
@@ -238,11 +251,11 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatalf("TurnStart (failed provider): %v", err)
 	}
 
-	if got := <-milestones; got != "failed turn" {
-		t.Fatalf("first structured milestone = %q, want failed turn", got)
+	if err := waitServeMilestone(ctx, milestones, "failed turn"); err != nil {
+		t.Fatalf("wait failed turn: %v", err)
 	}
-	if got := <-milestones; got != "idle with model capability" {
-		t.Fatalf("second structured milestone = %q, want idle with model capability", got)
+	if err := waitServeMilestone(ctx, milestones, "idle with model capability"); err != nil {
+		t.Fatalf("wait idle capability: %v", err)
 	}
 
 	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
@@ -268,14 +281,18 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("TurnStart (recovered provider): %v", err)
 	}
-	if got := <-milestones; got != "successful turn" {
-		t.Fatalf("third structured milestone = %q, want successful turn", got)
+	if err := waitServeMilestone(ctx, milestones, "successful turn"); err != nil {
+		t.Fatalf("wait successful turn: %v", err)
 	}
 
 	kimiRequests := kimi.Requests()
 	openaiRequests := openai.Requests()
 	if len(kimiRequests) != 1 || len(openaiRequests) != 1 {
 		t.Fatalf("scripted provider requests = kimi %d, openai %d; want one each", len(kimiRequests), len(openaiRequests))
+	}
+	if kimiRequests[0].Provider != "kimi-anthropic" || kimiRequests[0].Model != "k3" {
+		t.Fatalf("initial request = provider %q model %q, want provider %q model %q",
+			kimiRequests[0].Provider, kimiRequests[0].Model, "kimi-anthropic", "k3")
 	}
 	if openaiRequests[0].Provider != "openai" || openaiRequests[0].Model != "gpt-5.6-sol" {
 		t.Fatalf("recovery request = provider %q model %q, want provider %q model %q",
