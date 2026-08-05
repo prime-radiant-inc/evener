@@ -229,6 +229,44 @@ describe("activitySummaryStore", () => {
     });
   });
 
+  test("an older bump arriving during a newer in-flight fetch queues nothing", async () => {
+    resetActivitySummaryStoreForTests();
+    const pendingFetches: Array<(value: unknown) => void> = [];
+    const fetch = () =>
+      new Promise<unknown>((resolve) => {
+        pendingFetches.push(resolve);
+      });
+
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 3, fetch)).toBe(1);
+    // A late caller still holding bump 2: the in-flight fetch for bump 3 is
+    // already newer, so nothing may queue - reissuing would regress
+    // lastFetchedBump and could replace a good result with a failure.
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 2, fetch)).toBeNull();
+
+    pendingFetches[0]?.({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pendingFetches.length).toBe(1);
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      loading: false,
+      lastFetchedBump: 3,
+    });
+  });
+
   test("a queued refresh fails through its own caller's onFailure, not the superseded one's", async () => {
     resetActivitySummaryStoreForTests();
     let resolveFirst!: (value: unknown) => void;

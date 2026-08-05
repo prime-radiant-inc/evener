@@ -117,15 +117,20 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     const requestID = get().beginRootFetch(ref, bump, force);
     if (requestID === null) {
       // Refused because a fetch is in flight? Queue this call - with its own
-      // fetch/onFailure - for re-issue on completion. Newest bump wins when
-      // several queue (bumps are reducer-side Date.now() stamps, so larger is
-      // newer; a null bump carries no ordering claim and yields to a number);
-      // force survives whichever record wins. A duplicate of the bump already
-      // being fetched, or a plain dedupe refusal, queues nothing.
+      // fetch/onFailure - for re-issue on completion. Newest bump wins, both
+      // against the IN-FLIGHT bump and anything already queued (bumps are
+      // reducer-side Date.now() stamps, so larger is newer; a null bump
+      // carries no ordering claim and yields to a number); force survives
+      // whichever record wins. A non-forced call that is not provably newer
+      // than the fetch already running queues nothing - reissuing an older
+      // bump would regress lastFetchedBump and could replace a good result.
       set((state) => {
         const entry = state.entries.get(ref);
         if (!entry?.loading) return state;
-        if (!force && bump === entry.lastFetchedBump) return state;
+        const newerThanInFlight =
+          bump !== null &&
+          (entry.lastFetchedBump === null || entry.lastFetchedBump === undefined || bump > entry.lastFetchedBump);
+        if (!force && !newerThanInFlight) return state;
         const incoming: PendingRootFetch = { bump, force, fetch, onFailure };
         const previous = entry.pendingBump;
         const incomingWins = !previous || previous.bump === null || (bump !== null && bump >= previous.bump);
