@@ -25,6 +25,7 @@ reap_release_fifo=""
 fixture_reapers_before_make_kill=0
 ready_failure_event=""
 make_record_delay=""
+make_publish_delay=""
 
 kill_if_alive() {
 	local pid="${1:-}"
@@ -70,6 +71,7 @@ new_case() {
 	reap_release_fifo=""
 	fixture_reapers_before_make_kill=0
 	make_record_delay=""
+	make_publish_delay=""
 	interrupt_child_pid=""
 	mkdir -p "$case_state" "$case_tmp" "$case_bin" "$work/scripts"
 	mkfifo "$case_state/ready" "$case_state/stopped" "$case_state/reaped" "$case_state/reap-release"
@@ -145,7 +147,7 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= PROBE_MAKE_PUBLISH_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
@@ -157,7 +159,8 @@ run_make_with_readiness_events() {
 			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" \
 			PROBE_READY_DELAY="$ready_delay" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
 		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
-			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed" PROBE_MAKE_RECORD_DELAY="$make_record_delay"
+			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed" PROBE_MAKE_RECORD_DELAY="$make_record_delay" \
+			PROBE_MAKE_PUBLISH_DELAY="$make_publish_delay"
 		child_pid=""
 		interrupted_at_startup=0
 		forward_interrupt() {
@@ -173,7 +176,10 @@ run_make_with_readiness_events() {
 		# Make records its own pid before exec'ing itself, so the pid file exists before Make
 		# can run for even an instant: a missing pid file therefore proves Make never started,
 		# which is what lets the stop ladder treat "nothing recorded" as "nothing to kill".
-		bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' _ "$PROBE_STATE/make-child.pid" \
+		# Fixture knob: hold the trampoline before it publishes, and mark that it is holding, so
+		# the pre-publication interval can be interrupted deliberately instead of raced.
+		bash -c '[ -n "$1" ] && { : >"$2.publishing"; sleep "$1"; }; printf "%s\n" "$$" >"$2"; shift 2; exec "$@"' \
+			_ "$PROBE_MAKE_PUBLISH_DELAY" "$PROBE_STATE/make-child.pid" \
 			"$real_make" "${make_args[@]}" >"$output" 2>&1 &
 		# Fixture knob: widen the wrapper's own spawn-to-record window for the startup-boundary check.
 		[ -n "$PROBE_MAKE_RECORD_DELAY" ] && sleep "$PROBE_MAKE_RECORD_DELAY"
@@ -323,6 +329,7 @@ if [ "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD:-}" = 1 ]; then
 	# The parent sets this to hold the wrapper inside its spawn-to-record window while the
 	# interrupt lands, so the startup boundary is exercised rather than raced.
 	make_record_delay="${MAKE_SELFTEST_SELFTEST_MAKE_RECORD_DELAY:-}"
+	make_publish_delay="${MAKE_SELFTEST_SELFTEST_MAKE_PUBLISH_DELAY:-}"
 	ready_fifo="$case_state/ready"
 	stop_fifo="$case_state/stopped"
 	reaped_fifo="$case_state/reaped"
@@ -625,6 +632,69 @@ else
 	interrupt_child_pid=""
 fi
 rm -rf "$startup_work"
+
+new_case
+publish_work="$case_dir/publish-child"
+mkdir -p "$publish_work"
+# Interrupt a child instance while the trampoline exists but has not yet published Make's pid.
+# The publish delay holds it in that interval and the marker it writes first proves the check
+# lands inside the interval rather than racing it.
+MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD=1 MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD_WORK="$publish_work" \
+	MAKE_SELFTEST_SELFTEST_MAKE_PUBLISH_DELAY=5 bash "$0" >"$case_dir/publish-child.out" 2>&1 &
+interrupt_child_pid="$!"
+publish_case_state=""
+attempt=0
+while [ "$attempt" -lt 200 ]; do
+	publish_case_state="$(ls -d "$publish_work"/case.*/state 2>/dev/null | head -n1 || :)"
+	if [ -n "$publish_case_state" ] && [ -f "$publish_case_state/make-child.pid.publishing" ]; then
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.05
+done
+if [ -n "$publish_case_state" ] && [ -f "$publish_case_state/make-child.pid.publishing" ]; then
+	# The trampoline already carries Make's argv, so it is findable by the child's work dir while
+	# still unpublished -- which is what makes the assertions below non-vacuous.
+	pre_publish_pids="$(pgrep -f "$publish_work" 2>/dev/null || :)"
+	if [ -n "$pre_publish_pids" ] && [ ! -f "$publish_case_state/make-child.pid" ]; then
+		ok "the fixture interrupts a live trampoline that has not published its pid"
+	else
+		bad "the fixture interrupts a live trampoline that has not published its pid"
+	fi
+	stop_started="$SECONDS"
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	wait "$interrupt_child_pid" 2>/dev/null || :
+	interrupt_child_pid=""
+	stop_elapsed=$((SECONDS - stop_started))
+	publish_survivor=""
+	for pid in $pre_publish_pids; do
+		kill -0 "$pid" 2>/dev/null && publish_survivor="$pid"
+	done
+	publish_survivors="$(pgrep -f "$publish_work" 2>/dev/null || :)"
+	if [ -z "$publish_survivor" ] && [ -z "$publish_survivors" ]; then
+		ok "interrupting before pid publication orphans no trampoline, Make, or probe"
+	else
+		bad "interrupting before pid publication orphans no trampoline, Make, or probe"
+		kill -KILL $pre_publish_pids $publish_survivors 2>/dev/null || :
+	fi
+	# The wrapper's own handler owns this interval, so the ladder never reaches the reap-ack
+	# deadline it would sit out if it had fallen through to the no-pid escalation branch.
+	if [ "$stop_elapsed" -lt 10 ]; then
+		ok "the stop ladder returns promptly when interrupted before pid publication"
+	else
+		bad "the stop ladder returns promptly when interrupted before pid publication (took ${stop_elapsed}s)"
+	fi
+else
+	for contract in "the fixture interrupts a live trampoline that has not published its pid" \
+		"interrupting before pid publication orphans no trampoline, Make, or probe" \
+		"the stop ladder returns promptly when interrupted before pid publication"; do
+		bad "$contract (fixture did not start)"
+	done
+	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
+	wait "$interrupt_child_pid" 2>/dev/null || :
+	interrupt_child_pid=""
+fi
+rm -rf "$publish_work"
 
 echo "----"
 echo "make-selftest-selftest: $checks checks, $fails failed"
