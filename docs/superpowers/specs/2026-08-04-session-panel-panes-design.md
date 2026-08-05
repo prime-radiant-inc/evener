@@ -1,6 +1,6 @@
 # Session panels as togglable panes — design
 
-Date: 2026-08-04 (v4, revised after adversarial review round 3)
+Date: 2026-08-04 (v5, revised after adversarial review round 4)
 Status: approved direction, under revision review
 
 ## Goal
@@ -111,6 +111,38 @@ v4 addresses the fourteen verified findings from adversarial review round 3
 8. **§10's popout test uses the fake-api precedent** — jsdom's
    `window.open` is unimplemented, so a real-dockview popout test is not
    writable in the current harness (A3#5).
+
+v5 addresses the twelve verified findings from adversarial review round 4
+(reviewer A: 4, reviewer B: 8 — B took the round):
+
+1. **§4's scoping rule is restated against real signals.** v4 claimed the
+   route effect "already distinguishes" navigation from workspace changes
+   via `openedForPathnameRef` — it does not (the session branch never reads
+   it), and the classification was self-contradictory: a deferred boot deep
+   link's placement run is triggered by the TREE LANDING, which v4 called
+   workspace-initiated, so the boot guarantee failed under v4's own rule
+   (A4#1, B4#1). The relaxation now keys on placement state: no pending
+   deep link and no route change since the last completed placement.
+2. **§6's background fetch reconciles the panel store** — v4 updated only
+   the summary store, so a backgrounded pane remounted to stale content
+   with a second fetch where today one fetch keeps both badge and body
+   fresh (B4#2). The body's mount fetch is also gated on the entry's
+   last-fetched bump (B4#3's extra-fetch cell).
+3. **The mount signal is recorded by whichever host mounts the body** —
+   pane host or sheet host — closing v4's mobile double-fetch hole (B4#3).
+4. **The established gate is described as attempt-based**, matching the
+   code (`fetchedBumpRef` is set at fetch start, not on success) (B4#4).
+5. **§5's "mobile behavior is unchanged" claim is corrected** — store-backed
+   state survives mobile Back where component state died today; benign and
+   now stated (B4#5).
+6. **§10 drops the v3 leftover eviction-test semantics** (A4#2), adds the
+   placement-rule tests round 4 proved necessary (B4#6), and removes the
+   vacuous store-level popout phrasing (A4#3).
+7. **§9/§11 acknowledge the remaining edge cases honestly**: crossed-over
+   panels have no close affordance on mobile (B4#7), BackToParentAction now
+   carries DOM focus into the parent's scaffold region (B4#8), and the
+   orphan-restore focus revert is documented as matching the transcript/doc
+   precedent (A4#4).
 
 ## Current state (verified against the code)
 
@@ -254,15 +286,18 @@ pane structure is present. Concretely:
   already returns applied unconditionally.
 
 `openRouteAsPane` is unchanged. One scoping rule keeps boot and navigation
-behavior intact: the relaxed focus clause applies only to
-**workspace-initiated** re-runs of the route effect (a pane opened, closed,
-or the tree landing). A **fresh navigation** — a pathname change, including
-a boot deep link over a restored layout — still focuses the routed pane
-exactly as today, so a deep link never lands the user on a restored Tasks
-tab, and panel panes get no privilege over transcript/doc panes at boot
-(the effect already distinguishes these paths via its
-`openedForPathnameRef` bookkeeping; the relaxation lives only in the
-workspace-change path).
+behavior intact: the relaxed focus clause applies only when the current
+route has ALREADY been fully placed — no deferred deep link
+(`pendingSessionRef` is null) and no route change since the last completed
+placement. This is NEW bookkeeping the change adds (a `placedPathname`
+signal maintained beside the effect): the existing `openedForPathnameRef`
+is never read in the session branch and cannot serve, and the tree landing
+is not a usable discriminator either — a deferred deep link's placement run
+is triggered by the tree arriving, with no pathname change. With the
+placement-state rule, a boot deep link over a restored layout and an in-app
+navigation (including `/thread/X` ↔ `/s/X`) both focus the routed pane
+exactly as today, and panel panes get no privilege over transcript/doc
+panes at boot.
 
 ### 5. Durable state lives in stores keyed by ref
 
@@ -295,8 +330,12 @@ screen, and a backgrounded panel's state survives exactly as long as its
 pane exists. Rail-driven session deletion already closes every pane for a
 deleted ref generically, so the cascade still reaches these stores.
 
-Sheet hosts read the same stores, so mobile behavior is unchanged (and the
-mobile sheet's close-unmounts-children behavior stops being load-bearing).
+Sheet hosts read the same stores. One honest mobile divergence: StackHost
+keeps panes in the workspace store across Back navigation, so store-backed
+panel state now survives leaving and returning to a session where today's
+component state died with the unmounted chrome — returning shows retained
+content instead of a fresh loading state. Benign, and consistent with the
+desktop behavior.
 
 ### 6. The Activity badge keeps its data source — and its freshness
 
@@ -304,8 +343,11 @@ The badge's fetch-while-closed moves out of the panel into an
 `activitySummaryStore` keyed by ref, owned by the chrome's Activity trigger
 component. The store reproduces today's two gates:
 
-- **Established gate:** no fetch fires before the first successful tree
-  fetch for the ref; the badge shows the bare "Activity" label until then.
+- **Established gate:** no background fetch fires before the first root
+  fetch is INITIATED for the ref — today's gate is attempt-based
+  (`fetchedBumpRef` is set at fetch start, so even a failed first open
+  establishes it), and the store reproduces exactly that. The badge shows
+  the bare "Activity" label until a summary exists.
   (The flag lives in the store, so its lifetime is the store entry's, not a
   chrome instance's: a session re-opened after its panel established the
   summary shows the count immediately. That is a deliberate, benign
@@ -315,16 +357,24 @@ component. The store reproduces today's two gates:
   unrendered, there is no owner and no fetch — today's `hideTrigger`
   suppression, unchanged.
 
-**One fetch at a time, via a mount signal.** The pane host records its
+**One fetch at a time, via a mount signal.** Whichever host mounts the body
+— the desktop pane host OR the mobile sheet host (the sheet unmounts its
+children on close, so an open sheet IS a mounted body) — records the body's
 mounted state in the summary store on mount/unmount. While a body is
 mounted, it owns freshness: it fetches on `jobsUpdatedAt` bumps and
 publishes the summary, and the badge fires nothing — one `listJobs`
-round-trip per bump. When the pane is open but backgrounded (body
-unmounted), the badge's background fetch resumes, matching today's
-closed-sheet freshness exactly. Publishing happens only from ROOT fetches —
-continuation patches carry partial-window counts (`mergeSession` adopts
-`patch.counts`), so grafts never overwrite the badge summary — and the
-stored summary keeps the `counts.complete` flag the label gates on.
+round-trip per bump on both platforms. When the pane is open but
+backgrounded (body unmounted), the badge's background fetch resumes — and
+because that fetch is a root fetch, it also reconciles the §5 panel-store
+entry when one exists, so re-activating the panel remounts to FRESH
+retained content, exactly as reopening the sheet does today. The body's
+mount fetch is gated on the entry's last-fetched bump: no fetch on
+re-activation when nothing changed (today's `needsVisibleFetch` semantics),
+one fetch when a bump landed while backgrounded. Publishing happens only
+from ROOT fetches — continuation patches carry partial-window counts
+(`mergeSession` adopts `patch.counts`), so grafts never overwrite the badge
+summary — and the stored summary keeps the `counts.complete` flag the label
+gates on.
 
 Tasks and Details badges are unaffected (`model.tasks`, no badge
 respectively).
@@ -400,7 +450,11 @@ over, now backed by the §5 stores.
   button. There is deliberately no Escape-to-close (dockview panes are
   persistent surfaces, not dialogs; keyboard close paths are the toggle
   button again and the tab's close affordance). Focus on close falls back
-  with the route effect's refocus of the main pane.
+  with the route effect's refocus of the main pane. `BackToParentAction`
+  (below) moves DOM focus into the parent pane's scaffold region — the same
+  focusable region this change adds to `PaneScaffold` — so the keyboard
+  round trip never strands focus on `<body>` when the activating button
+  unmounts.
 - **Breakpoint crossing:** the workspace store survives the
   DockHost↔StackHost swap, so a panel pane open at a desktop→mobile
   crossing renders full-screen in StackHost (it reads the same §5 stores,
@@ -410,10 +464,13 @@ over, now backed by the §5 stores.
   Instead, every panel pane renders the existing `BackToParentAction`
   header action (the shared component transcript/doc panes already use,
   keyed on the session ref), which re-focuses/reopens the parent session
-  regardless of host or back-stack state. The locked mobile decision
-  governs the toggle AFFORDANCE (mobile chrome buttons open sheets); an
-  already-open pane crossing the breakpoint degrades to a readable
-  full-screen pane rather than being destroyed.
+  regardless of host or back-stack state. A crossed-over panel has no close
+  affordance on mobile (StackHost has no tab-x, the mobile buttons operate
+  sheets, and BackToParentAction only navigates); it closes on the next
+  desktop crossing or on session deletion — accepted. The locked mobile
+  decision governs the toggle AFFORDANCE (mobile chrome buttons open
+  sheets); an already-open pane crossing the breakpoint degrades to a
+  readable full-screen pane rather than being destroyed.
 
 ### 10. Testing
 
@@ -426,22 +483,30 @@ New obligations beyond v1's list:
   session route** with a focused panel pane counts as applied; focusing a
   non-panel pane still reverts on both. (The nested cases are mandatory —
   v2's test plan would have passed with the nested bug in.)
+- **Placement-rule tests**: a deferred boot deep link over a restored
+  layout whose active tab is a panel pane STILL focuses the routed session
+  once the tree lands; an in-app navigation (`/thread/X` ↔ `/s/X`) with a
+  focused panel still focuses the routed pane; the relaxed clause applies
+  only once placement for the current route has completed. (Round 4 proved
+  these are the regression-prone direction; the harness supports them via
+  AppShell.test.tsx's saved-layout fixtures.)
 - **Restore round-trip tests** for the three new types through
   `layoutJSON`/`restoreLayout`, including the pre-hydration title fallback.
 - **Claim/release refcount tests**: session pane + panel pane claim pairs —
   open panel, close session, close panel, reordered — against the threads
   store's refcounting and model eviction, **plus eviction tests for the
-  three panel stores** (entry gone when the model is evicted, retained
-  while any claim holds).
+  three panel stores** (entry retained while any pane references the ref —
+  including a backgrounded panel holding no claim — and gone when the last
+  pane for the ref closes).
 - **Palette tests**: `/tasks` and `/status` dispatch `togglePane` with the
   palette-context ref on desktop — including with collapsed chrome and with
   the session pane unmounted behind its focused panel — and keep the legacy
   click on mobile.
 - **Popout toggle-off test**: at the paneActions level with a faked
   dockview api (the `paneActions.test.ts` precedent — jsdom's `window.open`
-  is unimplemented, so a real-dockview popout cannot exist under vitest),
-  plus a store-reconciliation test with dockview doubles covering
-  `closePane` of a panel whose group is not in the main grid.
+  is unimplemented, so a real-dockview popout cannot exist under vitest).
+  (The workspace store itself is geometry-blind — slots are assign-once —
+  so a store-level "panel outside the main grid" test would pin nothing.)
 - **Remount-state pins**: simulated unmount/remount of each panel body
   preserves retained rows / daemon-gone / activity selection+expansion /
   continuation grafts (the behaviors today's suites pin for sheet
@@ -481,6 +546,12 @@ New obligations beyond v1's list:
   (store-driven removal reconciles regardless of geometry), so it's
   recoverable; this hazard already exists for transcript/doc panes and
   fixing dockview's drop policy is out of scope here.
+- **Orphan restored panel:** `BackToParentAction` from a restored panel
+  whose session pane isn't open CREATES that session pane, which re-runs
+  the route effect and snaps focus back to the routed pane (the relaxation
+  covers panel panes only) — the session opens as a background tab. This
+  matches what restored transcript/doc panes do today; the label and the
+  reopen still work. Accepted.
 
 ## Out of scope
 
