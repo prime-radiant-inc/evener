@@ -2439,6 +2439,27 @@ describe("useThreadsStore.releaseThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  test("session and panel lifecycle claims survive close and remount reordering until the final reference releases", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    await threadsStore.getState().ensureThread("ref_a"); // session pane mounts
+    await threadsStore.getState().ensureThread("ref_a"); // panel pane mounts
+    threadsStore.getState().releaseThread("ref_a"); // session pane closes first
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+
+    // A dockview reorder can remount the session before it unmounts the panel.
+    // The hand-off must remain refcounted instead of transiently evicting the
+    // hydrated model or issuing another read.
+    await threadsStore.getState().ensureThread("ref_a");
+    threadsStore.getState().releaseThread("ref_a"); // panel pane unmounts
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+
+    threadsStore.getState().releaseThread("ref_a"); // remounted session is the last reference
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   test("releasing an untracked ref is a harmless no-op", () => {
     expect(() => threadsStore.getState().releaseThread("never_tracked")).not.toThrow();
   });

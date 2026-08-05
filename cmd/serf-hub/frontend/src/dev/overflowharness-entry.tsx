@@ -14,16 +14,28 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
+import "../panes/session";
 import Session from "../panes/session/Session";
+import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { DockHost } from "../shell/DockHost";
+import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
 const params = new URLSearchParams(window.location.search);
+window.addEventListener("error", (event) => {
+  const target = window as typeof window & { __panelGuardErrors?: string[] };
+  target.__panelGuardErrors = [...(target.__panelGuardErrors ?? []), event.error?.stack ?? event.message];
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const target = window as typeof window & { __panelGuardErrors?: string[] };
+  target.__panelGuardErrors = [...(target.__panelGuardErrors ?? []), event.reason?.stack ?? String(event.reason)];
+});
 const width = Number(params.get("w") ?? "1400");
 const theme = params.get("theme");
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
@@ -200,11 +212,20 @@ if (!rootEl) throw new Error("overflowharness.html is missing #root");
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
-createRoot(rootEl).render(
-  <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
-    <Session params={{ ref: REF }} paneId="oh" focused />
-  </div>,
-);
+if (params.get("panels") === "1") {
+  workspaceStore.getState().openPane("session", { ref: REF });
+  createRoot(rootEl).render(
+    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+      <DockHost />
+    </div>,
+  );
+} else {
+  createRoot(rootEl).render(
+    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+      <Session params={{ ref: REF }} paneId="oh" focused />
+    </div>,
+  );
+}
 
 interface Escapee {
   tag: string;
