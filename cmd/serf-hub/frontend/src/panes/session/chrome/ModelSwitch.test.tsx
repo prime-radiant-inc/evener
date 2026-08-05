@@ -131,6 +131,51 @@ test("the trigger is disabled when the thread's changeModel capability is unavai
   expect(trigger().disabled).toBe(true);
 });
 
+test("a failed turn's idle capabilities re-enable model switching without reload", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  let called: unknown;
+  fake.on("thread/model/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  const view = render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "active" },
+        activeTurnId: "turn_failed",
+        capabilities: { ...CAPABILITIES, changeModel: false },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(true);
+
+  view.rerender(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "idle" },
+        activeTurnId: undefined,
+        capabilities: { ...CAPABILITIES, changeModel: true },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(false);
+
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt-5.5");
+  await user.click(await screen.findByRole("option", { name: /openai\/gpt-5\.5/i }));
+  await waitFor(() =>
+    expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }),
+  );
+});
+
 // The capability is the ONLY gate. Whether a turn is in flight is not a fact
 // about whether this session's model can be changed - the wire answers that
 // question itself, for a running session and a cold exited one alike, and a
