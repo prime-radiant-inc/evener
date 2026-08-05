@@ -19,6 +19,7 @@ import styles from "./commandpalette.module.css";
 import {
   type Command,
   type CommandArgsEnumItem,
+  commandsInScope,
   filterCommands,
   type PaletteRunContext,
   type PaletteUi,
@@ -424,9 +425,9 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         return;
       }
       const firstToken = query.replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
-      const exact = view.items.find((it) => it.kind === "command" && it.command.id === firstToken);
-      if (exact?.kind === "command") {
-        activateCommand(exact.command);
+      const exact = commandsInScope(ctx, catalogCommands).find((command) => command.id === firstToken);
+      if (exact) {
+        activateCommand(exact);
         return;
       }
       // Slash fallthrough: forward the raw text to the session (TUI parity).

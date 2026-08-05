@@ -449,6 +449,23 @@ test("selecting a plugin catalog entry submits the qualified form", async () => 
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+test("Enter on a plugin command with arguments preserves its qualified invocation", async () => {
+  const user = userEvent.setup();
+  const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
+  useCommandCatalog.setState({
+    commands: [{ name: "review", pluginName: "p", source: "plugin" }],
+    loaded: true,
+  });
+  focusSession("ref_a");
+  render(<CommandPalette />);
+  act(() => openPalette("/review main"));
+
+  await user.keyboard("{Enter}");
+
+  expect(send).toHaveBeenCalledWith("ref_a", "/p:review main");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
 test("Arrow-selected catalog entry activates instead of the first result", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
