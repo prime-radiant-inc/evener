@@ -70,9 +70,11 @@ A switch attempted before step 5 still receives the current conflict response. T
 
 #### Agent
 
-Update the model-error decision in `agent/session_model_call.go` so `llmErrNonRetryable` does not set `CloseSession`. Remove the now-obsolete input or replace the close boolean with a lifecycle decision that cannot conflate request retryability with session viability. Keep the terminal failure, warning, goal termination behavior appropriate to a failed turn, and idle-boundary cleanup.
+Update the model-error decision in `agent/session_model_call.go` so `llmErrNonRetryable` does not set `CloseSession`. Remove the now-obsolete input or replace the close boolean with a lifecycle decision that cannot conflate request retryability with session viability. Keep the terminal failure, warning, and idle-boundary cleanup.
 
-Review comments and tests that currently state that every non-retryable `llm.Error` closes the session. Rewrite them to distinguish request-terminal from session-terminal.
+If a terminal provider error occurs while a session goal is active, terminate that goal through the existing error path before settling the session to idle. Otherwise an exhausted provider could immediately schedule another goal continuation and repeat the same doomed call. Goal termination and session closure are separate decisions: the goal stops, but the conversation remains available for a user-directed model switch.
+
+Review comments and tests that currently state that every non-retryable `llm.Error` closes the session. Rewrite them to distinguish request-terminal, goal-terminal, and session-terminal outcomes.
 
 #### Server and AppWire
 
