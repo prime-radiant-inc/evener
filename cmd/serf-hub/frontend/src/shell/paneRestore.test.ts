@@ -68,8 +68,9 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       fake.panels = [
         { id: "p1", params: { paneType: "doc", paneParams: { ref: "a", path: "notes.md" } } },
         { id: "p2", params: { paneType: "transcript", paneParams: { ref: "b" } } },
+        { id: "p3", params: { paneType: "sessionTasks", paneParams: { ref: "ref_a" } } },
       ];
-      fake.activePanel = { id: "p2" };
+      fake.activePanel = { id: "p3" };
     };
     registerDockviewApi(asDockviewApi(fake));
 
@@ -82,7 +83,8 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       // restoreLayout): the first panel is the top-left/main one.
       { id: "p1", type: "doc", params: { ref: "a", path: "notes.md" }, slot: "main" },
       { id: "p2", type: "transcript", params: { ref: "b" }, slot: "secondary" },
+      { id: "p3", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
     ]);
-    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+    expect(workspaceStore.getState().focusedPaneId).toBe("p3");
   });
 });

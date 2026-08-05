@@ -5,7 +5,16 @@
 // pane type never means editing this file.
 import type { ComponentType, LazyExoticComponent } from "react";
 
-export type PaneTypeId = "session" | "transcript" | "doc" | "spawn" | "settings" | "welcome";
+export type PaneTypeId =
+  | "session"
+  | "transcript"
+  | "doc"
+  | "sessionTasks"
+  | "sessionActivity"
+  | "sessionDetails"
+  | "spawn"
+  | "settings"
+  | "welcome";
 
 // Context passed to PaneDescriptor.title() alongside a pane's own params -
 // e.g. a thread ref -> display name lookup for session/transcript panes.

@@ -108,6 +108,12 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
       // No deep link yet - doc panes open contextually from a session, not
       // via a standalone URL. Revisit if/when a wave needs one.
       return null;
+    case "sessionTasks":
+    case "sessionActivity":
+    case "sessionDetails":
+      // Session panel panes are contextual surfaces opened beside a session;
+      // they intentionally have no standalone URL.
+      return null;
     default:
       return assertNever(type);
   }
