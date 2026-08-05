@@ -27,6 +27,27 @@ func (r *recordingExecEnv) ExecCommand(_ context.Context, command string, _ int,
 
 var _ execenv.ExecutionEnvironment = (*recordingExecEnv)(nil)
 
+func TestExpandArgs(t *testing.T) {
+	t.Parallel()
+	body := "Review $1 against @doc.md and run !`git diff` for $ARGUMENTS"
+	got := ExpandArgs(body, "main --stat")
+	want := "Review main against @doc.md and run !`git diff` for main --stat"
+	if got != want {
+		t.Errorf("ExpandArgs = %q, want %q", got, want)
+	}
+}
+
+func TestExpandArgs_SubstitutesInsideSpansAsInertText(t *testing.T) {
+	t.Parallel()
+	// $1 inside a !` span is replaced, but the span itself is never
+	// executed — it stays text.
+	got := ExpandArgs("run !`echo $1` now", "foo")
+	want := "run !`echo foo` now"
+	if got != want {
+		t.Errorf("ExpandArgs = %q, want %q", got, want)
+	}
+}
+
 func TestExpand_Arguments(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	got, err := Expand(context.Background(), "Hello $ARGUMENTS!", "world", env)
