@@ -579,6 +579,24 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
   });
 
+  // jobsUpdatedAt only ever comes from live pushes and re-hydrates to null
+  // after a thread-model eviction (protocol/reducer.ts), so a null bump can
+  // never prove retained data is current: bumps that happened while nothing
+  // held the model are simply gone. A remounting body must fetch in that case
+  // instead of trusting null === null.
+  test("remounting the body re-fetches when the model cannot prove freshness (null jobs bump)", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+
+    const first = render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+    first.unmount();
+
+    render(<ActivityPanelBody sessionRef="ref_null_bump" model={testModel()} />);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  });
+
   test("does not let a continuation patch change the root badge summary", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

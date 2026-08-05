@@ -189,7 +189,14 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
       entry.load.kind === "failed" ||
       entry.load.kind === "unsupported" ||
       entry.load.kind === "ended";
-    if (bumpMismatch || retainedNonReady) fetchRoot(undefined, retainedNonReady);
+    // A null bump can't prove retained data is current: jobsUpdatedAt only
+    // ever comes from live pushes and re-hydrates to null after a thread-model
+    // eviction, so bumps seen while nothing held the model are gone. Force the
+    // fetch past the store's established/bump dedupe in that case.
+    const unprovenFreshness = model.jobsUpdatedAt === null;
+    if (bumpMismatch || retainedNonReady || unprovenFreshness) {
+      fetchRoot(undefined, retainedNonReady || unprovenFreshness);
+    }
   }, [fetchRoot, model.jobsUpdatedAt, sessionRef]);
 
   useEffect(() => {
