@@ -140,9 +140,10 @@ export interface ClientInfo {
 
 export interface CommandDescriptor {
   name: string;
-  pluginName: string;
+  pluginName?: string;
   description?: string;
   argumentHint?: string;
+  source?: string;
 }
 
 export interface CommandListResponse {

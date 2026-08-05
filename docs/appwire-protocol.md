@@ -151,7 +151,7 @@ no router (reserved).
 | `serf/plugin/enable` | hub | `PluginRefParams` | `PluginListResponse` | Enables an installed plugin; returns the updated list. |
 | `serf/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `serf/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
-| `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded plugin slash commands (name, plugin, description) for catalog/autocomplete display. |
+| `serf/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
 | `serf/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
 | `serf/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 

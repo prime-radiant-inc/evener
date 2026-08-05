@@ -9,8 +9,94 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
+
+// writeSerfwideCommandFile creates <workDir>/.serf/commands/<name>.md.
+func writeSerfwideCommandFile(t *testing.T, workDir, name, content string) {
+	t.Helper()
+	dir := filepath.Join(workDir, ".serf", "commands")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSerfwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	client := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}}
+	client.Register(adapter)
+	workDir := t.TempDir()
+	writeSerfwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	cmd, ok := plugin.ResolveCommand(sess.pluginCommands, "review")
+	if !ok || cmd.Source != "project" {
+		t.Fatalf("pluginCommands = %v, want project command %q", sess.pluginCommands, "review")
+	}
+}
+
+func TestSerfwideCommand_ShadowsPluginBareName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	workDir := t.TempDir()
+	writeSerfwideCommandFile(t, workDir, "greet", "serf-wide body")
+	pluginDir := writePluginCommand(t, "greeter", "greet", "plugin body")
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	bare, ok := plugin.ResolveCommand(sess.pluginCommands, "greet")
+	if !ok || bare.Source == "plugin" {
+		t.Errorf("bare /greet resolved to %+v, want the serf-wide command", bare)
+	}
+	qualified, ok := plugin.ResolveCommand(sess.pluginCommands, "greeter:greet")
+	if !ok || qualified.Source != "plugin" {
+		t.Errorf("/greeter:greet resolved to %+v, want the plugin command", qualified)
+	}
+}
+
+func TestSerfwideCommand_DiscoveryWarningsQueued(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	workDir := t.TempDir()
+	writeSerfwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if len(sess.pluginCommands) != 0 {
+		t.Errorf("pluginCommands = %v, want the guarded file skipped", sess.pluginCommands)
+	}
+	sess.Close()
+	var warned bool
+	for ev := range sess.Events() {
+		if warning, ok := ev.Data.(events.WarningData); ok && warning.Title == "whitespace in command name" {
+			warned = true
+			break
+		}
+	}
+	if !warned {
+		t.Error("no discovery warning emitted; want the whitespace-guard warning")
+	}
+}
 
 // writePluginCommand creates a plugin directory named pluginName with a single
 // slash command file at commands/<cmdName>.md holding the given frontmatter+body
@@ -94,6 +180,51 @@ func TestExpandSlashCommand_ExpandsKnownCommand(t *testing.T) {
 	}
 	if got != "Hi world" {
 		t.Errorf("got %q, want %q", got, "Hi world")
+	}
+}
+
+// execRecordingEnv wraps a local execution environment and records
+// ExecCommand calls, so tests can assert a !` span never executed.
+type execRecordingEnv struct {
+	execenv.ExecutionEnvironment
+	calls int
+}
+
+func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, timeoutMs int, dir string, env map[string]string) (execenv.ExecResult, error) {
+	e.calls++
+	return e.ExecutionEnvironment.ExecCommand(ctx, command, timeoutMs, dir, env)
+}
+
+func TestExpandSlashCommand_SerfwideDoesNotExecute(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}})
+	workDir := t.TempDir()
+	writeSerfwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
+	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	// NewSession may inspect the workspace through ExecCommand; only calls
+	// made while expanding the slash command are relevant to this assertion.
+	env.calls = 0
+
+	got, ok := sess.expandSlashCommand(context.Background(), "/deploy v2")
+	if !ok {
+		t.Fatal("expected ok=true for a serf-wide command")
+	}
+	if env.calls != 0 {
+		t.Errorf("ExecCommand called %d times; serf-wide expansion must never execute", env.calls)
+	}
+	if !strings.Contains(got, "!`touch SHOULD_NOT_EXIST`") || !strings.Contains(got, "for v2") {
+		t.Errorf("expanded %q, want the !` span kept as text with $1 substituted", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(workDir, "SHOULD_NOT_EXIST")); !os.IsNotExist(statErr) {
+		t.Error("the !` span executed: SHOULD_NOT_EXIST exists")
 	}
 }
 

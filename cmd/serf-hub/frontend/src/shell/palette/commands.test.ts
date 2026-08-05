@@ -5,6 +5,7 @@ import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import "../../panes/sessionPanels";
+import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
@@ -174,6 +175,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
   localStorage.clear();
@@ -264,6 +266,57 @@ test("a focused session whose model has not hydrated yet leaves every command en
   const inScope = commandsInScope(buildPaletteContext());
   expect(inScope).toHaveLength(23);
   expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
+});
+
+test("a focused session includes catalog commands with source labels and qualified invocations", () => {
+  focusSession("ref_a");
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" },
+      { name: "standup", description: "user cmd", source: "user" },
+    ],
+    loaded: true,
+  });
+
+  const { commands } = filterCommands(buildPaletteContext(), "/rev");
+  expect(commands).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: "review",
+        title: "review [plugin]",
+        description: "plugin cmd",
+        source: "plugin",
+        pluginName: "p",
+        slashCommandInvocation: "/p:review",
+      }),
+    ]),
+  );
+  const userCommand = filterCommands(buildPaletteContext(), "/stand").commands.find(
+    (command) => command.id === "standup",
+  );
+  expect(userCommand?.title).toBe("standup [user]");
+  expect(userCommand?.slashCommandInvocation).toBe("/standup");
+});
+
+test("a plugin catalog entry without pluginName still has an unqualified invocation", () => {
+  focusSession("ref_a");
+  useCommandCatalog.setState({
+    commands: [{ name: "review", description: "plugin cmd", source: "plugin" }],
+    loaded: true,
+  });
+
+  const command = filterCommands(buildPaletteContext(), "/review").commands.find((entry) => entry.id === "review");
+  expect(command?.slashCommandInvocation).toBe("/review");
+  expect(command?.slashCommandInvocation).not.toContain("undefined");
+});
+
+test("catalog commands are absent without a focused session", () => {
+  useCommandCatalog.setState({
+    commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
+    loaded: true,
+  });
+
+  expect(commandsInScope(buildPaletteContext()).some((command) => command.id === "review")).toBe(false);
 });
 
 // --- filterCommands (search.js:637-651) ---

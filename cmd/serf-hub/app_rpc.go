@@ -801,39 +801,35 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // the plugin store) instead, which could never see a plugin installed via the
 // marketplace/registry system (living at cache/<marketplace>/<plugin>/<sha>,
 // not a direct child of the plugins root) — so a registry-installed plugin's
-// commands never appeared here even though a spawned session loaded them
-// fine. That was deliberate while P3 (slash-command execution, which owns
-// this method) needed to stay independent of P1 (the marketplace/registry
-// backend); now that the registry is the system of record on the hub side
-// (P5), this reads EnabledPluginDirs like session init does.
-//
-// Loading is fail-soft (plugin.LoadAllFailSoft), the same way session init
-// loads plugins: one broken or mid-edit plugin dir must not blank out the
-// whole command catalog, only its own commands. Skip reasons aren't
-// surfaced here — CommandListResponse has no warning channel — but a skipped
-// dir still shows up in a session's own SESSION_START warnings.
+// commands never appeared here even though a spawned session loaded them.
+// The hub catalog combines enabled plugin commands with serf-wide commands.
+// Serf-wide discovery receives a nil environment because the hub is
+// multi-project: project commands are per-session and must never appear here.
+// Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
+// plugin dir cannot blank out the whole command catalog.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
 	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
-	if len(dirs) == 0 {
-		return appwire.CommandListResponse{}, nil
-	}
 	loaded, _ := plugin.LoadAllFailSoft(dirs)
+	serfwide, _ := plugin.DiscoverSerfWideCommands(nil)
+	merged := plugin.MergeCommands(loaded, serfwide)
 	var commands []appwire.CommandDescriptor
-	for _, lp := range loaded {
-		for _, cmd := range lp.Commands {
-			commands = append(commands, appwire.CommandDescriptor{
-				Name:         cmd.Name,
-				PluginName:   cmd.PluginName,
-				Description:  cmd.Description,
-				ArgumentHint: cmd.ArgumentHint,
-			})
-		}
+	for _, cmd := range merged {
+		commands = append(commands, appwire.CommandDescriptor{
+			Name:         cmd.Name,
+			PluginName:   cmd.PluginName,
+			Description:  cmd.Description,
+			ArgumentHint: cmd.ArgumentHint,
+			Source:       cmd.Source,
+		})
 	}
 	sort.Slice(commands, func(i, j int) bool {
 		if commands[i].Name != commands[j].Name {
 			return commands[i].Name < commands[j].Name
 		}
-		return commands[i].PluginName < commands[j].PluginName
+		if commands[i].PluginName != commands[j].PluginName {
+			return commands[i].PluginName < commands[j].PluginName
+		}
+		return commands[i].Source < commands[j].Source
 	})
 	return appwire.CommandListResponse{Commands: commands}, nil
 }

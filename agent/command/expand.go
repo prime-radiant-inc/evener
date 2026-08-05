@@ -104,6 +104,16 @@ func Expand(ctx context.Context, body string, args string, env execenv.Execution
 	return out.String(), nil
 }
 
+// ExpandArgs renders a serf-wide slash command's body: $ARGUMENTS and
+// $1..$9 substitute as inert text over the whole body, and nothing else
+// happens. !`cmd` spans and @file references are never executed or read —
+// they remain text (substitution still applies inside them, as inert
+// text). This is the serf-wide command posture: auto-discovered templates
+// are data, never code (docs/skills.md).
+func ExpandArgs(body, args string) string {
+	return substituteArguments(body, args)
+}
+
 // atFileBoundaryOK reports whether the "@" at body[start] opens a new @file
 // directive rather than sitting mid-token — e.g. the "@" in an email address
 // like "foo@example.com" must not be treated as a directive. A directive must

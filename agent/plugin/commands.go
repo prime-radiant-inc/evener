@@ -9,10 +9,11 @@ import (
 	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
-// Command represents a slash command defined by a plugin. Invoking it expands
-// Body against the user-supplied argument string (see the agent/command
-// package): $ARGUMENTS, $1..$9, backtick command substitution, and @file
-// inclusion.
+// Command represents a slash command. Plugin commands come from a plugin's
+// commands/ directory; serf-wide commands come from .serf/commands/ project
+// directories or the user-global config dir (see serfwide.go). Invoking a
+// plugin command expands Body with command.Expand (shell execution);
+// serf-wide commands expand inert with command.ExpandArgs.
 type Command struct {
 	Name         string   // command name, derived from the command's .md filename (not frontmatter — see ParseCommand)
 	Description  string   // shown in command catalogs/autocomplete
@@ -20,7 +21,9 @@ type Command struct {
 	Model        string   // requested per-turn model override (parsed; not yet enforced — see design §14)
 	AllowedTools []string // requested per-turn tool restriction, verbatim as declared (parsed; not yet enforced — see design §14)
 	Body         string   // markdown template body
-	PluginName   string   // owning plugin
+	PluginName   string   // owning plugin; empty for serf-wide commands
+	Source       string   // "plugin", "project", or "user"
+	File         string   // absolute path of the defining .md
 }
 
 // ParseCommand parses a markdown file with optional YAML frontmatter into a
@@ -103,6 +106,8 @@ func discoverPluginCommands(pluginDir string, commandsOverride json.RawMessage, 
 		if err != nil {
 			return nil, fmt.Errorf("parsing command file %q: %w", filepath.Base(file), err)
 		}
+		command.Source = "plugin"
+		command.File = file
 		key := pluginName + ":" + command.Name
 		commands[key] = command
 	}

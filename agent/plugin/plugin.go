@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -339,6 +340,22 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 	return plugins, skipped
 }
 
+// MergeCommands flattens plugin instances' commands (namespaced keys) and
+// overlays serf-wide commands (bare keys), returning the unified command
+// map a session or the hub catalog resolves against. Bare keys can never
+// collide with "plugin:name" keys (serf-wide discovery rejects colons), so
+// the overlay cannot shadow a plugin's qualified key; precedence between a
+// bare serf-wide command and a plugin's bare-name fallback is decided by
+// ResolveCommand's exact-match-first rule.
+func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command {
+	out := make(map[string]Command, len(serfwide))
+	for _, inst := range instances {
+		maps.Copy(out, inst.Commands)
+	}
+	maps.Copy(out, serfwide)
+	return out
+}
+
 // resolveComponentDirs returns a list of absolute directory paths to scan for
 // a component type. It always includes <pluginDir>/<defaultName>/ if that
 // directory exists on disk. If override is a string, it is resolved relative to
@@ -375,6 +392,11 @@ func resolveComponentDirs(pluginDir string, defaultName string, override any) []
 func componentMarkdownFiles(paths []string) ([]string, error) {
 	var files []string
 	for _, p := range paths {
+		absolute, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("resolving component path %q: %w", p, err)
+		}
+		p = absolute
 		info, err := pluginStat(p)
 		if err != nil {
 			if os.IsNotExist(err) {

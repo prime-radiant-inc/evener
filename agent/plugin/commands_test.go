@@ -2,10 +2,90 @@ package plugin
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestMergeCommands(t *testing.T) {
+	t.Parallel()
+	instances := []Instance{
+		{Commands: map[string]Command{
+			"p:review": {Name: "review", PluginName: "p", Source: "plugin"},
+		}},
+	}
+	serfwide := map[string]Command{
+		"review": {Name: "review", Source: "user"},
+	}
+	got := MergeCommands(instances, serfwide)
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2: %v", len(got), maps.Keys(got))
+	}
+	if got["review"].Source != "user" || got["p:review"].Source != "plugin" {
+		t.Errorf("got %+v, want bare key = user command, namespaced key = plugin command", got)
+	}
+	// Nil inputs are safe.
+	if merged := MergeCommands(nil, nil); len(merged) != 0 {
+		t.Errorf("MergeCommands(nil, nil) = %v, want empty", merged)
+	}
+}
+
+func TestDiscoverPluginCommands_SetsSourceAndFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(commandsDir, "hello.md")
+	if err := os.WriteFile(file, []byte("body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := discoverPluginCommands(dir, nil, "p")
+	if err != nil {
+		t.Fatalf("discoverPluginCommands: %v", err)
+	}
+	cmd := commands["p:hello"]
+	if cmd.Source != "plugin" {
+		t.Errorf("Source = %q, want %q", cmd.Source, "plugin")
+	}
+	if cmd.File != file {
+		t.Errorf("File = %q, want %q", cmd.File, file)
+	}
+}
+
+func TestDiscoverPluginCommands_RelativePluginDirSetsAbsoluteFile(t *testing.T) {
+	t.Parallel()
+	dir, err := os.MkdirTemp(".", "commands-relative-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	commandsDir := filepath.Join(dir, "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(commandsDir, "hello.md")
+	if err := os.WriteFile(file, []byte("body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := discoverPluginCommands(dir, nil, "p")
+	if err != nil {
+		t.Fatalf("discoverPluginCommands: %v", err)
+	}
+	cmd := commands["p:hello"]
+	if !filepath.IsAbs(cmd.File) {
+		t.Errorf("File = %q, want absolute path", cmd.File)
+	}
+	absFile, err := filepath.Abs(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.File != absFile {
+		t.Errorf("File = %q, want %q", cmd.File, absFile)
+	}
+}
 
 func TestParseCommand_ValidFull(t *testing.T) {
 	data := []byte(`---

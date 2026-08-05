@@ -1,7 +1,7 @@
 # Serf-Wide Slash Commands — Design
 
 Date: 2026-08-04 (revised after adversarial review, same day)
-Status: Approved design, pre-plan
+Status: Implemented
 
 ## Summary
 

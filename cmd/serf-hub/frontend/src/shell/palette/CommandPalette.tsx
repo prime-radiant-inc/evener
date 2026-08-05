@@ -8,6 +8,9 @@
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
+import type { CommandDescriptor } from "../../protocol/types.gen";
+import { useCommandCatalog } from "../../stores/commandCatalog";
+import { threadsStore } from "../../stores/threads";
 import { type CadenceState, Chip, Dialog, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
@@ -16,6 +19,7 @@ import styles from "./commandpalette.module.css";
 import {
   type Command,
   type CommandArgsEnumItem,
+  commandsInScope,
   filterCommands,
   type PaletteRunContext,
   type PaletteUi,
@@ -165,6 +169,7 @@ export function CommandPalette() {
 
 function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const toasts = useToasts();
+  const catalogCommands = useCommandCatalog((state) => state.commands);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState(initialQuery);
@@ -283,8 +288,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // deps change - never on a bare activeIndex change, so arrow-key navigation
   // doesn't reset the selection (see the reset effect below).
   const view = useMemo<ResultsView>(
-    () => buildView({ mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp],
+    () => buildView({ mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands }),
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -349,6 +354,13 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       setError(`/${command.id} is ${command.unavailableReason}`);
       return;
     }
+    if (command.slashCommandInvocation && ctx.sessionRef) {
+      const args = query.replace(/^\//, "").trim().slice(command.id.length).trim();
+      const text = args ? `${command.slashCommandInvocation} ${args}` : command.slashCommandInvocation;
+      void threadsStore.getState().send(ctx.sessionRef, text);
+      closePalette();
+      return;
+    }
     if (command.args) enterArgsMode(command);
     else runArgless(command);
   }
@@ -407,8 +419,22 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       return;
     }
     if (mode === "command-filter") {
-      if (item?.kind !== "command") return;
-      activateCommand(item.command);
+      // An explicitly arrow-navigated selection wins.
+      if (activeIndex !== 0 && item?.kind === "command") {
+        activateCommand(item.command);
+        return;
+      }
+      const firstToken = query.replace(/^\//, "").trim().split(/\s+/)[0] ?? "";
+      const exact = commandsInScope(ctx, catalogCommands).find((command) => command.id === firstToken);
+      if (exact) {
+        activateCommand(exact);
+        return;
+      }
+      // Slash fallthrough: forward the raw text to the session (TUI parity).
+      if (firstToken !== "" && ctx.sessionRef) {
+        void threadsStore.getState().send(ctx.sessionRef, query);
+        closePalette();
+      }
       return;
     }
     // command-args
@@ -537,8 +563,9 @@ function buildView(args: {
   selectedCommand: Command | null;
   enumItems: CommandArgsEnumItem[];
   showingHelp: boolean;
+  catalogCommands: CommandDescriptor[];
 }): ResultsView {
-  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp } = args;
+  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands } = args;
   const entries: Entry[] = [];
   const items: PaletteItem[] = [];
   const push = (item: PaletteItem) => {
@@ -572,7 +599,7 @@ function buildView(args: {
   }
 
   if (mode === "command-filter") {
-    const { recent, commands } = filterCommands(ctx, query);
+    const { recent, commands } = filterCommands(ctx, query, catalogCommands);
     if (recent.length) {
       entries.push({ type: "header", label: "Recent" });
       for (const command of recent) push({ kind: "command", command });

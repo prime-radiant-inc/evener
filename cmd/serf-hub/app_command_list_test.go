@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -75,6 +76,62 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	}
 	if len(resp.Commands) != 0 {
 		t.Fatalf("Commands = %v, want empty", resp.Commands)
+	}
+}
+
+func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	commandsDir := filepath.Join(xdg, "serf", "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(commandsDir, "standup.md"), []byte("standup body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := hubCommandList(hubcore.WebConfig{PluginRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("hubCommandList: %v", err)
+	}
+	if len(resp.Commands) != 1 {
+		t.Fatalf("got %d commands, want 1: %+v", len(resp.Commands), resp.Commands)
+	}
+	if resp.Commands[0].Name != "standup" || resp.Commands[0].Source != "user" {
+		t.Errorf("got %+v, want Name=standup Source=user", resp.Commands[0])
+	}
+}
+
+func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	commandsDir := filepath.Join(xdg, "serf", "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A user-global "greet" shadows the plugin's "greet" (writeCommandListTestPlugin
+	// always writes greet.md).
+	if err := os.WriteFile(filepath.Join(commandsDir, "greet.md"), []byte("user body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pluginDir := t.TempDir()
+	writeCommandListTestPlugin(t, pluginDir, "greeter")
+	resp, err := hubCommandList(hubcore.WebConfig{PluginRoot: t.TempDir(), PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("hubCommandList: %v", err)
+	}
+	if len(resp.Commands) != 2 {
+		t.Fatalf("got %d commands, want 2 (shadowed plugin + user shadow): %+v", len(resp.Commands), resp.Commands)
+	}
+	var sources []string
+	for _, c := range resp.Commands {
+		if c.Source == "project" {
+			t.Errorf("hub catalog contains a project-sourced entry %+v; the hub passes a nil env and must never see project commands", c)
+		}
+		sources = append(sources, c.Source)
+	}
+	sort.Strings(sources)
+	if sources[0] != "plugin" || sources[1] != "user" {
+		t.Errorf("sources = %v, want [plugin user]", sources)
 	}
 }
 
