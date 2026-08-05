@@ -1841,14 +1841,19 @@ type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
 }
 
-// CommandDescriptor describes one plugin-provided slash command for catalog
-// display / autocomplete (serf/command/list). Name is unqualified; PluginName
-// disambiguates when more than one plugin defines the same command name.
+// CommandDescriptor describes one slash command — plugin-provided or
+// serf-wide — for catalog/autocomplete display. Name is unqualified;
+// PluginName disambiguates when more than one plugin defines the same command
+// name.
 type CommandDescriptor struct {
 	Name         string `json:"name"`
-	PluginName   string `json:"pluginName"`
+	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
+	// Source is "plugin" or "user"; "project" is reserved for a future
+	// project-scoped catalog (project commands are cwd-dependent and never
+	// appear in the hub-wide catalog).
+	Source string `json:"source,omitempty"`
 }
 
 // CommandListResponse is the result of serf/command/list.
