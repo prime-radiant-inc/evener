@@ -59,6 +59,7 @@ const CLASS = {
   actions: requireClass(styles.actions, "Rail.module.css", "actions"),
   chevron: requireClass(styles.chevron, "Rail.module.css", "chevron"),
   chevronButton: requireClass(styles.chevronButton, "Rail.module.css", "chevronButton"),
+  inactiveFold: requireClass(styles.inactiveFold, "Rail.module.css", "inactiveFold"),
   signal: requireClass(styles.signal, "Rail.module.css", "signal"),
   textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
@@ -638,15 +639,21 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 }
 
 // The "Inactive subagents (N)" disclosure (parity-m3-sidebar-tree.md §3).
-// Built from the same chevron gutter every other row uses, so its title sits
-// where a childless row's title sits - and no signal slot at all, matching
-// Signal's own render-only-when-dotted contract (a group of finished
-// sessions has no state to report). No actions menu either: it stands for
-// rows rather than being one, and the rows it hides carry their own.
+// No signal slot at all, matching Signal's own render-only-when-dotted
+// contract (a group of finished sessions has no state to report). No actions
+// menu either: it stands for rows rather than being one, and the rows it
+// hides carry their own.
+//
+// The row nests one group level under the session it belongs to, but its
+// chevron is the PARENT's affordance, so .inactiveFold pads the row's left
+// edge until the chevron gutter starts exactly where the parent session's
+// LABEL starts (Rail.module.css has the arithmetic, incl. the signal-dot
+// case) - the fold reads as hanging off the parent's title rather than as a
+// sibling row that happens to have a toggle.
 function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
   const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
   return (
-    <span className={CLASS.row}>
+    <span className={`${CLASS.row} ${CLASS.inactiveFold}`} data-testid="rail-row-inactive-fold">
       <ChevronGutter info={info} />
       {/* Same mouse-only shortcut for the toggle the chevron already offers,
           and the same a11y reasoning as SessionRow's own label: this text is

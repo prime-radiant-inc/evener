@@ -273,6 +273,37 @@ describe("inactive-subagent fold row", () => {
     await userEvent.setup().click(screen.getByText("Inactive subagents (2)"));
     expect(toggle).toHaveBeenCalled();
   });
+
+  // The chevron is the PARENT's affordance, so the row carries the class whose
+  // padding-left (pinned by the two CSS-source tests below) left-justifies the
+  // chevron gutter at the parent session's label x, rather than leaving it one
+  // raw nesting level in from the parent's own row edge.
+  test("carries the alignment class on its root", () => {
+    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-inactive-fold").classList.contains(railStyles.inactiveFold)).toBe(true);
+  });
+
+  // Quiet parent (no signal dot): parent label x = chevron (--space-4) + gap
+  // (--space-2); the fold already starts one group step (1px border + --space-2
+  // padding) in from the parent's content edge, so the row owes the difference.
+  test("the fold chevron aligns to a quiet parent's label x", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/\.inactiveFold\s*\{\s*padding-left:\s*calc\(var\(--space-4\)\s*-\s*1px\);\s*\}/);
+  });
+
+  // Dotted parent: the label moves one signal column (6px dot + --space-2 gap)
+  // right, so the override - keyed off the parent treeitem's own .signal, via
+  // the role="group" sibling widgets/tree renders - adds exactly that column.
+  // The child combinators matter: a deeper fold must take its OWN parent's
+  // alignment, never an ancestor's.
+  test("the fold chevron aligns to a dotted parent's label x", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(
+      /\[role="treeitem"\]:has\(>\s*\.row\s*>\s*\.signal\)\s*\+\s*\[role="group"\]\s*>\s*\[role="treeitem"\]\s*>\s*\.inactiveFold\s*\{\s*padding-left:\s*calc\(var\(--space-4\)\s*\+\s*var\(--space-2\)\s*\+\s*6px\s*-\s*1px\);\s*\}/,
+    );
+  });
 });
 
 describe("session row", () => {

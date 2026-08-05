@@ -448,6 +448,37 @@
   cursor: default;
 }
 
+/* The "Inactive subagents (N)" fold (RailRow's InactiveFoldRow) nests one
+ * group level under its parent session, but its chevron is the PARENT's
+ * affordance: it must be left-justified at the same x as the parent session's
+ * label, not at the ragged position one raw nesting level would give it.
+ *
+ * The arithmetic, from the parent row's content edge:
+ *   parent label x  = .chevron (--space-4) + flex gap (--space-2)
+ *                     [+ .signal (6px) + gap (--space-2) when the parent is dotted]
+ *   fold row start  = parent content edge + one group step
+ *                     (border-left 1px + padding-left --space-2, tree.module.css's
+ *                     .group and the .section [role="group"] hairline above)
+ * so the row owes its chevron gutter the difference as padding-left (border-box
+ * keeps width: 100% from overflowing):
+ *   quiet parent:   --space-4 + --space-2 - 1px - --space-2 = --space-4 - 1px
+ *   dotted parent:  that + the signal column (6px + --space-2 gap)
+ *
+ * Which case applies is a fact about the PARENT row, so the override keys off
+ * the parent treeitem itself: widgets/tree renders a branch's role="group" as
+ * its treeitem's next sibling (same reach-in the .section [role="group"]
+ * hairline above already makes), and the fold's own treeitem is that group's
+ * direct child - the child combinators keep a deeper fold (a dotted subagent's
+ * own inactive fold) from inheriting an ancestor's alignment instead of its
+ * own parent's. */
+.inactiveFold {
+  padding-left: calc(var(--space-4) - 1px);
+}
+
+.section [role="treeitem"]:has(> .row > .signal) + [role="group"] > [role="treeitem"] > .inactiveFold {
+  padding-left: calc(var(--space-4) + var(--space-2) + 6px - 1px);
+}
+
 /* The row's text column: the title, and on a signal row a gloss line under it.
  * A column rather than two siblings directly in `.row` so the row's own
  * `align-items: center` centers whatever it holds vertically instead of
