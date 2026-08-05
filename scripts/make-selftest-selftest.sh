@@ -11,7 +11,11 @@ make_args=(-f "$makefile" -C "$work" --no-print-directory "SELFTEST_SCRIPTS=prob
 checks=0
 fails=0
 make_pid=""
+make_status=""
 unrelated_pid=""
+reaped_fifo=""
+reap_release_fifo=""
+fixture_reapers_before_make_kill=0
 
 kill_if_alive() {
 	local pid="${1:-}"
@@ -40,7 +44,11 @@ new_case() {
 	case_state="$case_dir/state"
 	case_tmp="$case_dir/tmp"
 	case_bin="$case_dir/bin"
+	reaped_fifo=""
+	reap_release_fifo=""
+	fixture_reapers_before_make_kill=0
 	mkdir -p "$case_state" "$case_tmp" "$case_bin" "$work/scripts"
+	mkfifo "$case_state/ready" "$case_state/stopped" "$case_state/reaped" "$case_state/reap-release"
 	cat >"$case_bin/mktemp" <<'STUB'
 #!/usr/bin/env bash
 set -u
@@ -58,10 +66,43 @@ STUB
 set -u
 name="${0##*/}"
 name="${name%-selftest.sh}"
-printf '%s\n' "$$" >"$PROBE_STATE/$name.pid"
+worker_pid="$$"
+if [ "${PROBE_MODE:-pass}" = hold ] && [ -n "${PROBE_REAP_FIFO:-}" ]; then
+	# Keep this wrapper alive until the harness releases the observed reaping event.
+	trap '' HUP INT TERM
+	if [ "${PROBE_IGNORE_TERM:-}" = "$name" ]; then
+		( trap '' HUP INT TERM; exec sleep 30 ) &
+	else
+		sleep 30 &
+	fi
+	worker_pid="$!"
+fi
+printf '%s\n' "$worker_pid" >"$PROBE_STATE/$name.pid"
 : >"$PROBE_STATE/$name.started"
+if [ -n "${PROBE_READY_FIFO:-}" ]; then
+	# A terminal event lets the reader fail even though the FIFO stays open read/write.
+	trap 'printf "worker-exited:%s\n" "$name" >"$PROBE_READY_FIFO"' EXIT
+	case " ${PROBE_SKIP_READY:-} " in
+		*" $name "*) ;;
+		*) printf '%s\n' "$name" >"$PROBE_READY_FIFO" ;;
+	esac
+fi
 case "${PROBE_MODE:-pass}" in
-	hold) exec sleep 30 ;;
+	hold)
+		if [ -n "${PROBE_REAP_FIFO:-}" ]; then
+			wait "$worker_pid" 2>/dev/null || :
+			IFS= read -r <"$PROBE_REAP_RELEASE_FIFO" || exit 1
+			trap - EXIT
+			if [ -e "$PROBE_MAKE_KILLED_MARKER" ]; then phase=after; else phase=before; fi
+			printf 'worker-reaped-%s:%s\n' "$phase" "$name" >"$PROBE_REAP_FIFO"
+			exit 0
+		fi
+		if [ "${PROBE_IGNORE_TERM:-}" = "$name" ]; then
+			trap '' HUP INT TERM
+			exec sleep 30
+		fi
+		exec sleep 30
+		;;
 	fail)
 		if [ "$name" = "${PROBE_FAIL:-}" ]; then
 			printf '%s failed\n' "$name" >&2
@@ -77,20 +118,121 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
-wait_for_file() {
-	local path="$1" attempts=1000
-	# The full selftest wave starts this fixture alongside many other workers.
-	# Give both probe processes time to start before testing interruption cleanup.
-	while [ "$attempts" -gt 0 ]; do
-		[ -f "$path" ] && return 0
-		sleep 0.01
-		attempts=$((attempts - 1))
+run_make_with_readiness_events() {
+	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}"
+	(
+		# The wrapper converts Make exit into a terminal FIFO event and forwards interrupts.
+		export PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" \
+			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
+		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
+			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed"
+		child_pid=""
+		forward_interrupt() {
+			kill -TERM "$child_pid" 2>/dev/null || :
+			if wait "$child_pid" 2>/dev/null; then rc=0; else rc=$?; fi
+			printf 'make-stopped:%s\n' "$rc" >"$PROBE_STOP_FIFO"
+			exit 143
+		}
+		trap forward_interrupt HUP INT TERM
+		"$real_make" "${make_args[@]}" >"$output" 2>&1 &
+		child_pid="$!"
+		printf '%s\n' "$child_pid" >"$PROBE_STATE/make-child.pid"
+		if wait "$child_pid"; then rc=0; else rc=$?; fi
+		printf 'make-exited:%s\n' "$rc" >"$PROBE_READY_FIFO"
+		exit "$rc"
+	) &
+	make_pid="$!"
+}
+
+stop_make_with_readiness_events() {
+	local pid="$make_pid" child_pid="" stop_event=""
+	[ -n "$pid" ] || return 0
+	kill -TERM "$pid" 2>/dev/null || :
+	if IFS= read -r -t 1 -u 8 stop_event; then
+		if wait "$pid"; then make_status=0; else make_status=$?; fi
+	else
+		# Keep Make alive while fixture wrappers reap their recorded workers.
+		kill_fixture_workers
+		wait_for_fixture_reapers || :
+		if IFS= read -r -t 1 -u 8 stop_event; then
+			if wait "$pid"; then make_status=0; else make_status=$?; fi
+		else
+			child_pid="$(cat "$case_state/make-child.pid" 2>/dev/null || :)"
+			: >"$case_state/make-child-killed"
+			[ -n "$child_pid" ] && kill -KILL "$child_pid" 2>/dev/null || :
+			if IFS= read -r -t 1 -u 8 stop_event; then
+				if wait "$pid"; then make_status=0; else make_status=$?; fi
+			else
+				kill -KILL "$pid" 2>/dev/null || :
+				wait "$pid" 2>/dev/null || :
+				make_status=137
+			fi
+		fi
+	fi
+	make_pid=""
+}
+
+kill_fixture_workers() {
+	local name pid
+	for name in probe-one probe-two; do
+		pid="$(cat "$case_state/$name.pid" 2>/dev/null || :)"
+		[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || :
 	done
-	return 1
+}
+
+release_fixture_reapers() {
+	[ -n "$reap_release_fifo" ] || return 0
+	printf 'release\nrelease\n' >&6
+}
+
+wait_for_fixture_reapers() {
+	local reaped="" probe_one_reaped=0 probe_two_reaped=0
+	[ -n "$reaped_fifo" ] || return 0
+	release_fixture_reapers
+	while [ "$((probe_one_reaped + probe_two_reaped))" -lt 2 ]; do
+		if ! IFS= read -r -t 1 -u 7 reaped; then
+			return 1
+		fi
+		case "$reaped" in
+			worker-reaped-before:probe-one)
+				[ "$probe_one_reaped" -eq 0 ] || return 1
+				probe_one_reaped=1
+				;;
+			worker-reaped-before:probe-two)
+				[ "$probe_two_reaped" -eq 0 ] || return 1
+				probe_two_reaped=1
+				;;
+			*) return 1 ;;
+		esac
+	done
+	fixture_reapers_before_make_kill=1
+}
+
+wait_for_ready_workers() {
+	local ready="" probe_one_ready=0 probe_two_ready=0
+	while [ "$((probe_one_ready + probe_two_ready))" -lt 2 ]; do
+		# Bound a hung worker without polling; readiness and terminal events still drive progress.
+		if ! IFS= read -r -t 5 -u 9 ready; then
+			stop_make_with_readiness_events
+			return 1
+		fi
+		case "$ready" in
+			probe-one)
+				[ "$probe_one_ready" -eq 0 ] || { stop_make_with_readiness_events; return 1; }
+				probe_one_ready=1
+				;;
+			probe-two)
+				[ "$probe_two_ready" -eq 0 ] || { stop_make_with_readiness_events; return 1; }
+				probe_two_ready=1
+				;;
+			worker-exited:*|make-exited:*) stop_make_with_readiness_events; return 1 ;;
+			*) stop_make_with_readiness_events; return 1 ;;
+		esac
+	done
 }
 
 new_case
@@ -117,21 +259,97 @@ failure_logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
 [ -n "$failure_logdir" ] && [ ! -e "$failure_logdir" ] && ok "a failed wave removes its temporary logs" || bad "a failed wave leaves its temporary logs"
 
 new_case
-interrupt_out="$case_dir/interrupted.out"
-PROBE_STATE="$case_state" PROBE_MODE=hold TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
-	"$real_make" "${make_args[@]}" >"$interrupt_out" 2>&1 &
-make_pid="$!"
-if wait_for_file "$case_state/probe-one.started" && wait_for_file "$case_state/probe-two.started"; then
-	ok "the interruption fixture starts both workers"
+missing_ready_out="$case_dir/missing-ready.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+run_make_with_readiness_events pass "$missing_ready_out" probe-two
+if wait_for_ready_workers; then
+	bad "the readiness fixture rejects a worker that exits before readiness"
 else
-	bad "the interruption fixture did not start both workers"
+	ok "the readiness fixture rejects a worker that exits before readiness"
+fi
+exec 9>&-
+exec 8>&-
+assert_eq "$make_pid" "" "the missing-readiness wave reaps its Make wrapper"
+
+new_case
+hung_ready_out="$case_dir/hung-ready.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+run_make_with_readiness_events hold "$hung_ready_out" probe-two
+if wait_for_ready_workers; then
+	bad "the readiness fixture rejects a hung worker before readiness"
+else
+	ok "the readiness fixture rejects a hung worker before readiness"
+fi
+exec 9>&-
+exec 8>&-
+assert_eq "$make_pid" "" "the hung-readiness wave reaps its Make wrapper"
+
+new_case
+term_ignore_out="$case_dir/term-ignore.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+reaped_fifo="$case_state/reaped"
+reap_release_fifo="$case_state/reap-release"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+exec 7<>"$reaped_fifo"
+exec 6<>"$reap_release_fifo"
+run_make_with_readiness_events hold "$term_ignore_out" probe-two probe-two
+if wait_for_ready_workers; then
+	bad "the readiness fixture rejects a TERM-ignoring worker before readiness"
+else
+	ok "the readiness fixture rejects a TERM-ignoring worker before readiness"
+fi
+exec 9>&-
+exec 8>&-
+if [ "$fixture_reapers_before_make_kill" -eq 1 ]; then
+	ok "the TERM-ignoring wave reaps both recorded workers before Make is killed"
+else
+	bad "the TERM-ignoring wave reaps both recorded workers before Make is killed"
+fi
+release_fixture_reapers
+exec 7>&-
+exec 6>&-
+assert_eq "$make_pid" "" "the TERM-ignoring wave reaps its Make wrapper"
+for name in probe-one probe-two; do
+	pid="$(cat "$case_state/$name.pid" 2>/dev/null || :)"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		bad "a TERM-ignoring wave leaves $name alive"
+		kill -KILL "$pid" 2>/dev/null || :
+	else
+		ok "a TERM-ignoring wave reaps $name"
+	fi
+done
+
+new_case
+interrupt_out="$case_dir/interrupted.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+run_make_with_readiness_events hold "$interrupt_out"
+if wait_for_ready_workers; then
+	ok "the interruption fixture receives both worker readiness events"
+else
+	bad "the interruption fixture receives both worker readiness events"
+fi
+exec 9>&-
+if [ -f "$case_state/probe-one.started" ] && [ -f "$case_state/probe-two.started" ]; then
+	ok "the interruption fixture records both workers as started"
+else
+	bad "the interruption fixture did not record both workers as started"
 fi
 sleep 30 &
 unrelated_pid="$!"
-kill -TERM "$make_pid" 2>/dev/null || :
-if wait "$make_pid"; then rc=0; else rc=$?; fi
-make_pid=""
-[ "$rc" -ne 0 ] && ok "an interrupted wave exits nonzero" || bad "an interrupted wave exits zero"
+stop_make_with_readiness_events
+exec 8>&-
+[ "$make_status" -ne 0 ] && ok "an interrupted wave exits nonzero" || bad "an interrupted wave exits zero"
 interrupted_logdir="$(cat "$case_state/logdir" 2>/dev/null || :)"
 [ -n "$interrupted_logdir" ] && [ ! -e "$interrupted_logdir" ] && ok "an interrupted wave removes its temporary logs" || bad "an interrupted wave leaves its temporary logs"
 for name in probe-one probe-two; do
