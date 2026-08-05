@@ -315,18 +315,21 @@ else
 fi
 chmod 755 "$locked_vol"
 
-# --- scenario 12: --check warns (but does not fail) when GOCACHE is reachable
-# but back on the same volume as the checkout ---
+# --- scenario 12: --check stays silent when GOCACHE is reachable and on the
+# same volume as the checkout ---
+# Same-volume is the NORMAL layout now: the machine's external cache volume is
+# gone, so the cache lives on the boot volume with everything else and a drift
+# warning would fire on every test run forever.
 # SERF_DISK_MIN_FREE_GB=0 pins the floor: this scenario asserts exit 0, and
 # without the pin it asserts the machine happens to have 5G free as well. It
 # does not always — this failed for real on a night the repo volume was down to
 # 2G, which is exactly when the rest of this script matters most.
 samevol_gocache="$work/samevol-gocache"
 if GOCACHE="$samevol_gocache" SERF_DISK_MIN_FREE_GB=0 run_disk_reclaim --check >"$work/gocache-samevol.out" 2>&1; then
-	if grep -q "setup-gocache.sh" "$work/gocache-samevol.out"; then
-		ok "--check warns (exit 0) when GOCACHE shares the checkout's volume"
+	if [ -s "$work/gocache-samevol.out" ]; then
+		bad "--check with same-volume GOCACHE exited 0 but was not silent: $(cat "$work/gocache-samevol.out")"
 	else
-		bad "--check with same-volume GOCACHE exited 0 but did not warn: $(cat "$work/gocache-samevol.out")"
+		ok "--check is silent (exit 0) when GOCACHE shares the checkout's volume"
 	fi
 else
 	bad "--check with a reachable (same-volume) GOCACHE exited non-zero"

@@ -14,23 +14,22 @@
 # NOT inherit it — there is nothing in the repo to inherit it from. That is
 # why this is a script to run once per machine, not a repo file to commit.
 # scripts/disk-reclaim.sh --check (wired into every test run via
-# run-module-tests.sh) warns on every subsequent run if GOCACHE has drifted
-# back onto the same volume as the repo, so a machine that skips this step,
-# or a GOCACHE some other tool resets, does not fail silently forever.
+# run-module-tests.sh) fails loud if GOCACHE points at a path that cannot be
+# reached — the signature of the volume it lived on being unmounted or gone.
 #
 # Usage:
-#   scripts/setup-gocache.sh                       # use the default target below
-#   scripts/setup-gocache.sh /path/on/big/volume    # use an explicit target
+#   scripts/setup-gocache.sh /path/on/big/volume
 #
-# The default target is this machine's known big volume. Override it on a
-# machine with a different layout by passing a path explicitly.
+# There is no default target: a big volume is a per-machine fact, and a
+# baked-in path outlives the volume it names — this script once defaulted to
+# an external volume that was later retired, and every no-argument run then
+# chased the dead path. Name the target explicitly.
 set -uo pipefail
 
-default_target="/Volumes/Local Archives/serf-build-cache"
-target="${1:-$default_target}"
+target="${1:-}"
 
 if [ -z "$target" ]; then
-	echo "setup-gocache: no target path given and no default configured" >&2
+	echo "setup-gocache: no target path given. Usage: scripts/setup-gocache.sh /path/on/big/volume" >&2
 	exit 2
 fi
 

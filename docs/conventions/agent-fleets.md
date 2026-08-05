@@ -84,20 +84,20 @@ legitimate concurrent actor owns, or it is a coin-flip under fleet load.
 biggest package adds roughly 1G from warm. With the cache on the boot
 volume, a fleet filled the disk to zero **twice** — every agent died at
 once, including tool calls, which write an output file before executing,
-so nothing could run at all. Move `GOCACHE` to a volume with room, once
-per machine:
+so nothing could run at all. On a machine that HAS a second volume with
+room, move `GOCACHE` there, once per machine:
 
 ```
-scripts/setup-gocache.sh                    # default target for this machine
 scripts/setup-gocache.sh /path/on/a/big/volume
 ```
 
-`go env -w` writes to a per-user file outside this git checkout, so a
-fresh clone or a new machine does **not** inherit it — this is a step to
-run, not a setting to commit. `scripts/disk-reclaim.sh --check` (wired
-into every test run via `run-module-tests.sh`) warns if `GOCACHE` has
-drifted back onto the checkout's own volume, so skipping this step
-doesn't fail silently forever.
+There is no default target: a big volume is a per-machine fact, and the
+script once defaulted to an external volume that was later retired, after
+which every no-argument run chased the dead path. On a machine with only
+its boot volume, leave `GOCACHE` at Go's default and watch the disk floor
+instead. `go env -w` writes to a per-user file outside this git checkout,
+so a fresh clone or a new machine does **not** inherit it — this is a
+step to run, not a setting to commit.
 
 The external volume itself can be unmounted. That must fail loudly, not
 mysteriously: `scripts/disk-reclaim.sh --check` probes `GOCACHE` and

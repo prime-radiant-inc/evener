@@ -472,13 +472,13 @@ from the state it guards.
 ## A Live Run Uses the Machine's Build Cache
 
 None of the live-test commands below carries a `GOCACHE=` prefix, and adding
-one is a regression. A per-command cache under `/tmp` lands on the same
-volume as the checkout — the volume `scripts/setup-gocache.sh` exists to move
-the build cache OFF, which has filled to 100% twice mid-fleet-run (kata
-98x9); one stray `/tmp/serf-gocache` grew from 1.3G to 2.9G in an hour. There
+one is a regression. A per-command cache under `/tmp` duplicates the
+machine's warm cache on the checkout's volume, which has filled to 100%
+twice mid-fleet-run (kata 98x9); one stray `/tmp/serf-gocache` grew from
+1.3G to 2.9G in an hour. There
 is nothing to isolate, either: the build cache is content-addressed, so a
 live run and the default suite cannot corrupt each other's entries. And when
-the configured cache volume stalls, `scripts/disk-reclaim.sh --check` — which
+the cache's volume stalls, `scripts/disk-reclaim.sh --check` — which
 `run-module-tests.sh` runs before every test run — names the stall instead of
 letting the run hang (kata r07s).
 

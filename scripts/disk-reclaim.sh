@@ -202,13 +202,12 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	# has to be a single fast syscall, not a du of a 10G+ build cache or a
 	# merge-base walk over twenty-odd worktrees.
 
-	# GOCACHE reachability (kata 98x9, reopened): the build cache now lives on
-	# a second, external volume by design (scripts/setup-gocache.sh) precisely
-	# BECAUSE it was the fastest-growing consumer on this one — one `go test
-	# -c` of the biggest package alone grows it ~1G from warm. That moves the
-	# risk, it does not remove it: an external volume can be unmounted, and a
-	# GOCACHE pointing at a path that no longer exists must fail loudly, not
-	# mysteriously. `go build` itself already does fail on this — confirmed by
+	# GOCACHE reachability (kata 98x9, reopened): GOCACHE can be pointed off
+	# this volume (scripts/setup-gocache.sh) because the build cache is the
+	# fastest-growing consumer on it — one `go test -c` of the biggest package
+	# alone grows it ~1G from warm. A relocated cache carries its own risk:
+	# an external volume can be unmounted, and a GOCACHE pointing at a path
+	# that no longer exists must fail loudly, not mysteriously. `go build` itself already does fail on this — confirmed by
 	# actually unmounting-equivalent testing, not reasoned about — with
 	# `mkdir /Volumes/X: permission denied`, but that message names neither
 	# GOCACHE nor "unmounted", and would surface once per module mid-wave
@@ -258,42 +257,38 @@ if [ "$CHECK_ONLY" = 1 ]; then
 				MSG
 				exit 1
 			fi
-			# Drift warning, not a failure: GOCACHE reachable but back on the same
-			# volume as this checkout defeats the point of moving it off in the
-			# first place (kata 98x9) — warn so a machine that never ran
-			# setup-gocache.sh, or had it reset by a Go toolchain reinstall, does
-			# not silently regress to the original failure mode.
+			# Same-volume detection feeds the --cache lever in the floor message
+			# below: emptying the cache only helps this volume's floor if the
+			# cache is actually on it. Detection only — no drift warning. This
+			# machine's external cache volume is gone, so GOCACHE on the
+			# checkout's volume is the normal layout, and a warning for it
+			# would fire on every test run forever.
 			#
 			# Bounded like the probe above: this is a SECOND touch of the same
 			# path, and a volume that answered the probe can stall before it.
 			# An unanswered df leaves gocache_dev empty, which reads as "not the
-			# same volume" — the quiet direction, and the right one for a drift
-			# warning when the probe has already passed.
+			# same volume" — the quiet direction, and the right one when the
+			# probe has already passed.
 			gocache_df=$(gocache_probe "$gocache_probe_timeout" df -P "$gocache")
 			gocache_dev=$(awk 'NR==2 {print $1}' <<<"$gocache_df")
 			repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
-			if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
-				echo "disk-reclaim: warning: GOCACHE ($gocache) is on the same volume as this checkout — kata 98x9. Run scripts/setup-gocache.sh to move it to a bigger volume." >&2
-			fi
 		fi
 	fi
 
-	# The floor stays at 5 even now that GOCACHE has moved off this volume by
-	# default (see scripts/setup-gocache.sh): the fastest-growing single
-	# consumer left, but repo_root still sits at ~11G free of 228G (95% used)
-	# from worktree checkouts, node_modules, and — per kata smw0 — ~1.6G of
-	# orphaned pre-rename checkouts this script cannot even see. That is
-	# slower growth than the old ~1G-per-build-cache-touch, not zero growth,
-	# and 11G is only ~2x today's floor. Lowering it would shorten the
-	# warning window for exactly the kind of slow creep that caused the
-	# SECOND occurrence of this kata. Re-measure before changing it.
+	# The floor stays at 5: beyond the build cache, repo_root has sat as low
+	# as ~11G free of 228G (95% used) from worktree checkouts, node_modules,
+	# and — per kata smw0 — ~1.6G of orphaned pre-rename checkouts this
+	# script cannot even see. 11G is only ~2x today's floor; lowering it
+	# would shorten the warning window for exactly the kind of slow creep
+	# that caused the SECOND occurrence of this kata. Re-measure before
+	# changing it.
 	min_gb=${SERF_DISK_MIN_FREE_GB:-5}
 	avail_kb=$(df -k "$repo_root" | awk 'NR==2 {print $4}')
 	min_kb=$((min_gb * 1024 * 1024))
 	if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
 		avail_gb=$((avail_kb / 1024 / 1024))
 		# --cache only helps THIS volume's floor if GOCACHE is actually on it;
-		# once moved off (the default now), emptying it does nothing here. The
+		# when it lives on another volume, emptying it does nothing here. The
 		# same is true of --all, which is only "--cache and --worktrees" — an
 		# unconditional "--all # both" pointed at a lever the line above it had
 		# just deliberately declined to name (kata td3g).
