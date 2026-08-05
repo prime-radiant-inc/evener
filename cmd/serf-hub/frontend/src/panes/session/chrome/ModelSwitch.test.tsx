@@ -171,9 +171,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   await user.clear(combobox);
   await user.keyboard("gpt-5.5");
   await user.click(await screen.findByRole("option", { name: /openai\/gpt-5\.5/i }));
-  await waitFor(() =>
-    expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }),
-  );
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 
 // The capability is the ONLY gate. Whether a turn is in flight is not a fact
