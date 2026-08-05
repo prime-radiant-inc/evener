@@ -222,6 +222,16 @@ test("the back affordance is shown once a non-welcome pane is focused", async ()
   expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
 });
 
+test("session panel panes suppress generic mobile back while retaining their pane action", async () => {
+  await import("../../panes/sessionPanels");
+  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_panel" });
+  render(<StackHost />);
+
+  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  expect(screen.getByRole("button", { name: /back to ref_panel/i })).toBeTruthy();
+});
+
 test("back returns to the pane that was focused before the current one", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<StackHost />);

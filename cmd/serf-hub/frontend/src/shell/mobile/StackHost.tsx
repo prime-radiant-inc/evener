@@ -291,7 +291,8 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // meaningful to go "back" to from it, regardless of what this
   // component's own backStackRef happens to hold, so it gets no back
   // affordance at all rather than one that would just loop back to itself.
-  const showBack = focusedPane !== null && focusedPane.type !== "welcome";
+  const panelPaneTypes = new Set(["sessionTasks", "sessionActivity", "sessionDetails"]);
+  const showBack = focusedPane !== null && focusedPane.type !== "welcome" && !panelPaneTypes.has(focusedPane.type);
 
   return (
     <div className={styles.host}>

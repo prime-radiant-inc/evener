@@ -9,7 +9,7 @@
 // already IS the parent session ref, just under a different field name) -
 // so this lives as one shared component instead of a second copy of the
 // same button+icon+truncation rule.
-import { workspaceStore } from "../shell/workspace";
+import { requestPaneFocus, workspaceStore } from "../shell/workspace";
 import { useThreadsStore } from "../stores/threads";
 import { Button, Chevron } from "../widgets";
 import { requireClass } from "../widgets/internal/requireClass";
@@ -34,13 +34,20 @@ const CLASS = {
 export function BackToParentAction({ parentRef }: { parentRef: string }) {
   const name = useThreadsStore((s) => s.threads.get(parentRef)?.name);
   const label = name || parentRef;
+  const focusParent = () => {
+    const parentScaffold = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-scaffold]")).find(
+      (element) => element.dataset.paneScaffold === `session:${parentRef}`,
+    );
+    const parentPaneId = workspaceStore.getState().openPane("session", { ref: parentRef });
+    if (parentScaffold) {
+      parentScaffold.focus();
+    } else {
+      requestPaneFocus(parentPaneId);
+    }
+  };
+
   return (
-    <Button
-      variant="quiet"
-      size="sm"
-      icon={<Chevron direction="left" />}
-      onClick={() => workspaceStore.getState().openPane("session", { ref: parentRef })}
-    >
+    <Button variant="quiet" size="sm" icon={<Chevron direction="left" />} onClick={focusParent}>
       <span className={CLASS.backLabel}>Back to {label}</span>
     </Button>
   );

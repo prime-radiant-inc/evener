@@ -1,10 +1,14 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { chromeStore } from "../../shell/chromeStore";
+import { cancelPaneFocus, consumePaneFocus } from "../../shell/workspace";
 import { requireClass } from "../internal/requireClass";
 import styles from "./panescaffold.module.css";
 
 export interface PaneScaffoldProps {
   title: string;
+  paneId?: string;
+  focused?: boolean;
+  scaffoldMarker?: string;
   mobileTitle?: string;
   cadence?: ReactNode;
   actions?: ReactNode;
@@ -31,7 +35,17 @@ const CLASS = {
  * the most-copied layout primitive in the app, so every pane looks and
  * behaves the same way.
  */
-export function PaneScaffold({ title, mobileTitle, cadence, actions, footer, children }: PaneScaffoldProps) {
+export function PaneScaffold({
+  title,
+  paneId,
+  focused = true,
+  scaffoldMarker,
+  mobileTitle,
+  cadence,
+  actions,
+  footer,
+  children,
+}: PaneScaffoldProps) {
   // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
   // decision 2): publish the title ALWAYS, host-agnostically - StackHost
   // renders it in the mobile top bar, DockHost never reads it, so this widget
@@ -45,6 +59,16 @@ export function PaneScaffold({ title, mobileTitle, cadence, actions, footer, chi
     chromeStore.getState().setPaneTitle(publishedTitle);
     return () => chromeStore.getState().setPaneTitle(null);
   }, [publishedTitle]);
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (paneId === undefined) return;
+    if (!focused) {
+      cancelPaneFocus(paneId);
+      return;
+    }
+    if (consumePaneFocus(paneId)) bodyRef.current?.focus();
+  }, [focused, paneId]);
 
   return (
     <div className={CLASS.pane}>
@@ -74,7 +98,9 @@ export function PaneScaffold({ title, mobileTitle, cadence, actions, footer, chi
           </div>
         )}
       </div>
-      <div className={CLASS.body}>{children}</div>
+      <div ref={bodyRef} className={CLASS.body} tabIndex={-1} data-pane-scaffold={scaffoldMarker}>
+        {children}
+      </div>
       {footer !== undefined && (
         <div className={CLASS.footer} data-testid="pane-footer">
           {footer}

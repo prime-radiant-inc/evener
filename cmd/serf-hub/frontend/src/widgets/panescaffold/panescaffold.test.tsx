@@ -2,10 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { PaneScaffold } from "./index";
 
 afterEach(cleanup);
+
+beforeEach(resetWorkspaceStoreForTests);
 
 test("renders the title as a heading", () => {
   render(<PaneScaffold title="Sessions">content</PaneScaffold>);
@@ -15,6 +18,57 @@ test("renders the title as a heading", () => {
 test("renders children inside the scrollable body", () => {
   render(<PaneScaffold title="Sessions">the body content</PaneScaffold>);
   expect(screen.getByText("the body content")).toBeTruthy();
+});
+
+test("makes the content region focusable and consumes a toggle-open focus marker once", () => {
+  requestPaneFocus("pane_sessionDetails_1");
+  const previousFocus = document.createElement("button");
+  document.body.append(previousFocus);
+  previousFocus.focus();
+  const { rerender, container } = render(
+    <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused scaffoldMarker="session-panel:details:ref_a">
+      content
+    </PaneScaffold>,
+  );
+
+  const body = container.querySelector<HTMLElement>("[data-pane-scaffold]");
+  expect(body).not.toBeNull();
+  expect(body?.tabIndex).toBe(-1);
+  expect(document.activeElement).toBe(body);
+
+  previousFocus.focus();
+  rerender(
+    <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused scaffoldMarker="session-panel:details:ref_a">
+      content
+    </PaneScaffold>,
+  );
+  expect(document.activeElement).toBe(previousFocus);
+});
+
+test("does not focus on an ordinary remount or after a pre-mount activation is cancelled", () => {
+  requestPaneFocus("pane_sessionDetails_1");
+  const { rerender, unmount, container } = render(
+    <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused={false}>
+      content
+    </PaneScaffold>,
+  );
+  const body = container.querySelector<HTMLElement>(".body");
+  expect(document.activeElement).not.toBe(body);
+
+  rerender(
+    <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused>
+      content
+    </PaneScaffold>,
+  );
+  expect(document.activeElement).not.toBe(container.querySelector<HTMLElement>(".body"));
+  unmount();
+
+  const remounted = render(
+    <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused>
+      content
+    </PaneScaffold>,
+  );
+  expect(document.activeElement).not.toBe(remounted.container.querySelector<HTMLElement>(".body"));
 });
 
 test("renders no cadence slot when the cadence prop is omitted", () => {

@@ -18,7 +18,7 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
   return typeof value?.ref === "string" && value.ref.length > 0;
 }
 
-export function SessionPanelPane({ params, paneId, focused: _focused, kind }: SessionPanelPaneProps) {
+export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanelPaneProps) {
   if (!isSessionPanelParams(params)) {
     throw new Error("SessionPanelPane: params.ref must be a non-empty string");
   }
@@ -48,7 +48,13 @@ export function SessionPanelPane({ params, paneId, focused: _focused, kind }: Se
 
   if (!model) {
     return (
-      <PaneScaffold title={title} actions={<BackToParentAction parentRef={ref} />}>
+      <PaneScaffold
+        title={title}
+        paneId={paneId}
+        focused={focused}
+        scaffoldMarker={`session-panel:${kind}:${ref}`}
+        actions={<BackToParentAction parentRef={ref} />}
+      >
         <EmptyState title="Loading session panel…" />
       </PaneScaffold>
     );
@@ -64,7 +70,13 @@ export function SessionPanelPane({ params, paneId, focused: _focused, kind }: Se
     );
 
   return (
-    <PaneScaffold title={title} actions={<BackToParentAction parentRef={ref} />}>
+    <PaneScaffold
+      title={title}
+      paneId={paneId}
+      focused={focused}
+      scaffoldMarker={`session-panel:${kind}:${ref}`}
+      actions={<BackToParentAction parentRef={ref} />}
+    >
       <div data-pane-id={paneId}>{body}</div>
     </PaneScaffold>
   );

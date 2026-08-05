@@ -6,6 +6,7 @@ import { registerPane } from "../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { BackToParentAction } from "./backToParentAction";
+import { PaneScaffold } from "../widgets";
 // Side-effect import: registers the real "doc" pane type, used below as an
 // arbitrary already-registered OTHER pane type to focus before testing that
 // clicking Back moves focus back to the parent session pane.
@@ -66,4 +67,34 @@ test("re-focuses an ALREADY-OPEN parent pane rather than opening a duplicate", (
   const panes = workspaceStore.getState().panes;
   expect(panes.filter((p) => p.type === "session")).toHaveLength(1);
   expect(workspaceStore.getState().focusedPaneId).toBe(existingId);
+});
+
+test("focuses an already-mounted parent scaffold through the DOM path", () => {
+  const parentId = workspaceStore.getState().openPane("session", { ref: "ref_parent" });
+  render(
+    <PaneScaffold
+      title="ref_parent"
+      paneId={parentId}
+      focused
+      scaffoldMarker="session:ref_parent"
+      actions={<BackToParentAction parentRef="ref_parent" />}
+    >
+      parent
+    </PaneScaffold>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /back to/i }));
+
+  expect(document.activeElement).toBe(screen.getByText("parent").closest("[data-pane-scaffold]"));
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "session")).toHaveLength(1);
+});
+
+test("records an orphan marker for a parent that is not mounted, consumed on mount", () => {
+  render(<BackToParentAction parentRef="ref_parent" />);
+  fireEvent.click(screen.getByRole("button", { name: /back to/i }));
+  const parentId = workspaceStore.getState().panes.find((pane) => pane.type === "session")?.id;
+  expect(parentId).toBeDefined();
+
+  cleanup();
+  render(<PaneScaffold title="ref_parent" paneId={parentId} focused scaffoldMarker="session:ref_parent">parent</PaneScaffold>);
+  expect(document.activeElement).toBe(screen.getByText("parent").closest("[data-pane-scaffold]"));
 });
