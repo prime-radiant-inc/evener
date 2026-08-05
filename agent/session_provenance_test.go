@@ -80,7 +80,7 @@ func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
 	}
 }
 
-func TestNonRetryableModelErrorClearsActiveProvenanceBeforeClose(t *testing.T) {
+func TestNonRetryableModelErrorClearsActiveProvenanceAtIdleBoundary(t *testing.T) {
 	t.Parallel()
 	s := newProvenanceErrorSession(t, llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil))
 
@@ -89,10 +89,13 @@ func TestNonRetryableModelErrorClearsActiveProvenanceBeforeClose(t *testing.T) {
 		t.Fatal("processInputWithProvenance succeeded, want provider error")
 	}
 	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
-		t.Fatalf("active provenance after closed failed turn = %+v, want cleared", s.activeCausalProvenance())
+		t.Fatalf("active provenance after failed turn = %+v, want cleared", s.activeCausalProvenance())
 	}
 	if !provenance.ContainsWatch(s.completedCausalProvenance(), "watch_A", "wg_1") {
-		t.Fatalf("completed provenance after closed failed turn = %+v, want watch_A/wg_1", s.completedCausalProvenance())
+		t.Fatalf("completed provenance after failed turn = %+v, want watch_A/wg_1", s.completedCausalProvenance())
+	}
+	if got := s.State(); got != SessionIdle {
+		t.Fatalf("state after non-retryable provider error = %q, want %q", got, SessionIdle)
 	}
 }
 

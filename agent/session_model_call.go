@@ -469,21 +469,19 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // handleModelError reacts to a failed model call. It returns retry=true when the
 // turn should retry the round — content-filter recovery, which compacts away the
 // offending content (the next request often succeeds) and records that it has
-// tried once via *contentFilterRetried. Otherwise it emits the terminal error,
-// emits a context-overflow warning when applicable, closes the session on a
-// non-retryable llm.Error, leaves the session out of "processing", and returns
-// retry=false with the error the turn should fail with — a "provider error"-wrapped
-// value (so callers can distinguish a provider failure from agent quiescence; the
-// original error is preserved via errors.Unwrap, kata 3xbh) or the raw cancellation.
+// tried once via *contentFilterRetried. Provider retryability governs request
+// retries elsewhere; every remaining provider failure is terminal for this turn.
+// The terminal path emits the failure, terminates any active goal, and settles the
+// open session at idle before returning a "provider error"-wrapped value (so
+// callers can distinguish a provider failure from agent quiescence; the original
+// error is preserved via errors.Unwrap, kata 3xbh). The outer lifecycle error
+// boundary remains an idempotent compatibility tail for this provider-owned path.
 func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool) (retry bool, ferr error) {
-	var le llm.Error
-	llmErrNonRetryable := errors.As(err, &le) && !le.Retryable()
 	dec := classifyModelError(
 		isTurnCancellation(ctx, err),
 		llm.Kind(err),
 		*contentFilterRetried,
 		s.contextMgr != nil,
-		llmErrNonRetryable,
 	)
 
 	switch dec.Action {
@@ -514,23 +512,17 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	if dec.EmitContextLenWarn {
 		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
-	// Spec: non-retryable/unrecoverable errors transition the session to closed.
-	if dec.CloseSession {
-		// Emit the goal's terminal report BEFORE Close() shuts the events
-		// channel — a later emit after Close is a silent no-op, so the
-		// "told why it stopped" promise would be lost otherwise (spec §2/C11).
-		s.terminateGoalOnError(ctx, err)
-		s.finishActiveProvenance()
-		s.Close()
-	}
-	// Recoverable LLM errors (retry policy exhausted, stream-ended, timeouts,
-	// etc.) bail out of the run loop without compacting or closing — but we still
-	// need to leave the session out of "processing" so it doesn't sit active
-	// forever from the daemon's /status endpoint (which would disable steer/send
-	// with no recovery path short of restarting the daemon, kata r6y9). meta.json
-	// flush happens via the deferred flush at the top of processOneInput (kata ztne).
+	s.terminateGoalOnError(ctx, err)
 	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// isProviderTerminalError identifies the wrapper returned by handleModelError
+// (and any underlying provider error it carries) so the outer drain loop does
+// not repeat goal termination or the idle-boundary provenance transition.
+func isProviderTerminalError(err error) bool {
+	var providerErr llm.Error
+	return strings.HasPrefix(err.Error(), "provider error: ") && errors.As(err, &providerErr)
 }
 
 // modelErrorAction names the branch handleModelError takes on a failed model call.
@@ -550,16 +542,14 @@ const (
 type modelErrorDecision struct {
 	Action             modelErrorAction
 	EmitContextLenWarn bool
-	CloseSession       bool
 }
 
 // classifyModelError is the pure decision core lifted out of handleModelError. It
 // classifies a failed model call into cancel / content-filter-retry / terminal and,
-// for the terminal case, whether to warn about context overflow and whether to close
-// the session. haveContextMgr gates content-filter recovery (which needs the context
-// manager to compact); llmErrNonRetryable reports whether the error is a
-// non-retryable llm.Error (closing the session). All side effects stay in the caller.
-func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAlreadyRetried bool, haveContextMgr bool, llmErrNonRetryable bool) modelErrorDecision {
+// for the terminal case, whether to warn about context overflow. haveContextMgr
+// gates content-filter recovery (which needs the context manager to compact). All
+// side effects stay in the caller.
+func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAlreadyRetried bool, haveContextMgr bool) modelErrorDecision {
 	if isCancellation {
 		return modelErrorDecision{Action: modelErrorCancel}
 	}
@@ -569,7 +559,6 @@ func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAl
 	return modelErrorDecision{
 		Action:             modelErrorTerminal,
 		EmitContextLenWarn: kind == llm.KindContextLength,
-		CloseSession:       llmErrNonRetryable,
 	}
 }
 

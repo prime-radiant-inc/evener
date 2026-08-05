@@ -343,12 +343,8 @@ func FuzzTurnFallbackLifecycleProgram(f *testing.F) {
 			if err == nil {
 				t.Fatalf("failure scenario %d returned nil error", program.scenario)
 			}
-			wantState := SessionIdle
-			if program.scenario == tfpFallbackExhausted || program.scenario == tfpContextLengthFailure {
-				wantState = SessionClosed
-			}
-			if got := sess.State(); got != wantState {
-				t.Fatalf("failure scenario %d ended in state %q, want %q (err=%v)", program.scenario, got, wantState, err)
+			if got := sess.State(); got != SessionIdle {
+				t.Fatalf("failure scenario %d ended in state %q, want %q (err=%v)", program.scenario, got, SessionIdle, err)
 			}
 		}
 

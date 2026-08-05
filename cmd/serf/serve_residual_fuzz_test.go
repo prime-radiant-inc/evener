@@ -97,7 +97,7 @@ func (s *residualServeServer) SetJobOutputFunc(f func(string, int64) (any, bool,
 func (s *residualServeServer) SetClearFunc(f func(context.Context) error) { s.clear = f }
 func (s *residualServeServer) SetShutdownFunc(f func())                   { s.shutdown = f }
 
-func exerciseResidualCallbacks(s *residualServeServer) {
+func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	ctx := context.Background()
 	_ = s.escalate("missing", false)
 	_ = s.compact(ctx)
@@ -128,7 +128,7 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	s.name("renamed")
 	s.effort("low")
 	_ = s.tasks()
-	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:test", Continuation: "next"})
+	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", 1024)
 }
 
@@ -233,12 +233,14 @@ func TestRunServeResidualCoverage(t *testing.T) {
 	t.Run("callbacks and input", func(t *testing.T) {
 		d, args := base(t)
 		var captured *residualServeServer
+		var sessionID string
 		d.newServer = func(cfg server.ServerConfig) serveServer { captured = newResidualServeServer(cfg); return captured }
 		d.bridge = func(_ serveServer, _ *agent.Session, _ func(events.SessionEvent), onDrained func()) {
 			onDrained()
 		}
 		d.subscriberCount = func(serveServer, string) int { return 1 }
 		d.observeCallbacks = func(c serveCallbackObserver) {
+			sessionID = c.session.ID()
 			c.notify()
 			if c.subscriberCount() != 1 {
 				t.Fatal("subscriber callback")
@@ -249,7 +251,18 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		}
 		d.register = func(*rvreg.Registration, string, rendezvous.Entry) error { return boom }
 		d.serveHTTP = func(*http.Server, net.Listener) error {
-			exerciseResidualCallbacks(captured)
+			exerciseResidualCallbacks(captured, sessionID)
+			data, err := captured.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
+			if err != nil {
+				t.Fatalf("jobs callback: %v", err)
+			}
+			tree, ok := data.(appwire.JobActivityTree)
+			if !ok {
+				t.Fatalf("jobs data = %#v (%T), want appwire.JobActivityTree", data, data)
+			}
+			if tree.Root.SessionID == "" {
+				t.Fatalf("jobs tree = %+v", tree)
+			}
 			captured.input <- server.InputMessage{Text: "hello", Kind: agent.EntryUserInput}
 			close(captured.input)
 			time.Sleep(20 * time.Millisecond)
@@ -265,17 +278,6 @@ func TestRunServeResidualCoverage(t *testing.T) {
 		}
 		if _, err := captured.jobs(appwire.JobsListParams{Ref: "local:wrong"}); err == nil {
 			t.Fatal("jobs callback accepted a ref for another local session")
-		}
-		data, err := captured.jobs(appwire.JobsListParams{Ref: "local:test", Continuation: "next"})
-		if err != nil {
-			t.Fatalf("jobs callback: %v", err)
-		}
-		tree, ok := data.(appwire.JobActivityTree)
-		if !ok {
-			t.Fatalf("jobs data = %#v (%T), want appwire.JobActivityTree", data, data)
-		}
-		if tree.Root.SessionID == "" {
-			t.Fatalf("jobs tree = %+v", tree)
 		}
 	})
 

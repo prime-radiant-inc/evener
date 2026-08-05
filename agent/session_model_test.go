@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
@@ -1601,6 +1602,98 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 	}
 }
 
+func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
+	t.Parallel()
+	adapter := &fakeErrAdapter{
+		name: "kimi-anthropic",
+		steps: []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, llm.ErrorFromHTTPStatus(
+					"kimi-anthropic", http.StatusForbidden,
+					"billing-cycle quota exhausted", nil, nil,
+				)
+			},
+			func(llm.Request) (llm.Response, error) {
+				return toolCallResponse(communicateCall("after_failure", "recovered")), nil
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(
+		client,
+		WithProviderID(newKimiAnthropicProfile("k3"), "kimi-anthropic"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{LLMRetryPolicy: &policy},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	sess.getOrCreateGoalStore().Set("recover from provider failure", sess.sclock().Now())
+
+	var evs []events.SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			evs = append(evs, ev)
+		}
+	}()
+
+	_, processErr := sess.ProcessInput(context.Background(), "trigger quota failure", nil)
+	if processErr == nil || !strings.Contains(processErr.Error(), "billing-cycle quota exhausted") {
+		t.Fatalf("ProcessInput error = %v, want quota detail", processErr)
+	}
+	var providerErr llm.Error
+	if !errors.As(processErr, &providerErr) {
+		t.Fatalf("ProcessInput error does not unwrap to llm.Error: %v", processErr)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("provider requests after failure = %d, want 1", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after provider failure = %q, want %q", got, SessionIdle)
+	}
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after provider failure = %+v, want blocked", snap)
+	}
+
+	out, secondErr := sess.ProcessInput(context.Background(), "try again", nil)
+	if secondErr != nil || out != "recovered" {
+		t.Fatalf("second ProcessInput = (%q, %v), want (%q, nil)", out, secondErr, "recovered")
+	}
+	sess.Close()
+	<-done
+
+	var errorEvents, turnEndedEvents, goalEndedEvents int
+	var blockedGoalEnded int
+	for _, ev := range evs {
+		switch ev.Kind {
+		case events.EventError:
+			errorEvents++
+		case events.EventTurnEnded:
+			turnEndedEvents++
+		case events.EventGoalEnded:
+			goalEndedEvents++
+			if data, ok := ev.Data.(events.GoalEndedData); ok && data.Status == string(goal.StatusBlocked) {
+				blockedGoalEnded++
+			}
+		}
+	}
+	if errorEvents == 0 {
+		t.Fatal("events contain no error event")
+	}
+	if turnEndedEvents == 0 {
+		t.Fatal("events contain no turn-ended event")
+	}
+	if goalEndedEvents != 1 || blockedGoalEnded != 1 {
+		t.Fatalf("provider failure emitted goal-ended events = %d (blocked = %d), want exactly one blocked report", goalEndedEvents, blockedGoalEnded)
+	}
+}
+
 // kata 3xbh: agent quiescence — the agent calls communicate and finishes
 // its turn — must still return (output, nil). This is the today-success
 // case; do not break it.
@@ -1979,6 +2072,7 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	sess.getOrCreateGoalStore().Set("preserve generic failure behavior", sess.sclock().Now())
 
 	var evs []events.SessionEvent
 	done := make(chan struct{})
@@ -1993,6 +2087,12 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
 		t.Fatal("expected non-nil error from ProcessInput")
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after non-provider failure = %q, want %q", got, SessionIdle)
+	}
+	if snap, ok := sess.getOrCreateGoalStore().Snapshot(); !ok || snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal after non-provider failure = %+v, want blocked", snap)
 	}
 	sess.Close()
 	<-done

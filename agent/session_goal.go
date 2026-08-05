@@ -268,8 +268,8 @@ func (s *Session) settleGoalOnIdle() bool {
 // user /interrupt: the goal stays active and resumes after the next completed
 // turn (spec §6). The discriminator is the queuedInputDrainContext bool, not the
 // WithQueuedInputDrainOnInterrupt marker (which is installed on every turn ctx and
-// so discriminates nothing); a DeadlineExceeded or non-retryable provider error
-// routes to blocked.
+// so discriminates nothing); a DeadlineExceeded or provider error routes the goal
+// to blocked while the session remains available for later input.
 func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 	store := s.getOrCreateGoalStore()
 	if snap, ok := store.Snapshot(); !ok || snap.Status != goal.StatusActive {

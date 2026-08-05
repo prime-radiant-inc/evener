@@ -298,7 +298,7 @@ type opRecord struct {
 
 // llmFaultKind selects the TYPED provider error opLLMError injects on a turn's
 // first model call, so the fuzzer drives each distinct handleModelError arm:
-// content-filter recovery (compact + retry), non-retryable close (auth), the
+// content-filter recovery (compact + retry), non-retryable terminal turn (auth), the
 // context-length warning, and the retryable paths (rate-limit/server).
 type llmFaultKind int
 
@@ -308,7 +308,7 @@ const (
 	faultRateLimit                         // 429 → retryable
 	faultServer                            // 503 → retryable
 	faultContextLength                     // 413 → context-length warning + terminal
-	faultAuth                              // 401 → non-retryable, closes the session
+	faultAuth                              // 401 → non-retryable terminal turn
 	numFaultKinds
 )
 
@@ -466,7 +466,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	// W1 fault injection: opLLMError arms this so the next model call fails once
 	// with the op's TYPED fault (content-filter/rate-limit/server/context-length/
 	// auth/generic), exercising every handleModelError arm — content-filter
-	// compact-and-retry recovery, non-retryable close, the context-length warning,
+	// compact-and-retry recovery, non-retryable terminal turn, the context-length warning,
 	// and the retryable paths — under the full interleaving. One-shot (disarms
 	// itself) so a recoverable fault lets the round succeed on the retry.
 	adapter.FaultResponder = func(llm.Request) error {
