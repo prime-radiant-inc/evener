@@ -25,7 +25,7 @@ Implementation complete. The frontend now lazily fetches and caches plugin/user 
 
 ## Commit
 
-Final commit hash: pending commit.
+Final commit hash: `64df15ac3772f7a0ef38c14fa0d7a074064c3a67`.
 
 ## Concerns
 
