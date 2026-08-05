@@ -14,6 +14,10 @@ export interface ActivitySummaryEntry {
   loading: boolean;
   lastFetchedBump?: number | null;
   requestID: number;
+  // The newest bump (or forced retry) that arrived while a root fetch was
+  // in flight. Nothing re-runs the component effects when `loading` clears,
+  // so refreshRoot itself re-issues this once the active request completes.
+  pendingBump?: { bump: number | null; force: boolean };
 }
 
 export interface ActivitySummaryStoreState {
@@ -84,7 +88,16 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     let requestID: number | null = null;
     set((state) => {
       const entry = entryFor(state.entries, ref);
-      if (entry.loading || (!force && entry.established && entry.lastFetchedBump === bump)) return state;
+      if (entry.loading) {
+        // Don't lose a NEWER bump behind the in-flight request: queue it for
+        // refreshRoot to re-issue on completion. A duplicate of the bump
+        // already being fetched queues nothing.
+        if (!force && bump === entry.lastFetchedBump) return state;
+        const entries = new Map(state.entries);
+        entries.set(ref, { ...entry, pendingBump: { bump, force } });
+        return { entries };
+      }
+      if (!force && entry.established && entry.lastFetchedBump === bump) return state;
       requestID = ++nextRequestID;
       const entries = new Map(state.entries);
       entries.set(ref, {
@@ -93,6 +106,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         loading: true,
         lastFetchedBump: bump,
         requestID,
+        pendingBump: undefined,
       });
       return { entries };
     });
@@ -103,16 +117,34 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     const requestID = get().beginRootFetch(ref, bump, force);
     if (requestID === null) return null;
     const panelRequestID = activityPanelStore.getState().beginFetch(ref);
+    // Re-issues a bump queued while this request was in flight. The queued
+    // caller's own fetch/onFailure were dropped at queue time; every
+    // production caller passes the same listJobs fetch and an equivalent
+    // mount-guarded toast, so this completion's pair stands in for them.
+    const issuePendingBump = () => {
+      let pending: ActivitySummaryEntry["pendingBump"];
+      set((state) => {
+        const entry = state.entries.get(ref);
+        if (!entry?.pendingBump) return state;
+        pending = entry.pendingBump;
+        const entries = new Map(state.entries);
+        entries.set(ref, { ...entry, pendingBump: undefined });
+        return { entries };
+      });
+      if (pending) get().refreshRoot(ref, pending.bump, fetch, onFailure, pending.force);
+    };
     void fetch(ref)
       .then((data) => {
         const parsed = parseActivityTree(data);
         if (parsed === null) {
           get().failRootFetch(ref, requestID);
           activityPanelStore.getState().publishFetch(ref, panelRequestID, { kind: "unsupported" });
+          issuePendingBump();
           return;
         }
         get().publishRootFetch(ref, requestID, parsed.root.counts);
         activityPanelStore.getState().publishFetch(ref, panelRequestID, { kind: "ready", tree: parsed });
+        issuePendingBump();
       })
       .catch((err) => {
         const currentRequest = get().entries.get(ref)?.requestID === requestID;
@@ -126,6 +158,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
           if (currentRequest) onFailure?.(failure.sentence);
         }
         activityPanelStore.getState().publishFetch(ref, panelRequestID, result);
+        issuePendingBump();
       });
     return requestID;
   },

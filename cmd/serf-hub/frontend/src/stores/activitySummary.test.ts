@@ -141,6 +141,50 @@ describe("activitySummaryStore", () => {
     expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(root.root.counts);
   });
 
+  test("re-fetches the newest bump that arrived while a root fetch was loading", async () => {
+    resetActivitySummaryStoreForTests();
+    const pendingFetches: Array<(value: unknown) => void> = [];
+    const fetch = () =>
+      new Promise<unknown>((resolve) => {
+        pendingFetches.push(resolve);
+      });
+    const rootWith = (active: number) => ({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 1, fetch)).toBe(1);
+    // Bump 2 arrives while request 1 is still in flight: dropped today.
+    expect(activitySummaryStore.getState().refreshRoot("ref_a", 2, fetch)).toBeNull();
+
+    pendingFetches[0]?.(rootWith(4));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Completion of request 1 must re-issue a fetch for the queued bump 2.
+    expect(pendingFetches.length).toBe(2);
+    pendingFetches[1]?.(rootWith(7));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      loading: false,
+      lastFetchedBump: 2,
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(7);
+  });
+
   test("a completion from before eviction cannot publish into a recreated entry", async () => {
     resetActivitySummaryStoreForTests();
     resetWorkspaceStoreForTests();
