@@ -1,0 +1,5 @@
+{
+  "name": "inactive-fold-chevron-align",
+  "description": "rail: the 'Inactive subagents (N)' fold's chevron gutter must be left-justified at exactly the parent session label's x, for a dotted (signal) parent and a quiet one alike",
+  "cssFiles": ["styles/tokens.css", "widgets/tree/tree.module.css", "shell/rail/Rail.module.css"]
+}

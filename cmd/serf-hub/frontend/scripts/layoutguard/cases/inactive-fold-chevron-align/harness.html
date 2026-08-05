@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>inactive-fold-chevron-align layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The rail's own column width at its default 280px; any container inset
+     applies equally to every row, so only the width matters for fidelity. */
+  .railBox {
+    width: 280px;
+    box-sizing: border-box;
+  }
+  /* Collision correction, NOT component CSS: layoutguard loads every
+     .module.css unscoped (resolve-composes.mjs), so tree.module.css's `.row`
+     (min-height, padding 0 --space-2, border-radius - the outer treeitem's
+     styles) also lands on RailRow's inner content span, which carries the
+     same bare class name. In the real build the two `.row`s are different
+     hashed classes; strip the tree-only properties off the inner span so the
+     harness measures what production renders. The :not(.inactiveFold) scope
+     matters: the fold span's own .inactiveFold padding-left is the property
+     under test, and this correction's element+class specificity would
+     otherwise outrank and erase it (the fold still takes tree .row's
+     padding-left, but resolved.css concatenates tree.module.css BEFORE
+     Rail.module.css, so .inactiveFold's later longhand wins - matching the
+     production cascade). The :has(> .row > .signal) selector under test
+     still matches - the class itself stays. */
+  span.row:not(.inactiveFold) {
+    min-height: 0;
+    padding: 0;
+    border-radius: 0;
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces the rail tree's real DOM (widgets/tree/index.tsx's
+     treeitem-then-role=group sibling structure; RailRow.tsx's SessionRow and
+     InactiveFoldRow content spans) against the REAL class names from
+     tree.module.css and Rail.module.css - twice: a dotted (signal) parent and
+     a quiet one, since the parent's signal dot moves its label one signal
+     column right and the fold must follow. -->
+<div class="railBox">
+  <div class="section">
+    <div class="tree">
+
+      <div role="treeitem" class="row" aria-expanded="true" aria-level="1">
+        <span class="row">
+          <span class="chevron" data-testid="rail-row-chevron-gutter"><button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button></span>
+          <span class="signal" data-testid="rail-row-signal"></span>
+          <span class="textCol"><span class="label" id="label-dotted">Verify Vite Build</span></span>
+        </span>
+      </div>
+      <div role="group" class="group">
+        <div role="treeitem" class="row" aria-expanded="false" aria-level="2">
+          <span class="row inactiveFold" data-testid="rail-row-inactive-fold">
+            <span class="chevron" id="chev-dotted" data-testid="rail-row-chevron-gutter"><button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button></span>
+            <span class="label">Inactive subagents (30)</span>
+          </span>
+        </div>
+      </div>
+
+      <div role="treeitem" class="row" aria-expanded="true" aria-level="1">
+        <span class="row">
+          <span class="chevron" data-testid="rail-row-chevron-gutter"><button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button></span>
+          <span class="textCol"><span class="label" id="label-quiet">Rename Session Gloss</span></span>
+        </span>
+      </div>
+      <div role="group" class="group">
+        <div role="treeitem" class="row" aria-expanded="false" aria-level="2">
+          <span class="row inactiveFold" data-testid="rail-row-inactive-fold">
+            <span class="chevron" id="chev-quiet" data-testid="rail-row-chevron-gutter"><button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button></span>
+            <span class="label">Inactive subagent (1)</span>
+          </span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const left = (id) => document.getElementById(id).getBoundingClientRect().left;
+  return {
+    dotted: { label: left("label-dotted"), chevron: left("chev-dotted") },
+    quiet: { label: left("label-quiet"), chevron: left("chev-quiet") },
+  };
+};
+</script>
+</body>
+</html>
