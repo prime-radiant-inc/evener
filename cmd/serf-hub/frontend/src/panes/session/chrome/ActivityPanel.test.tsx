@@ -6,6 +6,7 @@ import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
+import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
@@ -614,6 +615,38 @@ describe("ActivityPanel", () => {
       threadsStore.setState({ hydrations: new Map([["ref_rehydrated", 2]]) });
     });
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  });
+
+  // The closed Sheet's trigger owns background badge refresh; it has the same
+  // null-to-null rehydration blind spot as a mounted body and watches the same
+  // hydration generation.
+  test("a closed panel's badge refresh notices rehydration when the bump stays null", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => ({ data: activityTree() }));
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          "ref_gen",
+          {
+            counts: undefined,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: null,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
+
+    render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} now={0} />);
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(0);
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_gen", 1]]) });
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
   });
 
   test("does not let a continuation patch change the root badge summary", async () => {

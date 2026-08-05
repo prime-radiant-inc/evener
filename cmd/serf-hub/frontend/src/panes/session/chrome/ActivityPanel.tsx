@@ -335,6 +335,13 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
 ) {
   const [open, setOpen] = useState(false);
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  // Same rehydration signal the body watches (see ActivityPanelBody): while
+  // the trigger owns background refresh, a wholesale model replacement with a
+  // null bump on both sides changes no other dependency of the effect below.
+  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
+  // The generation this owner last considered handled. Initialized to the
+  // current value so mounting never manufactures a refresh by itself.
+  const handledGenerationRef = useRef(hydrationGeneration);
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
@@ -348,12 +355,23 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   // its replacement trigger, but refreshWhenHidden is false while that
   // trigger row is collapsed. The root result also reconciles the panel store.
   useEffect(() => {
-    if (open || (hideTrigger && !refreshWhenHidden) || summary.mountedBodies > 0) return;
+    if (open || summary.mountedBodies > 0) {
+      // A mounted body owns freshness (including the rehydration check), so
+      // any generation seen while it owns is handled by it, not queued here.
+      handledGenerationRef.current = hydrationGeneration;
+      return;
+    }
+    if (hideTrigger && !refreshWhenHidden) return;
     if (!summary.established) return;
-    if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
-    refreshRoot(sessionRef, model.jobsUpdatedAt);
+    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
+    if (!generationChanged && summary.lastFetchedBump === model.jobsUpdatedAt) return;
+    handledGenerationRef.current = hydrationGeneration;
+    // force pushes past the store's established/bump dedupe for the
+    // null-to-null rehydration case the bump comparison cannot see.
+    refreshRoot(sessionRef, model.jobsUpdatedAt, undefined, generationChanged);
   }, [
     hideTrigger,
+    hydrationGeneration,
     model.jobsUpdatedAt,
     open,
     refreshWhenHidden,
