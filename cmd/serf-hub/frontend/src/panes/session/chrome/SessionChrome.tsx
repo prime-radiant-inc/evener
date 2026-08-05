@@ -74,9 +74,13 @@ const NARROW_CHROME_WIDTH_PX = 640;
 // the node in state instead makes React invoke the callback (and this hook
 // re-render) at the moment the div actually mounts, however many renders
 // that takes.
-function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => void, boolean] {
+// `narrow` is null until the observer's FIRST report: before that the width
+// is unknown, not known-wide, and behavior that collapse must suppress (the
+// hidden Activity badge refresh below) has to wait for the measurement
+// rather than assume "not collapsed".
+function useNarrowerThan(thresholdPx: number): [(el: HTMLDivElement | null) => void, boolean | null] {
   const [node, setNode] = useState<HTMLDivElement | null>(null);
-  const [narrow, setNarrow] = useState(false);
+  const [narrow, setNarrow] = useState<boolean | null>(null);
   useEffect(() => {
     if (!node) return;
     if (typeof ResizeObserver === "undefined") return;
@@ -112,7 +116,11 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
-  const [chromeRef, collapsed] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
+  const [chromeRef, narrow] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
+  // Unmeasured (null) renders like not-collapsed - the triggers show until
+  // the first observation lands, avoiding a mount flash - but is NOT treated
+  // as measured-wide where that matters (see refreshWhenHidden below).
+  const collapsed = narrow === true;
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
@@ -136,14 +144,15 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   // Details/Tasks/Activity lead the "..." menu's own list when collapsed - see
   // SessionActionsMenu's extraItems doc comment for why that order, not
   // this one, is what actually matters (this array is just the three items).
-  const overflowItems: MenuItem[] =
-    !isMobile && collapsed
-      ? [
-          { id: "details", label: checkedLabel("Details", detailsOpen), onSelect: openDetails },
-          { id: "tasks", label: checkedLabel("Tasks", tasksOpen), onSelect: openTasks },
-          { id: "activity", label: checkedLabel("Activity", activityOpen), onSelect: openActivity },
-        ]
-      : [];
+  // Collapse is not desktop-only: a phone-width pane collapses too, and its
+  // items open the Sheets (openX branches on isMobile), never workspace panes.
+  const overflowItems: MenuItem[] = collapsed
+    ? [
+        { id: "details", label: checkedLabel("Details", detailsOpen), onSelect: openDetails },
+        { id: "tasks", label: checkedLabel("Tasks", tasksOpen), onSelect: openTasks },
+        { id: "activity", label: checkedLabel("Activity", activityOpen), onSelect: openActivity },
+      ]
+    : [];
 
   return (
     <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
@@ -163,15 +172,15 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         />
       </div>
       <div className={CLASS.right}>
-        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={!isMobile} />
-        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={!isMobile} />
+        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={!isMobile || collapsed} />
+        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={!isMobile || collapsed} />
         <ActivityPanel
           ref={activityRef}
           sessionRef={sessionRef}
           model={model}
           now={now}
-          hideTrigger={!isMobile}
-          refreshWhenHidden={!isMobile && !collapsed}
+          hideTrigger={!isMobile || collapsed}
+          refreshWhenHidden={!isMobile && narrow === false}
         />
         {!isMobile && !collapsed && (
           <>
