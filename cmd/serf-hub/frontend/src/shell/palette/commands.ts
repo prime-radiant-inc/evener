@@ -10,7 +10,7 @@
 // for a fire-and-report action - never a silent swallow.
 
 import type { ThreadModel } from "../../protocol/model";
-import type { ThreadCapabilities } from "../../protocol/types.gen";
+import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore } from "../../stores/prefs";
@@ -559,16 +559,16 @@ export function rememberableId(command: Command): string {
 // An unhydrated model (no snapshot in the store yet) leaves everything
 // enabled: unknown is not the same as refused, and the hub still gets the
 // final word on the call itself.
-export function commandsInScope(ctx: PaletteContext): ScopedCommand[] {
+export function commandsInScope(ctx: PaletteContext, catalog = useCommandCatalog.getState().commands): ScopedCommand[] {
   const model = focusedModel(ctx.sessionRef);
-  const catalog = ctx.sessionRef === null ? [] : catalogCommands();
-  return [...buildCommands(), ...catalog]
+  const catalogEntries = ctx.sessionRef === null ? [] : catalogCommands(catalog);
+  return [...buildCommands(), ...catalogEntries]
     .filter((c) => c.scope === "global" || ctx.sessionRef !== null)
     .map((c) => scopeCommand(c, model));
 }
 
-function catalogCommands(): Command[] {
-  return useCommandCatalog.getState().commands.map((command) => ({
+function catalogCommands(catalog: CommandDescriptor[]): Command[] {
+  return catalog.map((command) => ({
     id: command.name,
     title: `${command.name} [${command.source ?? "plugin"}]`,
     hint: command.description ?? "",
@@ -577,7 +577,8 @@ function catalogCommands(): Command[] {
     pluginName: command.pluginName,
     keywords: [command.source ?? "plugin", command.pluginName ?? ""].filter(Boolean),
     scope: "session",
-    slashCommandInvocation: command.source === "user" ? `/${command.name}` : `/${command.pluginName}:${command.name}`,
+    slashCommandInvocation:
+      command.source === "plugin" && command.pluginName ? `/${command.pluginName}:${command.name}` : `/${command.name}`,
   }));
 }
 
@@ -597,9 +598,13 @@ export interface FilteredCommands {
 // list to avoid duplication); with a NON-empty filter, commandScore ranking
 // (descending, registry order as a stable tiebreak, negatives excluded) and
 // no Recent section.
-export function filterCommands(ctx: PaletteContext, rawFilter: string): FilteredCommands {
+export function filterCommands(
+  ctx: PaletteContext,
+  rawFilter: string,
+  catalog = useCommandCatalog.getState().commands,
+): FilteredCommands {
   const q = rawFilter.replace(/^\//, "").toLowerCase().trim();
-  const scoped = commandsInScope(ctx);
+  const scoped = commandsInScope(ctx, catalog);
   const recent = q
     ? []
     : readRecentCommandIds()

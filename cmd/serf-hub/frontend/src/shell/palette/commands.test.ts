@@ -287,6 +287,23 @@ test("a focused session includes catalog commands with source labels and qualifi
       }),
     ]),
   );
+  const userCommand = filterCommands(buildPaletteContext(), "/stand").commands.find(
+    (command) => command.id === "standup",
+  );
+  expect(userCommand?.title).toBe("standup [user]");
+  expect(userCommand?.slashCommandInvocation).toBe("/standup");
+});
+
+test("a plugin catalog entry without pluginName still has an unqualified invocation", () => {
+  focusSession("ref_a");
+  useCommandCatalog.setState({
+    commands: [{ name: "review", description: "plugin cmd", source: "plugin" }],
+    loaded: true,
+  });
+
+  const command = filterCommands(buildPaletteContext(), "/review").commands.find((entry) => entry.id === "review");
+  expect(command?.slashCommandInvocation).toBe("/review");
+  expect(command?.slashCommandInvocation).not.toContain("undefined");
 });
 
 test("catalog commands are absent without a focused session", () => {

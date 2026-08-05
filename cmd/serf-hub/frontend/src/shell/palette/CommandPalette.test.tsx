@@ -5,6 +5,7 @@ import { WireError } from "../../protocol/errors";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../protocol/types.gen";
+import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
@@ -99,6 +100,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  useCommandCatalog.setState({ commands: [], loaded: false });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   localStorage.clear();
@@ -148,6 +150,21 @@ test("a '/set' filter narrows to matching commands and drops non-matches", () =>
   act(() => openPalette("/set"));
   expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
   expect(screen.queryByRole("option", { name: /New session/ })).toBeNull();
+});
+
+test("an async catalog refresh rerenders the open session palette", async () => {
+  const fake = new FakeClient();
+  fake.on("serf/command/list", async () => {
+    await Promise.resolve();
+    return { commands: [{ name: "review", pluginName: "p", source: "plugin" }] };
+  });
+  connectionStore.setState({ client: fake as never });
+  focusSession("ref_a");
+  render(<CommandPalette />);
+
+  act(() => openPalette("/review"));
+
+  await waitFor(() => expect(screen.getByRole("option", { name: /review \[plugin\]/ })).toBeTruthy());
 });
 
 test("selecting a free-arg command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
