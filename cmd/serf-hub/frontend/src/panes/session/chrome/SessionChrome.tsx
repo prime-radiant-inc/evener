@@ -165,7 +165,14 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
       <div className={CLASS.right}>
         <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={!isMobile} />
         <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={!isMobile} />
-        <ActivityPanel ref={activityRef} sessionRef={sessionRef} model={model} now={now} hideTrigger={!isMobile} />
+        <ActivityPanel
+          ref={activityRef}
+          sessionRef={sessionRef}
+          model={model}
+          now={now}
+          hideTrigger={!isMobile}
+          refreshWhenHidden={!isMobile}
+        />
         {!isMobile && !collapsed && (
           <>
             <Button variant="quiet" size="sm" onClick={openDetails} aria-pressed={detailsOpen} data-details-trigger="">

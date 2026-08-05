@@ -30,6 +30,10 @@ export interface ActivityPanelProps {
   model: ThreadModel;
   now: number;
   hideTrigger?: boolean;
+  // SessionChrome's desktop replacement button hides this panel's own
+  // trigger, but still needs the trigger-owned background summary refresh.
+  // The store's loading/bump gate keeps this second owner duplicate-free.
+  refreshWhenHidden?: boolean;
 }
 
 export interface ActivityPanelBodyProps {
@@ -313,7 +317,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
 }
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false },
+  { sessionRef, model, now: _now, hideTrigger = false, refreshWhenHidden = false },
   ref,
 ) {
   const [open, setOpen] = useState(false);
@@ -329,13 +333,15 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   // A closed Sheet has no mounted body, so its trigger owns the established
   // background refresh. The root result also reconciles the panel store.
   useEffect(() => {
-    if (open || hideTrigger || summary.mountedBodies > 0 || !summary.established) return;
+    if (open || (hideTrigger && !refreshWhenHidden) || summary.mountedBodies > 0) return;
+    if (!refreshWhenHidden && !summary.established) return;
     if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
     refreshRoot(sessionRef, model.jobsUpdatedAt);
   }, [
     hideTrigger,
     model.jobsUpdatedAt,
     open,
+    refreshWhenHidden,
     sessionRef,
     summary.established,
     summary.lastFetchedBump,

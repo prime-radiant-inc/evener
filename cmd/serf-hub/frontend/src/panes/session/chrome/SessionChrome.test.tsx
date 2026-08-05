@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import "../../sessionPanels";
@@ -76,6 +77,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
 });
 
@@ -408,6 +410,81 @@ test("selecting the Activity menu item opens the desktop Activity pane", async (
   } finally {
     ro.restore();
   }
+});
+
+test.each([
+  ["Details", "sessionDetails"],
+  ["Tasks", "sessionTasks"],
+  ["Activity", "sessionActivity"],
+] as const)("desktop %s trigger opens and closes its pane for the SessionChrome ref", async (label, type) => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_inline"));
+  fake.on("serf/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_inline");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_inline" />);
+    ro.fire(1000);
+    const trigger = screen.getByRole("button", { name: label });
+    expect(trigger.getAttribute("aria-pressed")).toBe("false");
+    await user.click(trigger);
+    expect(workspaceStore.getState().panes).toContainEqual(
+      expect.objectContaining({ type, params: { ref: "ref_inline" } }),
+    );
+    expect(trigger.getAttribute("aria-pressed")).toBe("true");
+    await user.click(trigger);
+    expect(workspaceStore.getState().panes.some((pane) => pane.type === type)).toBe(false);
+    expect(trigger.getAttribute("aria-pressed")).toBe("false");
+  } finally {
+    ro.restore();
+  }
+});
+
+test("mobile chrome opens Sheets without changing workspace panes", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_mobile"));
+  await threadsStore.getState().ensureThread("ref_mobile");
+
+  try {
+    render(<SessionChrome ref="ref_mobile" />);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
+    expect(workspaceStore.getState().panes).toEqual([]);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("desktop Activity badge refreshes on later jobsUpdatedAt changes without duplicate fetches", async () => {
+  const fake = connectFakeClient();
+  let fetches = 0;
+  fake.on("thread/read", () => readResponse("ref_activity_fresh"));
+  fake.on("serf/jobs/list", () => {
+    fetches += 1;
+    const tree = emptyActivityTree();
+    tree.root.counts.active = fetches;
+    return { data: tree };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_fresh");
+  const initial = threadsStore.getState().threads.get("ref_activity_fresh");
+  if (!initial) throw new Error("missing initial activity freshness model");
+  threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
+
+  render(<SessionChrome ref="ref_activity_fresh" />);
+  await waitFor(() => expect(fetches).toBe(1));
+  expect(screen.getByRole("button", { name: "Activity · 1" })).toBeTruthy();
+  const current = threadsStore.getState().threads.get("ref_activity_fresh");
+  if (!current) throw new Error("missing activity freshness model");
+  threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
+  await waitFor(() => expect(fetches).toBe(2));
+  expect(screen.getByRole("button", { name: "Activity · 2" })).toBeTruthy();
+  await Promise.resolve();
+  expect(fetches).toBe(2);
 });
 
 // Every test above awaits ensureThread BEFORE the first render, so the

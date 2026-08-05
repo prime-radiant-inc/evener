@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { useIsMobile } from "./useIsMobile";
+import { isMobileViewport, useIsMobile } from "./useIsMobile";
 
 // jsdom does not implement window.matchMedia at all (verified directly:
 // `typeof window.matchMedia === "undefined"` under this project's vitest+
@@ -154,4 +154,16 @@ test("does not throw and returns false when window.matchMedia is unavailable", (
   delete window.matchMedia;
   const { result } = renderHook(() => useIsMobile());
   expect(result.current).toBe(false);
+});
+
+test("isMobileViewport directly returns false without matchMedia", () => {
+  // @ts-expect-error simulates jsdom's honest no-matchMedia baseline.
+  delete window.matchMedia;
+  expect(isMobileViewport()).toBe(false);
+});
+
+test("isMobileViewport directly reads the current media query", () => {
+  window.matchMedia = vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia;
+  expect(isMobileViewport()).toBe(true);
+  expect(window.matchMedia).toHaveBeenCalledWith("(max-width: 899px)");
 });
