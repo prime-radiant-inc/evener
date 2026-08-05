@@ -11,6 +11,12 @@ export interface SessionPanelParams {
 
 export type SessionPanelKind = "tasks" | "activity" | "details";
 
+/** The single title grammar shared by the pane registry and PaneScaffold. */
+export function sessionPanelTitle(kind: SessionPanelKind, ref: string, name?: string): string {
+  const label = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : "Details";
+  return `${label} · ${name || ref}`;
+}
+
 const pane = (kind: SessionPanelKind) =>
   lazy(() =>
     import("./SessionPanelPane").then(({ SessionPanelPane }) => ({
@@ -18,23 +24,23 @@ const pane = (kind: SessionPanelKind) =>
     })),
   );
 
-const panelTitle = (prefix: string) => (params: SessionPanelParams, ctx: PaneTitleCtx) =>
-  `${prefix} · ${ctx.threadName?.(params.ref) ?? params.ref}`;
+const panelTitle = (kind: SessionPanelKind) => (params: SessionPanelParams, ctx: PaneTitleCtx) =>
+  sessionPanelTitle(kind, params.ref, ctx.threadName?.(params.ref));
 
 registerPane<SessionPanelParams>({
   id: "sessionTasks",
-  title: panelTitle("Tasks"),
+  title: panelTitle("tasks"),
   component: pane("tasks"),
 });
 
 registerPane<SessionPanelParams>({
   id: "sessionActivity",
-  title: panelTitle("Activity"),
+  title: panelTitle("activity"),
   component: pane("activity"),
 });
 
 registerPane<SessionPanelParams>({
   id: "sessionDetails",
-  title: panelTitle("Details"),
+  title: panelTitle("details"),
   component: pane("details"),
 });

@@ -1,15 +1,19 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../protocol/types.gen";
+import type { ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activityPanel";
 import { activitySummaryStore } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
+import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import type { ActivityTree } from "../session/chrome/activityData";
 import { activityNodeID } from "../session/chrome/activityData";
+import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
 
 vi.mock("../backToParentAction", () => ({
@@ -19,6 +23,7 @@ vi.mock("../backToParentAction", () => ({
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetDisclosureStoreForTests();
 });
 
 afterEach(() => {
@@ -80,6 +85,45 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const RETAINED_TASKS = [
+  {
+    id: 1,
+    type: "implement",
+    description: "Retain the first task",
+    prompt: "Keep this disclosure open across the pane remount.",
+    status: "in_progress",
+  },
+];
+
+function readResponse(ref: string): ThreadReadResponse {
+  return {
+    thread: {
+      id: `thread_${ref}`,
+      sessionId: `session_${ref}`,
+      preview: "Build session",
+      ephemeral: false,
+      modelProvider: "anthropic/claude",
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      status: { type: "idle" },
+      cwd: "/tmp/project",
+      cliVersion: "1.0.0",
+      source: "serf",
+      serf: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    },
+  };
+}
+
 function retainedActivity(): ActivityTree {
   return {
     revision: 1,
@@ -113,11 +157,148 @@ function retainedActivity(): ActivityTree {
   };
 }
 
+function activityRootTree(): ActivityTree {
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "session_a",
+      ref: "ref_a",
+      label: "Build session",
+      aggregate: "running",
+      counts: { active: 1, failed: 0, completed: 1, complete: true },
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "delegate_partial",
+            childSessionId: "session_partial",
+            childRef: "ref_partial",
+            mandate: "Continue retained branch",
+            turns: [
+              {
+                jobId: "delegate_turn",
+                ownerSessionId: "session_a",
+                ownerRef: "ref_a",
+                type: "delegate",
+                status: "completed",
+                terminal: true,
+                background: true,
+                hasOutput: true,
+                description: "partial delegate report",
+                startedAt: "2026-08-05T00:01:00Z",
+                endedAt: "2026-08-05T00:02:00Z",
+                outputBytes: 4,
+              },
+            ],
+            child: {
+              kind: "session",
+              sessionId: "session_partial",
+              ref: "ref_partial",
+              label: "Partial session",
+              aggregate: "running",
+              counts: { active: 1, failed: 0, completed: 1, complete: false },
+              entries: [],
+              branch: { truncated: true, continuation: "page-2", error: "child unavailable" },
+            },
+            branch: {},
+          },
+        },
+      ],
+      branch: {},
+    },
+  };
+}
+
+function continuedActivityTree(): ActivityTree {
+  return {
+    revision: 2,
+    root: {
+      kind: "session",
+      sessionId: "session_a",
+      ref: "ref_a",
+      label: "Build session",
+      aggregate: "running",
+      counts: { active: 1, failed: 0, completed: 1, complete: true },
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "delegate_partial",
+            childSessionId: "session_partial",
+            childRef: "ref_partial",
+            mandate: "Continue retained branch",
+            turns: [
+              {
+                jobId: "delegate_turn",
+                ownerSessionId: "session_a",
+                ownerRef: "ref_a",
+                type: "delegate",
+                status: "completed",
+                terminal: true,
+                background: true,
+                hasOutput: true,
+                description: "partial delegate report",
+                startedAt: "2026-08-05T00:01:00Z",
+                endedAt: "2026-08-05T00:02:00Z",
+                outputBytes: 4,
+              },
+            ],
+            child: {
+              kind: "session",
+              sessionId: "session_partial",
+              ref: "ref_partial",
+              label: "Partial session",
+              aggregate: "running",
+              counts: { active: 1, failed: 0, completed: 1, complete: true },
+              entries: [
+                {
+                  kind: "shell",
+                  job: {
+                    jobId: "continued_shell",
+                    ownerSessionId: "session_partial",
+                    ownerRef: "ref_partial",
+                    type: "shell",
+                    status: "running",
+                    terminal: false,
+                    background: false,
+                    hasOutput: false,
+                    description: "continued shell",
+                    startedAt: "2026-08-05T00:03:00Z",
+                    outputBytes: 0,
+                  },
+                },
+              ],
+              branch: {},
+            },
+            branch: {},
+          },
+        },
+      ],
+      branch: {},
+    },
+  };
+}
+
 test("renders a scaffold loading state before the session model hydrates", () => {
   render(<SessionPanelPane params={{ ref: "ref_a" }} paneId="panel-1" focused kind="tasks" />);
 
   expect(screen.getByText("Loading session panel…")).toBeTruthy();
   expect(screen.getByTestId("back-to-parent")).toBeTruthy();
+});
+
+test("keeps the scaffold heading consistent with the registered title after rename", () => {
+  const model = testModel({ name: "Initial name" });
+  seedModel(model);
+  const { rerender } = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-title" focused kind="details" />,
+  );
+  expect(screen.getByRole("heading", { name: sessionPanelTitle("details", model.ref, model.name) })).toBeTruthy();
+
+  const renamed = testModel({ name: "Renamed session" });
+  seedModel(renamed);
+  rerender(<SessionPanelPane params={{ ref: renamed.ref }} paneId="panel-title" focused kind="details" />);
+  expect(screen.getByRole("heading", { name: sessionPanelTitle("details", renamed.ref, renamed.name) })).toBeTruthy();
 });
 
 test("mounts Tasks body and fetches after the model is hydrated", async () => {
@@ -132,6 +313,26 @@ test("mounts Tasks body and fetches after the model is hydrated", async () => {
 
   expect(await screen.findByText("Run checks")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "serf/tasks/list")).toHaveLength(1);
+});
+
+test("retains Tasks rows and disclosure state across a pane remount", async () => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: RETAINED_TASKS }));
+  const model = testModel({ tasks: { total: 1, done: 0 } });
+  seedModel(model);
+
+  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
+  const summary = await screen.findByText("Retain the first task");
+  await userEvent.click(summary);
+  expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
+  first.unmount();
+
+  expect(tasksPanelStore.getState().entries.get(model.ref)?.rows).toHaveLength(1);
+  seedModel(model);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks-remount" focused kind="tasks" />);
+
+  expect(await screen.findByText("Retain the first task")).toBeTruthy();
+  expect(screen.getByTestId("task-detail-prompt")).toBeTruthy();
 });
 
 test("renders retained Activity selection and expansion after a pane remount", () => {
@@ -207,6 +408,124 @@ test("Details owns a clock after hydration", () => {
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
 });
 
+test("retains Details rendering and the current clock value across a pane remount", () => {
+  vi.useFakeTimers();
+  const start = new Date("2026-08-05T00:00:00.000Z");
+  vi.setSystemTime(start);
+  const model = testModel({ activeTurnStartedAt: start.toISOString(), workMillis: 1_000 });
+  seedModel(model);
+
+  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-details" focused kind="details" />);
+  act(() => vi.advanceTimersByTime(3_000));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
+
+  const mutated = { ...model, workMillis: 2_000 };
+  act(() => {
+    threadsStore.setState({ threads: new Map([[mutated.ref, mutated]]) });
+  });
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
+  first.unmount();
+
+  seedModel(mutated);
+  render(<SessionPanelPane params={{ ref: mutated.ref }} paneId="panel-details-remount" focused kind="details" />);
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
+  act(() => vi.advanceTimersByTime(3_000));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain("8s");
+});
+
+test("retains deferred Activity root completion after unmount and remount", async () => {
+  const fake = connectFakeClient();
+  const root = deferred<{ data: unknown }>();
+  fake.on("serf/jobs/list", () => root.promise);
+  const model = testModel({ jobsUpdatedAt: 1 });
+  seedModel(model);
+
+  const first = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
+  );
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+  first.unmount();
+
+  await act(async () => {
+    root.resolve({ data: retainedActivity() });
+    await Promise.resolve();
+  });
+  expect(activityPanelStore.getState().entries.get(model.ref)?.load.kind).toBe("ready");
+
+  seedModel(model);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-remount" focused kind="activity" />);
+  const row = await screen.findByRole("treeitem", { name: /compile retained shell/i });
+  expect(row.getAttribute("aria-selected")).toBeNull();
+
+  await userEvent.click(row);
+  expect(row.getAttribute("aria-selected")).toBe("true");
+  expect(activityPanelStore.getState().entries.get(model.ref)?.disclosure.selectedID).toBe("job:job_a");
+});
+
+test("retains Activity continuation failure, retry, graft, selection, and expansion across remounts", async () => {
+  const fake = connectFakeClient();
+  const root = deferred<{ data: unknown }>();
+  const failedContinuation = deferred<{ data: unknown }>();
+  const retriedContinuation = deferred<{ data: unknown }>();
+  let continuationCalls = 0;
+  fake.on("serf/jobs/list", ({ continuation }) => {
+    if (!continuation) return root.promise;
+    continuationCalls += 1;
+    return continuationCalls === 1 ? failedContinuation.promise : retriedContinuation.promise;
+  });
+  const model = testModel({ jobsUpdatedAt: 1 });
+  seedModel(model);
+
+  const first = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity" focused kind="activity" />,
+  );
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1));
+  first.unmount();
+  await act(async () => {
+    root.resolve({ data: activityRootTree() });
+    await Promise.resolve();
+  });
+
+  seedModel(model);
+  const second = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-second" focused kind="activity" />,
+  );
+  const delegate = await screen.findByRole("treeitem", { name: "Continue retained branch" });
+  await userEvent.click(screen.getByRole("button", { name: "Collapse Continue retained branch" }));
+  await userEvent.click(screen.getByRole("button", { name: "Expand Continue retained branch" }));
+  await userEvent.click(delegate);
+  expect(delegate.getAttribute("aria-selected")).toBe("true");
+  await userEvent.click(within(delegate).getByRole("button", { name: "Load more" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+  second.unmount();
+
+  await act(async () => {
+    failedContinuation.reject(new Error("continuation unavailable"));
+    await Promise.resolve();
+  });
+  seedModel(model);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-failed" focused kind="activity" />);
+  expect(await screen.findByText(/couldn't load more retained activity/i)).toBeTruthy();
+  const failedDelegate = screen.getByRole("treeitem", { name: "Continue retained branch" });
+  expect(failedDelegate.getAttribute("aria-expanded")).toBe("true");
+  expect(failedDelegate.getAttribute("aria-selected")).toBe("true");
+
+  await userEvent.click(within(failedDelegate).getByRole("button", { name: "Load more" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3));
+  cleanup();
+  await act(async () => {
+    retriedContinuation.resolve({ data: continuedActivityTree() });
+    await Promise.resolve();
+  });
+
+  seedModel(model);
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-grafted" focused kind="activity" />);
+  const graftedDelegate = await screen.findByRole("treeitem", { name: "Continue retained branch" });
+  expect(graftedDelegate.getAttribute("aria-expanded")).toBe("true");
+  expect(graftedDelegate.getAttribute("aria-selected")).toBe("true");
+  expect(await screen.findByRole("treeitem", { name: /continued shell/i })).toBeTruthy();
+});
+
 test("claims and releases the session ref with the pane lifecycle", async () => {
   connectFakeClient();
   const model = testModel();
@@ -222,6 +541,45 @@ test("claims and releases the session ref with the pane lifecycle", async () => 
 
   unmount();
   expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
+});
+
+test("claims after a delayed connection becomes ready and releases the hydrated ref", async () => {
+  const fake = new FakeClient("idle");
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? "ref_a"));
+  connectionStore.getState().connect(fake);
+  const model = testModel();
+  const { unmount } = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-delayed-claim" focused kind="details" />,
+  );
+  expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
+
+  act(() => fake.emitReady());
+  await waitFor(() => expect(threadsStore.getState().threads.has(model.ref)).toBe(true));
+  expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(1);
+
+  unmount();
+  expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
+  expect(threadsStore.getState().frameTimes.has(model.ref)).toBe(false);
+});
+
+test("does not claim a ref when unmounted before the delayed connection is ready", async () => {
+  const fake = new FakeClient("idle");
+  fake.on("thread/read", ({ ref }) => readResponse(ref ?? "ref_a"));
+  connectionStore.getState().connect(fake);
+  const model = testModel();
+  const { unmount } = render(
+    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-delayed-unmount" focused kind="details" />,
+  );
+
+  unmount();
+  act(() => fake.emitReady());
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
+  expect(threadsStore.getState().frameTimes.has(model.ref)).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
 });
 
 test("ordinary body remount does not move focus into the scaffold", () => {

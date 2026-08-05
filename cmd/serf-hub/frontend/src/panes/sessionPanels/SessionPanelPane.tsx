@@ -8,7 +8,7 @@ import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
-import type { SessionPanelKind, SessionPanelParams } from "./index";
+import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
 
 export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
   kind: SessionPanelKind;
@@ -16,11 +16,6 @@ export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
 
 function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelParams {
   return typeof value?.ref === "string" && value.ref.length > 0;
-}
-
-function panelTitle(kind: SessionPanelKind, refOrName: string): string {
-  const label = kind === "tasks" ? "Tasks" : kind === "activity" ? "Activity" : "Details";
-  return `${label} · ${refOrName}`;
 }
 
 export function SessionPanelPane({ params, paneId, focused: _focused, kind }: SessionPanelPaneProps) {
@@ -49,7 +44,7 @@ export function SessionPanelPane({ params, paneId, focused: _focused, kind }: Se
     };
   }, [ref]);
 
-  const title = panelTitle(kind, model?.name || ref);
+  const title = sessionPanelTitle(kind, ref, model?.name);
 
   if (!model) {
     return (
