@@ -22,7 +22,7 @@ import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivityTree, type ActivityTreeHandle, findActivitySelection } from "./ActivityTree";
-import { type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
+import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
 
 export interface ActivityPanelProps {
@@ -65,7 +65,7 @@ function retainedTree(load: (typeof EMPTY_ACTIVITY_PANEL_ENTRY)["load"]): Activi
   return undefined;
 }
 
-function triggerLabel(counts: ActivityTreeData["root"]["counts"] | undefined): string {
+function triggerLabel(counts: ActivityCounts | undefined): string {
   if (!counts?.complete) return "Activity";
   return `Activity · ${counts.active}`;
 }
@@ -86,7 +86,8 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const treeRef = useRef<ActivityTreeHandle>(null);
-  const mountedRef = useRef(true);
+  const mountedRef = useRef(false);
+  const bodyGenerationRef = useRef(0);
   const focusRestoreIDRef = useRef<string | null>(null);
   const currentSessionRef = useRef(sessionRef);
   const [showMobileTree, setShowMobileTree] = useState(true);
@@ -100,6 +101,8 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   }, [sessionRef]);
 
   useEffect(() => {
+    const bodyGeneration = bodyGenerationRef.current + 1;
+    bodyGenerationRef.current = bodyGeneration;
     mountedRef.current = true;
     activitySummaryStore.getState().mountBody(sessionRef);
     return () => {
@@ -125,11 +128,16 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
+        const bodyGeneration = bodyGenerationRef.current;
         refreshRoot(
           sessionRef,
           model.jobsUpdatedAt,
           (sentence) => {
-            if (mountedRef.current && currentSessionRef.current === sessionRef) {
+            if (
+              mountedRef.current &&
+              currentSessionRef.current === sessionRef &&
+              bodyGenerationRef.current === bodyGeneration
+            ) {
               toasts.push("error", sentence);
             }
           },
@@ -310,8 +318,6 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
 ) {
   const [open, setOpen] = useState(false);
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
-  const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
-  const tree = retainedTree(entry.load);
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
@@ -340,7 +346,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     <>
       {!hideTrigger && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {triggerLabel(summary.counts ?? tree?.root.counts)}
+          {triggerLabel(summary.counts)}
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">

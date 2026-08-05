@@ -110,6 +110,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         activityPanelStore.getState().publishFetch(ref, panelRequestID, { kind: "ready", tree: parsed });
       })
       .catch((err) => {
+        const currentRequest = get().entries.get(ref)?.requestID === requestID;
         get().failRootFetch(ref, requestID);
         let result: ActivityFetchResult;
         if (isActionUnavailable(err)) result = { kind: "unsupported" };
@@ -117,7 +118,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         else {
           const failure = failureFor(err);
           result = { kind: "failed", error: failure };
-          onFailure?.(failure.sentence);
+          if (currentRequest) onFailure?.(failure.sentence);
         }
         activityPanelStore.getState().publishFetch(ref, panelRequestID, result);
       });

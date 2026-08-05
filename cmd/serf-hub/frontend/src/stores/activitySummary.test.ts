@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { activityPanelStore } from "./activityPanel";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
 
 describe("activitySummaryStore", () => {
@@ -27,6 +28,12 @@ describe("activitySummaryStore", () => {
     expect(activitySummaryStore.getState().beginRootFetch("ref_a", 1)).toBe(1);
     expect(activitySummaryStore.getState().beginRootFetch("ref_a", 2)).toBeNull();
     activitySummaryStore.getState().failRootFetch("ref_a", 1);
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      established: true,
+      loading: false,
+      lastFetchedBump: 1,
+    });
+    expect(activitySummaryStore.getState().beginRootFetch("ref_a", 1)).toBeNull();
     expect(activitySummaryStore.getState().beginRootFetch("ref_a", 2)).toBe(2);
   });
 
@@ -73,6 +80,7 @@ describe("activitySummaryStore", () => {
     resolve({
       revision: 1,
       root: {
+        kind: "session",
         sessionId: "sess_a",
         ref: "ref_a",
         label: "A",
@@ -87,5 +95,47 @@ describe("activitySummaryStore", () => {
     await Promise.resolve();
     expect(request).toBe(1);
     expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(4);
+  });
+
+  test("publishes root counts to both stores without letting a continuation change the badge", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    const root = {
+      revision: 1,
+      root: {
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 4, failed: 0, completed: 1, complete: true },
+        entries: [],
+        branch: {},
+      },
+    };
+    const request = activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => root);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(request).toBe(1);
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(root.root.counts);
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
+      kind: "ready",
+      tree: { root: { counts: root.root.counts } },
+    });
+
+    const continuationRequest = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:child" });
+    activityPanelStore.getState().publishFetch("ref_a", continuationRequest, {
+      kind: "ready",
+      tree: {
+        revision: 2,
+        root: {
+          kind: "session",
+          ...root.root,
+          counts: { active: 99, failed: 0, completed: 0, complete: true },
+        },
+      },
+    });
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(root.root.counts);
   });
 });

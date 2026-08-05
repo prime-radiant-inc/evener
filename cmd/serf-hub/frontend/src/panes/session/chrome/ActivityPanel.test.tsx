@@ -10,7 +10,7 @@ import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
+import { ActivityPanel, ActivityPanelBody, type ActivityPanelHandle } from "./ActivityPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -399,6 +399,42 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
+  test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", () => {
+      throw new Error("first activity failure");
+    });
+
+    render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} now={0} />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+  });
+
+  test("keeps the badge bare when the root counts are incomplete", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const incomplete = activityTree();
+    incomplete.root.counts.complete = false;
+    fake.on("serf/jobs/list", () => ({ data: incomplete }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Activity · 3" })).toBeNull();
+  });
+
   test("renders empty, unsupported, and exited states", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -512,12 +548,56 @@ describe("ActivityPanel", () => {
     );
     cleanup();
     const hiddenRender = render(hidden(3));
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2);
     act(() => handle.current?.open());
     await screen.findByRole("tree");
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
     await user.click(screen.getByRole("button", { name: "Close" }));
     hiddenRender.rerender(hidden(4));
     expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(3);
+  });
+
+  test("refreshes the visible badge when an open panel body is backgrounded", async () => {
+    const fake = connectFakeClient();
+    let calls = 0;
+    const refreshed = cloneFixture(activityTree(2));
+    refreshed.root.counts.active = 8;
+    fake.on("serf/jobs/list", () => ({ data: calls++ === 0 ? activityTree() : refreshed }));
+
+    const model = testModel({ jobsUpdatedAt: 1 });
+    const { rerender } = render(
+      <>
+        <ActivityPanel sessionRef="ref_root" model={model} now={0} />
+        <ActivityPanelBody sessionRef="ref_root" model={model} />
+      </>,
+    );
+    await screen.findByRole("tree");
+    expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(1);
+
+    rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} now={0} />);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "serf/jobs/list")).toHaveLength(2));
+    expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
+  });
+
+  test("does not let a continuation patch change the root badge summary", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/jobs/list", ({ continuation }) => {
+      if (!continuation) return { data: activityTree() };
+      const patch = cloneFixture(continuedPartialTree());
+      patch.root.counts.active = 99;
+      return { data: patch };
+    });
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
+    await user.click(screen.getByRole("treeitem", { name: /compile root shell/i }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    await screen.findByRole("treeitem", { name: /continued shell/i });
+    expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
   test("continuation grafts only the targeted branch and preserves selection", async () => {
