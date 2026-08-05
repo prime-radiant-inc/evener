@@ -68,9 +68,10 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
@@ -294,15 +295,11 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   const toasts = useToasts();
   const [open, setOpen] = useState(false);
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-  const [rows, setRows] = useState<TaskRow[] | null>(null);
-  const [unsupported, setUnsupported] = useState(false);
-  const [error, setError] = useState<LoadFailure | null>(null);
-  // Set instead of setRows([]) when isThreadNotFound fires with model.tasks
-  // already non-null - see isThreadNotFound's own comment for why this is
-  // terminal rather than a blip. rows is left exactly as it was (whatever
-  // the last successful fetch put there, including nothing at all), so this
-  // can never wipe a retained list the way setRows([]) would.
-  const [daemonGone, setDaemonGone] = useState(false);
+  const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
+  const openRef = useRef(open);
+  useEffect(() => {
+    openRef.current = open;
+  }, [open]);
   // Bumped by Try again. The only fetch trigger a reader controls: the other
   // two are opening the panel and a push arriving, and neither is available
   // to someone looking at a failed fetch in an open panel on a quiet session.
@@ -318,40 +315,35 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    setError(null);
-    setUnsupported(false);
-    setDaemonGone(false);
+    const fetchID = tasksPanelStore.getState().beginFetch(sessionRef);
     threadsStore
       .getState()
       .listTasks(sessionRef)
       .then((data) => {
-        if (cancelled) return;
         const parsed = parseTaskListData(data);
-        if (parsed === null) {
-          setUnsupported(true);
-          setRows(null);
-        } else {
-          setRows(parsed);
-        }
+        tasksPanelStore
+          .getState()
+          .publishFetch(
+            sessionRef,
+            fetchID,
+            parsed === null ? { kind: "unsupported" } : { kind: "rows", rows: parsed },
+          );
       })
       .catch((err) => {
-        if (cancelled) return;
         if (isActionUnavailable(err)) {
-          setUnsupported(true);
-          setRows(null);
+          tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "unsupported" });
           return;
         }
         if (isThreadNotFound(err)) {
           if (model.tasks === null) {
             // Never had a live aggregate pushed - genuinely "no tasks", not
             // merely "can't ask any more" (see the header comment above).
-            setRows([]);
+            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "empty" });
           } else {
             // The trigger is already on screen claiming tasks exist; rows
             // is left untouched so a retained list survives this rejection
             // instead of being replaced by "No tasks yet".
-            setDaemonGone(true);
+            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "daemon-gone" });
           }
           return;
         }
@@ -360,12 +352,9 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
         // Only a panel that has never had a list renders the error state on
         // its own, and that is exactly the `rows === null` case below.
         const failure = loadFailure(err);
-        setError(failure);
-        toasts.push("error", failure.sentence);
+        tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
+        if (openRef.current) toasts.push("error", failure.sentence);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [open, model.tasks, sessionRef, reloads]);
 
   function reload() {
@@ -387,6 +376,7 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   );
 
   function renderBody() {
+    const { rows, unsupported, daemonGone, failure: error } = entry;
     if (unsupported) {
       // No Try again here: the source cannot answer this call at all, so
       // asking again would only fail again.

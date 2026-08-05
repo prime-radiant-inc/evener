@@ -31,6 +31,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "../protocol/types.gen";
+import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { translateAttachmentMarkers } from "./attachmentMarkers";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
@@ -45,6 +46,7 @@ import {
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
+import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
 // hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
@@ -2094,6 +2096,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  resetActivityPanelStoreForTests();
+  resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;
     void mutationRuntime.outbox.stop();
