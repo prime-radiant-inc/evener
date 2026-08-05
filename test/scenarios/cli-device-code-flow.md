@@ -119,9 +119,11 @@ unset XDG_STATE_HOME
 - **Missing `auth_mode=device auth_mode_reason=forced`**: the mode-selection table
   regressed. Cross-check with `auth-device-autodetect.md`.
 - **Missing `device_code_url=https://auth.openai.com/codex/device`**:
-  either a constant changed (`deviceVerificationPath`,
-  `auth/openai/device.go#deviceVerificationPath`, joined onto `IssuerBaseURL`,
-  `auth/openai/config.go#Config.IssuerBaseURL`, at `device.go:159`) or the
+  either a constant or default changed (`deviceVerificationPath`,
+  `auth/openai/device.go#deviceVerificationPath`, joined onto
+  `Config.IssuerBaseURL`, `auth/openai/config.go#Config.IssuerBaseURL`, whose
+  default is `openai.IssuerBaseURL`,
+  `auth/openai/config.go#openai.IssuerBaseURL`, at `device.go:159`) or the
   device endpoint moved.
 - **`device_code=` line missing or malformed**: the
   `RequestDeviceCode` call failed silently, or `oaitest`-style framing
