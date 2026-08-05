@@ -222,14 +222,29 @@ test("the back affordance is shown once a non-welcome pane is focused", async ()
   expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
 });
 
-test("session panel panes suppress generic mobile back while retaining their pane action", async () => {
+// The scaffold header holding the pane's own BackToParentAction is
+// display:none below 900px (panescaffold.module.css), so the top bar is the
+// ONLY visible chrome a phone user has. A panel pane's Back there must return
+// to the parent session - never pop the generic stack, which would walk to
+// whatever happened to be focused before.
+test("a session panel pane's top-bar Back returns to the parent session, not the back stack", async () => {
+  const user = userEvent.setup();
   await import("../../panes/sessionPanels");
-  workspaceStore.getState().openPane("sessionDetails", { ref: "ref_panel" });
+  workspaceStore.getState().openPane("doc", { ref: "ref_before" });
   render(<StackHost />);
+  await screen.findByText(/doc pane: ref_before/);
 
+  workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   expect(await screen.findByText("Loading session panel…")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-  expect(screen.getByRole("button", { name: /back to ref_panel/i })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(workspaceStore.getState().panes).toContainEqual(
+    expect.objectContaining({ type: "session", params: { ref: "local:ref_panel" } }),
+  );
+  const state = workspaceStore.getState();
+  const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  expect(focused?.type).toBe("session");
 });
 
 test("back returns to the pane that was focused before the current one", async () => {
