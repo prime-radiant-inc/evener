@@ -235,7 +235,7 @@ always contain `:` and serf-wide keys never do (enforced at discovery).
 
 Expansion is server-side (`EntryUserInput`, session_lifecycle.go:925-933),
 so any client that forwards `/name args` as input gets serf-wide invocation
-with no client work. See §Client parity for the cases where clients don't
+with no client work. See §Web invocation for the cases where clients don't
 forward.
 
 ### Shared loader
@@ -431,7 +431,8 @@ no live requests.
 
 | File | Change |
 |---|---|
-| `agent/plugin/commands.go` | Add `Source` and `File` to `Command`; set both in `discoverPluginCommands` |
+| `agent/plugin/commands.go` | Add `Source` and `File` to `Command`; set both in `discoverPluginCommands`; update the `Command` doc comment (currently says "defined by a plugin") |
+| `agent/session.go` | Update the `pluginCommands` field comment (currently says "the union of every loaded plugin's slash commands") |
 | `agent/plugin/serfwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
 | `agent/plugin/plugin.go` | New: `MergeCommands` shared flatten-and-overlay |
 | `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
