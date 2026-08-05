@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
@@ -18,13 +19,17 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
   return typeof value?.ref === "string" && value.ref.length > 0;
 }
 
+function DetailsPaneBody({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
+  const now = useNowTick(NOW_TICK_MS);
+  return <DetailsPanelBody sessionRef={sessionRef} model={model} now={now} />;
+}
+
 export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanelPaneProps) {
   if (!isSessionPanelParams(params)) {
     throw new Error("SessionPanelPane: params.ref must be a non-empty string");
   }
   const { ref } = params;
   const model = useThreadsStore((state) => state.threads.get(ref));
-  const now = useNowTick(NOW_TICK_MS);
 
   useEffect(() => {
     let started = false;
@@ -66,7 +71,7 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
     ) : kind === "activity" ? (
       <ActivityPanelBody sessionRef={ref} model={model} />
     ) : (
-      <DetailsPanelBody sessionRef={ref} model={model} now={now} />
+      <DetailsPaneBody sessionRef={ref} model={model} />
     );
 
   return (

@@ -331,10 +331,12 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   }, [sessionRef]);
 
   // A closed Sheet has no mounted body, so its trigger owns the established
-  // background refresh. The root result also reconciles the panel store.
+  // background refresh. The desktop chrome keeps this owner mounted behind
+  // its replacement trigger, but refreshWhenHidden is false while that
+  // trigger row is collapsed. The root result also reconciles the panel store.
   useEffect(() => {
     if (open || (hideTrigger && !refreshWhenHidden) || summary.mountedBodies > 0) return;
-    if (!refreshWhenHidden && !summary.established) return;
+    if (!summary.established) return;
     if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
     refreshRoot(sessionRef, model.jobsUpdatedAt);
   }, [

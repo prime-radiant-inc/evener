@@ -7,10 +7,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
+import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import "../../sessionPanels";
+import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome } from "./SessionChrome";
 
@@ -483,7 +484,7 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
   }
 });
 
-test("desktop Activity badge refreshes on later jobsUpdatedAt changes without duplicate fetches", async () => {
+test("desktop Activity waits for the body's first root attempt before owning later refreshes", async () => {
   const fake = connectFakeClient();
   let fetches = 0;
   fake.on("thread/read", () => readResponse("ref_activity_fresh"));
@@ -498,9 +499,16 @@ test("desktop Activity badge refreshes on later jobsUpdatedAt changes without du
   if (!initial) throw new Error("missing initial activity freshness model");
   threadsStore.setState({ threads: new Map([[initial.ref, { ...initial, jobsUpdatedAt: 1 }]]) });
 
-  render(<SessionChrome ref="ref_activity_fresh" />);
+  const chrome = render(<SessionChrome ref="ref_activity_fresh" />);
+  await act(async () => Promise.resolve());
+  expect(fetches).toBe(0);
+  expect(activitySummaryStore.getState().entries.get(initial.ref)?.established).not.toBe(true);
+
+  const body = render(<ActivityPanelBody sessionRef={initial.ref} model={initial} />);
   await waitFor(() => expect(fetches).toBe(1));
   expect(screen.getByRole("button", { name: "Activity · 1" })).toBeTruthy();
+  body.unmount();
+
   const current = threadsStore.getState().threads.get("ref_activity_fresh");
   if (!current) throw new Error("missing activity freshness model");
   threadsStore.setState({ threads: new Map([[current.ref, { ...current, jobsUpdatedAt: 2 }]]) });
@@ -508,6 +516,41 @@ test("desktop Activity badge refreshes on later jobsUpdatedAt changes without du
   expect(screen.getByRole("button", { name: "Activity · 2" })).toBeTruthy();
   await Promise.resolve();
   expect(fetches).toBe(2);
+  chrome.unmount();
+});
+
+test("collapsed desktop chrome suppresses established Activity refresh until the trigger row returns", async () => {
+  const fake = connectFakeClient();
+  let fetches = 0;
+  fake.on("thread/read", () => readResponse("ref_activity_collapsed"));
+  fake.on("serf/jobs/list", () => {
+    fetches += 1;
+    return { data: emptyActivityTree() };
+  });
+  await threadsStore.getState().ensureThread("ref_activity_collapsed");
+  const initial = threadsStore.getState().threads.get("ref_activity_collapsed");
+  if (!initial) throw new Error("missing collapsed activity model");
+  const model = { ...initial, jobsUpdatedAt: 1 };
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref={model.ref} />);
+    const body = render(<ActivityPanelBody sessionRef={model.ref} model={model} />);
+    await waitFor(() => expect(fetches).toBe(1));
+    body.unmount();
+
+    ro.fire(300);
+    const bumped = { ...model, jobsUpdatedAt: 2 };
+    act(() => threadsStore.setState({ threads: new Map([[bumped.ref, bumped]]) }));
+    await act(async () => Promise.resolve());
+    expect(fetches).toBe(1);
+
+    ro.fire(1_000);
+    await waitFor(() => expect(fetches).toBe(2));
+  } finally {
+    ro.restore();
+  }
 });
 
 // Every test above awaits ensureThread BEFORE the first render, so the

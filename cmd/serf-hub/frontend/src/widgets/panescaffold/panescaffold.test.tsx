@@ -45,7 +45,7 @@ test("makes the content region focusable and consumes a toggle-open focus marker
   expect(document.activeElement).toBe(previousFocus);
 });
 
-test("does not focus on an ordinary remount or after a pre-mount activation is cancelled", () => {
+test("does not focus after a scaffold mounts inactive or on an ordinary remount", () => {
   requestPaneFocus("pane_sessionDetails_1");
   const { rerender, unmount, container } = render(
     <PaneScaffold title="Details" paneId="pane_sessionDetails_1" focused={false}>

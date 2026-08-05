@@ -171,7 +171,7 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
           model={model}
           now={now}
           hideTrigger={!isMobile}
-          refreshWhenHidden={!isMobile}
+          refreshWhenHidden={!isMobile && !collapsed}
         />
         {!isMobile && !collapsed && (
           <>

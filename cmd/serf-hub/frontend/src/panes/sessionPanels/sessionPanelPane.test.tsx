@@ -13,6 +13,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import type { ActivityTree } from "../session/chrome/activityData";
 import { activityNodeID } from "../session/chrome/activityData";
+import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
 import { SessionPanelPane } from "./SessionPanelPane";
 
@@ -394,14 +395,31 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
   expect(await screen.findByText("This session has ended")).toBeTruthy();
 });
 
+test.each(["tasks", "activity"] as const)("%s pane does not install the Details clock", async (kind) => {
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => ({ data: [] }));
+  fake.on("serf/jobs/list", () => ({ data: retainedActivity() }));
+  const model = testModel({ tasks: { total: 0, done: 0 }, jobsUpdatedAt: 1 });
+  seedModel(model);
+  const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+
+  render(<SessionPanelPane params={{ ref: model.ref }} paneId={`panel-${kind}`} focused kind={kind} />);
+  await act(async () => Promise.resolve());
+
+  expect(setIntervalSpy).not.toHaveBeenCalled();
+  setIntervalSpy.mockRestore();
+});
+
 test("Details owns a clock after hydration", () => {
   vi.useFakeTimers();
   const start = new Date("2026-08-05T00:00:00.000Z");
   vi.setSystemTime(start);
   const model = testModel({ activeTurnStartedAt: start.toISOString(), workMillis: 1_000 });
   seedModel(model);
+  const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-details" focused kind="details" />);
+  expect(setIntervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), NOW_TICK_MS);
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("1s");
 
   act(() => vi.advanceTimersByTime(3_000));
