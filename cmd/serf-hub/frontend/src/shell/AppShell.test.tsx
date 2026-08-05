@@ -973,12 +973,9 @@ test("a placement guard armed for one pathname does not mark a concurrent pathna
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local:session-next"));
-  unsubscribe();
-
-  act(() => {
-    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-armed" }, { slot: "secondary" });
-  });
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-next" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+  unsubscribe();
 });
 
 test("a focused non-panel pane is re-focused to the routed top-level session", async () => {

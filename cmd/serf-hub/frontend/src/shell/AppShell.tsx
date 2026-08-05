@@ -362,8 +362,10 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
         const armedPathname = routePlacementPathnameRef.current;
         routePlacementInProgressRef.current = false;
         routePlacementPathnameRef.current = null;
-        if (armedPathname === pathname) placedPathnameRef.current = pathname;
-        return;
+        if (armedPathname === pathname) {
+          placedPathnameRef.current = pathname;
+          return;
+        }
       }
       const allowFocusedPanel =
         pendingSessionRef.current === null &&
