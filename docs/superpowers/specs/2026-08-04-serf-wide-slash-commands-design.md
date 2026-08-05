@@ -1,45 +1,53 @@
 # Serf-Wide Slash Commands — Design
 
-Date: 2026-08-04
+Date: 2026-08-04 (revised after adversarial review, same day)
 Status: Approved design, pre-plan
 
 ## Summary
 
-Serf loads slash commands only from plugins (`agent/plugin/commands.go`): each
-plugin's `commands/*.md` files become commands namespaced as `plugin:name`.
-This design adds **serf-wide commands** — markdown command files that live
-outside any plugin, discovered from the project and the user config dir, and
-invoked by bare name. Plugin commands keep their `plugin:name` namespacing;
-serf-wide commands have none.
+Serf loads slash commands only from plugins (`agent/plugin/commands.go`):
+each plugin's `commands/*.md` files become commands namespaced as
+`plugin:name`. This design adds **serf-wide commands** — markdown command
+files that live outside any plugin, discovered from the project and the user
+config dir, and invoked by bare name. Plugin commands keep their `plugin:name`
+namespacing and their full Claude Code-compatible expansion; serf-wide
+commands have no namespace and expand **inert** (codex posture, §Threat
+model).
 
 ## Goals
 
-- Discover commands from `<dir>/.serf/commands/*.md` walking git-root→cwd, and
-  from the global config dir (`$XDG_CONFIG_HOME/serf/commands/` or
+- Discover commands from `<dir>/.serf/commands/*.md` walking git-root→cwd,
+  and from the global config dir (`$XDG_CONFIG_HOME/serf/commands/` or
   `~/.config/serf/commands/`).
-- Precedence: **project > user-global > plugin**. A serf-wide command shadows
-  a plugin command of the same bare name; the plugin command stays reachable
-  as `/plugin:name`.
-- Identical file format, expansion semantics, and unenforced-field warnings as
-  plugin commands.
-- Invocation parity across clients (TUI, web, headless) — automatic, because
-  expansion is server-side (`agent/session_slash_command.go`).
-- `serf/command/list` entries gain a `source` label (`plugin` / `project` /
-  `user`).
+- Precedence: **project > user-global > plugin**. A serf-wide command
+  shadows a plugin command of the same bare name; the plugin command stays
+  reachable as `/plugin:name`.
+- Same file format as plugin commands (bare markdown, optional frontmatter,
+  filename is the name).
+- Serf-wide commands never execute shell commands or read files at expansion
+  time. Arguments substitute as inert text; `!`cmd`` spans and `@file`
+  directives in a serf-wide body stay literal.
+- `serf/command/list` entries gain a `source` label
+  (`plugin` / `project` / `user`).
 
 ## Non-goals (YAGNI)
 
 - Enforcing `model` / `allowed-tools` frontmatter. Both stay parsed-but-
   unenforced, warned about, deferred to design §14 of the plugin-marketplaces
   spec — for plugin and serf-wide commands alike.
+- Changing plugin command expansion. Plugin commands keep `!`cmd`` execution
+  and `@file` inclusion: they are explicitly installed by the user and exist
+  for Claude Code compatibility.
 - A `commands_dirs` launch-config field for arbitrary extra directories. The
   two auto-discovered locations cover the ask; the field is easy to add later
   by analogy with `skills_dirs`.
 - Per-command enable/disable, command aliases, or a first-class command
-  registry type. The existing `map[string]plugin.Command` plus bare-key merge
-  delivers the required precedence with no refactor.
+  registry type.
 - Project commands in the hub-wide `serf/command/list` catalog (see
   §Catalog boundary).
+- A client built-in collision guard. Clients intercept their own built-in
+  slash names before input reaches the session (§Client parity); this design
+  documents the behavior rather than reserving names.
 
 ## Current state
 
@@ -48,26 +56,74 @@ serf-wide commands have none.
   bare markdown (no frontmatter required); the filename is the authoritative
   name.
 - Plugin commands are keyed `plugin:name` in `Session.pluginCommands`
-  (`agent/session_init.go` merges each plugin's `Commands`).
+  (`agent/session_init.go:1139` merges each plugin's `Commands`).
 - `plugin.ResolveCommand` tries an exact key match, then falls back to
-  matching the unqualified suffix of each key.
+  matching the unqualified suffix of each key (commands.go:121-131); a bare
+  name matching two plugins resolves nondeterministically by map iteration
+  order (documented at commands.go:118-120).
 - `Session.expandSlashCommand` resolves `/name args` against
-  `pluginCommands` and expands the body via `command.Expand` (`$ARGUMENTS`,
-  `$1..$9`, backtick substitution, `@file` inclusion). Unknown `/words` pass
-  through as ordinary text.
-- `skill.DiscoverSkills` (`agent/skill/skills.go`) is the discovery analog:
-  walk git-root→cwd scanning `skills/` dirs, then extra dirs; later entries
-  shadow earlier ones by name; cwd is symlink-resolved.
-- `agent/internal/promptpath` is the config-dir analog: `GlobalPromptsDir`
-  resolves `$XDG_CONFIG_HOME/serf/prompts` or `~/.config/serf/prompts` via
-  `envvars.XDGConfigHome` with home lookup injected at the boundary.
-- `hubCommandList` (`cmd/serf-hub/app_rpc.go`) answers `serf/command/list`
-  by loading `plugins.Manager.EnabledPluginDirs(cfg.PluginDirs)` through
-  `plugin.LoadAllFailSoft` and flattening into
-  `appwire.CommandDescriptor{Name, PluginName, Description, ArgumentHint}`.
+  `pluginCommands` and expands via `command.Expand`: `$ARGUMENTS`, `$1..$9`,
+  **`!`cmd`` executes via `env.ExecCommand`** (agent/command/expand.go:86-91,
+  160-163), and **`@file` inlines file contents** (expand.go:175-188;
+  `filepath.IsLocal`-constrained but symlink-following). Unknown `/words`
+  pass through as ordinary text.
+- `command.Expand`'s safety invariant (expand.go:6-12): only directives in
+  the template execute; argument text can never open a directive.
+- `skill.DiscoverSkills` (`agent/skill/skills.go:26-55`) is the discovery
+  analog: walk git-root→cwd scanning `skills/` dirs, then extra dirs; later
+  entries shadow earlier; cwd is symlink-resolved. Skill bodies are loaded as
+  pure text — no expansion of any kind.
+- `agent/internal/promptpath` is the config-dir analog:
+  `globalPromptsDir` resolves `$XDG_CONFIG_HOME/serf/prompts` or
+  `~/.config/serf/prompts` via `envvars.XDGConfigHome`, with environment and
+  home lookup injected at the boundary for deterministic tests.
+- `initPlugins` (`agent/session_init.go:1121`) **early-returns when
+  `cfg.PluginDirs` is empty** (line 1122) — serf-wide discovery must not
+  live behind that gate.
+- `hubCommandList` (`cmd/serf-hub/app_rpc.go:815-839`) answers
+  `serf/command/list` via `plugins.Manager.EnabledPluginDirs` +
+  `plugin.LoadAllFailSoft`, flattened into
+  `appwire.CommandDescriptor{Name, PluginName, Description, ArgumentHint}`;
+  it **early-returns empty when there are no plugin dirs** (lines 817-819).
 - The agent module must not import `primeradiant.com/serf/internal/plugins`
-  (root-module internal). It already imports `primeradiant.com/serf/envvars`,
-  which is the sanctioned XDG seam inside the agent module.
+  (root-module internal). It already imports
+  `primeradiant.com/serf/envvars`, the sanctioned XDG seam. `agent/plugin`
+  imports neither `execenv` nor `events` today; neither imports `plugin`, so
+  the additions below create no import cycle.
+- Client interception: the TUI resolves typed `/name` against ~27 built-in
+  commands before forwarding to the session (cmd/serf-tui/
+  hub_session_keys.go:439-468; registry in hub_command_registry.go). The web
+  composer routes a leading `/` in an empty composer to its local command
+  palette (cmd/serf-hub/frontend/src/panes/session/composer/
+  Composer.tsx:679-682).
+
+## Threat model
+
+Today every executable command template comes from a plugin dir the user
+explicitly configured or installed. This feature auto-discovers templates
+from the worked-on repo (`.serf/commands/`), which is attacker-controlled in
+any cloned repository. Combined with `command.Expand`'s `!`cmd`` execution,
+a user typing `/setup` in a malicious repo would run repo-supplied shell
+with no confirmation. Skills — the discovery analog — have no such exposure
+because skill bodies never expand.
+
+Reference postures:
+
+- **Claude Code** executes `!`cmd`` in skills/commands, but gates
+  project-sourced content behind a workspace trust dialog and offers a
+  `disableSkillShellExecution` settings kill switch.
+- **Codex** never executes: skills and custom prompts are inert text; skill
+  bodies reach the model only through the model's own tool calls, inheriting
+  normal permission and sandbox checks (`inspo/codex/codex-rs/core-skills`,
+  `ext/skills/src/render.rs`).
+
+**Decision: codex's posture.** Serf-wide commands expand inert regardless of
+source (project or user-global): `$ARGUMENTS`/`$1..$9` substitute as inert
+text; `!`cmd`` spans and `@file` directives remain literal text in the
+expanded body. A user who wants executable templates already has the plugin
+path, which is explicit and Claude Code-compatible. This also matches serf
+skills, which are inert today. Rationale and cross-tool comparison are
+documented for users in `docs/skills.md`.
 
 ## Design
 
@@ -85,8 +141,7 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 
 - User-global dir: a `globalCommandsDir(xdgConfigHome string, userHomeDir
   func() (string, error))` helper mirroring `promptpath.globalPromptsDir`,
-  returning `<config>/serf/commands`. Environment and home lookup stay at the
-  boundary so path construction is deterministic in tests.
+  returning `<config>/serf/commands`.
 - Project walk: reuse the skill discovery shape — resolve symlinks on cwd,
   find git root via `execenv.GitRootOrEmpty`, iterate
   `execenv.DirsFromRootToCwd`, scan `<dir>/.serf/commands` in each. A nil env
@@ -94,11 +149,16 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
   (the hub catalog relies on this; see §Catalog boundary).
 - Each scan reads immediate `.md` files only (same semantics as plugin
   command discovery) and parses with the existing `ParseCommand`.
-- Two filename rejections, each with a warning, never fatal:
+- Per-file rejections, each producing a warning, never fatal:
   - a basename containing `:` — a bare key with a colon could forge the
     `plugin:name` namespace and shadow a plugin's exact key;
-  - malformed frontmatter — `ParseCommand`'s only error path; skip the file,
-    warn, continue.
+  - malformed frontmatter — `ParseCommand`'s only error path; skip the
+    file, warn, continue.
+- Per-file advisory warning: a serf-wide body containing a `!`` span is
+  flagged once at discovery ("execution directives are inert in serf-wide
+  commands; use a plugin command for executable templates"). `@file` text is
+  not scanned — `@` appears too often in ordinary prose (emails, mentions)
+  for a useful signal.
 - Shadowing between serf-wide sources is silent and deterministic, matching
   skills.
 
@@ -112,55 +172,80 @@ them) stay consistent with how plugin load failures are handled today.
 
 ```go
 Source string // "plugin", "project", or "user"
+File   string // absolute path of the defining .md; empty for built-ins
 ```
 
-`discoverPluginCommands` sets `Source: "plugin"`. Serf-wide discovery sets
-`"project"` or `"user"` per origin dir. `PluginName` stays empty for
-serf-wide commands. No other consumer of `Command` changes.
+`discoverPluginCommands` sets `Source: "plugin"` and the file path.
+Serf-wide discovery sets `"project"` or `"user"` and the path. `PluginName`
+stays empty for serf-wide commands. The `File` field exists so warnings can
+name the offending file, which the review found undeliverable otherwise.
+
+### Expansion
+
+New function in `agent/command`:
+
+```go
+// ExpandArgs substitutes $ARGUMENTS and $1..$9 only. !`cmd` spans and
+// @file directives remain literal text; nothing executes or reads.
+func ExpandArgs(body, args string) string
+```
+
+It reuses the existing `substituteArguments` over the whole body — argument
+substitution is already inert by the package safety invariant, so no
+directive scanning is needed at all.
+
+`Session.expandSlashCommand` branches on the resolved command's `Source`:
+`"plugin"` commands expand via `command.Expand` (unchanged); serf-wide
+commands expand via `command.ExpandArgs`.
 
 ### Merge and precedence
 
-Session init (`initPlugins`) merges after the plugin loop:
+Serf-wide discovery must run for every session, including sessions with no
+plugin dirs, so it does **not** live in `initPlugins` (which early-returns
+on empty `PluginDirs`). Session init discovers and merges next to the skill
+merge (`agent/session_init.go:905`):
 
 ```go
 serfwide, warnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
 maps.Copy(s.pluginCommands, serfwide) // bare-name keys
-s.pendingHookWarnings-style queue += warnings
+// warnings join the session-start warning queue
 ```
 
-Precedence needs no resolution changes. `ResolveCommand` exact-matches first:
-a bare serf-wide key `review` wins over every `plugin:review` suffix-fallback
-candidate. `/plugin:review` still exact-matches the plugin's key. Serf-wide
-keys never collide with plugin keys because plugin keys always contain `:`
-and serf-wide keys never do (enforced at discovery).
+Precedence needs no resolution changes. `ResolveCommand` exact-matches
+first: a bare serf-wide key `review` wins over every `plugin:review`
+suffix-fallback candidate. `/plugin:review` still exact-matches the plugin's
+key. Serf-wide keys never collide with plugin keys because plugin keys
+always contain `:` and serf-wide keys never do (enforced at discovery).
 
-Expansion is untouched: `expandSlashCommand` already resolves through
-`pluginCommands`, so every client (TUI, web, headless `serf run`) inherits
-serf-wide invocation with no client work.
+Expansion is server-side (`EntryUserInput`, session_lifecycle.go:925-933),
+so any client that forwards `/name args` as input gets serf-wide invocation
+with no client work. See §Client parity for the cases where clients don't
+forward.
 
 ### Shared loader
 
-Today session init and `hubCommandList` each assemble the command set on
-their own. Extract one path in `agent/plugin`:
+Session init and `hubCommandList` must agree on the command set, but the
+session already holds loaded `plugin.Instance`s — a shared loader taking
+dirs would double-load. Share the flatten-and-merge, not the load:
 
 ```go
-// LoadAllCommands returns the full command map a session in env's directory
-// would see: plugin commands (namespaced) plus serf-wide commands (bare).
-func LoadAllCommands(dirs []string, env execenv.ExecutionEnvironment) (map[string]Command, []events.WarningData)
+// MergeCommands flattens plugin instances' commands (namespaced keys) and
+// overlays serf-wide commands (bare keys), returning the unified map.
+func MergeCommands(instances []Instance, serfwide map[string]Command) map[string]Command
 ```
 
-Session init and the hub both call it. (`agent/plugin` already depends on
-neither `execenv` nor `events`; both are leaf-ward of it — verify no import
-cycle at implementation time; if one exists, the loader moves to the `agent`
-package and takes `plugin` pieces as parameters.)
+Session init calls it with its already-loaded instances; `hubCommandList`
+calls `plugin.LoadAllFailSoft` first, then `MergeCommands`, then flattens
+for the wire. `hubCommandList`'s `len(dirs) == 0` early return is removed so
+user-global commands appear in the catalog even with zero plugins.
 
 ### Unenforced-field warnings
 
-`commandUnenforcedFieldWarnings` (`agent/session_init.go`) warns when a
-plugin command declares `model` or `allowed-tools`. Extend the same warning
-to serf-wide commands, labeled by source and file, so a user who writes
-`allowed-tools` in `~/.config/serf/commands/review.md` learns it is not
-enforced.
+`commandUnenforcedFieldWarnings` (`agent/session_init.go:1624`) takes a
+`plugin.Instance` and interpolates its manifest name, so it cannot cover
+serf-wide commands. Serf-wide `model`/`allowed-tools` warnings are generated
+inside discovery instead — where the file path is known — and returned in
+the discovery warnings slice, labeled by source and file.
 
 ### Catalog
 
@@ -172,24 +257,48 @@ Source string `json:"source,omitempty"` // "plugin" | "project" | "user"
 
 `appwire/protocol.go`'s `serf/command/list` description and
 `docs/appwire-protocol.md` are updated to match. The web catalog badges or
-groups commands by source; TUI autocomplete may show it. Frontend changes
-follow the AGENTS.md gates (`npx biome check --write`, `make test-web`).
+groups commands by source. Frontend changes follow the AGENTS.md gates
+(`npx biome check --write`, `make test-web`).
 
 ### Catalog boundary
 
 The hub is multi-project: `WebConfig` has no single working directory, and
 `serf/command/list` takes `EmptyParams`. The hub-wide catalog therefore
 reports **plugin and user-global commands only**; project commands are
-cwd-dependent and appear in the catalog of whatever session-scoped surface
-exists later. This is a deliberate boundary, not an oversight: invocation
-parity is unaffected (expansion is session-side), and a project-scoped
-catalog param is a clean future extension.
+cwd-dependent and resolve per session. Invocation is unaffected (expansion
+is session-side). A project-scoped catalog param is a clean future
+extension.
+
+Consequence for the error table below: when a **user-global** command
+shadows a plugin command, the catalog lists both with distinct sources; when
+a **project** command shadows one, the catalog lists only the plugin entry.
+
+### Client parity
+
+Expansion parity across clients is **not** automatic, and this design does
+not change that:
+
+- TUI built-in names (~27: `status`, `model`, `help`, ...) are intercepted
+  client-side before input reaches the session; a serf-wide command with
+  such a name is unreachable in the TUI. It works in headless input and is
+  shadowed identically for plugin commands today.
+- The web composer routes a leading `/` in an empty composer to its local
+  palette rather than sending it as input.
+
+`docs/skills.md` documents both behaviors. A reserved-name warning at
+discovery is a possible follow-up; it requires sharing the clients' built-in
+name lists and is out of scope here.
 
 ### Lifecycle and persistence
 
-Serf-wide commands are discovered live at session init, exactly like skills.
-Nothing is added to `SessionConfig`, the snapshot schema, or launch config.
-Resumed and forked sessions re-discover from the current filesystem.
+Serf-wide commands are discovered once at session init, exactly like skills;
+nothing is added to `SessionConfig`, the snapshot schema, or launch config.
+Resumed and forked sessions re-discover from the current filesystem. A
+mid-session worktree swap (`swapEnvAndRefresh`,
+`agent/session_env_swap.go:17`) changes the working directory without
+re-running discovery, so project commands reflect the tree the session
+started in until restart — the same staleness skills have today; documented,
+not fixed here.
 
 ## Error handling
 
@@ -201,10 +310,12 @@ Fail-soft everywhere; loud warnings; never block spawn.
 | Commands dir present but unreadable | Warning, continue with other dirs |
 | Malformed frontmatter in a `.md` | Skip file, warning naming file and error, continue |
 | Filename containing `:` | Skip file, warning (namespace forgery guard) |
+| Serf-wide body contains `!`` spans | Advisory warning at discovery; spans stay literal in expansion |
 | Serf-wide vs serf-wide name collision | Silent deterministic shadowing (deepest project dir > user-global) |
-| Serf-wide shadows plugin command | Silent; plugin reachable via `/plugin:name`; catalog lists both with distinct sources |
-| Expansion failure | Unchanged: warning + literal-text fallback in `expandSlashCommand` |
-| `model`/`allowed-tools` declared | Unenforced-field warning, as plugin commands today |
+| Serf-wide shadows plugin command | Silent; plugin reachable via `/plugin:name`; catalog lists both only when the shadowing command is user-global (§Catalog boundary) |
+| Command name matches a client built-in | Works headless; unreachable in TUI / palette-intercepted in web; documented (§Client parity) |
+| Expansion failure (plugin commands) | Unchanged: warning + literal-text fallback in `expandSlashCommand` |
+| `model`/`allowed-tools` declared | Unenforced-field warning naming source and file, generated at discovery |
 
 ## Testing
 
@@ -212,24 +323,31 @@ Per `docs/testing.md`: deterministic, scripted provider at the LLM boundary,
 no live requests.
 
 - **Unit — discovery**: table tests over fixture trees: user-global only;
-  project walk only; ordering (user-global scanned first, deepest project dir
-  shadows); symlinked cwd; non-`.md` files ignored; subdirectories not
+  project walk only; ordering (user-global scanned first, deepest project
+  dir shadows); symlinked cwd; non-`.md` files ignored; subdirectories not
   descended; malformed frontmatter skipped with warning; colon filenames
-  skipped with warning; nil env scans user-global only.
+  skipped with warning; `!`` advisory warning fires; nil env scans
+  user-global only.
 - **Unit — precedence**: `ResolveCommand` exact-matches a bare serf-wide key
   before plugin suffix fallback; `/plugin:name` still resolves explicitly;
-  two plugins sharing a command name keep first-found fallback when no
-  serf-wide command shadows.
-- **Session (scripted provider)**: `/review args` from project and user
-  sources expands through `command.Expand` including `$ARGUMENTS` and
-  `@file`; a shadowed plugin command expands only when invoked as
-  `/plugin:name`; a malformed command file yields the warning event and the
-  session spawns normally; unenforced-frontmatter warnings fire for
-  serf-wide commands.
-- **Hub**: `serf/command/list` returns plugin and user-global entries with
-  correct `source` values; shared-loader parity — the catalog for a nil-env
-  hub matches what session init loads from the same plugin dirs plus the
-  user-global dir.
+  when two plugins share a command name with no serf-wide shadow, assert the
+  result is one of the two (the fallback is nondeterministic map iteration
+  by design — do not assert a specific winner).
+- **Unit — expansion**: `ExpandArgs` substitutes `$ARGUMENTS`/`$1..$9` and
+  leaves `!`cmd`` and `@file` byte-for-byte literal; `expandSlashCommand`
+  routes `"plugin"` sources to `Expand` and serf-wide sources to
+  `ExpandArgs` (assert a `!`true`` span in a serf-wide body is not
+  executed, e.g. via a scripted env that records `ExecCommand` calls).
+- **Session (scripted provider)**: serf-wide commands load and expand with
+  **`PluginDirs: nil`** (the default configuration); `/review args` expands
+  from project and user sources; a shadowed plugin command expands only
+  when invoked as `/plugin:name`; a malformed command file yields the
+  warning event and the session spawns normally; unenforced-frontmatter
+  warnings fire for serf-wide commands with file labels.
+- **Hub**: `serf/command/list` with zero plugin dirs still returns
+  user-global entries with `source: "user"`; shared-loader parity — the
+  catalog matches what session init loads from the same plugin dirs plus
+  the user-global dir.
 - **Fuzz**: discovery over fuzzed directory trees and frontmatter, following
   `agent/plugin/loader_program_fuzz_test.go` patterns; register targets per
   the fuzz registry (`make fuzz-registry-check`).
@@ -240,18 +358,22 @@ no live requests.
 
 | File | Change |
 |---|---|
-| `agent/plugin/commands.go` | Add `Source` to `Command`; set `"plugin"` in `discoverPluginCommands` |
-| `agent/plugin/serfwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards |
-| `agent/plugin/plugin.go` (home of `LoadAllFailSoft`; or the `agent` package) | New: `LoadAllCommands` shared loader |
-| `agent/session_init.go` | Merge serf-wide commands after plugin loop; extend unenforced-field warnings |
+| `agent/plugin/commands.go` | Add `Source` and `File` to `Command`; set both in `discoverPluginCommands` |
+| `agent/plugin/serfwide.go` | New: `DiscoverSerfWideCommands`, dir-scan helper, `globalCommandsDir`, filename guards, directive advisory, unenforced-field warnings |
+| `agent/plugin/plugin.go` | New: `MergeCommands` shared flatten-and-overlay |
+| `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
+| `agent/session_slash_command.go` | Branch expansion on `Command.Source` |
+| `agent/session_init.go` | Discover + merge serf-wide commands beside the skill merge (outside the `PluginDirs` gate); queue discovery warnings |
 | `appwire/types.go` | `CommandDescriptor.Source` |
 | `appwire/protocol.go` | `serf/command/list` description mentions source |
-| `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses the shared loader (nil env) |
-| web catalog (`cmd/serf-hub` web assets) | Badge/group commands by source |
+| `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
+| web catalog (`cmd/serf-hub/frontend`) | Badge/group commands by source |
 | `docs/appwire-protocol.md` | Document the `source` field |
-| `docs/commands.md` (new user doc; no command doc exists today) | Document serf-wide command locations, precedence, format |
+| `docs/skills.md` | Document skills and command sources, the inert-expansion posture, and the trust model |
 
 ## Open questions
 
-None. Precedence (project > user > plugin), the catalog boundary, and
-deferred frontmatter enforcement were decided during design review.
+None. Precedence (project > user > plugin), the inert-expansion posture
+(codex model), the catalog boundary, client-parity documentation, and
+deferred frontmatter enforcement were all decided during design review and
+adversarial re-review.
