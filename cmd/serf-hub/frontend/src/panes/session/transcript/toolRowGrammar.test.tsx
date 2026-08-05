@@ -985,6 +985,24 @@ test("a status-bearing summary-less, purpose-less row's disclosure does not stam
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
+// `status` is typed ReactNode, which admits values that carry no accessible
+// name at all - null, false, an empty string - not just a real status node.
+// Suppressing the fallback on `status !== undefined` alone treats any of
+// those as "status present" and leaves the disclosure with no accessible
+// name: no aria-label (suppressed) and no descendant name (nothing renders
+// one). The gate must reject nameless status values, not just absent ones.
+test("a null status does not suppress the fallback label - the disclosure is never left unnamed", () => {
+  render(<ToolRow summary="" failed={false} status={null} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+test("a false status does not suppress the fallback label - the disclosure is never left unnamed", () => {
+  render(<ToolRow summary="" failed={false} status={false} expandable expanded onToggle={() => {}} />);
+  const row = screen.getByTestId("tool-row");
+  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
 // The mechanism-level ToolRow tests above prove the row CAN linkify a
 // summaryLink; this proves ToolCallItem actually THREADS a descriptor's
 // summaryLink through to it - a wiring bug (the prop never passed) would

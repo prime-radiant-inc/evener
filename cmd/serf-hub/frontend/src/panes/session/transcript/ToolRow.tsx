@@ -203,6 +203,14 @@ export function ToolRow({
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
+  // `status` is typed ReactNode, so it admits values that render nothing and
+  // carry no accessible name - null, undefined, false (the common
+  // `condition && <Node/>` idiom) - alongside a real status node. Only a
+  // value that can actually render counts as "status present" for both the
+  // wrapping span below and the aria-label fallback gate: treating null or
+  // false as present would render an empty span and, on the expandable
+  // branch, suppress the fallback label with nothing left to name the row.
+  const hasStatus = status !== undefined && status !== null && status !== false;
   // The inline-affordance anchor (trailingAfter): split the summary into the
   // text up to the anchor's end and the rest, so the trailing control can
   // ride BETWEEN them. Undefined when there is no trailing control, no
@@ -313,7 +321,7 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failed && <FailureGlyph />}
-      {status !== undefined && (
+      {hasStatus && (
         <span className={CLASS.status} data-testid="tool-row-status">
           {status}
         </span>
@@ -392,11 +400,14 @@ export function ToolRow({
       // aria-label REPLACES the computed accessible name entirely, including
       // any descendant name (FailureGlyph's "Failed", a status glyph's state
       // label), so the fallback applies ONLY when the row would otherwise
-      // have no accessible name at all - not merely no purpose/summary. When
-      // failed or status is set, their own accessible name stands instead.
-      // The fallback is a stable label, not a restoration of the hidden
-      // summary text (that suppression, ToolCallItem.tsx:259, is deliberate).
-      aria-label={!hasPurpose && !hasSummary && !failed && status === undefined ? "Tool call" : undefined}
+      // have no accessible name at all - not merely no purpose/summary, and
+      // not merely no FAILED/hasStatus flag (a nameless status value like
+      // null or false must not suppress it either, see hasStatus above).
+      // When failed or hasStatus is true, their own accessible name stands
+      // instead. The fallback is a stable label, not a restoration of the
+      // hidden summary text (that suppression, ToolCallItem.tsx:259, is
+      // deliberate).
+      aria-label={!hasPurpose && !hasSummary && !failed && !hasStatus ? "Tool call" : undefined}
       onClick={(e) => {
         // Fully controlled: preventDefault stops the browser flipping
         // <details open> itself, so the caller's store stays the single source
