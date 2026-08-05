@@ -375,6 +375,11 @@ func resolveComponentDirs(pluginDir string, defaultName string, override any) []
 func componentMarkdownFiles(paths []string) ([]string, error) {
 	var files []string
 	for _, p := range paths {
+		absolute, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("resolving component path %q: %w", p, err)
+		}
+		p = absolute
 		info, err := pluginStat(p)
 		if err != nil {
 			if os.IsNotExist(err) {

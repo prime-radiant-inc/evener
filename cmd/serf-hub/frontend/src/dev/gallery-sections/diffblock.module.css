@@ -1,7 +1,0 @@
-/* min() against the viewport, not max-width: 100% - see
- * gallery-sections/dialog.module.css for why (this frame's ThemeFlip
- * .pane ancestor is shrink-to-fit, so a percentage max-width silently
- * does nothing; wave-close fix, verified empirically). */
-.frame {
-  width: min(480px, calc(100vw - 96px));
-}

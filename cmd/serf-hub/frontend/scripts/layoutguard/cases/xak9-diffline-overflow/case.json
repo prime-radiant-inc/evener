@@ -1,8 +1,0 @@
-{
-  "name": "xak9-diffline-overflow",
-  "description": "an expanded diff line longer than its box must truncate visibly (ellipsis), not silently escape its container with no signal that content is missing (kata xak9)",
-  "cssFiles": [
-    "styles/tokens.css",
-    "widgets/diffblock/diffblock.module.css"
-  ]
-}

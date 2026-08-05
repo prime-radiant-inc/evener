@@ -1,9 +1,0 @@
-/* failureglyph is allowlisted (src/styles/token-contract.test.ts) for
- * --danger: marking a failure IS this widget's whole purpose, so the hue is
- * its content, not decoration. */
-.glyph {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  color: var(--danger);
-}

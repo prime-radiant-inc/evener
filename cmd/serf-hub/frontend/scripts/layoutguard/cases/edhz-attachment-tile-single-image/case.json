@@ -1,9 +1,0 @@
-{
-  "name": "edhz-attachment-tile-single-image",
-  "description": "composer attachment tile: one image filling the tile exactly, nothing inside it clipped by its own overflow:hidden, and the same box whether the decode has landed or not (katas edhz, 39xe)",
-  "cssFiles": [
-    "styles/tokens.css",
-    "styles/global.css",
-    "panes/session/composer/composer.module.css"
-  ]
-}
