@@ -8,10 +8,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
+import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
+import {
+  activitySummaryStore,
+  EMPTY_ACTIVITY_SUMMARY_ENTRY,
+  useActivitySummaryStore,
+} from "../../../stores/activitySummary";
 import { threadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -19,7 +24,6 @@ import { ActivityInspector } from "./ActivityInspector";
 import { ActivityTree, type ActivityTreeHandle, findActivitySelection } from "./ActivityTree";
 import { type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
 import styles from "./activitypanel.module.css";
-import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 
 export interface ActivityPanelProps {
   sessionRef: string;
@@ -31,14 +35,6 @@ export interface ActivityPanelProps {
 export interface ActivityPanelHandle {
   open: () => void;
 }
-
-interface LoadFailure {
-  headline: string;
-  detail?: string;
-  sentence: string;
-}
-
-const LOAD_FAILURE = "Couldn't load activity";
 
 const CLASS = {
   state: requireClass(styles.state, "activitypanel.module.css", "state"),
@@ -58,22 +54,15 @@ function continuationFailureMessage(err?: unknown): string {
     : "Couldn't load more retained activity for this branch.";
 }
 
-function loadFailure(err: unknown): LoadFailure {
-  const headline = sessionActionHeadline(LOAD_FAILURE, err);
-  const sentence = sessionActionError(LOAD_FAILURE, err);
-  const detail = errorText(err).trim();
-  return detail ? { headline, detail, sentence } : { headline, sentence };
-}
-
 function retainedTree(load: (typeof EMPTY_ACTIVITY_PANEL_ENTRY)["load"]): ActivityTreeData | undefined {
   if (load.kind === "ready") return load.tree;
   if (load.kind === "ended") return load.tree;
   return undefined;
 }
 
-function triggerLabel(tree: ActivityTreeData | undefined): string {
-  if (!tree?.root.counts.complete) return "Activity";
-  return `Activity · ${tree.root.counts.active}`;
+function triggerLabel(counts: ActivityTreeData["root"]["counts"] | undefined): string {
+  if (!counts?.complete) return "Activity";
+  return `Activity · ${counts.active}`;
 }
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
@@ -89,9 +78,13 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
   const openRef = useRef(false);
   const focusRestoreIDRef = useRef<string | null>(null);
   const openedRef = useRef(false);
+  const currentSessionRef = useRef(sessionRef);
+  const bodyTokenRef = useRef({ ref: sessionRef });
   const [open, setOpen] = useState(false);
   const [showMobileTree, setShowMobileTree] = useState(true);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
+  currentSessionRef.current = sessionRef;
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
@@ -99,6 +92,14 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     openRef.current = open;
     if (!open) openedRef.current = false;
   }, [open]);
+
+  if (bodyTokenRef.current.ref !== sessionRef) bodyTokenRef.current = { ref: sessionRef };
+
+  useEffect(() => {
+    if (!open) return;
+    activitySummaryStore.getState().mountBody(sessionRef);
+    return () => activitySummaryStore.getState().unmountBody(sessionRef);
+  }, [open, sessionRef]);
 
   useEffect(
     () => () => {
@@ -132,6 +133,26 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
 
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }) => {
+      if (!continuation) {
+        const summaryRequestID = activitySummaryStore.getState().refreshRoot(
+          sessionRef,
+          model.jobsUpdatedAt,
+          (ref) => threadsStore.getState().listJobs(ref),
+          (sentence) => {
+            if (
+              mountedRef.current &&
+              currentSessionRef.current === sessionRef &&
+              bodyTokenRef.current.ref === sessionRef &&
+              openRef.current
+            ) {
+              toasts.push("error", sentence);
+            }
+          },
+          true,
+        );
+        if (summaryRequestID !== null) fetchedBumpRef.current = model.jobsUpdatedAt;
+        return;
+      }
       const requestID = activityPanelStore
         .getState()
         .beginFetch(sessionRef, continuation ? { nodeID: continuation.nodeID } : undefined);
@@ -142,17 +163,13 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         .then((data) => {
           const parsed = parseActivityTree(data);
           if (parsed === null) {
-            activityPanelStore.getState().publishFetch(
-              sessionRef,
-              requestID,
-              continuation
-                ? {
-                    kind: "continuation-failed",
-                    nodeID: continuation.nodeID,
-                    message: continuationFailureMessage(),
-                  }
-                : { kind: "unsupported" },
-            );
+            if (continuation) {
+              activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+                kind: "continuation-failed",
+                nodeID: continuation.nodeID,
+                message: continuationFailureMessage(),
+              });
+            }
             return;
           }
           activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
@@ -166,17 +183,6 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
             });
             return;
           }
-          if (isActionUnavailable(err)) {
-            activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "unsupported" });
-            return;
-          }
-          if (isThreadNotFound(err)) {
-            activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ended" });
-            return;
-          }
-          const failure = loadFailure(err);
-          activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "failed", error: failure });
-          if (mountedRef.current && openRef.current) toasts.push("error", failure.sentence);
         });
     },
     [model.jobsUpdatedAt, sessionRef, toasts],
@@ -190,11 +196,18 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
       if (needsVisibleFetch) fetchRoot();
       return;
     }
-    if (hideTrigger) return;
-    if (fetchedBumpRef.current === undefined) return;
-    if (fetchedBumpRef.current === model.jobsUpdatedAt) return;
+    if (hideTrigger || summary.mountedBodies > 0 || !summary.established) return;
+    if (summary.lastFetchedBump === model.jobsUpdatedAt) return;
     fetchRoot();
-  }, [fetchRoot, hideTrigger, model.jobsUpdatedAt, open]);
+  }, [
+    fetchRoot,
+    hideTrigger,
+    model.jobsUpdatedAt,
+    open,
+    summary.established,
+    summary.lastFetchedBump,
+    summary.mountedBodies,
+  ]);
 
   useEffect(() => {
     if (!isMobile) setShowMobileTree(true);
@@ -321,7 +334,7 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     <>
       {!hideTrigger && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {triggerLabel(tree)}
+          {triggerLabel(summary.counts ?? tree?.root.counts)}
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">

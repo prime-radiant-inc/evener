@@ -297,9 +297,22 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   const openRef = useRef(open);
+  const mountedRef = useRef(true);
+  const currentSessionRef = useRef(sessionRef);
+  const bodyTokenRef = useRef({ ref: sessionRef });
+  currentSessionRef.current = sessionRef;
   useEffect(() => {
     openRef.current = open;
   }, [open]);
+
+  if (bodyTokenRef.current.ref !== sessionRef) bodyTokenRef.current = { ref: sessionRef };
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   // Bumped by Try again. The only fetch trigger a reader controls: the other
   // two are opening the panel and a push arriving, and neither is available
   // to someone looking at a failed fetch in an open panel on a quiet session.
@@ -315,6 +328,7 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
     if (!open) return;
+    const bodyToken = bodyTokenRef.current;
     const fetchID = tasksPanelStore.getState().beginFetch(sessionRef);
     threadsStore
       .getState()
@@ -353,7 +367,14 @@ export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function
         // its own, and that is exactly the `rows === null` case below.
         const failure = loadFailure(err);
         tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
-        if (openRef.current) toasts.push("error", failure.sentence);
+        if (
+          mountedRef.current &&
+          currentSessionRef.current === sessionRef &&
+          bodyTokenRef.current === bodyToken &&
+          openRef.current
+        ) {
+          toasts.push("error", failure.sentence);
+        }
       });
   }, [open, model.tasks, sessionRef, reloads]);
 

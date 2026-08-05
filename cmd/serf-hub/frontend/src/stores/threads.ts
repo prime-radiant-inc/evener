@@ -32,6 +32,7 @@ import type {
   ThreadTurnsListResponse,
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
+import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { translateAttachmentMarkers } from "./attachmentMarkers";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
@@ -2097,6 +2098,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetTasksPanelStoreForTests();
   if (mutationRuntime) {
     mutationRuntime.active = false;
