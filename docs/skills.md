@@ -30,7 +30,7 @@ own.
 |---|---|---|---|---|
 | Skill | skills bundled with serf; `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
 | Serf-wide command | `.serf/commands/` (git root→cwd), `~/.config/serf/commands/` | yes, inert text | never — stays literal | never — stays literal |
-| Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines cwd-local files |
+| Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines files at cwd-relative paths (symlinks followed) |
 
 Argument substitution is safe in every row: `$ARGUMENTS` and `$1..$9` are
 always substituted as inert text and can never become a live directive, even
@@ -96,7 +96,8 @@ cwd wins.
 Plugins (installed via the marketplace or configured via `plugin_dirs`) may
 ship `commands/*.md` files. These are Claude Code-compatible: in addition
 to `$ARGUMENTS` substitution, ``!`cmd` `` spans execute in the session
-environment and `@file` inlines working-directory-local files. Only install
+environment and `@file` inlines files at working-directory-relative paths
+(the constraint is lexical; symlinks are followed). Only install
 plugins you trust — a plugin command's body runs shell commands with the
 same permissions as the session.
 

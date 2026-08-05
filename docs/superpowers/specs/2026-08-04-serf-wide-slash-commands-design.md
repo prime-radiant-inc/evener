@@ -333,6 +333,7 @@ Fail-soft everywhere; loud warnings; never block spawn.
 |---|---|
 | Commands dir absent | Silent (default state on most machines) |
 | Commands dir present but unreadable | Warning, continue with other dirs |
+| Command file unreadable after a successful dir scan | Skip file, warning naming file, continue (plugin discovery fails hard here, commands.go:97-100; serf-wide discovery follows the fail-soft rule instead) |
 | Malformed frontmatter in a `.md` | Skip file, warning naming file and error, continue |
 | Filename containing `:` | Skip file, warning (namespace forgery guard) |
 | Filename containing whitespace | Skip file, warning (uninvokable-name guard) |
