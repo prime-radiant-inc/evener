@@ -271,11 +271,17 @@ wait_for_ready_workers() {
 if [ "${MAKE_SELFTEST_SELFTEST_INTERRUPT_CHILD:-}" = 1 ]; then
 	# Child-mode instance for the interruption-reaping check below: set up one hung-readiness
 	# wave and block in the readiness wait until the parent sends TERM. Never spawns a child itself.
+	# Reap-fifo plumbing (the same handshake the TERM-ignoring case uses) makes this instance's
+	# own cleanup() wait for an actual probe-reaped event instead of leaving it to be inferred.
 	new_case
 	ready_fifo="$case_state/ready"
 	stop_fifo="$case_state/stopped"
+	reaped_fifo="$case_state/reaped"
+	reap_release_fifo="$case_state/reap-release"
 	exec 9<>"$ready_fifo"
 	exec 8<>"$stop_fifo"
+	exec 7<>"$reaped_fifo"
+	exec 6<>"$reap_release_fifo"
 	run_make_with_readiness_events hold "$case_dir/child.out" probe-two
 	wait_for_ready_workers || :
 	exit 0
@@ -462,15 +468,13 @@ if [ -n "$child_case_state" ] && [ -f "$child_case_state/make-child.pid" ] \
 	probe_one_pid="$(cat "$child_case_state/probe-one.pid")"
 	probe_two_pid="$(cat "$child_case_state/probe-two.pid")"
 	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
-	# The child's own cleanup() reaps Make through its wrapper via a real `wait`, so once this
-	# returns make_child_pid is truly gone, not a zombie. The probes are orphaned (not our
-	# children) and can't be `wait`ed on directly, so give their reap a small bounded poll.
+	# The child's own cleanup() reaps its whole hierarchy through real completion events before
+	# it exits: Make through its wrapper's `wait`, and the probes (reap-fifo plumbed above, so
+	# their wrapper survives Make's death and only reports reaped once its own bg job is waited
+	# on) through wait_for_fixture_reapers' blocking FIFO read. So by the time `wait` returns
+	# here, nothing below is a race -- it's a single confirmation, not a poll.
 	wait "$interrupt_child_pid" 2>/dev/null || :
-	reap_attempt=0
-	while [ "$reap_attempt" -lt 20 ] && { kill -0 "$probe_one_pid" 2>/dev/null || kill -0 "$probe_two_pid" 2>/dev/null; }; do
-		reap_attempt=$((reap_attempt + 1))
-		sleep 0.05
-	done
+	interrupt_child_pid=""
 	if kill -0 "$make_child_pid" 2>/dev/null || kill -0 "$probe_one_pid" 2>/dev/null || kill -0 "$probe_two_pid" 2>/dev/null; then
 		bad "interrupting the selftest during a readiness wait reaps the Make child and probe descendants"
 		kill -KILL "$make_child_pid" "$probe_one_pid" "$probe_two_pid" 2>/dev/null || :
@@ -482,9 +486,9 @@ else
 	# TERM, not KILL: let the child's own EXIT cleanup reap whatever it managed to start.
 	kill -TERM "$interrupt_child_pid" 2>/dev/null || :
 	wait "$interrupt_child_pid" 2>/dev/null || :
+	interrupt_child_pid=""
 fi
 rm -rf "$child_work"
-interrupt_child_pid=""
 
 echo "----"
 echo "make-selftest-selftest: $checks checks, $fails failed"
