@@ -65,10 +65,10 @@ of two places:
 - `$XDG_CONFIG_HOME/serf/commands/name.md` or `~/.config/serf/commands/name.md`
   (user-global commands)
 
-The filename is the command name. Names cannot contain spaces (invocation
-parses the name up to the first space, so a spaced name can never run) or
-colons (`:` is the plugin-namespace separator; serf skips such files with a
-warning). Invoke it by typing `/name args` in a session. Optional
+The filename is the command name. Names cannot contain whitespace
+(invocation parses the name up to the first space, so a spaced name can
+never run) or colons (`:` is the plugin-namespace separator; serf skips
+such files with a warning). Invoke it by typing `/name args` in a session. Optional
 frontmatter: `description`, `argument-hint`, `model`, `allowed-tools` (the
 last two are parsed but not enforced; serf warns when they appear).
 

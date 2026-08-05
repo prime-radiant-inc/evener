@@ -184,7 +184,7 @@ them) stay consistent with how plugin load failures are handled today.
 
 ```go
 Source string // "plugin", "project", or "user"
-File   string // absolute path of the defining .md; empty for built-ins
+File   string // absolute path of the defining .md
 ```
 
 `discoverPluginCommands` sets `Source: "plugin"` and the file path.
@@ -291,12 +291,15 @@ a **project** command shadows one, the catalog lists only the plugin entry.
 
 ### Web invocation (closing the parity gap)
 
-Today serf-wide and plugin commands are **entirely unreachable from the web
-composer**: a leading `/` in an empty composer opens the local palette
-(Composer.tsx:679-682), the palette lists only built-in UI commands (no
-frontend consumer of `serf/command/list` exists outside generated types),
-and Enter on an unmatched query does nothing
-(CommandPalette.tsx:409-411 — no fallthrough). The TUI, by contrast,
+Today serf-wide and plugin commands are **unreachable from the web
+composer by typing**: a leading `/` in an empty composer opens the local
+palette (Composer.tsx:679-682), the palette lists only built-in UI commands
+(no frontend consumer of `serf/command/list` exists outside generated
+types), and Enter on an unmatched query does nothing
+(CommandPalette.tsx:409-411 — no fallthrough). The only escapes are
+accidental: the gate fires only on an *empty* composer, and the server
+`TrimSpace`s input (session_slash_command.go:22), so pasting `/name` or
+typing a leading space reaches the session. The TUI, by contrast,
 forwards unmatched slash names to the session
 (hub_session_keys.go:440-457). This design closes the gap rather than
 documenting it:
@@ -404,9 +407,10 @@ no live requests.
   user-global entries with `source: "user"`; with a project
   `.serf/commands/` present on disk, the hub catalog returns **no**
   project-sourced entries (the hub calls discovery with a nil env — the
-  test that pins §Catalog boundary); shared-loader parity — the catalog
-  matches what session init loads from the same plugin dirs plus the
-  user-global dir.
+  test that pins §Catalog boundary); when a user-global command shadows a
+  plugin command, the catalog lists both entries with distinct sources;
+  shared-loader parity — the catalog matches what session init loads from
+  the same plugin dirs plus the user-global dir.
 - **Fuzz**: discovery over fuzzed directory trees and frontmatter, following
   `agent/plugin/loader_program_fuzz_test.go` patterns; register targets per
   the fuzz registry (`make fuzz-registry-check`).
