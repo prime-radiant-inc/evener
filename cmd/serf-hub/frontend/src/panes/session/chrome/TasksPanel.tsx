@@ -358,8 +358,10 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         // Only a panel that has never had a list renders the error state on
         // its own, and that is exactly the `rows === null` case below.
         const failure = loadFailure(err);
-        tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
-        if (mountedRef.current && currentSessionRef.current === sessionRef) {
+        const accepted = tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
+        // A rejected (obsolete) failure must not toast either: a newer fetch
+        // already superseded this one, possibly with rows now on screen.
+        if (accepted && mountedRef.current && currentSessionRef.current === sessionRef) {
           toasts.push("error", failure.sentence);
         }
       });

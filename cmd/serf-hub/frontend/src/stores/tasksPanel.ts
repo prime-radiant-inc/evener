@@ -28,7 +28,9 @@ export type TasksFetchResult =
 export interface TasksPanelStoreState {
   entries: Map<string, TasksPanelEntry>;
   beginFetch(ref: string): number;
-  publishFetch(ref: string, fetchID: number, result: TasksFetchResult): void;
+  // Returns whether the result was accepted - false when a newer fetch has
+  // superseded this one, so the caller must not surface it either.
+  publishFetch(ref: string, fetchID: number, result: TasksFetchResult): boolean;
   setRows(ref: string, rows: TaskRow[]): void;
   setFailure(ref: string, failure: PanelLoadFailure): void;
   setUnsupported(ref: string): void;
@@ -93,9 +95,11 @@ export const tasksPanelStore = createStore<TasksPanelStoreState>((set) => ({
   },
 
   publishFetch(ref, fetchID, result) {
+    let accepted = false;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.fetchID !== fetchID) return state;
+      accepted = true;
       const next = new Map(state.entries);
       switch (result.kind) {
         case "rows":
@@ -149,6 +153,7 @@ export const tasksPanelStore = createStore<TasksPanelStoreState>((set) => ({
       }
       return { entries: next };
     });
+    return accepted;
   },
 
   setRows(ref, rows) {
