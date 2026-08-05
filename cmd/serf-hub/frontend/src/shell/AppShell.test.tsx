@@ -314,6 +314,26 @@ async function saveRealSessionLayout(): Promise<void> {
   resetWorkspaceStoreForTests();
 }
 
+async function saveRealSessionPanelLayout(): Promise<void> {
+  window.history.pushState({}, "", "/s/local:session-a");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+
+  act(() => {
+    const panelId = workspaceStore
+      .getState()
+      .openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+  await screen.findByText(/Loading session panel…/);
+
+  unmount();
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  resetWorkspaceStoreForTests();
+}
+
 async function saveLegacyNestedMainLayout(): Promise<void> {
   workspaceStore.getState().openPane("session", { ref: "local:child" });
   const { unmount } = render(<DockHost />);
@@ -825,6 +845,179 @@ test("a nested child route replaces unrelated panes, keeps its owner main, and f
   expect(workspaceStore.getState().focusedPaneId).toBe(
     panes.find((pane) => (pane.params as { ref?: string }).ref === "local:child")?.id,
   );
+});
+
+test("a focused same-ref session panel does not steal a settled top-level route", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
+
+  act(() => {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+
+  await waitFor(() =>
+    expect(workspaceStore.getState().focusedPaneId).toBe(
+      workspaceStore.getState().panes.find((pane) => pane.type === "sessionTasks")?.id,
+    ),
+  );
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+  expect(workspaceStore.getState().panes.some((pane) => pane.type === "sessionTasks")).toBe(true);
+});
+
+test("a focused aside-ref session panel does not invalidate a top-level route", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
+
+  act(() => {
+    workspaceStore.getState().openPane("session", { ref: "local:sub1" }, { slot: "secondary" });
+    workspaceStore.getState().openPane("sessionActivity", { ref: "local:sub1" }, { slot: "secondary" });
+  });
+
+  await waitFor(() =>
+    expect(workspaceStore.getState().focusedPaneId).toBe(
+      workspaceStore.getState().panes.find((pane) => pane.type === "sessionActivity")?.id,
+    ),
+  );
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" });
+});
+
+test("a focused session panel does not invalidate a settled nested route", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    return Promise.resolve(jsonResponse({}));
+  });
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
+
+  act(() => {
+    workspaceStore.getState().openPane("sessionDetails", { ref: "local:child" }, { slot: "secondary" });
+  });
+
+  await waitFor(() =>
+    expect(workspaceStore.getState().focusedPaneId).toBe(
+      workspaceStore.getState().panes.find((pane) => pane.type === "sessionDetails")?.id,
+    ),
+  );
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+});
+
+test("a deferred deep link beats a restored active session panel", async () => {
+  await saveRealSessionPanelLayout();
+  resetTreeStoreForTests();
+  let resolveTree!: (value: Response) => void;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url === "/api/tree") return new Promise<Response>((resolve) => (resolveTree = resolve));
+      return Promise.resolve(jsonResponse({}));
+    }),
+  );
+
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => expect(resolveTree).toBeDefined());
+  resolveTree(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+  await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+});
+
+test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
+
+  act(() => {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+  });
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  act(() => {
+    window.history.pushState({}, "", "/thread/local:session-a");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(mainId));
+
+  act(() => {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
+    window.history.pushState({}, "", "/s/local:session-a");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(mainId));
+});
+
+test("a placement guard armed for one pathname does not mark a concurrent pathname placed", async () => {
+  window.history.pushState({}, "", "/s/local:session-base");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+
+  let redirected = false;
+  const unsubscribe = workspaceStore.subscribe(() => {
+    const main = workspaceStore.getState().mainPane();
+    const ref = (main?.params as { ref?: unknown } | undefined)?.ref;
+    if (!redirected && ref === "local:session-armed") {
+      redirected = true;
+      window.history.pushState({}, "", "/s/local:session-next");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  });
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:session-armed");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local:session-next"));
+  unsubscribe();
+
+  act(() => {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-armed" }, { slot: "secondary" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-next" }));
+});
+
+test("a focused non-panel pane is re-focused to the routed top-level session", async () => {
+  window.history.pushState({}, "", "/s/local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
+  const mainId = workspaceStore.getState().mainPane()?.id;
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:session-a",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(mainId));
+});
+
+test("a focused non-panel pane is re-focused to the routed nested session", async () => {
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    return Promise.resolve(jsonResponse({}));
+  });
+  window.history.pushState({}, "", "/s/local:child");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
+  const childId = paneFor("local:child")?.id;
+
+  act(() => {
+    workspaceStore.getState().openPane("doc", {
+      session: "local:child",
+      path: "README.md",
+      kind: "text",
+    });
+  });
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(childId));
 });
 
 test("successful Spawn navigation replaces Spawn with the created session and clears old secondary panes", async () => {

@@ -114,7 +114,7 @@ function sameRouteParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): boolean {
+function routePlacementIsApplied(pathname: string, tree: TreeResponse | null, allowFocusedPanel = false): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
 
@@ -136,10 +136,17 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): b
     const paneRef = (pane.params as { ref?: unknown }).ref;
     return typeof paneRef === "string" ? paneRef : null;
   };
+  const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const focusedPanel =
+    focusedPane?.type === "sessionTasks" ||
+    focusedPane?.type === "sessionActivity" ||
+    focusedPane?.type === "sessionDetails";
+  const focusIsApplied = (paneId: string): boolean =>
+    workspace.focusedPaneId === paneId || (allowFocusedPanel && focusedPanel);
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
-      workspace.focusedPaneId === main.id &&
+      focusIsApplied(main.id) &&
       main.type === "session" &&
       sessionRefOf(main) === ref &&
       workspace.panes.filter((pane) => pane.type === "session" && sessionRefOf(pane) === ref).length === 1
@@ -154,7 +161,7 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null): b
     ownerPanes.length === 1 &&
     ownerPanes[0]?.id === main.id &&
     childPanes.length === 1 &&
-    workspace.focusedPaneId === childPanes[0]?.id
+    focusIsApplied(childPanes[0]?.id ?? "")
   );
 }
 
@@ -325,6 +332,8 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const dockHostHasMountedRef = useRef(false);
   const openedForPathnameRef = useRef<string | null>(null);
   const routePlacementInProgressRef = useRef(false);
+  const routePlacementPathnameRef = useRef<string | null>(null);
+  const placedPathnameRef = useRef<string | null>(null);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
@@ -350,17 +359,31 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   useEffect(() => {
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
+        const armedPathname = routePlacementPathnameRef.current;
         routePlacementInProgressRef.current = false;
+        routePlacementPathnameRef.current = null;
+        if (armedPathname === pathname) placedPathnameRef.current = pathname;
         return;
       }
-      if (routePlacementIsApplied(pathname, tree)) return;
+      const allowFocusedPanel =
+        pendingSessionRef.current === null &&
+        placedPathnameRef.current === pathname &&
+        !routePlacementInProgressRef.current;
+      if (routePlacementIsApplied(pathname, tree, allowFocusedPanel)) {
+        placedPathnameRef.current = pathname;
+        return;
+      }
       openedForPathnameRef.current = pathname;
       const expectWorkspaceTransition = route.type !== "session" || tree !== null;
       routePlacementInProgressRef.current = expectWorkspaceTransition;
+      routePlacementPathnameRef.current = expectWorkspaceTransition ? pathname : null;
       try {
         openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
       } finally {
-        if (!expectWorkspaceTransition) routePlacementInProgressRef.current = false;
+        if (!expectWorkspaceTransition) {
+          routePlacementInProgressRef.current = false;
+          routePlacementPathnameRef.current = null;
+        }
       }
       return;
     }
