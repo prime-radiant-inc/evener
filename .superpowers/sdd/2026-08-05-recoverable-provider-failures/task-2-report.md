@@ -34,9 +34,17 @@ The required old-behavior mutation run was not performed because Task 1 behavior
 
 The commit command emitted an initial `packed-refs.lock: Operation not permitted` warning from the outer repository path but completed successfully in this worktree; the resulting commit and clean status were verified.
 
-## Self-review
+## Root-cause fix verification (2026-08-05)
 
-- The change is limited to the two planned test files.
+Fresh verification found the recovery test was not reaching the second scripted adapter: `installServeScriptedProviders` assigned `Type: "openai"` to every `InstanceConfig`, including the `kimi-anthropic` instance. Since provider routing derives the instance behavior tag from `Type`, the initial Kimi model was misconfigured and the cross-provider recovery request did not route correctly.
+
+- Changed only `cmd/serf/scripted_provider_test.go`: added `scriptedProviderType`, mapping `kimi-anthropic` to `Type("kimi-anthropic")` and preserving `Type("openai")` for all existing scripted adapters. No production server, AppWire, model-switch, or AppWire code changed.
+- `gofmt -w cmd/serf/scripted_provider_test.go cmd/serf/serve_model_switch_test.go` — PASS.
+- `GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run '^TestServeModelSwitch_' -count=1 -v` — FAIL in this sandbox before daemon rendezvous: both tests reported `no rendezvous entry ... after 5s`; this is the existing loopback listener restriction, not a test assertion failure. The command exited 1.
+- `git diff --check` — PASS.
+
+Self-review: the fix is test-only and minimal; the one-provider helper still produces `openai` instances, while the recovery helper now gives each named scripted provider its matching configured type. Existing assertions remain strict, including exactly one request per provider and provider/model identity. No assertion was weakened and no recovery path was skipped.
+
 - Existing scripted-provider `steps` callers remain supported.
 - Error responses return before provider/model/finish defaults are applied.
 - The regression uses channels and structured AppWire notifications rather than sleeps or polling for turn state.

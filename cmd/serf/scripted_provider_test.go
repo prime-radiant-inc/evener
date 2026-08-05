@@ -118,7 +118,7 @@ func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) 
 		}
 		instances := make([]providercfg.InstanceConfig, len(adapters))
 		for i, adapter := range adapters {
-			instances[i] = providercfg.InstanceConfig{Name: adapter.Name(), Type: "openai"}
+			instances[i] = providercfg.InstanceConfig{Name: adapter.Name(), Type: scriptedProviderType(adapter.Name())}
 		}
 		return client, providercfg.Config{
 			Default:   adapters[0].Name(),
@@ -128,6 +128,15 @@ func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) 
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
 	})
+}
+
+func scriptedProviderType(name string) providercfg.Type {
+	switch name {
+	case "kimi-anthropic":
+		return "kimi-anthropic"
+	default:
+		return "openai"
+	}
 }
 
 func scriptedProviderConfig(name string) providercfg.Config {
