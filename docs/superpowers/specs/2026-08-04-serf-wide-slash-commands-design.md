@@ -28,8 +28,8 @@ model).
   time. Arguments substitute as inert text; `!`cmd`` spans and `@file`
   directives in a serf-wide body stay literal.
 - `serf/command/list` entries gain a `source` label (`plugin` or `user`
-  on the wire today; `project` is reserved for a future project-scoped
-  catalog — see §Catalog boundary).
+  in the initial implementation; `project` is reserved for a future
+  project-scoped catalog — see §Catalog boundary).
 - Web invocation parity: the web palette lists plugin and user-global
   commands and forwards unmatched slash input to the session (§Web
   invocation).
@@ -301,16 +301,22 @@ forwards unmatched slash names to the session
 (hub_session_keys.go:440-457). This design closes the gap rather than
 documenting it:
 
-1. **Palette fallthrough.** In command-filter mode, when the query matches
-   no registry command, Enter sends the raw text (`/name args`) as session
-   input on session pages — the web equivalent of the TUI forward.
-   Expansion stays server-side; the web client needs no template logic.
-   "No registry command" includes the web palette's own built-ins (26 ids
-   including `status`, `model`, `help`, `steer`, `queue`: commands.ts), so
-   a serf-wide command whose name collides with a *web* built-in is
-   intercepted exactly as TUI built-in collisions are — both clients
-   intercept their own built-in sets, and only headless input is
-   interception-free.
+1. **Palette fallthrough.** The web palette's command-filter mode matches
+   fuzzily (subsequence scoring, commands.ts:580-597), so "no match" must
+   be defined precisely or near-miss names get captured by built-ins (a
+   command named `stat` fuzzy-matches `status`). The fallthrough rule is:
+   **when the query's first token exactly equals no registry command id,
+   Enter sends the raw text (`/name args`) as session input** on session
+   pages — TUI parity, since the TUI forwards on exact-name miss
+   (hubCommandByName, hub_session_keys.go:439-441). Exact equality with a
+   built-in id still runs the built-in (the collision rule); fuzzy
+   near-misses fall through. Expansion stays server-side; the web client
+   needs no template logic. Both clients intercept their own built-in sets
+   — the web palette's 23 commands (commands.ts; including `status`,
+   `model`, `help`, `steer`, `queue`) and the TUI's 27 — and only headless
+   input is interception-free. When a typed name exactly equals both a
+   built-in id and a catalog command name, the built-in wins; the catalog
+   entry remains reachable via arrow-key selection.
 2. **Palette command listing.** The palette consumes `serf/command/list`
    and lists plugin and user-global commands alongside built-ins, badged by
    `source`, showing `description`/`argument-hint`. Selecting one enters
@@ -395,21 +401,27 @@ no live requests.
   warning event and the session spawns normally; unenforced-frontmatter
   warnings fire for serf-wide commands with file labels.
 - **Hub**: `serf/command/list` with zero plugin dirs still returns
-  user-global entries with `source: "user"`; shared-loader parity — the
-  catalog matches what session init loads from the same plugin dirs plus
-  the user-global dir.
+  user-global entries with `source: "user"`; with a project
+  `.serf/commands/` present on disk, the hub catalog returns **no**
+  project-sourced entries (the hub calls discovery with a nil env — the
+  test that pins §Catalog boundary); shared-loader parity — the catalog
+  matches what session init loads from the same plugin dirs plus the
+  user-global dir.
 - **Fuzz**: discovery over fuzzed directory trees and frontmatter, following
   `agent/plugin/loader_program_fuzz_test.go` patterns; register targets per
   the fuzz registry (`make fuzz-registry-check`).
-- **Frontend**: palette command-filter fallthrough — Enter on an unmatched
-  `/name args` query on a session page sends the raw text as session input;
-  a query matching a web built-in still runs the built-in. The palette
-  lists `serf/command/list` entries with source badges; selecting a
-  **plugin-source entry submits the qualified `/plugin:name` form**
-  (a shadowed plugin entry must not run its serf-wide shadow), and
-  selecting a user-source entry submits the bare form; fetch failure
-  degrades to built-ins only (fallthrough still works). Biome +
-  `make test-web` gates; `make test-web-browser` on Chrome-capable hosts.
+- **Frontend**: palette command-filter fallthrough — Enter sends the raw
+  `/name args` as session input when the first token **exactly** equals no
+  registry command id (a fuzzy near-miss like `/stat` falls through to the
+  session; an exact built-in id runs the built-in; an exact tie between a
+  built-in and a catalog command activates the built-in, with the catalog
+  entry selectable by arrow key). The palette lists `serf/command/list`
+  entries with source badges; selecting a **plugin-source entry submits
+  the qualified `/plugin:name` form** (a shadowed plugin entry must not
+  run its serf-wide shadow), and selecting a user-source entry submits the
+  bare form; fetch failure degrades to built-ins only (fallthrough still
+  works). Biome + `make test-web` gates; `make test-web-browser` on
+  Chrome-capable hosts.
 
 ## File-by-file change list
 

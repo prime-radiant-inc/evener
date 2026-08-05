@@ -53,7 +53,10 @@ argument substitution.
 
 > Availability: serf-wide commands are specified in
 > `docs/superpowers/specs/2026-08-04-serf-wide-slash-commands-design.md` and
-> land with that implementation. On older builds only plugin commands exist.
+> land with that implementation. On older builds only plugin commands exist,
+> and the web palette shows only built-in UI commands — the palette's
+> command listing and slash-command forwarding (Client caveats, below) land
+> with the same implementation.
 
 A serf-wide slash command is a markdown file — frontmatter optional — in one
 of two places:
