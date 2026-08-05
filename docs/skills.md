@@ -28,7 +28,7 @@ own.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
-| Skill | `skills/` dirs (git root→cwd), `skills_dirs`, plugins | no | never | never |
+| Skill | skills bundled with serf; `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
 | Serf-wide command | `.serf/commands/` (git root→cwd), `~/.config/serf/commands/` | yes, inert text | never — stays literal | never — stays literal |
 | Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines cwd-local files |
 
@@ -41,14 +41,19 @@ in plugin commands.
 A skill is a directory containing a `SKILL.md` with YAML frontmatter
 (`name` and `description` required, `allowed-tools` optional). Serf
 discovers skills from `skills/` directories walking the git root down to
-your cwd, from any `skills_dirs` launch-config entries, and from plugins.
-Later sources shadow earlier ones by name.
+your cwd, from any `skills_dirs` launch-config entries, and from plugins —
+layered on top of the skills bundled with serf itself, which form the base
+layer everything else shadows. Later sources shadow earlier ones by name.
 
 Skill bodies are loaded as text and injected for the model to follow. Serf
 performs no expansion on them: no shell execution, no file inclusion, no
 argument substitution.
 
 ## Serf-wide slash commands
+
+> Availability: serf-wide commands are specified in
+> `docs/superpowers/specs/2026-08-04-serf-wide-slash-commands-design.md` and
+> land with that implementation. On older builds only plugin commands exist.
 
 A serf-wide slash command is a markdown file — frontmatter optional — in one
 of two places:
@@ -57,10 +62,11 @@ of two places:
 - `$XDG_CONFIG_HOME/serf/commands/name.md` or `~/.config/serf/commands/name.md`
   (user-global commands)
 
-The filename is the command name. Invoke it by typing `/name args` in a
-session. Optional frontmatter: `description`, `argument-hint`, `model`,
-`allowed-tools` (the last two are parsed but not enforced; serf warns when
-they appear).
+The filename is the command name — choose a name without spaces (invocation
+parses the name up to the first space, so a spaced name can never run).
+Invoke it by typing `/name args` in a session. Optional frontmatter:
+`description`, `argument-hint`, `model`, `allowed-tools` (the last two are
+parsed but not enforced; serf warns when they appear).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
 spans and `@file` references in a serf-wide command body are passed through
@@ -77,10 +83,13 @@ cwd wins.
 
 - The TUI intercepts its own built-in slash commands (`/status`, `/model`,
   `/help`, ...) before your input reaches the session. A serf-wide command
-  with one of those names works in headless input but is unreachable in the
-  TUI.
+  with one of those names works in headless and web input but is
+  unreachable in the TUI.
 - The web UI opens its command palette when you type `/` into an empty
-  composer.
+  composer. The palette lists plugin and user-global commands (badged by
+  source) alongside the built-ins, and if your typed `/name` matches
+  nothing, Enter sends it to the session as-is. Project commands invoke
+  through that fallthrough.
 
 ## Plugin commands
 
@@ -91,8 +100,10 @@ environment and `@file` inlines working-directory-local files. Only install
 plugins you trust — a plugin command's body runs shell commands with the
 same permissions as the session.
 
-Plugin commands are namespaced: `/plugin:name`. The bare `/name` form works
-when no serf-wide command shadows it.
+Plugin commands are namespaced: `/plugin:name`. The bare `/name` form
+resolves to the plugin command when no serf-wide command shadows it and no
+TUI built-in intercepts it (the client caveats above apply to plugin
+commands too).
 
 ## Security checklist for command authors
 

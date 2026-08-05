@@ -27,8 +27,12 @@ model).
 - Serf-wide commands never execute shell commands or read files at expansion
   time. Arguments substitute as inert text; `!`cmd`` spans and `@file`
   directives in a serf-wide body stay literal.
-- `serf/command/list` entries gain a `source` label
-  (`plugin` / `project` / `user`).
+- `serf/command/list` entries gain a `source` label (`plugin` or `user`
+  on the wire today; `project` is reserved for a future project-scoped
+  catalog — see §Catalog boundary).
+- Web invocation parity: the web palette lists plugin and user-global
+  commands and forwards unmatched slash input to the session (§Web
+  invocation).
 
 ## Non-goals (YAGNI)
 
@@ -45,9 +49,9 @@ model).
   registry type.
 - Project commands in the hub-wide `serf/command/list` catalog (see
   §Catalog boundary).
-- A client built-in collision guard. Clients intercept their own built-in
-  slash names before input reaches the session (§Client parity); this design
-  documents the behavior rather than reserving names.
+- A client built-in collision guard. TUI clients intercept their own
+  built-in slash names before input reaches the session (§Web invocation);
+  this design documents the behavior rather than reserving names.
 
 ## Current state
 
@@ -152,6 +156,10 @@ func DiscoverSerfWideCommands(env execenv.ExecutionEnvironment) (map[string]Comm
 - Per-file rejections, each producing a warning, never fatal:
   - a basename containing `:` — a bare key with a colon could forge the
     `plugin:name` namespace and shadow a plugin's exact key;
+  - a basename containing whitespace — `expandSlashCommand` cuts the name
+    at the first space (session_slash_command.go:26), so such a command
+    can never be invoked; skip it and warn (the same defect exists for
+    plugin commands today; this guard covers the new discovery path only);
   - malformed frontmatter — `ParseCommand`'s only error path; skip the
     file, warn, continue.
 - Per-file advisory warning: a serf-wide body containing a `!`` span is
@@ -202,14 +210,18 @@ commands expand via `command.ExpandArgs`.
 
 Serf-wide discovery must run for every session, including sessions with no
 plugin dirs, so it does **not** live in `initPlugins` (which early-returns
-on empty `PluginDirs`). Session init discovers and merges next to the skill
-merge (`agent/session_init.go:905`):
+on empty `PluginDirs`). Session init discovers immediately after the
+`initPlugins` call (which is also where every plugin instance is loaded,
+empty set included), then assembles the whole command map in one place:
 
 ```go
 serfwide, warnings := plugin.DiscoverSerfWideCommands(s.currentEnv())
-maps.Copy(s.pluginCommands, serfwide) // bare-name keys
+s.pluginCommands = plugin.MergeCommands(s.plugins, serfwide)
 // warnings join the session-start warning queue
 ```
+
+`initPlugins` stops merging `p.Commands` per plugin (today at
+session_init.go:1139); `MergeCommands` becomes the single assembly point.
 
 Precedence needs no resolution changes. `ResolveCommand` exact-matches
 first: a bare serf-wide key `review` wins over every `plugin:review`
@@ -252,7 +264,7 @@ the discovery warnings slice, labeled by source and file.
 `appwire.CommandDescriptor` gains:
 
 ```go
-Source string `json:"source,omitempty"` // "plugin" | "project" | "user"
+Source string `json:"source,omitempty"` // "plugin" or "user"; "project" reserved for a future project-scoped catalog
 ```
 
 `appwire/protocol.go`'s `serf/command/list` description and
@@ -273,21 +285,34 @@ Consequence for the error table below: when a **user-global** command
 shadows a plugin command, the catalog lists both with distinct sources; when
 a **project** command shadows one, the catalog lists only the plugin entry.
 
-### Client parity
+### Web invocation (closing the parity gap)
 
-Expansion parity across clients is **not** automatic, and this design does
-not change that:
+Today serf-wide and plugin commands are **entirely unreachable from the web
+composer**: a leading `/` in an empty composer opens the local palette
+(Composer.tsx:679-682), the palette lists only built-in UI commands (no
+frontend consumer of `serf/command/list` exists outside generated types),
+and Enter on an unmatched query does nothing
+(CommandPalette.tsx:409-411 — no fallthrough). The TUI, by contrast,
+forwards unmatched slash names to the session
+(hub_session_keys.go:440-457). This design closes the gap rather than
+documenting it:
 
-- TUI built-in names (~27: `status`, `model`, `help`, ...) are intercepted
-  client-side before input reaches the session; a serf-wide command with
-  such a name is unreachable in the TUI. It works in headless input and is
-  shadowed identically for plugin commands today.
-- The web composer routes a leading `/` in an empty composer to its local
-  palette rather than sending it as input.
+1. **Palette fallthrough.** In command-filter mode, when the query matches
+   no registry command, Enter sends the raw text (`/name args`) as session
+   input on session pages — the web equivalent of the TUI forward.
+   Expansion stays server-side; the web client needs no template logic.
+2. **Palette command listing.** The palette consumes `serf/command/list`
+   and lists plugin and user-global commands alongside built-ins, badged by
+   `source`, showing `description`/`argument-hint`. Selecting one enters
+   the palette's existing args flow where applicable, and submits
+   `/name args` as session input. Project commands are not in the hub
+   catalog (§Catalog boundary); they invoke via the fallthrough.
 
-`docs/skills.md` documents both behaviors. A reserved-name warning at
-discovery is a possible follow-up; it requires sharing the clients' built-in
-name lists and is out of scope here.
+The TUI's built-in interception stays: a serf-wide command named `status`
+or `model` remains unreachable in the TUI (identical for plugin commands
+today). `docs/skills.md` documents this. A reserved-name warning at
+discovery is a possible follow-up; it requires sharing the clients'
+built-in name lists and is out of scope here.
 
 ### Lifecycle and persistence
 
@@ -310,10 +335,11 @@ Fail-soft everywhere; loud warnings; never block spawn.
 | Commands dir present but unreadable | Warning, continue with other dirs |
 | Malformed frontmatter in a `.md` | Skip file, warning naming file and error, continue |
 | Filename containing `:` | Skip file, warning (namespace forgery guard) |
+| Filename containing whitespace | Skip file, warning (uninvokable-name guard) |
 | Serf-wide body contains `!`` spans | Advisory warning at discovery; spans stay literal in expansion |
 | Serf-wide vs serf-wide name collision | Silent deterministic shadowing (deepest project dir > user-global) |
 | Serf-wide shadows plugin command | Silent; plugin reachable via `/plugin:name`; catalog lists both only when the shadowing command is user-global (§Catalog boundary) |
-| Command name matches a client built-in | Works headless; unreachable in TUI / palette-intercepted in web; documented (§Client parity) |
+| Command name matches a TUI built-in | Works headless and (via the palette fallthrough, §Web invocation) in web; unreachable in the TUI; documented |
 | Expansion failure (plugin commands) | Unchanged: warning + literal-text fallback in `expandSlashCommand` |
 | `model`/`allowed-tools` declared | Unenforced-field warning naming source and file, generated at discovery |
 
@@ -326,18 +352,21 @@ no live requests.
   project walk only; ordering (user-global scanned first, deepest project
   dir shadows); symlinked cwd; non-`.md` files ignored; subdirectories not
   descended; malformed frontmatter skipped with warning; colon filenames
-  skipped with warning; `!`` advisory warning fires; nil env scans
-  user-global only.
+  skipped with warning; whitespace filenames skipped with warning; `!``
+  advisory warning fires; nil env scans user-global only.
 - **Unit — precedence**: `ResolveCommand` exact-matches a bare serf-wide key
   before plugin suffix fallback; `/plugin:name` still resolves explicitly;
   when two plugins share a command name with no serf-wide shadow, assert the
   result is one of the two (the fallback is nondeterministic map iteration
   by design — do not assert a specific winner).
 - **Unit — expansion**: `ExpandArgs` substitutes `$ARGUMENTS`/`$1..$9` and
-  leaves `!`cmd`` and `@file` byte-for-byte literal; `expandSlashCommand`
-  routes `"plugin"` sources to `Expand` and serf-wide sources to
-  `ExpandArgs` (assert a `!`true`` span in a serf-wide body is not
-  executed, e.g. via a scripted env that records `ExecCommand` calls).
+  never executes or reads: `!`cmd`` and `@file` spans pass through
+  unexpanded (argument substitution still applies inside them as inert
+  text — `!`echo $1`` with arg `foo` yields the literal text
+  `!`echo foo``; assert inertness, not byte-for-byte identity).
+  `expandSlashCommand` routes `"plugin"` sources to `Expand` and serf-wide
+  sources to `ExpandArgs` (assert a `!`…`` span in a serf-wide body
+  produces no `ExecCommand` call, via a scripted env that records them).
 - **Session (scripted provider)**: serf-wide commands load and expand with
   **`PluginDirs: nil`** (the default configuration); `/review args` expands
   from project and user sources; a shadowed plugin command expands only
@@ -351,8 +380,12 @@ no live requests.
 - **Fuzz**: discovery over fuzzed directory trees and frontmatter, following
   `agent/plugin/loader_program_fuzz_test.go` patterns; register targets per
   the fuzz registry (`make fuzz-registry-check`).
-- **Frontend**: source badge/grouping in the command catalog; Biome +
-  `make test-web` gates.
+- **Frontend**: palette command-filter fallthrough — Enter on an unmatched
+  `/name args` query on a session page sends the raw text as session input;
+  palette lists `serf/command/list` entries with source badges, and
+  selecting one submits `/name args`; fetch failure degrades to built-ins
+  only (fallthrough still works). Biome + `make test-web` gates;
+  `make test-web-browser` on Chrome-capable hosts.
 
 ## File-by-file change list
 
@@ -363,11 +396,11 @@ no live requests.
 | `agent/plugin/plugin.go` | New: `MergeCommands` shared flatten-and-overlay |
 | `agent/command/expand.go` | New: `ExpandArgs` (argument substitution only) |
 | `agent/session_slash_command.go` | Branch expansion on `Command.Source` |
-| `agent/session_init.go` | Discover + merge serf-wide commands beside the skill merge (outside the `PluginDirs` gate); queue discovery warnings |
+| `agent/session_init.go` | `initPlugins` stops merging `p.Commands`; after it returns, discover serf-wide commands and set `s.pluginCommands = MergeCommands(s.plugins, serfwide)`; queue discovery warnings |
 | `appwire/types.go` | `CommandDescriptor.Source` |
 | `appwire/protocol.go` | `serf/command/list` description mentions source |
 | `cmd/serf-hub/app_rpc.go` | `hubCommandList` uses `MergeCommands`; remove the empty-dirs early return |
-| web catalog (`cmd/serf-hub/frontend`) | Badge/group commands by source |
+| `cmd/serf-hub/frontend` palette (`CommandPalette.tsx`, command registry) | Command-filter fallthrough sends unmatched `/name args` as session input; palette lists `serf/command/list` commands badged by source |
 | `docs/appwire-protocol.md` | Document the `source` field |
 | `docs/skills.md` | Document skills and command sources, the inert-expansion posture, and the trust model |
 
