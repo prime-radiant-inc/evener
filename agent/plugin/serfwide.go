@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
@@ -12,6 +14,10 @@ import (
 )
 
 var serfwideUserHomeDir = os.UserHomeDir
+
+// execSpanPattern matches a !`cmd` execution span in a command body. The
+// same shape as command.cmdOrFilePattern's first alternative.
+var execSpanPattern = regexp.MustCompile("!`[^`]*`")
 
 // globalCommandsDir resolves the user-global commands directory:
 // $XDG_CONFIG_HOME/serf/commands, or ~/.config/serf/commands. Mirrors
@@ -80,13 +86,28 @@ func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]eve
 			continue
 		}
 		file := filepath.Join(dir, entry.Name())
+		name := strings.TrimSuffix(entry.Name(), ".md")
+		if name == "" {
+			*warnings = append(*warnings, serfwideWarning("empty command name",
+				fmt.Sprintf("skipping command file %s: a file named exactly .md has no command name", file)))
+			continue
+		}
+		if strings.Contains(name, ":") {
+			*warnings = append(*warnings, serfwideWarning("colon in command name",
+				fmt.Sprintf("skipping command file %s: ':' is the plugin namespace separator", file)))
+			continue
+		}
+		if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+			*warnings = append(*warnings, serfwideWarning("whitespace in command name",
+				fmt.Sprintf("skipping command file %s: names with whitespace can never be invoked", file)))
+			continue
+		}
 		data, err := os.ReadFile(file)
 		if err != nil {
 			*warnings = append(*warnings, serfwideWarning("unreadable command file",
 				fmt.Sprintf("skipping command file %s: %v", file, err)))
 			continue
 		}
-		name := strings.TrimSuffix(entry.Name(), ".md")
 		command, err := ParseCommand(data, name, "")
 		if err != nil {
 			*warnings = append(*warnings, serfwideWarning("malformed command file",
@@ -95,6 +116,14 @@ func scanSerfwideDir(dir, source string, out map[string]Command, warnings *[]eve
 		}
 		command.Source = source
 		command.File = file
+		if execSpanPattern.MatchString(command.Body) {
+			*warnings = append(*warnings, serfwideWarning("inert execution directive",
+				fmt.Sprintf("command file %s contains !` spans: execution directives are inert in serf-wide commands; use a plugin command for executable templates", file)))
+		}
+		if command.Model != "" || len(command.AllowedTools) > 0 {
+			*warnings = append(*warnings, serfwideWarning("unenforced command frontmatter",
+				fmt.Sprintf("command file %s declares model/allowed-tools, which serf does not enforce yet", file)))
+		}
 		out[name] = command
 	}
 }

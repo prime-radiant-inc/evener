@@ -4,6 +4,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -134,5 +135,51 @@ func TestDiscoverSerfWideCommands_IsolatedXDGConfigHome(t *testing.T) {
 	}
 	if _, ok := got["first"]; ok {
 		t.Fatalf("second scan leaked first command: %v", maps.Keys(got))
+	}
+}
+
+func TestDiscoverSerfWideCommands_RejectsBadNames(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "serf", "commands")
+	writeSerfwideCommand(t, dir, "ok", "body")
+	writeSerfwideCommand(t, dir, "p:forge", "body")    // colon: namespace forgery
+	writeSerfwideCommand(t, dir, "my command", "body") // whitespace: uninvokable
+	writeSerfwideCommand(t, dir, "", "body")           // file named exactly ".md"
+
+	got, warnings := DiscoverSerfWideCommands(nil)
+	if len(got) != 1 {
+		t.Errorf("got keys %v, want only [ok]", maps.Keys(got))
+	}
+	if len(warnings) != 3 {
+		t.Errorf("got %d warnings, want 3 (colon, whitespace, empty): %v", len(warnings), warnings)
+	}
+}
+
+func TestDiscoverSerfWideCommands_MalformedFrontmatterSkipped(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "serf", "commands")
+	writeSerfwideCommand(t, dir, "broken", "---\n[unclosed\n---\nbody")
+	got, warnings := DiscoverSerfWideCommands(nil)
+	if len(got) != 0 || len(warnings) != 1 {
+		t.Errorf("got %d commands, %d warnings; want 0, 1", len(got), len(warnings))
+	}
+}
+
+func TestDiscoverSerfWideCommands_Advisories(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir := filepath.Join(xdg, "serf", "commands")
+	writeSerfwideCommand(t, dir, "exec", "run !`git status` here")
+	writeSerfwideCommand(t, dir, "front", "---\nmodel: gpt-5.2\nallowed-tools:\n  - shell\n---\nbody")
+	_, warnings := DiscoverSerfWideCommands(nil)
+	if len(warnings) != 2 {
+		t.Fatalf("got %d warnings, want 2: %v", len(warnings), warnings)
+	}
+	for _, w := range warnings {
+		if !strings.Contains(w.Message, dir) {
+			t.Errorf("warning %q does not name the file", w.Message)
+		}
 	}
 }
