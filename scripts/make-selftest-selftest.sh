@@ -116,6 +116,13 @@ if [ -n "${PROBE_READY_FIFO:-}" ]; then
 			;;
 	esac
 fi
+if [ "${PROBE_MODE:-pass}" = hold ] && [ "${PROBE_SPAWN_DESCENDANT:-}" = "$name" ]; then
+	# A forked (not exec'd) descendant: run_worker's forwarding trap only ever signals the
+	# probe's own pid ($child), so this process is reachable only if Make signals the whole
+	# process group -- a direct, non-forwarded kernel delivery this descendant does not ignore.
+	sleep 30 &
+	printf '%s\n' "$!" >"$PROBE_STATE/$name.descendant.pid"
+fi
 case "${PROBE_MODE:-pass}" in
 	hold)
 		if [ -n "${PROBE_REAP_FIFO:-}" ]; then
@@ -147,17 +154,17 @@ STUB
 
 run_make() {
 	local mode="$1" output="$2" fail_name="${3:-}"
-	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= PROBE_MAKE_PUBLISH_DELAY= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
+	PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" PROBE_READY_FIFO= PROBE_SKIP_READY= PROBE_READY_DELAY= PROBE_MAKE_RECORD_DELAY= PROBE_MAKE_PUBLISH_DELAY= PROBE_SPAWN_DESCENDANT= TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin" \
 		"$real_make" "${make_args[@]}" >"$output" 2>&1
 }
 
 run_make_with_readiness_events() {
-	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}" ready_delay="${6:-}"
+	local mode="$1" output="$2" skip_ready="${3:-}" ignore_term="${4:-}" fail_name="${5:-}" ready_delay="${6:-}" spawn_descendant="${7:-}"
 	(
 		# The wrapper converts Make exit into a terminal FIFO event and forwards interrupts.
 		export PROBE_STATE="$case_state" PROBE_MODE="$mode" PROBE_FAIL="$fail_name" \
 			PROBE_SKIP_READY="$skip_ready" PROBE_IGNORE_TERM="$ignore_term" PROBE_READY_FIFO="$ready_fifo" PROBE_STOP_FIFO="$stop_fifo" \
-			PROBE_READY_DELAY="$ready_delay" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
+			PROBE_READY_DELAY="$ready_delay" PROBE_SPAWN_DESCENDANT="$spawn_descendant" TMPDIR="$case_tmp" PATH="$case_bin:/usr/bin:/bin"
 		export PROBE_REAP_FIFO="$reaped_fifo" PROBE_REAP_RELEASE_FIFO="$reap_release_fifo" \
 			PROBE_MAKE_KILLED_MARKER="$case_state/make-child-killed" PROBE_MAKE_RECORD_DELAY="$make_record_delay" \
 			PROBE_MAKE_PUBLISH_DELAY="$make_publish_delay"
@@ -519,6 +526,44 @@ fi
 kill -TERM "$unrelated_pid" 2>/dev/null || :
 wait "$unrelated_pid" 2>/dev/null || :
 unrelated_pid=""
+
+new_case
+descendant_out="$case_dir/descendant.out"
+ready_fifo="$case_state/ready"
+stop_fifo="$case_state/stopped"
+exec 9<>"$ready_fifo"
+exec 8<>"$stop_fifo"
+run_make_with_readiness_events hold "$descendant_out" "" "" "" "" probe-two
+if wait_for_ready_workers; then
+	ok "the descendant-escape fixture receives both worker readiness events"
+else
+	bad "the descendant-escape fixture receives both worker readiness events"
+fi
+exec 9>&-
+descendant_pid="$(cat "$case_state/probe-two.descendant.pid" 2>/dev/null || :)"
+if [ -n "$descendant_pid" ] && kill -0 "$descendant_pid" 2>/dev/null; then
+	ok "the descendant-escape fixture records a live forked descendant before interruption"
+else
+	bad "the descendant-escape fixture records a live forked descendant before interruption"
+fi
+stop_make_with_readiness_events
+exec 8>&-
+[ "$make_status" -ne 0 ] && ok "an interrupted wave with a forked descendant exits nonzero" || bad "an interrupted wave with a forked descendant exits nonzero"
+for name in probe-one probe-two; do
+	pid="$(cat "$case_state/$name.pid" 2>/dev/null || :)"
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		bad "an interrupted wave with a forked descendant leaves $name alive"
+		kill -KILL "$pid" 2>/dev/null || :
+	else
+		ok "an interrupted wave with a forked descendant reaps $name"
+	fi
+done
+if [ -n "$descendant_pid" ] && kill -0 "$descendant_pid" 2>/dev/null; then
+	bad "an interrupted wave reaches a probe's forked (not exec'd) descendant"
+	kill -KILL "$descendant_pid" 2>/dev/null || :
+else
+	ok "an interrupted wave reaches a probe's forked (not exec'd) descendant"
+fi
 
 new_case
 child_work="$case_dir/interrupt-child"

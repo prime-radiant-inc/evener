@@ -201,7 +201,7 @@ SELFTEST_SCRIPTS := run-module-lint run-module-tests make-selftest reclaim-test-
 selftest:
 	@set -u; fail=0; normal=0; pids=""; \
 	dir="$$(mktemp -d -t serf-selftest.XXXXXX)" || exit 1; \
-	stop_children() { for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || :; done; }; \
+	stop_children() { for pid in $$pids; do kill -TERM -- "-$$pid" 2>/dev/null || kill -TERM "$$pid" 2>/dev/null || :; done; }; \
 	cleanup() { \
 		if [ "$$normal" -eq 0 ]; then stop_children; fi; \
 		for pid in $$pids; do wait "$$pid" 2>/dev/null || :; done; \
@@ -213,15 +213,18 @@ selftest:
 		s="$$1"; start="$$(date +%s)"; \
 		scripts/$$s-selftest.sh >"$$dir/$$s.log" 2>&1 & child="$$!"; \
 		trap 'kill -TERM "$$child" 2>/dev/null || :; wait "$$child" 2>/dev/null || :; exit 143' HUP INT TERM; \
-		wait "$$child"; status="$$?"; end="$$(date +%s)"; \
+		wait "$$child"; status="$$?"; trap - HUP INT TERM; end="$$(date +%s)"; \
 		printf 'real %s\n' "$$((end - start))" >>"$$dir/$$s.log"; \
-		trap - HUP INT TERM; echo "$$status" >"$$dir/$$s.status"; \
+		echo "$$status" >"$$dir/$$s.status"; \
 	}; \
+	set -m; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		run_worker "$$s" & \
 		pids="$$pids $$!"; \
 	done; \
+	set +m; \
 	wait; \
+	pids=""; \
 	for s in $(SELFTEST_SCRIPTS); do \
 		if [ "$$(cat "$$dir/$$s.status" 2>/dev/null || echo 1)" = 0 ]; then \
 			printf 'PASS  %-26s %s\n' "$$s" "$$(awk '/^real /{print $$2"s"}' "$$dir/$$s.log" | tail -1)"; \
