@@ -97,6 +97,7 @@ TARGETS=(
 	"native:.:./cmd/serf-fuzzregistry:FuzzRegistryProgram::"
 	"native:agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
 	"native:agent:./plugin:FuzzPluginLoaderProgram::"
+	"native:agent:./plugin:FuzzDiscoverSerfwideFrontmatter::"
 	"native:.:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
 	"native:agent:./plugin:FuzzPluginLoad::plugin.go#Load"
 	# Phase 7 Wave 1 — a decode/parse target for every remaining package.
