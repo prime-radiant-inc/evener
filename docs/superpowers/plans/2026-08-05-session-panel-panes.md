@@ -418,7 +418,7 @@ git commit -m "feat(web): move focus into session panel panes"
 
 - [ ] **Step 1: Add restore round-trip coverage** for all three panel types through `layoutJSON`/`restoreLayout`, including raw-ref title fallback before hydration.
 
-- [ ] **Step 2: Add thread claim/release coverage** for session-plus-panel claims in open/close/reorder sequences and verify models are evicted only after the last pane reference closes.
+- [ ] **Step 2: Add thread claim/release coverage** for session-plus-panel claims in open/close/reorder sequences. Thread claims are MOUNTED-lifetime (stores/threads.ts refcounts ensureThread/releaseThread; dockview unmounts background tabs, so a backgrounded pane holds no claim and its model may be evicted and re-hydrated on refocus); it is the PANEL stores that retain state for the logical pane lifetime, evicted only when the last workspace pane referencing the ref closes (stores/panelStoreEviction.ts). Verify each retention rule against its own owner: model eviction after the last mounted claim releases, panel-store eviction after the last logical pane reference closes.
 
 - [ ] **Step 3: Add final remount and badge pins** for retained rows, daemon-gone state, Activity selection/expansion/grafts, no focus on remount, established/collapsed/single-fetch gates, and root-only summary publication.
 
