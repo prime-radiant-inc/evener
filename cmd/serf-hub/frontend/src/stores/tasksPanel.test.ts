@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { resetWorkspaceStoreForTests } from "../shell/workspace";
+import { schedulePanelStoreEviction } from "./panelStoreEviction";
 import { resetTasksPanelStoreForTests, tasksPanelStore } from "./tasksPanel";
 
 const failure = { headline: "Couldn't load tasks", sentence: "Couldn't load tasks: broken pipe" };
@@ -51,5 +53,18 @@ describe("tasksPanelStore", () => {
     resolve([]);
     await publish;
     expect(tasksPanelStore.getState().entries.get("ref_a")?.rows).toEqual([]);
+  });
+
+  test("a completion from before eviction cannot publish into a recreated entry", async () => {
+    resetWorkspaceStoreForTests();
+    const stale = tasksPanelStore.getState().beginFetch("ref_a");
+    schedulePanelStoreEviction();
+    await Promise.resolve();
+    expect(tasksPanelStore.getState().entries.has("ref_a")).toBe(false);
+
+    const fresh = tasksPanelStore.getState().beginFetch("ref_a");
+    expect(fresh).not.toBe(stale);
+    tasksPanelStore.getState().publishFetch("ref_a", stale, { kind: "rows", rows: [] });
+    expect(tasksPanelStore.getState().entries.get("ref_a")).toMatchObject({ rows: null, loading: true });
   });
 });

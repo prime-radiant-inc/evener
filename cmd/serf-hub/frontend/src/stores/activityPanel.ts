@@ -77,6 +77,11 @@ function entryFor(entries: Map<string, ActivityPanelEntry>, ref: string): Activi
   return entries.get(ref) ?? newEntry();
 }
 
+// Monotonic across every entry and NOT stored per-entry: an entry recreated
+// after eviction must never hand out an ID that a request begun in its
+// previous life could still complete with (publishFetch matches on requestID).
+let nextRequestID = 0;
+
 function retainedTree(load: ActivityLoadState): ActivityTree | undefined {
   if (load.kind === "ready") return load.tree;
   if (load.kind === "ended") return load.tree;
@@ -203,7 +208,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
     let requestID = 0;
     set((state) => {
       const current = entryFor(state.entries, ref);
-      requestID = current.requestID + 1;
+      requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
       const next: ActivityPanelEntry = continuation
         ? {
@@ -351,6 +356,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
   },
 
   resetForTests() {
+    nextRequestID = 0;
     set({ entries: new Map() });
   },
 }));

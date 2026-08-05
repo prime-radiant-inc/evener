@@ -46,6 +46,11 @@ function entryFor(entries: Map<string, ActivitySummaryEntry>, ref: string): Acti
   return entries.get(ref) ?? { ...EMPTY_ACTIVITY_SUMMARY_ENTRY };
 }
 
+// Monotonic across every entry and NOT stored per-entry: an entry recreated
+// after eviction must never hand out an ID that a request begun in its
+// previous life could still complete with (publish/fail match on requestID).
+let nextRequestID = 0;
+
 function failureFor(err: unknown): { headline: string; detail?: string; sentence: string } {
   const headline = sessionActionHeadline("Couldn't load activity", err);
   const sentence = sessionActionError("Couldn't load activity", err);
@@ -80,7 +85,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     set((state) => {
       const entry = entryFor(state.entries, ref);
       if (entry.loading || (!force && entry.established && entry.lastFetchedBump === bump)) return state;
-      requestID = entry.requestID + 1;
+      requestID = ++nextRequestID;
       const entries = new Map(state.entries);
       entries.set(ref, {
         ...entry,
@@ -146,6 +151,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   },
 
   resetForTests() {
+    nextRequestID = 0;
     set({ entries: new Map() });
   },
 }));

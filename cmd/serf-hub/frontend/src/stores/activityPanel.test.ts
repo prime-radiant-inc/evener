@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
+import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
+import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 function tree(revision = 1) {
   return {
@@ -83,5 +85,19 @@ describe("activityPanelStore", () => {
     const request = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", request, { kind: "ready", tree: tree() });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load.kind).toBe("ready");
+  });
+
+  test("a completion from before eviction cannot publish into a recreated entry", async () => {
+    resetActivityPanelStoreForTests();
+    resetWorkspaceStoreForTests();
+    const stale = activityPanelStore.getState().beginFetch("ref_a");
+    schedulePanelStoreEviction();
+    await Promise.resolve();
+    expect(activityPanelStore.getState().entries.has("ref_a")).toBe(false);
+
+    const fresh = activityPanelStore.getState().beginFetch("ref_a");
+    expect(fresh).not.toBe(stale);
+    activityPanelStore.getState().publishFetch("ref_a", stale, { kind: "ready", tree: tree(9) });
+    expect(activityPanelStore.getState().entries.get("ref_a")?.load.kind).toBe("loading");
   });
 });

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
+import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
+import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 describe("activitySummaryStore", () => {
   test("uses the established-attempt gate and complete-count badge data", () => {
@@ -137,5 +139,25 @@ describe("activitySummaryStore", () => {
     });
 
     expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(root.root.counts);
+  });
+
+  test("a completion from before eviction cannot publish into a recreated entry", async () => {
+    resetActivitySummaryStoreForTests();
+    resetWorkspaceStoreForTests();
+    const stale = activitySummaryStore.getState().beginRootFetch("ref_a", 1);
+    schedulePanelStoreEviction();
+    await Promise.resolve();
+    expect(activitySummaryStore.getState().entries.has("ref_a")).toBe(false);
+
+    const fresh = activitySummaryStore.getState().beginRootFetch("ref_a", 2);
+    expect(fresh).not.toBe(stale);
+    activitySummaryStore.getState().publishRootFetch("ref_a", stale as number, {
+      active: 9,
+      failed: 0,
+      completed: 0,
+      complete: true,
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toBeUndefined();
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.loading).toBe(true);
   });
 });

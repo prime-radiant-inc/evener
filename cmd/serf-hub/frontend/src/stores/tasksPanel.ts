@@ -65,6 +65,11 @@ function updateEntry(
   });
 }
 
+// Monotonic across every entry and NOT stored per-entry: an entry recreated
+// after eviction must never hand out an ID that a request begun in its
+// previous life could still complete with (publishFetch matches on fetchID).
+let nextFetchID = 0;
+
 export const tasksPanelStore = createStore<TasksPanelStoreState>((set) => ({
   entries: new Map(),
 
@@ -72,7 +77,7 @@ export const tasksPanelStore = createStore<TasksPanelStoreState>((set) => ({
     let fetchID = 0;
     set((state) => {
       const current = entryFor(state.entries, ref);
-      fetchID = current.fetchID + 1;
+      fetchID = ++nextFetchID;
       const next = new Map(state.entries);
       next.set(ref, {
         ...current,
@@ -187,6 +192,7 @@ export const tasksPanelStore = createStore<TasksPanelStoreState>((set) => ({
   },
 
   resetForTests() {
+    nextFetchID = 0;
     set({ entries: new Map() });
   },
 }));
