@@ -11,6 +11,7 @@
 
 import type { ThreadModel } from "../../protocol/model";
 import type { ThreadCapabilities } from "../../protocol/types.gen";
+import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
@@ -74,6 +75,9 @@ export interface Command {
   id: string;
   title: string;
   hint: string;
+  description?: string;
+  source?: string;
+  pluginName?: string;
   keywords: string[];
   scope: CommandScope;
   // The ThreadCapabilities flag the hub publishes for this command's action,
@@ -86,6 +90,7 @@ export interface Command {
   // stayOpen commands (/search, /help) never close and never record recency.
   stayOpen?: boolean;
   args?: CommandArgs;
+  slashCommandInvocation?: string;
   run?(ctx: PaletteRunContext): CommandResult;
 }
 
@@ -556,9 +561,24 @@ export function rememberableId(command: Command): string {
 // final word on the call itself.
 export function commandsInScope(ctx: PaletteContext): ScopedCommand[] {
   const model = focusedModel(ctx.sessionRef);
-  return buildCommands()
+  const catalog = ctx.sessionRef === null ? [] : catalogCommands();
+  return [...buildCommands(), ...catalog]
     .filter((c) => c.scope === "global" || ctx.sessionRef !== null)
     .map((c) => scopeCommand(c, model));
+}
+
+function catalogCommands(): Command[] {
+  return useCommandCatalog.getState().commands.map((command) => ({
+    id: command.name,
+    title: `${command.name} [${command.source ?? "plugin"}]`,
+    hint: command.description ?? "",
+    description: command.description ?? "",
+    source: command.source,
+    pluginName: command.pluginName,
+    keywords: [command.source ?? "plugin", command.pluginName ?? ""].filter(Boolean),
+    scope: "session",
+    slashCommandInvocation: command.source === "user" ? `/${command.name}` : `/${command.pluginName}:${command.name}`,
+  }));
 }
 
 function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedCommand {

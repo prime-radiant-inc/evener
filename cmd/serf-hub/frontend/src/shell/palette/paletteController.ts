@@ -8,6 +8,8 @@
 // the overlay body (search + the 22-command registry) reading the same store.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { useCommandCatalog } from "../../stores/commandCatalog";
+import { buildPaletteContext } from "./paletteContext";
 
 export interface PaletteState {
   open: boolean;
@@ -24,6 +26,7 @@ export const paletteStore = createStore<PaletteState>(() => ({ open: false, quer
 
 export function openPalette(initialQuery = ""): void {
   paletteStore.setState((s) => ({ open: true, query: initialQuery, openSeq: s.openSeq + 1 }));
+  if (buildPaletteContext().sessionRef !== null) void useCommandCatalog.getState().refresh();
 }
 
 export function closePalette(): void {
