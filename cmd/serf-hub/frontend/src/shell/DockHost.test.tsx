@@ -10,7 +10,7 @@ import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
 // auto-resizing - see this task's report for the live probe that found
@@ -272,6 +272,31 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     expect(document.activeElement).toBe(previousFocus);
     expect(document.activeElement).not.toBe(document.querySelector('[data-pane-scaffold="delayed-details"]'));
     previousFocus.remove();
+  } finally {
+    registerPane(originalDetails);
+  }
+});
+
+// A breakpoint crossing unmounts DockHost while the workspace still considers
+// the toggle-opened pane focused. Its pending focus marker must survive the
+// teardown so StackHost's PaneScaffold can consume it once the pane's lazy
+// content finally mounts on the other side of the swap.
+test("a host teardown preserves the still-focused pane's pending focus marker", async () => {
+  const originalDetails = paneFor("sessionDetails") as PaneDescriptor<{ ref: string }>;
+  const pendingChunk = new Promise<{ default: typeof FocusFixture }>(() => {});
+  registerPane({ ...originalDetails, component: lazy(() => pendingChunk) });
+
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "ref_main" });
+    const view = render(<DockHost />);
+    await screen.findByText(/doc pane: ref_main/);
+
+    const delayed = workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId;
+    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
+
+    view.unmount();
+    expect(consumePaneFocus(delayed)).toBe(true);
   } finally {
     registerPane(originalDetails);
   }

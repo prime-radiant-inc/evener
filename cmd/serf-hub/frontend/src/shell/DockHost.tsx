@@ -72,7 +72,12 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
     });
     return () => {
       disposable.dispose();
-      cancelPaneFocus(api.id);
+      // A host teardown (the desktop-to-mobile breakpoint swap) unmounts every
+      // panel while the workspace still considers this pane focused - its
+      // pending marker must survive for the next host's scaffold to consume.
+      // Any other unmount means the pane deactivated or closed, where a
+      // pending marker is stale and must not focus a later remount.
+      if (workspaceStore.getState().focusedPaneId !== api.id) cancelPaneFocus(api.id);
     };
   }, [api]);
 
