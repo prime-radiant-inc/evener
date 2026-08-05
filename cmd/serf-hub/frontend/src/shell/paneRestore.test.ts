@@ -92,7 +92,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         p5: {
           id: "p5",
           contentComponent: "default",
-          params: { paneType: "doc", paneParams: { ref: "ref_a", path: "notes.md" } },
+          params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } },
         },
         p6: { id: "p6", contentComponent: "default", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
       },
@@ -105,7 +105,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         { id: "p2", params: { paneType: "sessionTasks", paneParams: { ref: "ref_a" } } },
         { id: "p3", params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } } },
         { id: "p4", params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } } },
-        { id: "p5", params: { paneType: "doc", paneParams: { ref: "ref_a", path: "notes.md" } } },
+        { id: "p5", params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } } },
         { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
       ];
       fake.activePanel = { id: "p4" };
@@ -124,7 +124,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p3", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
-      { id: "p5", type: "doc", params: { ref: "ref_a", path: "notes.md" }, slot: "secondary" },
+      { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
       { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
